@@ -14,9 +14,21 @@
 //    their logs began (first `recorded_at`, then id), with a parent always before its children.
 //
 // The log is read, never written: `corrected` events replay like any other event and the rows they
-// correct stay as stored (B 4). The outbox is not a projection and is not truncated; replay calls
-// `outboxFor` like an append does, which returns nothing until the Jira projector fills it (#89
-// tracks giving replay a way to skip it).
+// correct stay as stored (B 4).
+//
+// The outbox is not touched (#89). It is not a projection: it is a delivery log whose rows cause
+// writes to Jira, GitHub, Slack, and Teams. Replay passes `{ outbox: false }` to `applyProjections`,
+// so `outboxFor` is never consulted and the table is neither truncated nor added to. Enqueueing only
+// the rows that are missing (insert, on conflict do nothing) was considered and rejected:
+// - Nothing is ever missing by accident. An append writes its outbox rows in the same transaction
+//   as its events (B 4), so a stored event without its row means the row was delivered and pruned.
+//   "Missing" rows are exactly the ones a refill would send a second time.
+// - The rows that would come back are history: a status, a comment, a field value from when the
+//   event happened, delivered again after newer writes and out of order with them.
+// - If `outboxFor` changes after events were recorded, replay would emit rows those events never
+//   produced, turning a projection repair into an external side effect.
+// Re-emitting writes on purpose (a wiped Jira project) is `<cli> jira reproject` (B 7.1), a separate
+// command that decides what to send against the target's current state.
 //
 // `snapshotProjections(state)` is every projection row as canonical JSON (tables, then rows sorted by
 // primary key in code, object keys sorted, values decoded through the codec), so two snapshots from
@@ -77,6 +89,7 @@ export async function rebuild(state: RebuildState, target: RebuildTarget, option
         await applyProjections(
           tx,
           log.slice(i, i + batchSize).map((e) => upcast(e, registry)),
+          { outbox: false },
         );
       }
       return log.length;
