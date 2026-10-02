@@ -4,6 +4,7 @@
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EventPayloads, EventType, IncidentEvent, NewEvent } from '../../src/contracts/events.ts';
+import type { OutboxItem } from '../../src/contracts/state.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import type { StateContext } from '../../src/state/context.ts';
 import { applyProjections } from '../../src/state/projections/index.ts';
@@ -16,6 +17,32 @@ import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/
 vi.mock('../../src/state/projections/index.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/state/projections/index.ts')>();
   return { ...actual, applyProjections: vi.fn(actual.applyProjections) };
+});
+
+// `outboxFor` behind a switch: off, the real hook; on, one outbox row per event, as the Jira
+// projector will fill it (#89). Row ids come from the event, so a second enqueue would collide.
+const outboxHook = vi.hoisted(() => ({ rowPerEvent: false }));
+vi.mock('../../src/state/projections/outbox.ts', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/state/projections/outbox.ts')>();
+  return {
+    ...actual,
+    outboxFor: (e: IncidentEvent): OutboxItem[] =>
+      outboxHook.rowPerEvent
+        ? [
+            {
+              id: `${e.incidentId}#${String(e.seq).padStart(4, '0')}`,
+              workspaceId: e.workspaceId,
+              target: 'jira',
+              incidentId: e.incidentId,
+              op: 'update-fields',
+              payload: { eventType: e.type },
+              attempts: 0,
+              nextAttempt: e.recordedAt,
+              createdAt: e.recordedAt,
+            },
+          ]
+        : actual.outboxFor(e),
+  };
 });
 
 const WS = '01JZ0000000000000000000001';
@@ -293,6 +320,54 @@ describe(`rebuild (${TEST_DIALECT})`, () => {
     const before = await snapshotProjections(ctx);
     await rebuild(ctx, { all: true });
     expect(await snapshotProjections(state)).toBe(before);
+  });
+});
+
+// rebuild and the outbox --------------------------------------------------------------------------
+
+describe(`rebuild and the outbox (${TEST_DIALECT})`, () => {
+  beforeEach(() => {
+    outboxHook.rowPerEvent = true;
+  });
+
+  afterEach(() => {
+    outboxHook.rowPerEvent = false;
+  });
+
+  async function outboxRows(): Promise<unknown[]> {
+    return ctx.db.selectFrom('outbox').selectAll().orderBy('id').execute();
+  }
+
+  it('#89: with outboxFor giving a row per event, a rebuild leaves the outbox table unchanged', async () => {
+    await appendFixture();
+    // Appends enqueue in their transaction: one row per event.
+    expect(await outboxRows()).toHaveLength(21);
+    // One row delivered and acked, one delivered and pruned, as the projector will leave them.
+    await state.ackOutbox([`${INC_A}#0001`]);
+    await ctx.db.deleteFrom('outbox').where('id', '=', `${INC_B}#0001`).execute();
+    const before = await outboxRows();
+    expect(before).toHaveLength(20);
+    const projections = await snapshotProjections(state);
+    vi.mocked(applyProjections).mockClear();
+
+    expect(await rebuild(state, { all: true })).toEqual({ incidents: 3, events: 21 });
+    expect(await outboxRows()).toEqual(before);
+    expect(await rebuild(state, { incidentId: INC_B })).toEqual({ incidents: 1, events: 7 });
+    expect(await outboxRows()).toEqual(before);
+    expect(await snapshotProjections(state)).toBe(projections);
+
+    const calls = vi.mocked(applyProjections).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    expect(calls.every(([, , options]) => options?.outbox === false)).toBe(true);
+  });
+
+  it('an append after a rebuild still enqueues its own rows', async () => {
+    await appendFixture();
+    await rebuild(state, { all: true });
+    await appendAll(INC_B, [ev('jira-assignee-changed', { jiraKey: 'WEB-2001', to: LEE }, INC_B)]);
+    const rows = (await outboxRows()) as { id: string }[];
+    expect(rows).toHaveLength(22);
+    expect(rows.map((r) => r.id)).toContain(`${INC_B}#0008`);
   });
 });
 

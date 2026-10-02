@@ -35,12 +35,22 @@ export { foldIncidentSubscriptions } from './subscriptions.ts';
 export const FIND_INCIDENTS_DEFAULT_LIMIT = 100;
 export const FIND_INCIDENTS_MAX_LIMIT = 1000;
 
+export interface ApplyProjectionsOptions {
+  /**
+   * Enqueue the outbox rows `outboxFor` says the events imply; default true. Append leaves it on,
+   * so the row exists or the event does not (B 4). Rebuild turns it off: the outbox is a delivery
+   * log, not a projection, and replay must not send history again (#89; see rebuild.ts).
+   */
+  outbox?: boolean;
+}
+
 /**
- * Folds `events` into the projection tables inside the append transaction (`tx`), and enqueues the
- * outbox rows `outboxFor` says they imply. Events are grouped by incident and applied in the order
- * given (seq order, as append and rebuild pass them).
+ * Folds `events` into the projection tables inside the append transaction (`tx`), and, unless
+ * `options.outbox` is false, enqueues the outbox rows `outboxFor` says they imply. Events are grouped
+ * by incident and applied in the order given (seq order, as append and rebuild pass them).
  */
-export async function applyProjections(tx: StateContext, events: readonly IncidentEvent[]): Promise<void> {
+export async function applyProjections(tx: StateContext, events: readonly IncidentEvent[], options: ApplyProjectionsOptions = {}): Promise<void> {
+  const outbox = options.outbox ?? true;
   if (events.length === 0) {
     return;
   }
@@ -55,12 +65,12 @@ export async function applyProjections(tx: StateContext, events: readonly Incide
   }
   await inTransaction(tx, async (t) => {
     for (const [incidentId, list] of byIncident) {
-      await projectIncident(t, incidentId, list);
+      await projectIncident(t, incidentId, list, outbox);
     }
   });
 }
 
-async function projectIncident(tx: StateContext, incidentId: string, events: readonly IncidentEvent[]): Promise<void> {
+async function projectIncident(tx: StateContext, incidentId: string, events: readonly IncidentEvent[], outbox: boolean): Promise<void> {
   const before = await loadIncident(tx, incidentId);
   // A correction refolds the log before it (ADR 0014). The batch is already in `incident_events`
   // (append inserts before it projects; rebuild replays stored rows), so the log read here holds
@@ -107,6 +117,9 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   }
   if (subs !== subsBefore) {
     await writeIncidentSubscriptions(tx, view.workspaceId, incidentId, subs);
+  }
+  if (!outbox) {
+    return;
   }
   for (const { event } of steps) {
     for (const item of outboxFor(event)) {
