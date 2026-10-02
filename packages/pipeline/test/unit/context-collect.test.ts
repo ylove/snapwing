@@ -74,6 +74,28 @@ describe('collectWindow', () => {
     expect(bundle.included).toHaveLength(40);
   });
 
+  it('calls replies only for messages with replies or an unknown reply count', async () => {
+    const all = Array.from({ length: 40 }, (_, i) => {
+      const extra: Partial<SourceMessage> = i < 3 ? { replyCount: 2 } : i < 33 ? { replyCount: 0 } : {};
+      return msg(`m${String(i).padStart(2, '0')}`, (i - 20) / 2, extra);
+    });
+    const a = all[39]!; // no replyCount
+    const reader = new FakeReader(all);
+    const bundle = await collectWindow(anchorOf(a), reader);
+    expect(bundle.included).toHaveLength(40);
+    expect(reader.replyCalls).toHaveLength(10);
+    expect(reader.replyCalls).toEqual(expect.arrayContaining(['m00', 'm01', 'm02', 'm39']));
+    expect(reader.replyCalls).not.toContain('m10');
+  });
+
+  it('still expands the thread an in-thread anchor belongs to when replyCount is 0 elsewhere', async () => {
+    const parent = msg('p', -5, { replyCount: 1 });
+    const a = msg('a', 0, { threadParentId: 'p' });
+    const reader = new FakeReader([parent, a, msg('q', -3, { replyCount: 0 })]);
+    await collectWindow(anchorOf(a), reader);
+    expect(reader.replyCalls).toEqual(['p']);
+  });
+
   it('expands the sub-thread of every message in the window', async () => {
     const a = msg('a', 0);
     const all = [

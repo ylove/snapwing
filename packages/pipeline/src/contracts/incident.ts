@@ -16,6 +16,7 @@ export interface SourceMessage {
   text: string;
   timestamp: string;               // ISO 8601
   threadParentId?: string;
+  replyCount?: number;             // Slack reply_count, Teams replies when known; absent means the adapter cannot tell
   mentions: string[];
   reactions: string[];
   attachments: Attachment[];
