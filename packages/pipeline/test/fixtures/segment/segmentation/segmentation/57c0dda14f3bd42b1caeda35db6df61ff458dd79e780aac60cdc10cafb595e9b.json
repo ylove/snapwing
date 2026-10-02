@@ -1,0 +1,15 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "57c0dda14f3bd42b1caeda35db6df61ff458dd79e780aac60cdc10cafb595e9b",
+  "prompt": "<anchor id=\"m1\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-dana\" time=\"2026-10-01T14:10:00Z\">\n      <text>export to CSV is empty</text>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m1"
+      ],
+      "excluded": [],
+      "resolutionMessageId": ""
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "3612a408454f21722235639844f2ef0c6cba9c83ffbb9147a78ee51d25d783a1",
+  "prompt": "<anchor id=\"m2\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-sam\" time=\"2026-10-01T14:05:00Z\">\n      <text>anyone want lunch?</text>\n    </message>\n    <message id=\"m2\" author=\"U-dana\" time=\"2026-10-01T14:20:00Z\" reactions=\"eyes\">\n      <text>checkout is throwing a 500 for me</text>\n    </message>\n    <message id=\"m3\" author=\"U-marcus\" time=\"2026-10-01T14:21:00Z\">\n      <text>same here on the pay button</text>\n    </message>\n    <message id=\"m4\" author=\"U-sam\" time=\"2026-10-01T14:22:00Z\">\n      <text>ticket for the offsite is up</text>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m2",
+        "m3"
+      ],
+      "excluded": [
+        {
+          "id": "m1",
+          "reason": "lunch chatter, 15 minutes before"
+        },
+        {
+          "id": "m4",
+          "reason": "offsite logistics"
+        }
+      ],
+      "resolutionMessageId": ""
+    }
+  }
+}

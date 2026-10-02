@@ -1,0 +1,20 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "21a94f35f27b985f0a04b0ad609dd9b73d92cc9b0bbe41a6d0245661cc0ea7c2",
+  "prompt": "<anchor id=\"m2\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-dana\" time=\"2026-10-01T14:05:00Z\">\n      <text>nvm, works now</text>\n    </message>\n    <message id=\"m2\" author=\"U-dana\" time=\"2026-10-01T14:10:00Z\">\n      <text>cannot log in</text>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m2"
+      ],
+      "excluded": [
+        {
+          "id": "m1",
+          "reason": "earlier"
+        }
+      ],
+      "resolutionMessageId": "m1"
+    }
+  }
+}

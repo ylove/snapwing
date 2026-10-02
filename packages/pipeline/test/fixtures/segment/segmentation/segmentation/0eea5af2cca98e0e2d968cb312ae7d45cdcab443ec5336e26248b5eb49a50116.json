@@ -1,0 +1,29 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "0eea5af2cca98e0e2d968cb312ae7d45cdcab443ec5336e26248b5eb49a50116",
+  "prompt": "<anchor id=\"m1\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-dana\" time=\"2026-10-01T14:10:00Z\">\n      <text>invoice page 404s</text>\n    </message>\n    <message id=\"m2\" author=\"U-dana\" time=\"2026-10-01T14:11:00Z\">\n      <text>same</text>\n    </message>\n    <message id=\"m3\" author=\"U-dana\" time=\"2026-10-01T14:12:00Z\">\n      <text>lunch</text>\n    </message>\n    <message id=\"m4\" author=\"U-dana\" time=\"2026-10-01T14:13:00Z\">\n      <text>standup moved</text>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m2",
+        "m9"
+      ],
+      "excluded": [
+        {
+          "id": "m2",
+          "reason": "second thoughts"
+        },
+        {
+          "id": "m3",
+          "reason": "lunch"
+        },
+        {
+          "id": "m9",
+          "reason": "ghost"
+        }
+      ],
+      "resolutionMessageId": ""
+    }
+  }
+}

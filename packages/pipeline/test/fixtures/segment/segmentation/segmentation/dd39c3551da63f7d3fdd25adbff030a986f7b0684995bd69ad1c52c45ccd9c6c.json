@@ -1,0 +1,15 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "dd39c3551da63f7d3fdd25adbff030a986f7b0684995bd69ad1c52c45ccd9c6c",
+  "prompt": "<anchor id=\"m1\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-dana\" time=\"2026-10-01T14:10:00Z\">\n      <text>login screen looks broken</text>\n      <image-reading url-bar=\"app.example.test/checkout\" page-title=\"Checkout\" chrome=\"web\">the pay button does nothing</image-reading>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m1"
+      ],
+      "excluded": [],
+      "resolutionMessageId": ""
+    }
+  }
+}
