@@ -1,0 +1,12 @@
+{
+  "task": "scout",
+  "schemaName": "scout-diagnosis",
+  "promptSha256": "3b7be01f6634b2a15faa719045537a22dc57616bf4d24dfee45a3166d937257c",
+  "prompt": "<scout-request>\n  <report>I cannot log in on the website, it just spins</report>\n  <resolved surface=\"web\" component=\"auth-web\" repo=\"github.com/acme/web\"/>\n  <search-hits>\n    <hit path=\"src/auth/login.ts\">export async function login() { /* auth-web */ }</hit>\n  </search-hits>\n  <files>\n    <file path=\"src/auth/login.ts\">export async function login() { /* auth-web */ }</file>\n  </files>\n</scout-request>",
+  "response": {
+    "value": {
+      "confidence": "low",
+      "files": []
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "task": "scout",
+  "schemaName": "scout-diagnosis",
+  "promptSha256": "8fe02945945537345689e65ca574b10d0d6a730e0cda1ac643446e0a513357a5",
+  "prompt": "<scout-request>\n  <report>the cart total goes blank after I add a promo code</report>\n  <resolved surface=\"web\" component=\"checkout\" repo=\"github.com/acme/web\"/>\n  <search-hits>\n    <hit path=\"src/cart/lineItem.ts\">export function price(item) {</hit>\n    <hit path=\"src/promo/apply.ts\">export function applyPromo(cart) {</hit>\n  </search-hits>\n  <files>\n    <file path=\"src/cart/lineItem.ts\">export function price(item) {\n  return item.qty * item.unit;\n}\n// checkout total</file>\n    <file path=\"src/promo/apply.ts\">export function applyPromo(cart) {\n  cart.lines.forEach((l) =&gt; { l.price = undefined; });\n}\n// checkout promo</file>\n  </files>\n</scout-request>",
+  "response": {
+    "value": {
+      "confidence": "medium",
+      "files": [
+        {
+          "path": "src/promo/apply.ts",
+          "note": "applyPromo clears the line price"
+        }
+      ]
+    }
+  }
+}

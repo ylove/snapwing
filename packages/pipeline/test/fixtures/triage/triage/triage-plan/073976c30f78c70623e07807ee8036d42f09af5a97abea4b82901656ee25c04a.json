@@ -1,0 +1,21 @@
+{
+  "task": "triage",
+  "schemaName": "triage-plan",
+  "promptSha256": "073976c30f78c70623e07807ee8036d42f09af5a97abea4b82901656ee25c04a",
+  "prompt": "<triage-request>\n  <reporter name=\"Pat\" role=\"reporter\" source=\"slack\"/>\n  <report>I cannot log in on the website, it just spins</report>\n  <context>\n    <message id=\"ctx-0\">same here since this morning</message>\n  </context>\n  <images>\n\n  </images>\n  <resolved surface=\"web\" component=\"auth-web\" owner=\"\" jira-project=\"WEB\"/>\n  <duplicate-check decision=\"none\">\n\n  </duplicate-check>\n  <diagnosis confidence=\"low\">\n\n  </diagnosis>\n  <workspace-map>\n    <surface id=\"web\" label=\"Website\" jira-project=\"WEB\" default-issue-type=\"Bug\">\n      <component id=\"nav\" label=\"Navigation\"/>\n      <component id=\"checkout\" label=\"Checkout\"/>\n      <component id=\"auth-web\" label=\"Login (web)\"/>\n    </surface>\n  </workspace-map>\n</triage-request>",
+  "response": {
+    "value": {
+      "action": "create_issue",
+      "issueType": "Incident",
+      "summary": "Web login spins forever",
+      "description": "Two people cannot log in on the website since this morning.",
+      "priority": "High",
+      "labels": [
+        "login"
+      ],
+      "componentId": "auth-web",
+      "suggestedAssigneeEmail": "webdev1@example.test",
+      "autonomyLevel": 3
+    }
+  }
+}
