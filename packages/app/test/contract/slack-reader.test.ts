@@ -130,7 +130,27 @@ describe('reader', () => {
     expect(messages[0]?.attachments).toEqual([{ kind: 'link', url: 'https://example.com/cart', extractedText: 'Your cart' }]);
     expect(messages[2]?.mentions).toEqual(['U0CCC']);
     expect(messages[2]?.reactions).toEqual(['eyes']);
-    expect((await reader.history('C0PUB', oldest, latest, 2)).map((m) => m.id)).toEqual(['1790000050.000100', '1790000100.000100']);
+    expect((await reader.history('C0PUB', oldest, latest, 2)).map((m) => m.id)).toEqual(['1790000100.000100', '1790000300.000200']);
+  });
+
+  it('keeps the limit messages nearest the midpoint of the window, oldest first', async () => {
+    // 100 messages, one every 6 seconds from ts 1790000000 to 1790000594; midpoint is 1790000300.
+    const wire = Array.from({ length: 100 }, (_, i) => ({ type: 'message', user: 'U0AAA', text: `m${i}`, ts: `${1790000000 + i * 6}.000100` }));
+    server.use(
+      http.get(`${API}/conversations.history`, () =>
+        HttpResponse.json({ ok: true, messages: [...wire].reverse(), has_more: false }),
+      ),
+    );
+    const oldest = slackTsToIso('1790000000.000000');
+    const latest = slackTsToIso('1790000600.000000');
+    const messages = await reader.history('C0PUB', oldest, latest, 40);
+    expect(messages).toHaveLength(40);
+    // Nearest 40 to 300s are indexes 30..69 (offsets 180s to 414s) by distance: 31..70 vs 30..69 tie-break.
+    const idx = messages.map((m) => Number(m.text.slice(1)));
+    expect(idx).toEqual(Array.from({ length: 40 }, (_, k) => idx[0]! + k));
+    expect(idx[0]).toBeGreaterThanOrEqual(30);
+    expect(idx[0]).toBeLessThanOrEqual(31);
+    expect(idx).toContain(50);
   });
 
   it('reads a thread, parent first, and returns empty when there is no thread', async () => {

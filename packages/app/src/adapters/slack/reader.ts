@@ -2,7 +2,7 @@
 // conversations.history and conversations.replies with cursor pagination, a deterministic anchor, and
 // an authorized image loader for the vision pass.
 
-import type { ChatReader } from '@snapwing/pipeline/context/chat-reader.ts';
+import { nearestMidpoint, type ChatReader } from '@snapwing/pipeline/context/chat-reader.ts';
 import type { Anchor } from '@snapwing/pipeline/context/collect.ts';
 import type { LoadImage } from '@snapwing/pipeline/context/vision/index.ts';
 import type { Attachment, CanonicalIncidentPayload, SourceMessage } from '@snapwing/pipeline/contracts/incident.ts';
@@ -126,11 +126,10 @@ export function createSlackChatReader(web: SlackWeb): ChatReader {
         cursor = res.nextCursor;
         if (cursor === undefined) break;
       }
-      return collected
+      const topLevel = collected
         .filter((m) => m.thread_ts === undefined || m.thread_ts === m.ts)
-        .map((m) => toSourceMessage(m, true))
-        .sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id))
-        .slice(0, limit);
+        .map((m) => toSourceMessage(m, true));
+      return nearestMidpoint(topLevel, oldest, latest, limit);
     },
 
     async replies(channelId, parentId) {

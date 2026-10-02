@@ -13,7 +13,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { http, HttpResponse, type HttpHandler } from 'msw';
-import type { ChatReader } from '../../context/chat-reader.ts';
+import { nearestMidpoint, type ChatReader } from '../../context/chat-reader.ts';
 import type { IngestionAdapter, InteractiveCard, StatusUpdate } from '../../contracts/adapters.ts';
 import type { ActorRole, CanonicalIncidentPayload, SourceMessage } from '../../contracts/incident.ts';
 import type { ContextSource } from '../../engine/deps.ts';
@@ -218,10 +218,11 @@ export class DemoSlackReader implements ChatReader {
       oldest: tsFromIso(oldest),
       latest: tsFromIso(latest),
       inclusive: 'true',
-      limit: String(limit),
+      // The wire limit keeps the newest; ask for the whole window and trim around the midpoint here.
+      limit: '1000',
     });
     const messages = Array.isArray(body['messages']) ? body['messages'] : [];
-    return messages.map(toSourceMessage).sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
+    return nearestMidpoint(messages.map(toSourceMessage), oldest, latest, limit);
   }
 
   async replies(channelId: string, parentId: string): Promise<SourceMessage[]> {
