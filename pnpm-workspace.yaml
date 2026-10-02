@@ -4,3 +4,4 @@ allowBuilds:
   esbuild: true
   "@google/genai": false
   protobufjs: false
+  better-sqlite3: true
