@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test fixture: a miniature workspace schema used by validate.test.ts. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:snapwing:test:mini:v1"
+           targetNamespace="urn:snapwing:test:mini:v1"
+           elementFormDefault="qualified">
+  <xs:include schemaLocation="mini-types.xsd"/>
+  <xs:element name="workspace">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="surface" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:attribute name="id" type="Slug" use="required"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="channel" minOccurs="0" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:attribute name="name" type="Slug" use="required"/>
+            <xs:attribute name="surface" type="Slug" use="required"/>
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

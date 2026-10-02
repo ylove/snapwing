@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Test fixture: shared simple types, included by mini.xsd to prove xs:include resolves. -->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:snapwing:test:mini:v1"
+           targetNamespace="urn:snapwing:test:mini:v1"
+           elementFormDefault="qualified">
+  <xs:simpleType name="Slug">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[a-z][a-z0-9-]*"/>
+    </xs:restriction>
+  </xs:simpleType>
+</xs:schema>
