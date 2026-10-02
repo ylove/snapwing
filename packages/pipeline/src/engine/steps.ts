@@ -514,7 +514,8 @@ function createIssueRow(issue: SynthesizedIssue): CreateIssueRow {
 
 /**
  * Where an incident with no Jira project files (ADR 0015): the install's `fallbackJiraProject`, the
- * one project every map surface shares, or the first surface's project. Undefined when the resolution
+ * project of the map's `fallbackSurface`, the one project every map surface shares, or the first
+ * surface's project. Undefined when the resolution
  * already names a project or a known surface.
  */
 export function fallbackProject(env: Pick<StepEnv, 'deps' | 'map'>, resolution: Resolution): string | undefined {
@@ -522,6 +523,8 @@ export function fallbackProject(env: Pick<StepEnv, 'deps' | 'map'>, resolution: 
   if (resolution.surfaceId !== undefined && findSurface(env.map, resolution.surfaceId) !== undefined) return undefined;
   const configured = env.deps.options?.fallbackJiraProject;
   if (configured !== undefined && configured !== '') return configured;
+  const mapped = env.map.fallbackSurface === undefined ? undefined : findSurface(env.map, env.map.fallbackSurface);
+  if (mapped !== undefined) return mapped.jira.project;
   const projects = [...new Set(env.map.surfaces.map((s) => s.jira.project))];
   return projects.length === 1 ? projects[0] : env.map.surfaces[0]?.jira.project;
 }

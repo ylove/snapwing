@@ -251,6 +251,7 @@
             <xs:sequence>
               <xs:element name="surface" type="SurfaceType" maxOccurs="unbounded"/>
             </xs:sequence>
+            <xs:attribute name="fallbackSurface" type="xs:string" use="optional"/>
           </xs:complexType>
           <xs:unique name="surfaceIdUnique">
             <xs:selector xpath="surface"/>

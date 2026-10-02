@@ -70,10 +70,13 @@ function convert(xml: string): WorkspaceMap {
   const autonomy = node(policies['autonomy']);
   const overrides = node(autonomy['overrides']);
 
+  const fallbackSurface = optAttr(node(root['surfaces']), 'fallbackSurface');
+
   return {
     org: attr(root, 'org'),
     updated: attr(root, 'updated'),
     surfaces: list(node(root['surfaces'])['surface']).map(surface),
+    ...(fallbackSurface === undefined ? {} : { fallbackSurface }),
     channels: list(node(root['channels'])['channel']).map(channel),
     triggers: triggers(node(root['triggers'])),
     vocabulary: list(node(root['vocabulary'])['term']).map(term),

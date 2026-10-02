@@ -14,6 +14,13 @@
     </sch:rule>
   </sch:pattern>
 
+  <sch:pattern id="fallback-surface">
+    <sch:rule context="w:surfaces[@fallbackSurface]">
+      <sch:assert id="fallback-surface-exists"
+                  test="@fallbackSurface = w:surface/@id">The fallback surface <sch:value-of select="@fallbackSurface"/> is not declared.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+
   <sch:pattern id="owns-component">
     <sch:rule context="w:person/w:owns">
       <sch:let name="surface" value="@surface"/>
