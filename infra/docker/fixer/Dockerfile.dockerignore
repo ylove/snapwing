@@ -1,0 +1,7 @@
+# The build context is the repository root; only these paths enter the image. Nothing else (no
+# .env, secrets/, *.pem, node_modules, or .git) is ever sent to the docker daemon.
+*
+!packages/pipeline/src/**
+!infra/docker/fixer/wrapper.ts
+!infra/docker/fixer/entrypoint.ts
+!infra/docker/fixer/askpass

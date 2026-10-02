@@ -23,7 +23,8 @@
     "serve": "tsx packages/app/src/cli/main.ts serve",
     "github:bootstrap": "tsx scripts/github-bootstrap.ts",
     "jira:bootstrap": "tsx scripts/jira-bootstrap.ts",
-    "slack:bootstrap": "tsx scripts/slack-bootstrap.ts"
+    "slack:bootstrap": "tsx scripts/slack-bootstrap.ts",
+    "fixer-image:build": "docker build -f infra/docker/fixer/Dockerfile -t snapwing-fixer:local ."
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

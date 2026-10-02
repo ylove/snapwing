@@ -22,7 +22,7 @@ The checkout (`packages/pipeline/src/fixer/workdir/`) is already on the work bra
 
 The command template is split into an argument vector (whitespace separated, double quotes respected) and executed without a shell. Snapwing never interpolates incident text into the command line; the incident reaches the process only through stdin.
 
-The harness process never talks to the Snapwing database or the fixer API. The wrapper in the container that starts it holds the short-lived fixer token (B 9), posts checkpoints and the result to the fixer endpoints, and polls for Stop.
+The harness process never talks to the Snapwing database or the fixer API. The wrapper in the container that starts it holds the short-lived fixer token (B 9), posts checkpoints and the result to the fixer endpoints, and polls for Stop. The wrapper is the fixer image's entrypoint (section 8).
 
 **The review role runs in a container of its own (ADR 0017 amendment 1, #239).** With a runner that has a boundary, the review job starts the same image with `SNAPWING_ROLE=review` (docker: `snapwing-review-<runId>`, attached). Its only mount is a self-contained copy of the pull request's head (no remote, no Git credential, no hooks), with the review input at `SNAPWING_REVIEW_INPUT_FILE` and the verdict going to `SNAPWING_REVIEW_FILE`, both under `.git/snapwing/` in the mount. The wrapper starts the configured review harness with the input file on stdin and exits 0 once the harness is done; it holds no fixer token and reports nothing to the fixer API. Snapwing reads the verdict file from the mount after the container is gone, accepting only a small regular file (no symlink), and validates it with `parseReviewVerdict`.
 
@@ -117,3 +117,30 @@ The process does not inherit the server's environment. It gets exactly these var
 | model access on the `local` runner (development only) | the CLI adapters copy their key and base URL variables from the server's environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and the base URL names above); never the fixer API token |
 
 The variables exist so a wrapper script can route or log a run without parsing the implementation request.
+
+## 8. The fixer image
+
+`infra/docker/fixer/` holds the image the `docker` runner starts (ADR 0017): `Dockerfile`, the entrypoint wrapper (`entrypoint.ts`, `wrapper.ts`), and an askpass script. It is a slim Node image (`node:24-bookworm-slim`; Node 22.18 or later runs the wrapper's TypeScript directly) with git, tini, a non-root `snapwing` user, and the `claude` CLI. The codex and gemini CLIs are behind build args; their package names and the flags their adapters use are from memory (#150, #232), so check them against each CLI's help when enabling them.
+
+Build it from the repository root, then point the server at it:
+
+```sh
+pnpm fixer-image:build
+pnpm fixer-image:build --build-arg INSTALL_CODEX=true --build-arg INSTALL_GEMINI=true
+# in the server's environment
+SNAPWING_FIXER_IMAGE=snapwing-fixer:local
+```
+
+Other build args: `NODE_VERSION`, `CLAUDE_CODE_VERSION`, `CODEX_VERSION`, `GEMINI_VERSION` (each CLI defaults to its latest release). CI never builds or runs the image; `packages/app/test/unit/fixer-image.test.ts` runs the wrapper itself with fake CLIs and checks the Dockerfile statically.
+
+**No secret is baked in.** `Dockerfile.dockerignore` filters the build context to `packages/pipeline/src` (the harness adapters and prompts the wrapper runs, the same code the `local` runner uses) and the wrapper's own files. Everything a run needs arrives as variables at `docker run` time, by name, from the runner (`packages/app/src/providers/docker/runner.ts`).
+
+**What the wrapper does**, by `SNAPWING_ROLE`:
+
+- `fixer`: the work item is in the mount: a checkout on the work branch at `SNAPWING_WORKDIR`, with the implementation request at `.git/snapwing/implementation-request.xml` inside it. The wrapper checks Stop, reports `cloned`, runs the harness named by `SNAPWING_HARNESS` with the request on stdin, posts every checkpoint to `SNAPWING_API_URL` with `SNAPWING_FIXER_TOKEN`, polls Stop after each checkpoint and every 5 seconds, and posts `done` (a `done` without a pull request is posted as `failed`) or `failed`. A 204 from the stop poll, a 409 from any call, or SIGTERM from `docker stop` stops the harness (SIGTERM, then SIGKILL after 8 seconds, inside docker's own grace). A run with no checkout or no request in the mount is reported `failed` without starting a harness. The harness never sees the fixer token. When `SNAPWING_GIT_TOKEN` is set, the harness gets it with `GIT_ASKPASS` pointing at the image's askpass script, and the checkout's `.git/snapwing/hooks` (when present) as `core.hooksPath`. `SNAPWING_PRIOR_REVIEW_FILE` is passed on when it lies in the mount.
+- `review`: the wrapper feeds `SNAPWING_REVIEW_INPUT_FILE` to the review harness on stdin with `SNAPWING_REVIEW_FILE` in its environment and exits 0 only when the harness finished and the verdict file is a regular file; otherwise it exits non-zero, which the review job treats as `escalate`. It never calls the fixer API.
+- A `generic` harness runs the command template the image keeps at `/etc/snapwing/generic/<templateId>` (one line; `SNAPWING_GENERIC_DIR` moves the directory). Server config does not reach the container, so an image that runs a generic agent is built `FROM` this one, installs the agent, and adds the template file.
+
+**Model access.** The wrapper rebuilds each CLI's base URL from `SNAPWING_MODEL_PROXY_URL` (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`) and keeps a key variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`) only when it holds a model proxy token (`swm1.`). Any other value, a real provider key passed by mistake included, and `GOOGLE_API_KEY` always, is removed before a harness starts and named on stderr without its value. Without a proxy, no model variable reaches the harness.
+
+**Exit codes**: 0 done, stopped, or review verdict written; 1 the fixer reported `failed` or the review produced no verdict; 2 the container lacks its contract (unknown role, missing variables); 3 the fixer could not deliver its final report.
