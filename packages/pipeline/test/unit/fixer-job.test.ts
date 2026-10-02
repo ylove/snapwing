@@ -1,11 +1,18 @@
-// Fixer job, budget timer, and Stop (#133; main 10.1, main 10.4, B 5, B 9). Runs on the in-process
-// workflow over the dialect `SNAPWING_DB` selects, with a fake RunnerPort and a fake FixerGitHub. The
-// fixer API (B 9) is simulated by appending its events and calling the hooks it will call.
+// Fixer job, budget timer, and Stop (#133, #173; main 10.1, main 10.4, B 5, B 9). Runs on the
+// in-process workflow over the dialect `SNAPWING_DB` selects, with a fake RunnerPort (and once the
+// local runner over a fake harness) and a fake FixerGitHub. The fixer API (B 9) is simulated by
+// appending its events and calling the hooks it will call; `report` mirrors its rule that a report
+// with no run going is refused as `run-finished`.
 
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EventPayloads, EventType, IncidentEvent, NewEvent } from '../../src/contracts/events.ts';
 import { fixerRunKey, isFixerBudgetData, isFixerRunData } from '../../src/contracts/jobs.ts';
 import {
+  activeRun,
+  appendDecided,
   BUDGET_EXCEEDED,
   handleFixerDone,
   handleFixerFailed,
@@ -18,7 +25,9 @@ import {
   type FixerGitHubContext,
 } from '../../src/fixer/job.ts';
 import { stopIncident } from '../../src/fixer/stop.ts';
+import type { HarnessPort } from '../../src/ports/harness.ts';
 import type { FixerJob, RunnerPort } from '../../src/ports/runner.ts';
+import { createLocalRunner } from '../../src/providers/local/runner.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { InProcessWorkflow } from '../../src/workflow/inprocess/index.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
@@ -55,14 +64,16 @@ afterEach(async () => {
 class FakeRunner implements RunnerPort {
   readonly started: { runId: string; job: FixerJob }[] = [];
   readonly cancelled: string[] = [];
-  /** Runs inside runFixer, after the run has started (a race hook). */
-  onStart?: () => Promise<void>;
+  /** Runs inside runFixer, after the run has started (a race hook, or the harness reporting). */
+  onStart?: (job: FixerJob) => Promise<void>;
+  /** When set, runFixer rejects with it and starts nothing. */
+  failWith?: Error;
 
   async runFixer(job: FixerJob): Promise<{ runId: string }> {
-    const runId = `run-${this.started.length + 1}`;
-    this.started.push({ runId, job });
-    await this.onStart?.();
-    return { runId };
+    if (this.failWith !== undefined) throw this.failWith;
+    this.started.push({ runId: job.runId, job });
+    await this.onStart?.(job);
+    return { runId: job.runId };
   }
 
   cancel(runId: string): Promise<void> {
@@ -167,6 +178,17 @@ async function lastOf<T extends EventType>(type: T): Promise<IncidentEvent<T> | 
   return latest(await log(), type);
 }
 
+/**
+ * A fixer report as the fixer API (B 9, #132) records it: appended while a run is going, refused as
+ * `run-finished` when none is.
+ */
+async function report(phase: 'cloned' | 'branched', detail = ''): Promise<'accepted' | 'run-finished'> {
+  const r = await appendDecided(state, INC, (events) =>
+    activeRun(events) === undefined ? undefined : [ev('fixer-checkpoint', { phase, detail }, 'fixer')],
+  );
+  return r.appended ? 'accepted' : 'run-finished';
+}
+
 async function advance(ms: number): Promise<void> {
   now += ms;
   await wf.drain();
@@ -212,7 +234,11 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     await wf.drain();
 
     expect(w.runner.started).toHaveLength(1);
+    const fs = await lastOf('fixer-started');
+    const runId = fs?.payload.runId ?? '';
+    expect(runId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
     expect(w.runner.started[0]?.job).toEqual({
+      runId,
       workItem: { id: INC, issueKey: 'WEB-1042', repo: REPO },
       implementationRequestArtifactId: w.request.artifactId,
       implementationRequestVersion: v2.version,
@@ -220,8 +246,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
       budget: { wallClock: 'PT30M', attempts: 3 },
     });
     expect(v2.version).toBe(2);
-    const fs = await lastOf('fixer-started');
-    expect(fs?.payload).toEqual({ runId: 'run-1', harness: 'claude-code', attempt: 1 });
+    expect(fs?.payload).toEqual({ runId, harness: 'claude-code', attempt: 1 });
     expect((await state.getIncident(INC))?.status).toBe('fixing');
 
     // The budget has not run out at 29 minutes.
@@ -308,17 +333,89 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(await types()).toEqual(afterStop);
   });
 
-  it('a stop that lands while the runner is starting cancels the new run and appends no fixer-started', async () => {
+  it('a stop that lands while the runner is starting cancels the new run once the runner knows it', async () => {
     const w = await setup();
     w.runner.onStart = async () => {
       await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER });
     };
-    await startFixer(w.deps, { incidentId: INC, attempt: 1 });
-    await wf.drain();
+    expect(await runFixerJob(w.deps, { incidentId: INC, attempt: 1 })).toEqual({ started: false, reason: 'stopped' });
 
-    expect(w.runner.started).toHaveLength(1);
-    expect(w.runner.cancelled).toEqual(['run-1']);
-    expect(await types()).not.toContain('fixer-started');
+    const runId = w.runner.started[0]?.runId;
+    // The stop's own cancel came before runFixer returned (a real runner did not know the id yet),
+    // so the fixer job cancels again; cancel is idempotent.
+    expect(w.runner.cancelled).toEqual([runId, runId]);
+    expect((await types()).slice(-2)).toEqual(['fixer-started', 'stopped']);
+    const afterStop = await types();
+    await advance(31 * MINUTE);
+    expect(await types()).toEqual(afterStop);
+  });
+
+  it('a report from inside runFixer is accepted: fixer-started is already in the log (#173)', async () => {
+    const w = await setup();
+    const outcomes: string[] = [];
+    w.runner.onStart = async (job) => {
+      const run = activeRun(await log());
+      expect(run?.payload.runId).toBe(job.runId);
+      outcomes.push(await report('cloned'));
+    };
+    const outcome = await runFixerJob(w.deps, { incidentId: INC, attempt: 1 });
+
+    expect(outcome).toEqual({ started: true, runId: w.runner.started[0]?.runId });
+    expect(outcomes).toEqual(['accepted']);
+    expect((await types()).slice(-2)).toEqual(['fixer-started', 'fixer-checkpoint']);
+    expect(w.runner.cancelled).toEqual([]);
+  });
+
+  it('with the local runner, a harness that reports its first checkpoint at once has it accepted', async () => {
+    const w = await setup();
+    const workdirRoot = await mkdtemp(join(tmpdir(), 'snapwing-fixer-job-'));
+    const outcomes: string[] = [];
+    const harness: HarnessPort = {
+      async run(_workItem, _request, _workdir, opts) {
+        await opts.onCheckpoint?.({ phase: 'cloned', detail: '' });
+        await opts.onCheckpoint?.({ phase: 'branched', detail: 'fix/WEB-1042' });
+        return { outcome: 'done', branch: 'fix/WEB-1042', summary: 'Guard the null cart', testsAdded: [] };
+      },
+    };
+    const local = createLocalRunner({
+      resolveHarness: () => harness,
+      artifacts: state,
+      workdirRoot,
+      onCheckpoint: async (_run, c) => {
+        outcomes.push(await report(c.phase === 'branched' ? 'branched' : 'cloned', c.detail));
+      },
+    });
+    try {
+      const outcome = await runFixerJob({ ...w.deps, runner: local }, { incidentId: INC, attempt: 1 });
+      if (!outcome.started) throw new Error(`expected a start, got ${outcome.reason}`);
+      expect((await local.wait(outcome.runId)).outcome).toBe('done');
+      expect(outcomes).toEqual(['accepted', 'accepted']);
+      expect((await lastOf('fixer-started'))?.payload.runId).toBe(outcome.runId);
+      expect((await types()).slice(-3)).toEqual(['fixer-started', 'fixer-checkpoint', 'fixer-checkpoint']);
+    } finally {
+      await rm(workdirRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('a runner that cannot start: fixer-failed with the error, then the failure path', async () => {
+    const w = await setup({ level: 3 });
+    w.runner.failWith = new Error('no <generic id="nope"> harness template in the config');
+    expect(await runFixerJob(w.deps, { incidentId: INC, attempt: 1 })).toEqual({ started: false, reason: 'runner-failed' });
+
+    expect((await types()).slice(-3)).toEqual(['fixer-started', 'fixer-failed', 'level-changed']);
+    expect((await lastOf('fixer-failed'))?.payload).toEqual({
+      reason: 'runner-error: no <generic id="nope"> harness template in the config',
+      attempts: 0,
+    });
+    expect((await lastOf('level-changed'))?.payload).toMatchObject({ from: 3, to: 2 });
+    expect(w.github.incomplete).toEqual([]);
+
+    // The budget timer is gone, and the attempt counts as run.
+    const afterFail = await types();
+    await advance(31 * MINUTE);
+    expect(await types()).toEqual(afterFail);
+    expect(w.runner.cancelled).toEqual([]);
+    expect(await runFixerJob(w.deps, { incidentId: INC, attempt: 1 })).toEqual({ started: false, reason: 'attempt-done' });
   });
 
   it('stop mid-run: appends stopped, cancels the run and its budget timer, and a second stop is a no-op', async () => {
@@ -406,11 +503,13 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(w.runner.started).toHaveLength(2);
     expect(w.runner.started[1]?.job.review).toEqual(reviewRef);
     expect(w.runner.started[1]?.job.implementationRequestArtifactId).toBe(w.request.artifactId);
-    expect((await lastOf('fixer-started'))?.payload).toEqual({ runId: 'run-2', harness: 'claude-code', attempt: 2 });
+    const run2 = w.runner.started[1]?.runId;
+    expect(run2).not.toBe(w.runner.started[0]?.runId);
+    expect((await lastOf('fixer-started'))?.payload).toEqual({ runId: run2, harness: 'claude-code', attempt: 2 });
 
     // The second run gets its own budget.
     await advance(30 * MINUTE);
-    expect(w.runner.cancelled).toEqual(['run-2']);
+    expect(w.runner.cancelled).toEqual([run2]);
     expect((await lastOf('fixer-failed'))?.payload.reason).toBe(BUDGET_EXCEEDED);
   });
 

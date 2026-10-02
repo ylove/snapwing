@@ -8,10 +8,15 @@
 //   fixer.run            reads the log and refuses, appending nothing, when a `stopped` is newer
 //                        than the last `filed`, when a run is still going, or when this attempt
 //                        already ran since the last `filed`. Otherwise it loads the latest version of
-//                        the implementation request `planned` references, calls `RunnerPort.runFixer`,
-//                        appends `fixer-started { runId, harness, attempt }`, and schedules
-//                        `timer.fixer-budget` (key `fixer-budget:{incident}`) at now plus the
-//                        configured wall clock (default PT30M).
+//                        the implementation request `planned` references, mints the run id, appends
+//                        `fixer-started { runId, harness, attempt }` (the refusals are decided again on
+//                        the append's read), schedules `timer.fixer-budget` (key
+//                        `fixer-budget:{incident}`) at now plus the configured wall clock (default
+//                        PT30M), and only then calls `RunnerPort.runFixer`, so the fixer's first report
+//                        always finds its run in the log (B 9, #173). When `runFixer` rejects it
+//                        appends `fixer-failed { reason: 'runner-error: ...', attempts: 0 }` and runs
+//                        `handleFixerFailed`. When a stop or a budget expiry landed while the runner
+//                        was starting (its cancel found no run then), it cancels the new run.
 //   timer.fixer-budget   when its run is still the running one: appends `fixer-failed
 //                        { reason: 'budget-exceeded' }`, cancels the run, then `handleFixerFailed`.
 //   handleFixerDone      cancels the budget timer. The fixer API (B 9) calls it after `fixer-done`.
@@ -23,10 +28,7 @@
 //                        still records why a human now owns it). Idempotent: a `level-changed` after
 //                        that `fixer-failed` whose reason starts with `fixer-failed:` means done.
 //
-// Deviation from the issue's step order, deliberate: `fixer-started` is appended after `runFixer`,
-// since the RunnerPort mints the run id the event carries. A stop that lands between the two is seen
-// by the append's conflict re-read, and the new run is cancelled. Every append passes `expectedSeq`
-// and re-reads on a conflict. The fixer itself reports only through the fixer API (B 9); this module
+// Every append passes `expectedSeq` and re-reads on a conflict. The fixer itself reports only through the fixer API (B 9); this module
 // never sees its progress except through the log.
 
 import type { ArtifactRef, AutonomyLevel, EventActor, EventPayloads, EventSource, EventType, IncidentEvent, NewEvent } from '../contracts/events.ts';
@@ -36,10 +38,13 @@ import type { FixerBudget, HarnessChoice, RunnerPort } from '../ports/runner.ts'
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseDuration } from '../util/duration.ts';
+import { ulid } from '../util/ulid.ts';
 
 export const DEFAULT_FIXER_WALL_CLOCK = 'PT30M';
 export const DEFAULT_FIXER_ATTEMPTS = 3;
 export const BUDGET_EXCEEDED = 'budget-exceeded';
+/** Prefix of the `fixer-failed` reason recorded when `RunnerPort.runFixer` rejects. */
+export const RUNNER_ERROR_PREFIX = 'runner-error:';
 /** Prefix of the `level-changed` reason that records a fixer failure's degrade. */
 export const FIXER_FAILED_REASON_PREFIX = 'fixer-failed:';
 /** The level a failed fixer degrades to (main 10.4). */
@@ -115,7 +120,9 @@ export function startFixer(deps: Pick<FixerDeps, 'workflow'>, input: FixerRunDat
 
 export type FixerRunOutcome =
   | { started: true; runId: string }
-  | { started: false; reason: 'stopped' | 'running' | 'attempt-done' | 'not-filed' | 'no-request' | 'no-repo' };
+  | { started: false; reason: StartRefusal | 'not-filed' | 'no-request' | 'no-repo' | 'runner-failed' };
+
+type StartRefusal = 'stopped' | 'running' | 'attempt-done';
 
 /** The `fixer.run` handler. */
 export async function runFixerJob(deps: FixerDeps, data: FixerRunData): Promise<FixerRunOutcome> {
@@ -137,29 +144,63 @@ export async function runFixerJob(deps: FixerDeps, data: FixerRunData): Promise<
   if (repo === undefined || repo === '') return { started: false, reason: 'no-repo' };
 
   const budget = fixerBudget(deps.config);
-  const { runId } = await deps.runner.runFixer({
-    workItem: { id: incidentId, issueKey: incident?.jiraKey ?? filed.payload.jiraKey, repo },
-    implementationRequestArtifactId: artifact.id,
-    implementationRequestVersion: artifact.version,
-    harness: deps.config.harness,
-    budget,
-    ...(data.reviewArtifact === undefined ? {} : { review: data.reviewArtifact }),
+  const runId = ulid();
+  let refused: StartRefusal = 'stopped';
+  const appended = await appendDecided(deps.state, incidentId, (events) => {
+    const again = refuseStart(events, data.attempt);
+    if (again !== undefined) {
+      refused = again;
+      return undefined;
+    }
+    return [newEvent(deps, incidentId, 'fixer-started', { runId, harness: harnessName(deps.config.harness), attempt: data.attempt })];
   });
+  if (!appended.appended) return { started: false, reason: refused };
 
-  const appended = await appendDecided(deps.state, incidentId, (events) =>
-    stoppedSinceFiled(events)
-      ? undefined
-      : [newEvent(deps, incidentId, 'fixer-started', { runId, harness: harnessName(deps.config.harness), attempt: data.attempt })],
-  );
-  if (!appended.appended) {
-    // A stop landed while the runner was starting.
-    await deps.runner.cancel(runId);
-    return { started: false, reason: 'stopped' };
-  }
+  // Scheduled before the start, so a start that hangs, or a worker that dies here, still ends in
+  // `fixer-failed` when the budget runs out.
   const budgetData: FixerBudgetData = { incidentId, runId };
   const fireAt = new Date(deps.clock().getTime() + parseDuration(budget.wallClock));
   await deps.workflow.schedule('timer.fixer-budget', budgetData, fireAt, { singletonKey: fixerBudgetKey(incidentId) });
+
+  try {
+    await deps.runner.runFixer({
+      runId,
+      workItem: { id: incidentId, issueKey: incident?.jiraKey ?? filed.payload.jiraKey, repo },
+      implementationRequestArtifactId: artifact.id,
+      implementationRequestVersion: artifact.version,
+      harness: deps.config.harness,
+      budget,
+      ...(data.reviewArtifact === undefined ? {} : { review: data.reviewArtifact }),
+    });
+  } catch (e) {
+    await runnerFailed(deps, incidentId, runId, e);
+    return { started: false, reason: 'runner-failed' };
+  }
+
+  // A stop or a budget expiry that landed while the runner was starting cancelled a run the runner
+  // did not know yet; cancel it now that it does. A `fixer-done` or the fixer's own `fixer-failed`
+  // is the run ending itself.
+  const ended = runEnd(await deps.state.read(incidentId), runId);
+  if (ended?.type === 'stopped' || (ended?.type === 'fixer-failed' && ended.source !== 'fixer')) {
+    await deps.runner.cancel(runId);
+  }
+  if (ended?.type === 'stopped') {
+    await deps.workflow.cancel(fixerBudgetKey(incidentId));
+    return { started: false, reason: 'stopped' };
+  }
   return { started: true, runId };
+}
+
+/** `runFixer` rejected: records `fixer-failed` for the run unless it already ended, then degrades. */
+async function runnerFailed(deps: FixerDeps, incidentId: string, runId: string, error: unknown): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await appendDecided(deps.state, incidentId, (events) =>
+    activeRun(events)?.payload.runId === runId
+      ? [newEvent(deps, incidentId, 'fixer-failed', { reason: `${RUNNER_ERROR_PREFIX} ${message}`, attempts: 0 })]
+      : undefined,
+  );
+  // Also cancels the budget timer; a no-op when the run ended otherwise and that was handled.
+  await handleFixerFailed(deps, incidentId);
 }
 
 export type BudgetOutcome = 'expired' | 'not-running';
@@ -320,7 +361,14 @@ export async function appendDecided(
 
 // Private ----------------------------------------------------------------------------------------
 
-function refuseStart(log: readonly IncidentEvent[], attempt: number): 'stopped' | 'running' | 'attempt-done' | undefined {
+/** The event that ended run `runId` (`fixer-done`, `fixer-failed`, or `stopped`), if one has. */
+function runEnd(events: readonly IncidentEvent[], runId: string): IncidentEvent | undefined {
+  const started = events.find((e) => e.type === 'fixer-started' && e.payload.runId === runId);
+  if (started === undefined) return undefined;
+  return events.find((e) => e.seq > started.seq && (e.type === 'fixer-done' || e.type === 'fixer-failed' || e.type === 'stopped'));
+}
+
+function refuseStart(log: readonly IncidentEvent[], attempt: number): StartRefusal | undefined {
   if (stoppedSinceFiled(log)) return 'stopped';
   if (activeRun(log) !== undefined) return 'running';
   const since = lastSeqOf(log, 'filed');

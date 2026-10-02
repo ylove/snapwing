@@ -20,6 +20,7 @@ import { createLocalRunner, harnessResolver, UnknownRunError, type RunInfo } fro
 import { createEnvFileSecrets, DotenvParseError, parseDotenv } from '../../src/providers/local/secrets.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { StateStore } from '../../src/state/store.ts';
+import { ulid } from '../../src/util/ulid.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
 
 let scratch: string;
@@ -391,6 +392,7 @@ describe('local runner (child process over the generic harness)', () => {
   };
 
   const job = (over: Partial<FixerJob> = {}): FixerJob => ({
+    runId: ulid(),
     workItem: { id: '01HZXTESTWORKITEM0000000000', issueKey: 'WEB-1042', repo: 'acme/web' },
     implementationRequestArtifactId: REQUEST_ID,
     harness: { adapter: 'generic', templateId: 'fake' },
@@ -422,10 +424,11 @@ describe('local runner (child process over the generic harness)', () => {
     return { r, checkpoints, finished };
   }
 
-  it('runs the fixer in its own work directory and reports checkpoints and the result', async () => {
+  it('runs the fixer under the job run id in its own work directory and reports checkpoints and the result', async () => {
     const { r, checkpoints, finished } = runner('success');
-    const { runId } = await r.runFixer(job());
-    expect(runId).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    const given = job();
+    const { runId } = await r.runFixer(given);
+    expect(runId).toBe(given.runId);
     expect(r.active()).toEqual([runId]);
     const result = await r.wait(runId);
     expect(result).toEqual({ outcome: 'done', branch: 'fix/WEB-1', summary: 'ok', testsAdded: ['t.test.ts'] });
@@ -479,6 +482,14 @@ describe('local runner (child process over the generic harness)', () => {
     await r.cancel(runId);
   });
 
+  it('refuses a second start of a run id it already knows', async () => {
+    const { r } = runner('success');
+    const given = job();
+    await r.runFixer(given);
+    await expect(r.runFixer(given)).rejects.toThrow(/already exists/);
+    expect((await r.wait(given.runId)).outcome).toBe('done');
+  });
+
   it('keeps running when a reporting hook throws', async () => {
     const { r } = runner('success', {
       onCheckpoint: async () => {
@@ -495,6 +506,8 @@ describe('local runner (child process over the generic harness)', () => {
     await expect(r.runFixer(job({ implementationRequestArtifactId: '01HZXTESTDIAGNOSIS00000000' }))).rejects.toThrow(/not an implementation-request/);
     await expect(r.runFixer(job({ harness: { adapter: 'generic', templateId: 'nope' } }))).rejects.toThrow(/no <generic id="nope">/);
     await expect(r.runFixer(job({ harness: { adapter: 'codex' } }))).rejects.toThrow(/not implemented/);
+    await expect(r.runFixer(job({ runId: '../escape' }))).rejects.toThrow(/not a plain path segment/);
+    await expect(r.runFixer(job({ runId: '' }))).rejects.toThrow(/not a plain path segment/);
     expect(r.active()).toEqual([]);
     expect(await readdir(workdirRoot)).toEqual([]);
   });

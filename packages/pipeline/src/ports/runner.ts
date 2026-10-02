@@ -22,6 +22,11 @@ export type FixerBudget = HarnessRunOptions['budget'];
 
 /** One fixer run to start. */
 export interface FixerJob {
+  /**
+   * The run's id, minted by the caller (a ULID), which appends `fixer-started { runId }` before it
+   * calls `runFixer`, so the fixer's first report always finds its run in the log (B 9, #173).
+   */
+  runId: string;
   workItem: WorkItemRef;
   /** The `implementation-request` artifact (main 9) the fixer implements. */
   implementationRequestArtifactId: string;
@@ -37,7 +42,10 @@ export interface FixerJob {
 }
 
 export interface RunnerPort {
-  /** Starts the run and resolves with its id once it has started, not when it ends. */
+  /**
+   * Starts the run under `job.runId` and resolves with that id once it has started, not when it ends.
+   * Rejects, starting nothing, when the run cannot start; the caller records that as `fixer-failed`.
+   */
   runFixer(job: FixerJob): Promise<{ runId: string }>;
   /**
    * Stops the run (the harness gets SIGTERM, then SIGKILL after its grace). Resolves once the stop
