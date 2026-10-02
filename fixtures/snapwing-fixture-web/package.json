@@ -1,0 +1,15 @@
+{
+  "name": "snapwing-fixture-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Fixture web project for Snapwing live and e2e tests. Seeded with one bug; the test fails until it is fixed.",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "vitest": "^5.0.3"
+  }
+}

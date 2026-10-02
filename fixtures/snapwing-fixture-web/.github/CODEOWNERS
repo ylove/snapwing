@@ -1,0 +1,4 @@
+# The fixture owner reviews everything; Snapwing resolves reviewers from this file (main 11.2).
+*         @ylove
+/src/     @ylove
+/test/    @ylove
