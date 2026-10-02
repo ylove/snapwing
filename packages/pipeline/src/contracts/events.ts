@@ -1,5 +1,6 @@
 // Event catalog: the vocabulary of the incident event log.
-// Companion A 4.2 (event names) and A 7 (IncidentEvent); Companion B 3 (incident_events columns),
+// Companion A 4.2 (event names), A 4.3 and A 4.5 (status message, waiting on, monitoring), and A 7
+// (IncidentEvent); Companion B 3 (incident_events columns),
 // B 4 (versioning and corrections), B 5 (lifecycle transitions), B 7.3 (Jira inbound), B 9 (fixer reporting).
 //
 // Parameterized names. A 4.2 writes `held:<env>` and `comment:<intent>`. They are modelled here as the
@@ -68,6 +69,11 @@ export type EventType =
   | 'tapped'
   // B 4 corrections
   | 'corrected'
+  // A 4.3 to 4.5 observability: the pinned status message, what the incident waits on, monitoring
+  | 'status-message-posted'
+  | 'waiting-changed'
+  | 'monitoring-started'
+  | 'monitoring-stopped'
   // B 7.3 Jira inbound
   | 'jira-priority-changed'
   | 'jira-assignee-changed'
@@ -112,6 +118,10 @@ export const EVENT_TYPES = Object.freeze([
   'let-agent-take',
   'tapped',
   'corrected',
+  'status-message-posted',
+  'waiting-changed',
+  'monitoring-started',
+  'monitoring-stopped',
   'jira-priority-changed',
   'jira-assignee-changed',
   'jira-transitioned',
@@ -447,12 +457,74 @@ export interface TappedPayload {
   choice: TappedChoice;
 }
 
-/** B 4: events are never edited; a correction references the seq it corrects. */
+/**
+ * B 4: events are never edited; a correction references the seq it corrects (ADR 0014). The
+ * corrected event's payload becomes `{ ...payload, ...fields }`, where a `null` field removes that
+ * key. Only the payload is corrected: the type, actor, source, and times stay as recorded.
+ *
+ * Rules the projections apply (a correction that breaks one is ignored and logged):
+ * - `correctsSeq` is an earlier event of the same incident, and not itself a `corrected` event.
+ *   Several corrections of one seq stack in log order; to correct a correction, correct the
+ *   original seq again.
+ * - A field the original payload has keeps its JSON kind (string, number, boolean, array, object),
+ *   or is `null` to remove it.
+ * - A correction never changes `incidents.status` (nor `closed_at`): the lifecycle already acted on
+ *   the event as recorded. To move the lifecycle, append the event that moves it.
+ */
 export interface CorrectedPayload {
   correctsSeq: number;
-  /** The corrected payload fields, validated by the reader of the corrected event type. */
+  /** The corrected payload fields; `null` removes a key. */
   fields: Record<string, unknown>;
   reason: string;
+}
+
+/**
+ * Spec silent (main 12, A 4.3). Appended by the chat outbox worker once the pinned status message is
+ * posted in the incident's thread (`incidents.channel_id`), so its id is always known. Later edits go
+ * through the outbox (`edit-message`) and need no event; a repost (the message was deleted) appends
+ * this again and the new id replaces the old. Feeds `incidents.status_msg_id`.
+ */
+export interface StatusMessagePostedPayload {
+  /** The platform message id (a Slack `ts`, a Teams activity id). */
+  messageId: string;
+}
+
+/** What an incident can wait on: `incidents.waiting_on` without `since`, which is the event's `occurredAt`. */
+export interface WaitingOn {
+  /** The A 7 `StatusAnswer.waitingOn` kinds, minus `nothing`, which is an absent `waitingOn`. */
+  kind: 'ci' | 'review' | 'human' | 'deploy' | 'hold';
+  /** A user id for `human` (the approver, the reporter asked to verify), else a name such as a check or an environment. */
+  who?: string;
+}
+
+/**
+ * A 4.3 "every answer ends with ... who or what it is waiting on". Appended by the step that parks
+ * (B 5 waits) when it starts waiting, and with no `waitingOn` when the wait ends without a status
+ * change (an answered ask-back). Any status change clears `incidents.waiting_on` on its own, so a
+ * step that moves the status and then waits appends the status event first, then this. Feeds
+ * `incidents.waiting_on` (`since` is this event's `occurredAt`).
+ */
+export interface WaitingChangedPayload {
+  /** Absent: nothing is awaited. */
+  waitingOn?: WaitingOn;
+}
+
+/**
+ * A 4.5: the incident qualifies for active monitoring. Appended by the monitor when it starts
+ * polling. Sets `incidents.monitored`; ignored on a closed incident.
+ */
+export interface MonitoringStartedPayload {
+  /** Which A 4.5 rule qualified it: Highest priority, an outage score (A 1.4), or a `critical` surface (A 6.2). */
+  qualifiedBy: 'priority' | 'outage-score' | 'critical-surface';
+}
+
+/**
+ * A 4.5: monitoring stops. Closing the incident (any terminal status, B 5) also clears
+ * `incidents.monitored` without this event; it is appended for the other stops.
+ */
+export interface MonitoringStoppedPayload {
+  /** `downgraded`: a human lowered the priority. `disqualified`: the playbook or the score no longer qualifies it. */
+  reason: 'downgraded' | 'disqualified';
 }
 
 /** B 7.3. Projections take the human's value. Feeds `incidents.priority`. */
@@ -510,6 +582,10 @@ export interface EventPayloads {
   'let-agent-take': LetAgentTakePayload;
   tapped: TappedPayload;
   corrected: CorrectedPayload;
+  'status-message-posted': StatusMessagePostedPayload;
+  'waiting-changed': WaitingChangedPayload;
+  'monitoring-started': MonitoringStartedPayload;
+  'monitoring-stopped': MonitoringStoppedPayload;
   'jira-priority-changed': JiraPriorityChangedPayload;
   'jira-assignee-changed': JiraAssigneeChangedPayload;
   'jira-transitioned': JiraTransitionedPayload;
