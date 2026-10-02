@@ -80,7 +80,7 @@ beforeEach(async () => {
   calls.length = 0;
   server.use(
     http.post(`${SLACK}/auth.test`, ({ request }) =>
-      HttpResponse.json(request.headers.get('authorization') === 'Bearer xoxb-test' ? { ok: true, user_id: BOT_USER } : { ok: false, error: 'invalid_auth' }),
+      HttpResponse.json(request.headers.get('authorization') === 'Bearer xoxb-test' ? { ok: true, user_id: BOT_USER, url: 'https://acme-test.slack.com/' } : { ok: false, error: 'invalid_auth' }),
     ),
   );
 });

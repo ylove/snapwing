@@ -180,6 +180,8 @@ export interface ComposeOverrides {
   gitRemoteUrl?: (repo: string) => string;
   /** The Slack bot's user id; skips `auth.test`. */
   slackBotUserId?: string;
+  /** The Slack workspace subdomain for the Conversation Link; with the bot user id, skips `auth.test`. */
+  slackWorkspaceDomain?: string;
   /** Opens the Socket Mode WebSocket. */
   openSocket?: (url: string) => SocketLike;
   /** The Slack side of the PR card. Default `createSlackPrReadyChat`. */
@@ -315,15 +317,26 @@ function harnessChoice(config: HarnessConfig, adapter: HarnessAdapter): HarnessC
   return { adapter: 'generic', templateId: template.id };
 }
 
-/** The bot's own user id, from `auth.test`. */
-async function slackBotUserId(token: string): Promise<string> {
+/** The bot's own user id and the workspace subdomain, from one `auth.test` call. */
+async function slackIdentity(token: string): Promise<{ userId: string; domain?: string }> {
   const res = await fetch('https://slack.com/api/auth.test', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
   });
-  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; error?: string };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; url?: string; error?: string };
   if (body.ok !== true || typeof body.user_id !== 'string') throw new Error(`slack auth.test failed: ${body.error ?? `http_${res.status}`}`);
-  return body.user_id;
+  return { userId: body.user_id, ...workspaceDomain(body.url) };
+}
+
+/** `https://acme.slack.com/` gives `acme`; anything else (a custom domain, no url) gives nothing. */
+function workspaceDomain(url: string | undefined): { domain?: string } {
+  try {
+    const host = new URL(url ?? '').hostname;
+    const m = /^([a-z0-9-]+)\.slack\.com$/i.exec(host);
+    return m?.[1] === undefined ? {} : { domain: m[1] };
+  } catch {
+    return {};
+  }
 }
 
 /** Slack-hosted files need the bot token; anything else is a plain GET. */
@@ -550,11 +563,16 @@ export const compose: ComposeFn = async (deps) => {
   });
 
   // Slack and the engine.
-  const botUserId = overrides.slackBotUserId ?? (await slackBotUserId(secret('SLACK_BOT_TOKEN')));
+  // One `auth.test` at startup gives the bot user id and the workspace subdomain (the Conversation Link).
+  const identity =
+    overrides.slackBotUserId !== undefined && overrides.slackWorkspaceDomain !== undefined ? undefined : await slackIdentity(secret('SLACK_BOT_TOKEN'));
+  const botUserId = overrides.slackBotUserId ?? identity?.userId ?? '';
+  const workspaceDomain = overrides.slackWorkspaceDomain ?? identity?.domain;
   const adapter = createSlackAdapter({
     web,
     signingSecret: secret('SLACK_SIGNING_SECRET'),
     botUserId,
+    ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
     getMap,
     onError: (e) => log.error(`slack: ${message(e)}`),
     clock,

@@ -31,7 +31,6 @@ import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
 import {
   blockIds,
   bootComposed,
-  BOT_USER,
   DEMO_LEVELS,
   DEMO_MAP,
   EXAMPLE_CONFIG,
@@ -42,6 +41,7 @@ import {
   type Booted,
   type SlackPostCall,
   type SlackWorld,
+  WORKSPACE_DOMAIN,
 } from '../fixtures/e2e/world.ts';
 
 const HARNESS = fileURLToPath(new URL('../fixtures/e2e/fake-harness.mjs', import.meta.url));
@@ -171,7 +171,7 @@ async function world(file: string, issueKey: string, plan: Partial<Plan> = {}): 
     secrets,
     dir,
     env: { SNAPWING_MAP: DEMO_MAP, SNAPWING_WORKDIR_ROOT: join(dir, 'work'), SNAPWING_TEST_COMMAND: TEST_COMMAND },
-    overrides: { model: withValidation(model), slackBotUserId: BOT_USER, projectorPollMs: 25, gitRemoteUrl: github.remoteUrl },
+    overrides: { model: withValidation(model), projectorPollMs: 25, gitRemoteUrl: github.remoteUrl },
   });
   return { booted, recording, slack, jira, jiraHooks, github, repo, harnessDir };
 }
@@ -410,7 +410,10 @@ describe('levels 1 and 2 end to end through the composed app', () => {
     expect(issue?.custom['Autonomy Level']).toBe(1);
     expect(String(issue?.custom['Implementation Prompt'])).toContain('<implementation-request');
     expect(String(issue?.custom['Implementation Prompt'])).toContain('ADM-1');
-    // TODO(#251): compose gives the Slack adapter no workspace domain, so no Conversation Link yet.
+    // The domain comes from the real `auth.test` at startup (the shortcut payload's team.domain is not needed).
+    expect(issue?.custom['Conversation Link']).toBe(
+      `https://${WORKSPACE_DOMAIN}.slack.com/archives/${w.recording.channel.id}/p${w.recording.anchor.replace('.', '')}`,
+    );
     const statusTs = await statusMessageTs(w, incidentId);
     await statusShows(w, statusTs, 'Filed as ADM-1, assigned to <@U0ADMDEV>.');
 
