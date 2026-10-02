@@ -1,0 +1,20 @@
+{
+  "task": "triage",
+  "schemaName": "triage-plan",
+  "promptSha256": "e7bf4b53d843d118a45a42d63dc8c91d7bdd804d0ef33d7764f05c2cadc59fa7",
+  "prompt": "<triage-request>\n  <reporter name=\"Pat\" role=\"reporter\" source=\"slack\"/>\n  <report>customers are being charged twice at checkout, please look right now</report>\n  <context>\n\n  </context>\n  <images>\n\n  </images>\n  <resolved surface=\"web\" component=\"checkout\" owner=\"\" jira-project=\"WEB\"/>\n  <duplicate-check decision=\"none\">\n\n  </duplicate-check>\n  <diagnosis none=\"true\"/>\n  <workspace-map>\n    <surface id=\"web\" label=\"Website\" jira-project=\"WEB\" default-issue-type=\"Bug\">\n      <component id=\"nav\" label=\"Navigation\"/>\n      <component id=\"checkout\" label=\"Checkout\"/>\n      <component id=\"auth-web\" label=\"Login (web)\"/>\n    </surface>\n  </workspace-map>\n</triage-request>",
+  "response": {
+    "value": {
+      "action": "create_issue",
+      "issueType": "Incident",
+      "summary": "Customers charged twice at checkout",
+      "description": "Customers are being charged twice at checkout.",
+      "priority": "Highest",
+      "labels": [
+        "payments"
+      ],
+      "componentId": "checkout",
+      "autonomyLevel": 3
+    }
+  }
+}

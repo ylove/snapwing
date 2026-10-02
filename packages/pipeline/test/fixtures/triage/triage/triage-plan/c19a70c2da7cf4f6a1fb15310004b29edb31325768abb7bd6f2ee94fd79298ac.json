@@ -1,0 +1,18 @@
+{
+  "task": "triage",
+  "schemaName": "triage-plan",
+  "promptSha256": "c19a70c2da7cf4f6a1fb15310004b29edb31325768abb7bd6f2ee94fd79298ac",
+  "prompt": "<triage-request>\n  <reporter name=\"Pat\" role=\"reporter\" source=\"slack\"/>\n  <report>the portal export is empty again</report>\n  <context>\n\n  </context>\n  <images>\n\n  </images>\n  <resolved surface=\"admin\" component=\"\" owner=\"\" jira-project=\"ADM\"/>\n  <duplicate-check decision=\"link\">\n    <candidate key=\"ADM-77\" score=\"0.91\">Portal export returns an empty file</candidate>\n  </duplicate-check>\n  <diagnosis none=\"true\"/>\n  <workspace-map>\n    <surface id=\"admin\" label=\"B2B Admin Portal\" jira-project=\"ADM\" default-issue-type=\"Bug\">\n\n    </surface>\n  </workspace-map>\n</triage-request>",
+  "response": {
+    "value": {
+      "action": "link_existing",
+      "linkTo": "ADM-77",
+      "issueType": "Bug",
+      "summary": "Portal export is empty again",
+      "description": "Another report of the empty portal export.",
+      "priority": "Medium",
+      "labels": [],
+      "autonomyLevel": 3
+    }
+  }
+}
