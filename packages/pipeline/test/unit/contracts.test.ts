@@ -4,6 +4,7 @@ import type {
   ApprovalAction,
   IncidentActor,
   MergeGateResult,
+  SourceMessage,
   TriageResolutionPlan,
 } from '../../src/contracts/incident.ts';
 import type { SignalEvent, StatusAnswer } from '../../src/contracts/signals.ts';
@@ -15,6 +16,10 @@ describe('contract types', () => {
     expectTypeOf<TriageResolutionPlan['descriptionAdf']>().toEqualTypeOf<Record<string, unknown>>();
     expectTypeOf<TriageResolutionPlan['linkTo']>().toEqualTypeOf<string | undefined>();
     expectTypeOf<TriageResolutionPlan['labels']>().toEqualTypeOf<string[]>();
+  });
+
+  it('SourceMessage', () => {
+    expectTypeOf<SourceMessage['replyCount']>().toEqualTypeOf<number | undefined>();
   });
 
   it('MergeGateResult', () => {

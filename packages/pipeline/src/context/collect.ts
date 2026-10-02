@@ -76,8 +76,11 @@ export async function collectWindow(
     else excluded.push({ id: m.id, reason: 'over-cap' });
   }
 
-  // Sub-threads of every top-level message in the window, plus the anchor's own thread.
-  const parents = [...byId.values()].filter((m) => m.threadParentId === undefined);
+  // Sub-threads of top-level messages in the window that have replies, plus the anchor's own thread.
+  // replyCount 0 means no thread (skip the rate-limited call); absent means unknown, so expand.
+  const parents = [...byId.values()].filter(
+    (m) => m.threadParentId === undefined && (m.replyCount === undefined || m.replyCount > 0),
+  );
   // When the anchor is in a thread, its parent and siblings come from that thread.
   const threadRoots = new Set(parents.map((m) => m.id));
   if (message.threadParentId !== undefined) threadRoots.add(message.threadParentId);
