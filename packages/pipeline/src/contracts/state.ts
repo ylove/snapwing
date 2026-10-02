@@ -261,12 +261,22 @@ export interface OutboxItem {
   payload: Record<string, unknown>;
   /** Comments with the same key within 60 s are merged (B 7.1, by the projector). */
   batchKey?: string;
+  /** Failed sends so far; `deferOutbox` with an error and `parkOutbox` count one each. */
   attempts: number;
   nextAttempt: string;
+  /**
+   * The last send error. On an undone row, why it was deferred; with `doneAt`, why it was parked
+   * (`parkOutbox`). `ackOutbox` clears it, so a done row with an error is always a parked one.
+   */
   lastError?: string;
   createdAt: string;
-  /** Set by `ackOutbox`; a drained row never has it. */
+  /** Set by `ackOutbox` (sent) or `parkOutbox` (given up, with `lastError`); a drained row never has it. */
   doneAt?: string;
+}
+
+/** True for a row `parkOutbox` gave up on: done, with the error that parked it. */
+export function isParkedOutbox(item: OutboxItem): boolean {
+  return item.doneAt !== undefined && item.lastError !== undefined;
 }
 
 // Config cache ------------------------------------------------------------------------------------

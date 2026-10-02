@@ -92,12 +92,24 @@ export class StateStore implements StatePort {
     return outbox.enqueueOutbox(this.ctx, item);
   }
 
-  drainOutbox(target: OutboxTarget, limit: number): Promise<OutboxItem[]> {
-    return outbox.drainOutbox(this.ctx, target, limit);
+  drainOutbox(target: OutboxTarget, limit: number, workspaceId?: string): Promise<OutboxItem[]> {
+    return outbox.drainOutbox(this.ctx, target, limit, workspaceId);
   }
 
   ackOutbox(ids: string[]): Promise<void> {
     return outbox.ackOutbox(this.ctx, ids);
+  }
+
+  deferOutbox(id: string, nextAttempt: string, error?: string): Promise<void> {
+    return outbox.deferOutbox(this.ctx, id, nextAttempt, error);
+  }
+
+  parkOutbox(id: string, error: string): Promise<void> {
+    return outbox.parkOutbox(this.ctx, id, error);
+  }
+
+  listParkedOutbox(target: OutboxTarget, limit: number): Promise<OutboxItem[]> {
+    return outbox.listParkedOutbox(this.ctx, target, limit);
   }
 
   // Config cache

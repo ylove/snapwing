@@ -1,4 +1,5 @@
 import { beforeEach, expect, it } from 'vitest';
+import { isParkedOutbox } from '../../../src/contracts/state.ts';
 import { epoch, fixture, id, outbox } from './helpers.ts';
 const f = fixture();
 beforeEach(async () => {
@@ -82,4 +83,70 @@ it('preserves caller idempotency data without merging batch keys', async () => {
 it('does not drain rows already marked done', async () => {
   await f.state().enqueueOutbox(outbox({ doneAt: epoch }));
   expect(await f.state().drainOutbox('jira', 10)).toEqual([]);
+});
+it('drains one workspace when asked', async () => {
+  const other = id();
+  const mine = outbox();
+  const theirs = outbox({ workspaceId: other });
+  await f.state().enqueueOutbox(mine);
+  await f.state().enqueueOutbox(theirs);
+  expect(await f.state().drainOutbox('jira', 10, other)).toEqual([theirs]);
+  expect(await f.state().drainOutbox('jira', 10)).toEqual([mine, theirs]);
+});
+it('defers with an error: counts an attempt, records it, and holds the row until due', async () => {
+  const row = outbox();
+  await f.state().enqueueOutbox(row);
+  await f.state().deferOutbox(row.id, '2026-10-02T12:00:10.000Z', 'jira answered 503');
+  expect(await f.state().drainOutbox('jira', 10)).toEqual([]);
+  f.setTime(10000);
+  expect(await f.state().drainOutbox('jira', 10)).toEqual([{ ...row, attempts: 1, lastError: 'jira answered 503', nextAttempt: '2026-10-02T12:00:10.000Z' }]);
+});
+it('holds without an error: no attempt counted, no error recorded', async () => {
+  const row = outbox();
+  await f.state().enqueueOutbox(row);
+  await f.state().deferOutbox(row.id, '2026-10-02T12:01:00.000Z');
+  expect(await f.state().drainOutbox('jira', 10)).toEqual([]);
+  f.setTime(60000);
+  expect(await f.state().drainOutbox('jira', 10)).toEqual([{ ...row, nextAttempt: '2026-10-02T12:01:00.000Z' }]);
+});
+it('keeps order per incident: a deferred row holds back its incident only', async () => {
+  const incident = id();
+  const first = outbox({ incidentId: incident });
+  const second = outbox({ incidentId: incident, createdAt: '2026-10-02T12:00:00.001Z', nextAttempt: '2026-10-02T12:00:00.001Z' });
+  const unrelated = outbox({ incidentId: id(), createdAt: '2026-10-02T12:00:00.002Z', nextAttempt: '2026-10-02T12:00:00.002Z' });
+  const loose = outbox({ createdAt: '2026-10-02T12:00:00.003Z', nextAttempt: '2026-10-02T12:00:00.003Z' });
+  for (const row of [first, second, unrelated, loose]) await f.state().enqueueOutbox(row);
+  f.setTime(5);
+  await f.state().deferOutbox(first.id, '2026-10-02T12:00:30.000Z', 'jira answered 502');
+  expect((await f.state().drainOutbox('jira', 10)).map((r) => r.id)).toEqual([unrelated.id, loose.id]);
+  f.setTime(30000);
+  expect((await f.state().drainOutbox('jira', 10)).map((r) => r.id)).toEqual([first.id, second.id, unrelated.id, loose.id]);
+});
+it('parks a row: done with its error, out of the drain, no longer holding back its incident, listed', async () => {
+  const incident = id();
+  const first = outbox({ incidentId: incident, target: 'teams' });
+  const second = outbox({ incidentId: incident, target: 'teams', createdAt: '2026-10-02T12:00:00.001Z', nextAttempt: '2026-10-02T12:00:00.001Z' });
+  await f.state().enqueueOutbox(first);
+  await f.state().enqueueOutbox(second);
+  f.setTime(1);
+  await f.state().deferOutbox(first.id, '2026-10-02T12:05:00.000Z', 'jira answered 500');
+  expect(await f.state().drainOutbox('teams', 10)).toEqual([]);
+  f.setTime(2000);
+  await f.state().parkOutbox(first.id, 'gave up after 2 attempts: jira answered 500');
+  await f.state().parkOutbox(first.id, 'a second park is ignored');
+  expect((await f.state().drainOutbox('teams', 10)).map((r) => r.id)).toEqual([second.id]);
+  const parked = await f.state().listParkedOutbox('teams', 10);
+  expect(parked).toEqual([
+    { ...first, attempts: 2, nextAttempt: '2026-10-02T12:05:00.000Z', lastError: 'gave up after 2 attempts: jira answered 500', doneAt: '2026-10-02T12:00:02.000Z' },
+  ]);
+  expect(parked.every(isParkedOutbox)).toBe(true);
+});
+it('ack clears a deferred error, so a sent row is never listed as parked', async () => {
+  const row = outbox({ target: 'github' });
+  await f.state().enqueueOutbox(row);
+  await f.state().deferOutbox(row.id, epoch, 'jira answered 503');
+  await f.state().ackOutbox([row.id]);
+  await f.state().deferOutbox(row.id, epoch, 'ignored once done');
+  expect(await f.state().listParkedOutbox('github', 10)).toEqual([]);
+  expect(await f.state().drainOutbox('github', 10)).toEqual([]);
 });
