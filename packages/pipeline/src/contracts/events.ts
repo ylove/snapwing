@@ -169,6 +169,11 @@ export type EventActorRole = ActorRole | 'human';
 export interface EventActor {
   id: string;
   role: EventActorRole;
+  /**
+   * Display name, when the appender has one (an `IncidentActor` does). Not a column: the log does not
+   * store it, so an event read back has only `id`, and readers fall back to the id.
+   */
+  name?: string;
 }
 
 export type AutonomyLevel = 0 | 1 | 2 | 3;

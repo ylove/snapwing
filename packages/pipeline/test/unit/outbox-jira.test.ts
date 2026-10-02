@@ -218,7 +218,9 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
       const { s } = filed(lvl);
       toCi(s);
       s.push(draft('ci-green', { prNumber: 418, headSha: 'abc123' }));
-      expect(s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: lvl })).map(shape)).toEqual([transition(to), status('merged · PR #418')]);
+      const merge: ReturnType<typeof shape>[] = [transition(to), status('merged · PR #418')];
+      if (lvl === 3) merge.push(comment('Merged PR #418 (https://github.com/fake-org/web/pull/418) on autopilot. Ticket done.'));
+      expect(s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: lvl })).map(shape)).toEqual(merge);
       expect(s.push(draft('closed', {})).map(shape)).toEqual([transition('Done'), status('closed · PR #418')]);
     }
   });
@@ -228,6 +230,51 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
     expect(s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: 3 }))).toEqual([]);
     s.push(draft('closed', {}));
     expect(s.push(draft('closed', {}))).toEqual([]);
+  });
+
+  it('reverted reopens the issue with a comment linking the revert PR', () => {
+    for (const [lvl, to] of [
+      [3, 'In Progress'],
+      [2, 'In Progress'],
+      [0, 'Backlog'],
+    ] as const) {
+      const { s } = filed(lvl);
+      toCi(s);
+      s.push(draft('ci-green', { prNumber: 418, headSha: 'abc123' }));
+      s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: lvl }));
+      expect(s.push(draft('reverted', { prNumber: 418, revertPrNumber: 431, reason: 'broke checkout' })).map(shape)).toEqual([
+        transition(to),
+        status('reverted · PR #418'),
+        comment('Revert PR #431 (https://github.com/fake-org/web/pull/431) of PR #418 reopens this ticket: broke checkout.'),
+      ]);
+    }
+  });
+
+  it('a revert without a revert PR number still reopens, and names no link', () => {
+    const { s } = filed(2);
+    toCi(s);
+    s.push(draft('ci-green', { prNumber: 418, headSha: 'abc123' }));
+    s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: 2 }));
+    expect(s.push(draft('reverted', { prNumber: 418 })).map(shape)).toEqual([
+      transition('In Progress'),
+      status('reverted · PR #418'),
+      comment('A revert of PR #418 reopens this ticket.'),
+    ]);
+    expect(s.push(draft('reverted', { prNumber: 418 }))).toEqual([]); // already reverted
+  });
+
+  it('names a stopper or a degrader by display name when the event carries one, else by user id', () => {
+    const named: EventActor = { ...DANA, name: 'Dana Fake' };
+    const a = filed().s;
+    expect(a.push(draft('stopped', { reason: 'wrong repo' }, named)).map(shape)).toContainEqual(comment('Stopped by Dana Fake: wrong repo. Ticket back in Backlog.'));
+    const b = filed(3).s;
+    expect(b.push(draft('level-changed', { from: 3, to: 2, reason: 'a gate failed' }, named)).map(shape)).toContainEqual(
+      comment('Autonomy level lowered by Dana Fake from 3 to 2: a gate failed.'),
+    );
+    const c = filed(3).s;
+    expect(c.push(draft('level-changed', { from: 3, to: 2, reason: 'a gate failed' }, DANA)).map(shape)).toContainEqual(
+      comment(`Autonomy level lowered by ${DANA.id} from 3 to 2: a gate failed.`),
+    );
   });
 
   it('stopped moves the issue to Backlog with a comment naming who stopped it', () => {

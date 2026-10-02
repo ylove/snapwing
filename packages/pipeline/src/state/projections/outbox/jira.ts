@@ -10,12 +10,18 @@
 //   only a filed incident gets them here (a `planned` after `filed` is a re-plan no step appends
 //   yet; it does not fit the status, and the label is still added, since the prompt did fail).
 // - Status (`transition`): `merged` to In Review, or to Done when autopilot merged (level 3, main
-//   11.3); `closed` to Done; `stopped` to Backlog. Only when the event moved the status there.
+//   11.3); `closed` to Done; `stopped` to Backlog; `reverted` back out of Done, to In Progress at level
+//   1 or above (the revert PR is agent work) and to Backlog at level 0 (main 11.3). Only when the event
+//   moved the status there.
 // - `Autonomy Level` (`update-fields`): whenever the level changes after filing (`level-changed`, or
 //   a claim release that restores it).
 // - Comments (`add-comment`, batched per 7.1): a stop names who stopped it (main 4.6); a degradation
 //   says why: `fixer-failed` (main 10.4), a merge held at a gate (main 11.3), a lowered level (except
-//   the degrade fixer/job.ts records after a fixer failure, which that comment already explains).
+//   the degrade fixer/job.ts records after a fixer failure, which that comment already explains); a
+//   level 3 merge links the merged PR (main 11.3) and a revert links the revert PR. A PR link is built
+//   from the incident's repo and the PR number (the events carry only the number), and is left out
+//   when the incident has no repo. A person is named by `actor.name` when the event carries one, else
+//   by the platform user id (the log stores only the id, so a replayed event names the id).
 //
 // Rows go only to an issue the incident filed itself: none before `filed` (there is no key; the create
 // payload carries the state at plan time) and none for an incident linked to someone else's issue.
@@ -27,7 +33,7 @@
 // transition is a write of the `status` field. Payloads name custom fields as create-issue does
 // (`customFields` by name); the projector maps names to ids (#113).
 
-import type { IncidentEvent } from '../../../contracts/events.ts';
+import type { EventActor, IncidentEvent } from '../../../contracts/events.ts';
 import type { IncidentView, OutboxItem } from '../../../contracts/state.ts';
 import { BUDGET_EXCEEDED, FIXER_FAILED_REASON_PREFIX } from '../../../fixer/job.ts';
 import { CUSTOM_FIELD_AUTONOMY_LEVEL, LABEL_NEEDS_CLARIFICATION, LABEL_PROMPT_FAILED } from '../../../jira/synthesis.ts';
@@ -41,6 +47,7 @@ export const LABEL_FIXER_FAILED = 'fixer-failed';
 
 /** Jira workflow statuses B 7.2 transitions to (main 14.4: the workflow exposes Backlog, In Progress, Done). */
 export const JIRA_BACKLOG = 'Backlog';
+export const JIRA_IN_PROGRESS = 'In Progress';
 export const JIRA_IN_REVIEW = 'In Review';
 export const JIRA_DONE = 'Done';
 
@@ -148,6 +155,7 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
   if (moved('merged') && event.type === 'merged') transition(event.payload.levelAtMergeTime === 3 ? JIRA_DONE : JIRA_IN_REVIEW);
   if (moved('closed')) transition(JIRA_DONE);
   if (moved('stopped')) transition(JIRA_BACKLOG);
+  if (moved('reverted') && event.type === 'reverted') transition(after.autonomyLevel === 0 ? JIRA_BACKLOG : JIRA_IN_PROGRESS);
 
   const line = agentStatusLine(after);
   if (!known || agentStatusLine(before) !== line) field(CUSTOM_FIELD_AGENT_STATUS, line);
@@ -177,19 +185,41 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
     case 'level-changed':
       // The degrade after a fixer failure (fixer/job.ts) is explained by the fixer-failed comment.
       if (known && event.payload.to < event.payload.from && !event.payload.reason.startsWith(FIXER_FAILED_REASON_PREFIX)) {
-        comment(`Autonomy level lowered from ${String(event.payload.from)} to ${String(event.payload.to)}: ${clause(event.payload.reason)}.`);
+        const by = event.actor === undefined ? '' : ` by ${actorLabel(event.actor)}`;
+        comment(`Autonomy level lowered${by} from ${String(event.payload.from)} to ${String(event.payload.to)}: ${clause(event.payload.reason)}.`);
       }
       break;
     default:
       break;
   }
+  if (moved('merged') && event.type === 'merged' && event.payload.levelAtMergeTime === 3) {
+    comment(`Merged ${prLink(after.repo, event.payload.prNumber)} on autopilot. Ticket done.`);
+  }
+  if (moved('reverted') && event.type === 'reverted') {
+    const p = event.payload;
+    const revert = p.revertPrNumber === undefined ? 'A revert' : `Revert ${prLink(after.repo, p.revertPrNumber)}`;
+    const reason = clause(p.reason ?? '');
+    comment(`${revert} of PR #${String(p.prNumber)} reopens this ticket${reason === '' ? '' : `: ${reason}`}.`);
+  }
   if (moved('stopped') && event.type === 'stopped') {
-    const by = event.actor === undefined ? 'Stopped' : `Stopped by ${event.actor.id}`;
+    const by = event.actor === undefined ? 'Stopped' : `Stopped by ${actorLabel(event.actor)}`;
     const reason = clause(event.payload.reason ?? '');
     const why = reason === '' ? '' : `: ${reason}`;
     comment(`${by}${why}. Ticket back in Backlog.`);
   }
   return rowsFor(event, 'jira', specs);
+}
+
+/** A person by display name when the event carries one, else by platform user id. */
+function actorLabel(actor: EventActor): string {
+  const name = actor.name?.trim();
+  return name === undefined || name === '' ? actor.id : name;
+}
+
+/** `PR #n` followed by its GitHub URL when the repo is known (the events carry only the number). */
+function prLink(repo: string | undefined, prNumber: number): string {
+  const ref = `PR #${String(prNumber)}`;
+  return repo === undefined ? ref : `${ref} (https://github.com/${repo}/pull/${String(prNumber)})`;
 }
 
 /** `text` without surrounding space or a closing period, to sit inside a sentence. */
