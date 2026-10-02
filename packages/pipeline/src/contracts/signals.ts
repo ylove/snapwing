@@ -38,7 +38,7 @@ export interface EscalationScore {
   ladderStepReached?: number;
 }
 
-// IncidentEvent: see events.ts (#10)
+export type { IncidentEvent } from './events.ts';
 
 export interface StatusQuery {
   asker: IncidentActor;
