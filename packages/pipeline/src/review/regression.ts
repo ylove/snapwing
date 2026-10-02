@@ -2,10 +2,18 @@
 // fails without the fix. proveRegression builds a scratch worktree at the base with only the head's test
 // files applied and runs the test command (it must fail), then runs it at the head (it must pass).
 // Every outcome is a typed result; nothing here throws for a bad input, a failing command, or a timeout.
+//
+// The test command is the pull request's own code, written by the fixer: untrusted (main 16). It runs
+// without the server's environment (only PATH, HOME, LANG, TMPDIR, plus the caller's `env`), with the
+// host's system and global git config switched off and no askpass or credential helper. Each scratch
+// tree is a fresh `clone --shared` of `workdir`, not a linked worktree: a linked worktree shares the
+// repository's config, so a credential helper or an auth header there would reach the test command, and
+// anything the test command writes to its config would reach the next git call in `workdir`. Our own git
+// calls get the same bare environment and run no hooks.
 
 import { spawn, execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseDuration } from '../util/duration.ts';
 import { isTestFile } from './verdict.ts';
@@ -30,6 +38,12 @@ export interface RegressionInput {
   testCommand: string;
   /** Per run: milliseconds or an ISO 8601 duration such as `PT5M`. */
   timeout: number | string;
+  /**
+   * Extra environment for the test command, for what the repository's tests need. The command gets
+   * only PATH, HOME, LANG, and TMPDIR from the host plus these; nothing else of `process.env`. Never
+   * pass a secret or a checkout's git environment (`PreparedWorkdir.env` carries the git token).
+   */
+  env?: Readonly<Record<string, string>> | undefined;
 }
 
 export interface RegressionResult {
@@ -58,9 +72,47 @@ interface RunOutcome {
   output: string;
 }
 
+/** Host variables the test command inherits; mirrors the harness adapters (docs/harness-generic.md section 7). */
+const INHERITED_ENV = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const;
+
+/** Git with no host config, no prompts, no askpass, and no credential helper. Applied last, so `env` cannot undo it. */
+const GIT_GUARD_ENV: Readonly<Record<string, string>> = {
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: devNull,
+  GIT_TERMINAL_PROMPT: '0',
+  // Set but empty: git then skips core.askPass and SSH_ASKPASS too.
+  GIT_ASKPASS: '',
+  // Command-line level config, which git reads last: an empty helper clears every helper set before it.
+  GIT_CONFIG_COUNT: '1',
+  GIT_CONFIG_KEY_0: 'credential.helper',
+  GIT_CONFIG_VALUE_0: '',
+};
+
+/** The test command's environment: the allowlisted host variables, the caller's `env`, then the git guards. */
+export function regressionEnv(extra: Readonly<Record<string, string>> = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of INHERITED_ENV) {
+    const v = process.env[name];
+    if (v !== undefined) env[name] = v;
+  }
+  return { ...env, ...extra, ...GIT_GUARD_ENV };
+}
+
+/** Our own git calls: the same bare environment without HOME. */
+function gitEnv(): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of ['PATH', 'LANG', 'TMPDIR'] as const) {
+    const v = process.env[name];
+    if (v !== undefined) env[name] = v;
+  }
+  return { ...env, ...GIT_GUARD_ENV };
+}
+
 function git(cwd: string, args: string[]): Promise<{ ok: boolean; out: string }> {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    // No hooks: a checkout must not run anything from the repository's or the host's hook directory.
+    const argv = ['-c', `core.hooksPath=${devNull}`, ...args];
+    execFile('git', argv, { cwd, env: gitEnv(), maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
       resolve({ ok: !err, out: `${stdout}${stderr}`.trim() || (err ? err.message : '') });
     });
   });
@@ -70,12 +122,12 @@ function tail(text: string): string {
   return text.length <= MAX_RUN_OUTPUT ? text : `[truncated]\n${text.slice(text.length - MAX_RUN_OUTPUT)}`;
 }
 
-function runCommand(command: string, cwd: string, timeoutMs: number): Promise<RunOutcome> {
+function runCommand(command: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<RunOutcome> {
   return new Promise((resolve) => {
     let buf = '';
     let timedOut = false;
     let settled = false;
-    const child = spawn(command, { cwd, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(command, { cwd, env, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     const keep = (chunk: Buffer): void => {
       // Bound memory: only the tail is ever reported.
       buf = (buf + chunk.toString('utf8')).slice(-MAX_RUN_OUTPUT * 2);
@@ -137,29 +189,27 @@ export async function proveRegression(input: RegressionInput): Promise<Regressio
     return result('missing-test-file', `not in ${headSha}: ${missing.join(', ')}`, { missingFiles: missing });
   }
 
+  const env = regressionEnv(input.env);
   let scratchRoot: string | undefined;
-  const added: string[] = [];
   try {
     scratchRoot = await mkdtemp(join(tmpdir(), 'snapwing-regression-'));
     const baseTree = join(scratchRoot, 'base');
     const headTree = join(scratchRoot, 'head');
 
-    const addBase = await git(workdir, ['worktree', 'add', '--detach', baseTree, baseSha]);
+    const addBase = await scratchTree(workdir, baseTree, baseSha);
     if (!addBase.ok) return result('git-error', `worktree at base failed: ${addBase.out}`);
-    added.push(baseTree);
     const apply = await git(baseTree, ['checkout', headSha, '--', ...testFiles]);
     if (!apply.ok) return result('git-error', `applying test files failed: ${apply.out}`);
 
-    const base = await runCommand(testCommand, baseTree, timeoutMs);
+    const base = await runCommand(testCommand, baseTree, env, timeoutMs);
     const baseLabel = `--- at base ${baseSha.slice(0, 12)} with head tests (exit ${base.exitCode ?? 'none'}) ---\n${base.output}`;
     if (base.timedOut) return result('timeout', baseLabel, { phase: 'base' });
     if (base.exitCode === 0) return result('passes-without-fix', baseLabel);
 
-    const addHead = await git(workdir, ['worktree', 'add', '--detach', headTree, headSha]);
+    const addHead = await scratchTree(workdir, headTree, headSha);
     if (!addHead.ok) return result('git-error', `worktree at head failed: ${addHead.out}`, { failsWithoutFix: true });
-    added.push(headTree);
 
-    const head = await runCommand(testCommand, headTree, timeoutMs);
+    const head = await runCommand(testCommand, headTree, env, timeoutMs);
     const output = `${baseLabel}\n--- at head ${headSha.slice(0, 12)} (exit ${head.exitCode ?? 'none'}) ---\n${head.output}`;
     if (head.timedOut) return result('timeout', output, { failsWithoutFix: true, phase: 'head' });
     if (head.exitCode !== 0) return result('fails-with-fix', output, { failsWithoutFix: true });
@@ -167,8 +217,19 @@ export async function proveRegression(input: RegressionInput): Promise<Regressio
   } catch (e) {
     return result('git-error', e instanceof Error ? e.message : String(e));
   } finally {
-    for (const tree of added) await git(workdir, ['worktree', 'remove', '--force', tree]);
     if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true }).catch(() => undefined);
-    await git(workdir, ['worktree', 'prune']);
   }
+}
+
+/**
+ * A checkout of `sha` at `dest` with its own fresh config: `clone --shared` borrows `workdir`'s objects
+ * through an alternates file and copies none of its config, so nothing in `workdir`'s config (a
+ * credential helper, an auth header, a remote URL with a token) is visible from the scratch tree.
+ */
+async function scratchTree(workdir: string, dest: string, sha: string): Promise<{ ok: boolean; out: string }> {
+  const clone = await git(workdir, ['clone', '--quiet', '--shared', '--no-checkout', '--', '.', dest]);
+  if (!clone.ok) return clone;
+  const removeRemote = await git(dest, ['remote', 'remove', 'origin']);
+  if (!removeRemote.ok) return removeRemote;
+  return git(dest, ['checkout', '--quiet', '--detach', sha]);
 }
