@@ -146,6 +146,12 @@ export interface MessagesPage extends SlackPage {
   messages: SlackMessage[];
 }
 
+export interface ReactionsGetResult {
+  reactions: SlackReaction[];
+  /** The message `reactions.get` returned; absent when Slack sent none. */
+  message?: SlackMessage;
+}
+
 export interface DownloadedFile {
   bytes: Uint8Array;
   /** The response `Content-Type` without parameters, lowercased; empty when absent. */
@@ -158,8 +164,8 @@ export interface SlackWeb {
   postEphemeral(args: PostEphemeralArgs): Promise<{ messageTs?: string }>;
   pinsAdd(channel: string, timestamp: string): Promise<void>;
   reactionsAdd(channel: string, timestamp: string, name: string): Promise<void>;
-  /** The reactions on one message, with the reactors. */
-  reactionsGet(channel: string, timestamp: string): Promise<SlackReaction[]>;
+  /** The reactions on one message, with the reactors, and the message Slack sends with them (text, ts, thread_ts, files). */
+  reactionsGet(channel: string, timestamp: string): Promise<ReactionsGetResult>;
   conversationsHistory(args: HistoryArgs): Promise<MessagesPage>;
   conversationsReplies(args: RepliesArgs): Promise<MessagesPage>;
   conversationsJoin(channel: string): Promise<void>;
@@ -280,9 +286,10 @@ export function createSlackWeb(options: SlackWebOptions): SlackWeb {
     },
     async reactionsGet(channel, timestamp) {
       const r = await get('reactions.get', { channel, timestamp, full: true });
-      const message = r['message'];
-      const reactions = typeof message === 'object' && message !== null ? (message as SlackMessage).reactions : undefined;
-      return reactions ?? [];
+      const raw = r['message'];
+      if (typeof raw !== 'object' || raw === null) return { reactions: [] };
+      const message = raw as SlackMessage;
+      return { reactions: message.reactions ?? [], message };
     },
     async conversationsHistory(args) {
       return messagesPage(await get('conversations.history', { ...args }));
