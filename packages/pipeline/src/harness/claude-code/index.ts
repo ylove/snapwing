@@ -9,17 +9,17 @@
 //   --model <model>              only when configured
 //   --no-session-persistence     fixer runs are disposable
 //
-// Stop and budget follow docs/harness-generic.md section 6. That logic is duplicated here rather
-// than shared with src/harness/generic/ (built in parallel under #32). TODO: fold both into a shared
-// helper once #32 has merged.
+// Stop and budget follow docs/harness-generic.md section 6 and are shared with the generic adapter
+// through ../process.ts.
 
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { HarnessCheckpoint, HarnessPhase, HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../ports/harness.ts';
+import type { HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../ports/harness.ts';
 import { parseDuration } from '../../util/duration.ts';
-import { HARNESS_PHASES, MAX_RESULT_LENGTH, parseCheckpointLine, parseHarnessResult } from '../contract.ts';
+import { MAX_RESULT_LENGTH, parseHarnessResult } from '../contract.ts';
+import { DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
 
 export interface ClaudeCodeHarnessConfig {
   /** The executable. Default `claude`. */
@@ -41,7 +41,7 @@ const MAX_STDOUT_CHARS = 8 * MAX_RESULT_LENGTH;
 export function createClaudeCodeHarness(config: ClaudeCodeHarnessConfig = {}): HarnessPort {
   const bin = config.bin ?? 'claude';
   const tools = config.allowedTools ?? DEFAULT_TOOLS;
-  const graceMs = config.killGraceMs ?? 10_000;
+  const graceMs = config.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
   return {
     async run(workItem, implementationRequest, workdir, opts): Promise<HarnessResult> {
@@ -81,20 +81,10 @@ async function runProcess(input: RunInput): Promise<HarnessResult> {
 
   let stdout = '';
   let stdoutOverflow = false;
-  let stderrBuf = '';
-  let lastPhase: HarnessPhase = 'cloned';
-  let chain: Promise<void> = Promise.resolve();
 
-  const deliver = (c: HarnessCheckpoint): void => {
-    lastPhase = laterPhase(lastPhase, c.phase);
-    chain = chain.then(() => opts.onCheckpoint(c)).catch(() => undefined);
-  };
-  const feedLines = (text: string): void => {
-    for (const line of text.split('\n')) {
-      const parsed = parseCheckpointLine(line);
-      if (parsed.kind === 'checkpoint') deliver(parsed.checkpoint);
-    }
-  };
+  const child = spawn(input.bin, input.args, { cwd: input.workdir, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const supervisor = superviseProcess(child, { budgetMs: wallClockMs, graceMs: input.graceMs, signal: opts.signal, onCheckpoint: opts.onCheckpoint });
+
   // Checkpoint file: read it whole each poll and deliver only the complete lines not yet seen.
   let deliveredLines = 0;
   const pollCheckpointFile = async (final: boolean): Promise<void> => {
@@ -107,19 +97,8 @@ async function runProcess(input: RunInput): Promise<HarnessResult> {
     const lines = text.split('\n');
     if (!final) lines.pop(); // trailing partial line, if any
     else if (lines[lines.length - 1] === '') lines.pop();
-    for (const line of lines.slice(deliveredLines)) feedLines(line);
+    for (const line of lines.slice(deliveredLines)) supervisor.feedLine(line);
     deliveredLines = Math.max(deliveredLines, lines.length);
-  };
-
-  const child = spawn(input.bin, input.args, { cwd: input.workdir, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-
-  let stopRequested = false;
-  let budgetExceeded = false;
-  let killTimer: NodeJS.Timeout | undefined;
-  const terminate = (): void => {
-    if (killTimer !== undefined) return;
-    signalGroup(child.pid, 'SIGTERM');
-    killTimer = setTimeout(() => signalGroup(child.pid, 'SIGKILL'), input.graceMs);
   };
 
   const exit = new Promise<{ code: number | null; spawnError?: Error }>((resolve) => {
@@ -133,40 +112,17 @@ async function runProcess(input: RunInput): Promise<HarnessResult> {
     else stdout += d;
   });
   child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (d: string) => {
-    stderrBuf += d;
-    const nl = stderrBuf.lastIndexOf('\n');
-    if (nl < 0) {
-      if (stderrBuf.length > 128 * 1024) stderrBuf = '';
-      return;
-    }
-    feedLines(stderrBuf.slice(0, nl));
-    stderrBuf = stderrBuf.slice(nl + 1);
-  });
+  child.stderr.on('data', (d: string) => supervisor.feedStderr(d));
   child.stdin.on('error', () => undefined); // child may exit without reading stdin
   child.stdin.end(input.request, 'utf8');
 
-  const budgetTimer = setTimeout(() => {
-    budgetExceeded = true;
-    terminate();
-  }, wallClockMs);
-  const onAbort = (): void => {
-    stopRequested = true;
-    terminate();
-  };
-  if (opts.signal.aborted) onAbort();
-  else opts.signal.addEventListener('abort', onAbort, { once: true });
   const poller = setInterval(() => void pollCheckpointFile(false), CHECKPOINT_POLL_MS);
 
   const { code, spawnError } = await exit;
-  clearTimeout(budgetTimer);
   clearInterval(poller);
-  if (killTimer !== undefined) clearTimeout(killTimer);
-  opts.signal.removeEventListener('abort', onAbort);
-  signalGroup(child.pid, 'SIGKILL'); // reap stragglers in the group; no-op when none remain
   await pollCheckpointFile(true);
-  if (stderrBuf !== '') feedLines(stderrBuf);
-  await chain;
+  await supervisor.finish();
+  const { stopRequested, budgetExceeded, lastPhase } = supervisor;
 
   if (spawnError !== undefined) {
     return { outcome: 'failed', reason: `harness could not start: ${spawnError.message}`, attempts: 0 };
@@ -210,19 +166,6 @@ function buildEnv(input: RunInput): NodeJS.ProcessEnv {
     if (v !== undefined) env[key] = v;
   }
   return env;
-}
-
-function signalGroup(pid: number | undefined, signal: NodeJS.Signals): void {
-  if (pid === undefined) return;
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    // group already gone
-  }
-}
-
-function laterPhase(a: HarnessPhase, b: HarnessPhase): HarnessPhase {
-  return HARNESS_PHASES.indexOf(b) > HARNESS_PHASES.indexOf(a) ? b : a;
 }
 
 type Extracted = { kind: 'result'; result: HarnessResult } | { kind: 'error'; message: string };

@@ -78,16 +78,19 @@ switch (mode) {
     break;
   }
   case 'hang-stopped':
-    checkpoint('implemented');
+    // Signal handlers are installed before the first checkpoint: tests abort in response to a
+    // checkpoint, so the SIGTERM can never arrive before the handler exists.
     process.on('SIGTERM', () => {
       emit(JSON.stringify({ outcome: 'stopped', atPhase: 'tested' }));
       process.exit(0);
     });
+    checkpoint('implemented');
     await new Promise(() => setInterval(() => undefined, 1000));
     break;
   case 'hang-stubborn':
-    checkpoint('tested');
-    process.on('SIGTERM', () => undefined);
+    // Reports each SIGTERM as a `tested` checkpoint so tests can assert the signal sequence.
+    process.on('SIGTERM', () => checkpoint('tested'));
+    checkpoint('branched');
     await new Promise(() => setInterval(() => undefined, 1000));
     break;
   default:

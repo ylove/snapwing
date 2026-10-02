@@ -7,9 +7,10 @@
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import type { HarnessCheckpoint, HarnessPhase, HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../ports/harness.ts';
+import type { HarnessPhase, HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../ports/harness.ts';
 import { InvalidDurationError, parseDuration } from '../../util/duration.ts';
-import { MAX_RESULT_LENGTH, parseCheckpointLine, parseHarnessResult } from '../contract.ts';
+import { MAX_RESULT_LENGTH, parseHarnessResult } from '../contract.ts';
+import { DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
 
 export interface GenericHarnessConfig {
   /** Command template, split on whitespace with double quotes respected; never run through a shell. */
@@ -23,7 +24,7 @@ export interface GenericHarnessConfig {
 }
 
 export const DEFAULT_TIMEOUT = 'PT30M';
-export const DEFAULT_KILL_GRACE_MS = 10_000;
+export { DEFAULT_KILL_GRACE_MS };
 const STDERR_TAIL_CHARS = 2000;
 const INHERITED_ENV = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const;
 
@@ -102,8 +103,7 @@ function runGeneric(
   workdir: string,
   opts: HarnessRunOptions,
 ): Promise<HarnessResult> {
-  const startedPhase: HarnessPhase = 'cloned';
-  if (opts.signal.aborted) return Promise.resolve({ outcome: 'stopped', atPhase: startedPhase });
+  if (opts.signal.aborted) return Promise.resolve({ outcome: 'stopped', atPhase: 'cloned' });
 
   const budget = wallClockMs(config, opts);
   const [file, ...args] = argv;
@@ -126,51 +126,8 @@ function runGeneric(
     let stdout = '';
     let stdoutOverflow = false;
     let stderrTail = '';
-    let stderrBuf = '';
-    let lastPhase: HarnessPhase | undefined;
-    let stopRequested = false;
-    let budgetExceeded = false;
     let spawnError: string | undefined;
-    let killTimer: NodeJS.Timeout | undefined;
-    let checkpointChain: Promise<void> = Promise.resolve();
-
-    const signalGroup = (sig: NodeJS.Signals): void => {
-      if (child.pid === undefined) return;
-      try {
-        process.kill(-child.pid, sig);
-      } catch {
-        try {
-          child.kill(sig);
-        } catch {
-          // already gone
-        }
-      }
-    };
-
-    const terminate = (): void => {
-      if (killTimer !== undefined) return;
-      signalGroup('SIGTERM');
-      killTimer = setTimeout(() => signalGroup('SIGKILL'), graceMs);
-    };
-
-    const onAbort = (): void => {
-      stopRequested = true;
-      terminate();
-    };
-    opts.signal.addEventListener('abort', onAbort, { once: true });
-
-    const budgetTimer = setTimeout(() => {
-      budgetExceeded = true;
-      terminate();
-    }, budget.ms);
-
-    const handleLine = (line: string): void => {
-      const parsed = parseCheckpointLine(line);
-      if (parsed.kind !== 'checkpoint') return;
-      const checkpoint: HarnessCheckpoint = parsed.checkpoint;
-      lastPhase = checkpoint.phase;
-      checkpointChain = checkpointChain.then(() => opts.onCheckpoint(checkpoint)).catch(() => undefined);
-    };
+    const supervisor = superviseProcess(child, { budgetMs: budget.ms, graceMs, signal: opts.signal, onCheckpoint: opts.onCheckpoint });
 
     child.stdout?.setEncoding('utf8');
     child.stdout?.on('data', (chunk: string) => {
@@ -185,15 +142,7 @@ function runGeneric(
     child.stderr?.setEncoding('utf8');
     child.stderr?.on('data', (chunk: string) => {
       stderrTail = (stderrTail + chunk).slice(-STDERR_TAIL_CHARS);
-      stderrBuf += chunk;
-      let nl = stderrBuf.indexOf('\n');
-      while (nl !== -1) {
-        handleLine(stderrBuf.slice(0, nl));
-        stderrBuf = stderrBuf.slice(nl + 1);
-        nl = stderrBuf.indexOf('\n');
-      }
-      // A line that never ends cannot be a checkpoint; keep memory bounded.
-      if (stderrBuf.length > 128 * 1024) stderrBuf = '';
+      supervisor.feedStderr(chunk);
     });
 
     child.stdin?.on('error', () => undefined);
@@ -204,13 +153,21 @@ function runGeneric(
     });
 
     child.on('close', (code, signal) => {
-      if (killTimer !== undefined) clearTimeout(killTimer);
-      clearTimeout(budgetTimer);
-      opts.signal.removeEventListener('abort', onAbort);
-      if (stderrBuf !== '') handleLine(stderrBuf);
-
-      const result = decide({ code, signal, stdout, stderrTail, lastPhase, stopRequested, budgetExceeded, spawnError, budgetLabel: budget.label });
-      void checkpointChain.then(() => resolve(result));
+      void supervisor.finish().then(() => {
+        resolve(
+          decide({
+            code,
+            signal,
+            stdout,
+            stderrTail,
+            lastPhase: supervisor.lastPhase,
+            stopRequested: supervisor.stopRequested,
+            budgetExceeded: supervisor.budgetExceeded,
+            spawnError,
+            budgetLabel: budget.label,
+          }),
+        );
+      });
     });
   });
 }
@@ -220,7 +177,7 @@ interface Outcome {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderrTail: string;
-  lastPhase: HarnessPhase | undefined;
+  lastPhase: HarnessPhase;
   stopRequested: boolean;
   budgetExceeded: boolean;
   spawnError: string | undefined;
@@ -240,7 +197,7 @@ function decide(o: Outcome): HarnessResult {
 
   if (o.stopRequested) {
     if (parsed.ok && parsed.result.outcome === 'stopped') return parsed.result;
-    return { outcome: 'stopped', atPhase: o.lastPhase ?? 'cloned' };
+    return { outcome: 'stopped', atPhase: o.lastPhase };
   }
 
   if (o.code === 0) {
