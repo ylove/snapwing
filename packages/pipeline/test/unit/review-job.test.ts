@@ -6,7 +6,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,7 +15,7 @@ import { isReviewRunData, reviewRunKey } from '../../src/contracts/jobs.ts';
 import { handleFixerDone, latest, registerFixerJobs, startFixer, type FixerDeps } from '../../src/fixer/job.ts';
 import { reviewVerdict, type MergeCombinedStatus } from '../../src/merge/job.ts';
 import type { HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../src/ports/harness.ts';
-import type { FixerJob, RunnerPort, TestRunJob, TestRunner, TestRunResult } from '../../src/ports/runner.ts';
+import type { FixerJob, ReviewRunJob, ReviewRunner, ReviewRunResult, RunnerPort, TestRunJob, TestRunner, TestRunResult } from '../../src/ports/runner.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
 import {
@@ -23,6 +23,8 @@ import {
   registerReviewJobs,
   REVIEW_CHECK_NAME,
   REVIEW_FILE_ENV,
+  REVIEW_INPUT_PATH,
+  REVIEW_VERDICT_PATH,
   runReviewJob,
   startReview,
   type ReviewCheckConclusion,
@@ -258,6 +260,48 @@ class FakeIsolatedRunner extends FakeRunner implements TestRunner {
     });
     const next = this.results.shift() ?? { exitCode: this.runs.length === 1 ? 1 : 0, timedOut: false, output: `run ${this.runs.length}` };
     if (next instanceof Error) throw next;
+    return next;
+  }
+}
+
+/** What a review run saw of its tree when the runner got it. */
+interface SeenReviewRun {
+  job: ReviewRunJob;
+  alternates: boolean;
+  config: string;
+  head: string;
+  input: string;
+  total: string;
+}
+
+/** What the fake container does with the tree: write a verdict (or raw text), or anything else. */
+type ReviewAct = ReviewVerdict | { raw: string } | ((job: ReviewRunJob) => Promise<void>);
+
+/**
+ * A runner with an isolation boundary that also runs the review agent, as the docker provider does.
+ * Its `runReview` is the container: it records what the tree holds, then acts as the scripted agent
+ * would inside it, writing only into the tree.
+ */
+class FakeReviewingRunner extends FakeIsolatedRunner implements ReviewRunner {
+  readonly reviews: SeenReviewRun[] = [];
+  readonly acts: ReviewAct[] = [];
+  readonly reviewResults: (ReviewRunResult | Error)[] = [];
+
+  async runReview(job: ReviewRunJob): Promise<ReviewRunResult> {
+    const gitDir = join(job.checkout, '.git');
+    this.reviews.push({
+      job,
+      alternates: existsSync(join(gitDir, 'objects', 'info', 'alternates')),
+      config: await readFile(join(gitDir, 'config'), 'utf8'),
+      head: git(job.checkout, ['rev-parse', 'HEAD']),
+      input: await readFile(join(job.checkout, job.inputFile), 'utf8'),
+      total: await readFile(join(job.checkout, 'src', 'cart', 'total.txt'), 'utf8'),
+    });
+    const next = this.reviewResults.shift() ?? { exitCode: 0, timedOut: false, output: 'reviewed' };
+    if (next instanceof Error) throw next;
+    const act = this.acts.shift() ?? APPROVE;
+    if (typeof act === 'function') await act(job);
+    else await writeFile(join(job.checkout, job.verdictFile), 'raw' in act ? act.raw : JSON.stringify(act));
     return next;
   }
 }
@@ -841,6 +885,147 @@ describe(`review job on a runner with a boundary (${TEST_DIALECT}; ADR 0017, #23
     const failed = await lastOf('review-failed');
     expect(failed?.payload.verdict).toBe('escalate');
     expect(failed?.payload.reason).toContain('runner: Cannot connect to the Docker daemon');
+  });
+});
+
+describe(`review agent on a runner with a boundary (${TEST_DIALECT}; ADR 0017, #239)`, () => {
+  it('no host process runs the review harness: the runner gets a self-contained tree at the head, the input in it, no credential', async () => {
+    const runner = new FakeReviewingRunner();
+    const w = await setup({ wallClock: 'PT20M' }, runner);
+    const head = await fixerOpensPr(w, FIXED);
+    runner.acts.push(APPROVE);
+
+    await review(w);
+
+    // The host harness never ran.
+    expect(w.harness.calls).toEqual([]);
+    expect(runner.reviews).toHaveLength(1);
+    const seen = runner.reviews[0];
+    if (seen === undefined) throw new Error('unreachable');
+    const { job } = seen;
+    expect(job.workItem).toEqual({ id: INC, issueKey: 'WEB-1042', repo: REPO });
+    expect(job.harness).toEqual({ adapter: 'claude-code' });
+    expect(job.budget).toEqual({ wallClock: 'PT20M', attempts: 1 });
+    expect(job.inputFile).toBe(REVIEW_INPUT_PATH);
+    expect(job.verdictFile).toBe(REVIEW_VERDICT_PATH);
+    expect(REVIEW_VERDICT_PATH.startsWith('.git/snapwing/')).toBe(true);
+    // A copy at the head with its own objects, no remote, no credential; never the review's checkout.
+    expect(seen.head).toBe(head);
+    expect(seen.total).toBe('fixed\n');
+    expect(seen.alternates).toBe(false);
+    expect(seen.config).not.toContain('[remote');
+    expect(seen.config).not.toContain('test-installation-token');
+    expect(seen.config).not.toContain('credential');
+    expect(seen.config).not.toContain('hooksPath');
+    expect(existsSync(join(job.checkout, '.git', 'snapwing', 'askpass'))).toBe(false);
+    // The input is the review request: constraints and the diff, nothing of the fixer's.
+    expect(seen.input).toContain('<scope>Only src/cart and its tests</scope>');
+    expect(seen.input).toContain('+fixed');
+    expect(seen.input).not.toContain('FIXER-SUMMARY-SECRET-REASONING');
+    // Gone afterwards.
+    expect(existsSync(job.checkout)).toBe(false);
+
+    const passed = await lastOf('review-passed');
+    expect(await storedVerdict(passed?.payload.review)).toEqual(APPROVE);
+    expect(w.github.lastCheck()).toMatchObject({ headSha: head, conclusion: 'success' });
+    // The regression proof still ran inside the runner too.
+    expect(runner.runs).toHaveLength(2);
+  });
+
+  it('passes the configured review harness to the runner', async () => {
+    const runner = new FakeReviewingRunner();
+    const w = await setup({ harness: { adapter: 'generic', templateId: 'aider' } }, runner);
+    await fixerOpensPr(w, FIXED);
+
+    await review(w);
+
+    expect(runner.reviews[0]?.job.harness).toEqual({ adapter: 'generic', templateId: 'aider' });
+    expect(await lastOf('review-passed')).toBeDefined();
+  });
+
+  it('a request-changes verdict read from the tree starts the fixer retry', async () => {
+    const runner = new FakeReviewingRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    runner.acts.push(REQUEST_CHANGES);
+
+    await review(w);
+
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('request-changes');
+    expect(await storedVerdict(failed?.payload.review)).toMatchObject({ verdict: 'request-changes', reasons: ['Handle the empty cart in the total'] });
+  });
+
+  it('a verdict file that links to a host file is not read: escalate', async () => {
+    const runner = new FakeReviewingRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    // A host file holding a valid approval, which the container must not be able to make us read.
+    const hostFile = join(scratch, 'host-approval.json');
+    await writeFile(hostFile, JSON.stringify(APPROVE));
+    runner.acts.push((job) => symlink(hostFile, join(job.checkout, job.verdictFile)));
+
+    await review(w);
+
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('escalate');
+    expect(failed?.payload.reason).toContain('the review agent left a verdict file that is a link');
+  });
+
+  it('a linked .git/snapwing directory is not followed either', async () => {
+    const runner = new FakeReviewingRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    const hostDir = join(scratch, 'host-dir');
+    await mkdir(hostDir);
+    await writeFile(join(hostDir, 'verdict.json'), JSON.stringify(APPROVE));
+    runner.acts.push(async (job) => {
+      const own = join(job.checkout, '.git', 'snapwing');
+      await rm(own, { recursive: true, force: true });
+      await symlink(hostDir, own);
+    });
+
+    await review(w);
+
+    expect((await lastOf('review-failed'))?.payload.reason).toContain('the review agent left a verdict file that is a link');
+  });
+
+  const escalations: { name: string; act?: ReviewAct; result?: ReviewRunResult | Error; reason: string }[] = [
+    { name: 'no verdict file', act: () => Promise.resolve(), reason: 'the review agent wrote no verdict file' },
+    { name: 'an invalid verdict', act: { raw: '{"verdict":"ship-it"}' }, reason: "the review agent's verdict is invalid" },
+    { name: 'a failing exit', result: { exitCode: 2, timedOut: false, output: 'boom' }, reason: 'the review agent failed: exit 2' },
+    { name: 'a timeout', result: { exitCode: null, timedOut: true, output: '' }, reason: 'the review agent ran past its PT30M budget' },
+    {
+      name: 'a runner that cannot run',
+      result: new Error('Cannot connect to the Docker daemon'),
+      reason: 'the review agent could not run: runner: Cannot connect to the Docker daemon',
+    },
+  ];
+  it.each(escalations)('$name escalates, and the host harness never runs', async (c) => {
+    const runner = new FakeReviewingRunner();
+    if (c.act !== undefined) runner.acts.push(c.act);
+    if (c.result !== undefined) runner.reviewResults.push(c.result);
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+
+    await review(w);
+
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('escalate');
+    expect(failed?.payload.reason).toContain(c.reason);
+    expect(w.harness.calls).toEqual([]);
+  });
+
+  it('a runner with runTests but no runReview keeps the review harness on the host', async () => {
+    const runner = new FakeIsolatedRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect(w.harness.calls).toHaveLength(1);
+    expect(await lastOf('review-passed')).toBeDefined();
   });
 });
 

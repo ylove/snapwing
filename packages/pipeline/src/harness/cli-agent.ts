@@ -32,7 +32,7 @@ export interface CliRunInput {
   extract: (stdout: string, extra: string | undefined) => Extracted;
   /** Optional file the CLI writes its final message to; read after exit and passed to `extract`. */
   extraFile?: string;
-  /** Environment variable names copied from the server environment (the model key the CLI needs). */
+  /** Environment variable names copied from the server environment: the model key the CLI needs, and its base URL (the model proxy inside a runner, ADR 0017 amendment 1). */
   inheritEnv: readonly string[];
   workdir: string;
   opts: HarnessRunOptions;

@@ -1,13 +1,14 @@
-// Docker RunnerPort (#135; main 14.3, main 10.2). A fake `docker` script on PATH records its argv and
-// the SNAPWING_ and other environment it was given; no real docker ever runs.
+// Docker RunnerPort (#135, #234, #239; main 14.3, main 10.2, ADR 0017). A fake `docker` script on PATH
+// records its argv and the SNAPWING_ and other environment it was given; no real docker ever runs.
 
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { FixerJob, TestRunJob } from '@snapwing/pipeline/ports/runner.ts';
+import type { FixerJob, ReviewRunJob, TestRunJob } from '@snapwing/pipeline/ports/runner.ts';
 import { issueFixerToken, verifyFixerToken } from '../../src/fixer-api/token.ts';
-import { containerName, createDockerRunner } from '../../src/providers/docker/runner.ts';
+import { issueModelToken, verifyModelToken } from '../../src/model-proxy/token.ts';
+import { containerName, createDockerRunner, type DockerModelProxy } from '../../src/providers/docker/runner.ts';
 
 const SECRET = 'fake-hmac-key-for-tests-0123456789abcdef';
 const clock = () => new Date('2026-10-02T12:00:00Z');
@@ -20,6 +21,11 @@ dir=$(dirname "$0")
 mode=$(cat "$dir/mode" 2>/dev/null)
 case "$1" in
   run) [ "$mode" = run-fail ] && { echo "Unable to find image 'nope' locally" >&2; exit 125; }
+       case " $* " in *" --name snapwing-review-"*)
+         [ "$mode" = hang ] && exec sleep 30
+         echo "review agent ran"
+         exit "$(cat "$dir/exit" 2>/dev/null || echo 0)" ;;
+       esac
        case " $* " in *" --entrypoint "*)
          [ "$mode" = hang ] && exec sleep 30
          echo "tests said hello"; echo "and warned on stderr" >&2
@@ -39,6 +45,7 @@ interface Call {
 let dir: string;
 let savedPath: string | undefined;
 let savedLeak: string | undefined;
+let savedProviderKey: string | undefined;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'fake-docker-'));
@@ -48,6 +55,8 @@ beforeEach(() => {
   savedLeak = process.env['SNAPWING_FIXER_TOKEN_SECRET'];
   process.env['PATH'] = `${dir}:${savedPath ?? ''}`;
   process.env['SNAPWING_FIXER_TOKEN_SECRET'] = 'server-only-secret-must-not-leak';
+  savedProviderKey = process.env['ANTHROPIC_API_KEY'];
+  process.env['ANTHROPIC_API_KEY'] = 'server-provider-key-must-not-leak';
 });
 
 afterEach(() => {
@@ -55,6 +64,8 @@ afterEach(() => {
   else process.env['PATH'] = savedPath;
   if (savedLeak === undefined) delete process.env['SNAPWING_FIXER_TOKEN_SECRET'];
   else process.env['SNAPWING_FIXER_TOKEN_SECRET'] = savedLeak;
+  if (savedProviderKey === undefined) delete process.env['ANTHROPIC_API_KEY'];
+  else process.env['ANTHROPIC_API_KEY'] = savedProviderKey;
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -292,6 +303,133 @@ describe('createDockerRunner runTests (#234, ADR 0017)', () => {
     }
     await expect(runner().runTests(testJob({ runId: '../x' }))).rejects.toThrow(/plain path segment/);
     await expect(runner().runTests(testJob({ timeoutMs: 0 }))).rejects.toThrow(/invalid test timeout/);
+    expect(calls()).toEqual([]);
+  });
+});
+
+describe('createDockerRunner runReview (#239, ADR 0017)', () => {
+  const REVIEW_RUN = '01J9ZREVIEWRUN000000000001';
+  const reviewJob = (over: Partial<ReviewRunJob> = {}): ReviewRunJob => ({
+    runId: REVIEW_RUN,
+    workItem: { id: 'WI01', issueKey: 'WEB-1042', repo: 'acme/web' },
+    harness: { adapter: 'claude-code' },
+    budget: { wallClock: 'PT30M', attempts: 1 },
+    checkout: join(dir, 'review-tree'),
+    inputFile: '.git/snapwing/review-input.xml',
+    verdictFile: '.git/snapwing/verdict.json',
+    ...over,
+  });
+  const proxy: DockerModelProxy = {
+    url: 'http://snapwing-api:8080/model/',
+    token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: 'PT45M' }, keys),
+  };
+
+  it('runs the image entrypoint attached as role review, the tree as its only mount, no git credential and no fixer token', async () => {
+    const r = await runner({ network: 'snapwing-net' }).runReview(reviewJob());
+    expect(r).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(r.output).toContain('review agent ran');
+
+    const [c] = calls();
+    if (c === undefined) throw new Error('docker was not called');
+    const a = c.args;
+    expect(a.slice(0, 2)).toEqual(['run', '--rm']);
+    expect(a).not.toContain('-d');
+    expect(a[a.indexOf('--name') + 1]).toBe(`snapwing-review-${REVIEW_RUN}`);
+    expect(a[a.indexOf('--network') + 1]).toBe('snapwing-net');
+    expect(a[a.indexOf('--cap-drop') + 1]).toBe('ALL');
+    expect(a).not.toContain('--privileged');
+    // The image's own entrypoint (its wrapper starts the harness).
+    expect(a).not.toContain('--entrypoint');
+    expect(a.at(-1)).toBe('snapwing-fixer:test');
+    const mounts = a.flatMap((x, i) => (x === '-v' || x === '--volume' || x === '--mount' ? [a[i + 1]] : []));
+    expect(mounts).toEqual([`${join(dir, 'review-tree')}:/work`]);
+    expect(a[a.indexOf('-w') + 1]).toBe('/work');
+    expect(a[a.indexOf('--user') + 1]).toBe(`${process.getuid?.()}:${process.getgid?.()}`);
+
+    expect(c.env).toMatchObject({
+      SNAPWING_HARNESS_CONTRACT: '1',
+      SNAPWING_ROLE: 'review',
+      SNAPWING_RUN_ID: REVIEW_RUN,
+      SNAPWING_WORK_ITEM_ID: 'WI01',
+      SNAPWING_ISSUE_KEY: 'WEB-1042',
+      SNAPWING_REPO: 'acme/web',
+      SNAPWING_WORKDIR: '/work',
+      SNAPWING_BUDGET_WALL_CLOCK: 'PT30M',
+      SNAPWING_BUDGET_ATTEMPTS: '1',
+      SNAPWING_HARNESS: 'claude-code',
+      SNAPWING_REVIEW_INPUT_FILE: '/work/.git/snapwing/review-input.xml',
+      SNAPWING_REVIEW_FILE: '/work/.git/snapwing/verdict.json',
+    });
+    for (const absent of ['SNAPWING_FIXER_TOKEN', 'SNAPWING_API_URL', 'SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_HARNESS_TEMPLATE', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']) {
+      expect(c.env[absent]).toBeUndefined();
+    }
+    const forwarded = a.flatMap((x, i) => (x === '-e' ? [a[i + 1]!] : []));
+    expect(forwarded.slice(-2)).toEqual(['HOME=/tmp', 'TMPDIR=/tmp']);
+    const snapwing = Object.keys(c.env).filter((k) => k.startsWith('SNAPWING_'));
+    expect(snapwing.sort()).toEqual(forwarded.slice(0, -2).sort());
+    expect(JSON.stringify(c.env)).not.toContain('server-only-secret');
+    expect(JSON.stringify(c.env)).not.toContain('server-provider-key');
+  });
+
+  it('names a generic template', async () => {
+    await runner().runReview(reviewJob({ harness: { adapter: 'generic', templateId: 'aider' } }));
+    expect(calls()[0]!.env).toMatchObject({ SNAPWING_HARNESS: 'generic', SNAPWING_HARNESS_TEMPLATE: 'aider' });
+  });
+
+  it('with a model proxy: the proxy as each CLI base URL and a per-run model token, never a provider key or a fixer token', async () => {
+    await runner({ env: { apiUrl: 'http://snapwing-api:8080', token: () => 'unused', modelProxy: proxy } }).runReview(reviewJob());
+    const c = calls()[0]!;
+    const base = 'http://snapwing-api:8080/model/WI01';
+    expect(c.env).toMatchObject({
+      SNAPWING_MODEL_PROXY_URL: base,
+      ANTHROPIC_BASE_URL: `${base}/anthropic`,
+      OPENAI_BASE_URL: `${base}/openai/v1`,
+      GOOGLE_GEMINI_BASE_URL: `${base}/google`,
+    });
+    const token = c.env['ANTHROPIC_API_KEY'];
+    if (token === undefined) throw new Error('no model token');
+    for (const k of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'GEMINI_API_KEY']) expect(c.env[k]).toBe(token);
+    expect(verifyModelToken(token, 'WI01', keys)).toMatchObject({ ok: true, claims: { workItemId: 'WI01', runId: REVIEW_RUN } });
+    // Not usable on the fixer API.
+    expect(verifyFixerToken(token, 'WI01', keys)).toEqual({ ok: false, reason: 'malformed' });
+    expect(c.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
+    expect(c.args.join(' ')).not.toContain(token);
+    expect(JSON.stringify(c.env)).not.toContain('server-provider-key');
+  });
+
+  it('gives a fixer container the same model proxy env next to its fixer token', async () => {
+    await runner({ env: { apiUrl: 'http://snapwing-api:8080', token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: 'INC01', ttl: 'PT45M' }, keys), modelProxy: proxy } }).runFixer(job());
+    const c = calls()[0]!;
+    expect(c.env['ANTHROPIC_BASE_URL']).toBe('http://snapwing-api:8080/model/WI01/anthropic');
+    const token = c.env['ANTHROPIC_API_KEY'];
+    expect(verifyModelToken(token ?? '', 'WI01', keys)).toMatchObject({ ok: true, claims: { runId: RUN_ID } });
+    expect(token).not.toBe(c.env['SNAPWING_FIXER_TOKEN']);
+    expect(JSON.stringify(c.env)).not.toContain('server-provider-key');
+  });
+
+  it('reports the exit code, and rejects when docker itself fails (exit 125)', async () => {
+    writeFileSync(join(dir, 'exit'), '4');
+    await expect(runner().runReview(reviewJob())).resolves.toMatchObject({ exitCode: 4, timedOut: false });
+    writeFileSync(join(dir, 'mode'), 'run-fail');
+    await expect(runner().runReview(reviewJob())).rejects.toThrow(/docker run failed \(exit 125\): Unable to find image/);
+  });
+
+  it('kills the container past the review wall clock and reports timedOut', async () => {
+    writeFileSync(join(dir, 'mode'), 'hang');
+    const r = await runner().runReview(reviewJob({ budget: { wallClock: 'PT0.3S', attempts: 1 } }));
+    expect(r).toMatchObject({ exitCode: null, timedOut: true });
+    expect(calls().map((c) => c.args.slice(0, 2))).toEqual([
+      ['run', '--rm'],
+      ['kill', `snapwing-review-${REVIEW_RUN}`],
+    ]);
+  });
+
+  it('refuses files outside the tree and bad ids, calling docker never', async () => {
+    for (const inputFile of ['/etc/passwd', '../x', '.git/../../x', 'a//b', 'a b']) {
+      await expect(runner().runReview(reviewJob({ inputFile }))).rejects.toThrow(/not a plain relative path/);
+    }
+    await expect(runner().runReview(reviewJob({ verdictFile: '../verdict.json' }))).rejects.toThrow(/not a plain relative path/);
+    await expect(runner().runReview(reviewJob({ runId: '../x' }))).rejects.toThrow(/plain path segment/);
     expect(calls()).toEqual([]);
   });
 });

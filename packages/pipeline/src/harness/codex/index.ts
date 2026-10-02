@@ -58,7 +58,7 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
           extraFile: lastMessageFile,
           extract: extractResult,
           doneOnExit: review,
-          inheritEnv: ['OPENAI_API_KEY', 'CODEX_API_KEY'],
+          inheritEnv: ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL'],
         });
       } finally {
         await rm(scratch, { recursive: true, force: true });

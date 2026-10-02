@@ -19,6 +19,13 @@
 //      writes its verdict to `SNAPWING_REVIEW_FILE` (under `.git/snapwing/`, outside the worktree),
 //      which `parseReviewVerdict` validates. Its environment carries no git credential: a reviewer
 //      never pushes. A harness that fails, stops, throws, or writes no valid verdict is `escalate`.
+//      With a runner that has an isolation boundary (`runner.runReview`: docker), the agent runs
+//      inside it and no host process runs the review harness (ADR 0017, #239): the job builds a
+//      self-contained copy of the checkout at the head (no remote, no credential, no alternates),
+//      writes the review input into its `.git/snapwing/`, hands that tree to the runner as the only
+//      mount, and afterwards only reads the verdict file back, refusing a symlink or anything but a
+//      small regular file inside the tree; it never runs git in that tree again. The `local` runner
+//      has no boundary, and the harness runs on the host with #233's guards (development only).
 //   3. Runs `checkConstraints` on the PR's changed files as GitHub lists them. The fixer's git hooks
 //      are advisory (a harness can push with `--no-verify`), so nothing the fixer reported is used.
 //   4. When the request requires tests, runs `proveRegression` on the PR's test files (plus the
@@ -49,7 +56,8 @@
 // Every append passes `expectedSeq` through `appendDecided` and decides again on a conflict.
 
 import { execFile } from 'node:child_process';
-import { readFile, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import { join } from 'node:path';
 import type { ArtifactRef, IncidentEvent } from '../contracts/events.ts';
@@ -59,12 +67,12 @@ import { prepareWorkdir, SNAPWING_GIT_DIR, type GitIdentity, type PreparedWorkdi
 import { recordCiResult } from '../merge/ci.ts';
 import { httpStatus, startMergeEvaluate, type MergeCombinedStatus } from '../merge/job.ts';
 import type { HarnessPort, WorkItemRef } from '../ports/harness.ts';
-import { testRunnerOf, type RunnerPort } from '../ports/runner.ts';
+import { reviewRunnerOf, testRunnerOf, type HarnessChoice, type ReviewRunner, type RunnerPort } from '../ports/runner.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseImplementationRequest, type ImplementationRequest } from '../prompts/implementation-request.ts';
 import { ulid } from '../util/ulid.ts';
-import { proveRegression, selectTestFiles, type RegressionResult, type RegressionStatus } from './regression.ts';
+import { isolatedTree, proveRegression, selectTestFiles, type RegressionResult, type RegressionStatus } from './regression.ts';
 import { checkConstraints, parseReviewVerdict, type ConstraintViolation, type ReviewVerdict } from './verdict.ts';
 
 /** The check run branch protection requires (main 11.2). Same name as the app client's default. */
@@ -77,6 +85,13 @@ export const DEFAULT_REVIEW_ATTEMPTS = 1;
 export const DEFAULT_REGRESSION_TIMEOUT = 'PT10M';
 /** Largest diff handed to the review agent, in UTF-16 code units; the rest is cut with a note. */
 export const MAX_REVIEW_DIFF = 512 * 1024;
+/** Where the review input and the verdict live in the tree a runner's review run gets (#239). */
+export const REVIEW_INPUT_PATH = `.git/${SNAPWING_GIT_DIR}/review-input.xml`;
+export const REVIEW_VERDICT_PATH = `.git/${SNAPWING_GIT_DIR}/verdict.json`;
+/** The review harness a runner's container starts when the config names none (main 14.5's default). */
+export const DEFAULT_REVIEW_HARNESS: HarnessChoice = Object.freeze({ adapter: 'claude-code' });
+/** Largest verdict file read back from an isolated review run, in bytes. */
+export const MAX_VERDICT_BYTES = 1024 * 1024;
 /** `createdBy` of the stored review artifacts. */
 export const REVIEW_AGENT = 'review-agent';
 /** The fixer attempt whose failed review escalates instead of retrying (main 11.1: retry once). */
@@ -156,6 +171,12 @@ export interface ReviewConfig {
   testCommand: string | ((repo: string) => string | undefined);
   /** ISO 8601 limit per test run of the regression proof. Default `PT10M`. */
   regressionTimeout?: string;
+  /**
+   * The review harness a runner with a boundary starts in its container (`<harness review="...">`,
+   * main 14.5; a `generic` one names its template). Default `claude-code`. The host path uses
+   * `ReviewDeps.harness` instead.
+   */
+  harness?: HarnessChoice;
 }
 
 export interface ReviewDeps {
@@ -165,7 +186,10 @@ export interface ReviewDeps {
   workflow: WorkflowPort;
   /** A client for one `owner/name` repository. */
   github: (repo: string) => ReviewGitHub;
-  /** The configured review harness (`<harness review="...">`, main 14.5). */
+  /**
+   * The configured review harness (`<harness review="...">`, main 14.5), run on this host. Used only
+   * when `runner` has no `runReview` (the `local` runner, development only).
+   */
   harness: HarnessPort;
   git: ReviewGit;
   /** Parent of the review checkouts; each run gets `review-<ulid>` under it. */
@@ -177,7 +201,8 @@ export interface ReviewDeps {
   /**
    * The RunnerPort the fixer runs on. When it can run tests inside its boundary (`runTests`, the
    * docker provider), the regression proof's test command runs there, never on this host (ADR 0017).
-   * Without one (the `local` runner, development only), the proof runs on the host.
+   * Without one (the `local` runner, development only), the proof runs on the host. Likewise, when it
+   * can run the review harness inside its boundary (`runReview`), the agent runs there (#239).
    */
   runner?: RunnerPort;
 }
@@ -263,11 +288,14 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
   const attempt = latest(log, 'fixer-started')?.payload.attempt ?? 1;
 
   const workdir = join(deps.workdirRoot, `review-${ulid()}`);
+  const agentTree = `${workdir}-agent`;
   let verdict: ReviewVerdict;
   try {
-    verdict = await reviewInCheckout(deps, { workItem: { id: incidentId, issueKey, repo }, pr, request, changed, present, attempt, workdir });
+    verdict = await reviewInCheckout(deps, { workItem: { id: incidentId, issueKey, repo }, pr, request, changed, present, attempt, workdir, agentTree });
   } finally {
-    if (deps.keepWorkdir !== true) await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
+    if (deps.keepWorkdir !== true) {
+      for (const dir of [workdir, agentTree]) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 
   // The log may have moved while the agent ran (a Stop, a duplicate job); decide again first.
@@ -334,6 +362,8 @@ interface CheckoutInput {
   present: readonly string[];
   attempt: number;
   workdir: string;
+  /** The self-contained tree a runner's review run gets; built only on that path. */
+  agentTree: string;
 }
 
 /** What the regression proof concluded, for `combine`. */
@@ -386,14 +416,18 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
   } catch (e) {
     return { failure: `could not diff the pull request: ${message(e)}` };
   }
-  const reviewFile = join(prepared.workdir, '.git', SNAPWING_GIT_DIR, 'verdict.json');
+  const reviewInput = buildReviewInput(input.request, pr, mergeBase, diff);
+  const isolated = reviewRunnerOf(deps.runner);
+  if (isolated !== undefined) return runAgentIsolated(deps, isolated, input, prepared.workdir, reviewInput);
+
+  const reviewFile = join(prepared.workdir, REVIEW_VERDICT_PATH);
   env[REVIEW_FILE_ENV] = reviewFile;
 
   let outcome: string;
   try {
-    const result = await deps.harness.run(input.workItem, buildReviewInput(input.request, pr, mergeBase, diff), prepared.workdir, {
+    const result = await deps.harness.run(input.workItem, reviewInput, prepared.workdir, {
       role: 'review',
-      budget: { wallClock: deps.config.wallClock ?? DEFAULT_REVIEW_WALL_CLOCK, attempts: deps.config.attempts ?? DEFAULT_REVIEW_ATTEMPTS },
+      budget: reviewBudget(deps),
       onCheckpoint: () => Promise.resolve(),
       signal: new AbortController().signal,
       env,
@@ -412,6 +446,87 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
   }
   const parsed = parseReviewVerdict(text);
   return parsed.ok ? parsed.verdict : { failure: `the review agent's verdict is invalid: ${parsed.error.message}` };
+}
+
+/**
+ * Runs the review harness inside the runner's boundary (#239). The tree is a self-contained copy at the
+ * head; afterwards nothing here runs in it, and only the verdict file is read back from it.
+ */
+async function runAgentIsolated(
+  deps: ReviewDeps,
+  runner: ReviewRunner,
+  input: CheckoutInput,
+  checkout: string,
+  reviewInput: string,
+): Promise<ReviewVerdict | { failure: string }> {
+  const tree = input.agentTree;
+  try {
+    const built = await isolatedTree(checkout, tree, input.pr.headSha);
+    if (!built.ok) return { failure: `could not prepare the review agent's tree: ${firstLine(built.out)}` };
+    await mkdir(join(tree, '.git', SNAPWING_GIT_DIR), { recursive: true });
+    await writeFile(join(tree, REVIEW_INPUT_PATH), reviewInput);
+  } catch (e) {
+    return { failure: `could not prepare the review agent's tree: ${message(e)}` };
+  }
+
+  const budget = reviewBudget(deps);
+  let result;
+  try {
+    result = await runner.runReview({
+      runId: ulid(),
+      workItem: input.workItem,
+      harness: deps.config.harness ?? DEFAULT_REVIEW_HARNESS,
+      budget,
+      checkout: tree,
+      inputFile: REVIEW_INPUT_PATH,
+      verdictFile: REVIEW_VERDICT_PATH,
+    });
+  } catch (e) {
+    return { failure: `the review agent could not run: runner: ${message(e)}` };
+  }
+  if (result.timedOut) return { failure: `the review agent ran past its ${budget.wallClock} budget` };
+  if (result.exitCode !== 0) return { failure: `the review agent failed: exit ${result.exitCode ?? 'none'}` };
+
+  const text = await readVerdictFile(tree, REVIEW_VERDICT_PATH, MAX_VERDICT_BYTES);
+  if (typeof text !== 'string') return { failure: `the review agent ${text.problem}` };
+  const parsed = parseReviewVerdict(text);
+  return parsed.ok ? parsed.verdict : { failure: `the review agent's verdict is invalid: ${parsed.error.message}` };
+}
+
+/**
+ * Reads `rel` from a tree an untrusted run had: only a regular file of at most `maxBytes` that lies in
+ * the tree with no symlink on its path (a link to a host file must not be read here), opened without
+ * following a link or blocking on a FIFO.
+ */
+export async function readVerdictFile(tree: string, rel: string, maxBytes: number): Promise<string | { problem: string }> {
+  const path = join(tree, rel);
+  let real: string;
+  let expected: string;
+  try {
+    real = await realpath(path);
+    expected = join(await realpath(tree), rel);
+  } catch {
+    return { problem: 'wrote no verdict file' };
+  }
+  if (real !== expected) return { problem: 'left a verdict file that is a link' };
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return { problem: 'left a verdict file that cannot be read' };
+  }
+  try {
+    const st = await handle.stat();
+    if (!st.isFile()) return { problem: 'left a verdict file that is not a regular file' };
+    if (st.size > maxBytes) return { problem: `left a verdict file over ${maxBytes} bytes` };
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
+function reviewBudget(deps: ReviewDeps): { wallClock: string; attempts: number } {
+  return { wallClock: deps.config.wallClock ?? DEFAULT_REVIEW_WALL_CLOCK, attempts: deps.config.attempts ?? DEFAULT_REVIEW_ATTEMPTS };
 }
 
 async function regressionCheck(
