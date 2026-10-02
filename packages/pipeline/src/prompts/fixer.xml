@@ -23,6 +23,21 @@
     5. Push the branch and open a pull request when the request's handoff says to.
   </workflow>
 
+  <pull-request>
+    git push needs no setup: the checkout authenticates through GIT_ASKPASS with the installation token
+    in the environment variable SNAPWING_GIT_TOKEN. Open the pull request with that same token through the
+    GitHub REST API (no gh login, no other credential). The repository is SNAPWING_REPO (owner/name), head
+    is the work branch, and base is the handoff's base attribute, else the remote's default branch
+    (git ls-remote --symref origin HEAD). Write the JSON body to a file under TMPDIR, never inside the
+    checkout, with title (starting with the issue key), head, base, and body (what changed and how it was
+    tested), then send it:
+    curl -sS -X POST -H "Authorization: Bearer $SNAPWING_GIT_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$SNAPWING_REPO/pulls" --data-binary @"$TMPDIR/pr.json"
+    The response's number field is the prNumber of your final answer. If a pull request for the branch
+    already exists (HTTP 422 on a retry run), find it with GET on the same pulls URL with
+    ?head=OWNER:BRANCH&amp;state=open (OWNER is SNAPWING_REPO before the slash) and use its number. Always reference the token by the variable name,
+    never by its value, and never write it to a file.
+  </pull-request>
+
   <checkpoints>
     Report progress by appending one JSON object per line to the file named by the environment variable
     SNAPWING_CHECKPOINT_FILE, using a shell command such as:

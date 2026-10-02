@@ -43,7 +43,9 @@ COPY packages/pipeline/src packages/pipeline/src
 COPY infra/docker/fixer/wrapper.ts infra/docker/fixer/entrypoint.ts infra/docker/fixer/askpass infra/docker/fixer/
 RUN chmod 0755 infra/docker/fixer/askpass
 
-# A non-root user for fixer runs; test and review runs get the server's uid:gid from the runner.
+# The default non-root user. The docker runner starts every run (fixer, review, tests) as the server's
+# uid:gid with HOME and TMPDIR at /tmp, so a run can write the tree the server prepared and the server
+# can remove it afterwards.
 RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin snapwing
 USER snapwing
 ENV SNAPWING_GENERIC_DIR=/etc/snapwing/generic

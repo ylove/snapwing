@@ -2,16 +2,36 @@
 // container on this host (any VPS). The container is the image's own entrypoint; it reads its job
 // from `SNAPWING_*` environment variables, works in the one scratch directory mounted at `/work`,
 // and reports through the fixer API (B 9) with the per-work-item token. The runner never mounts
-// anything else, and passes nothing secret but that token.
+// anything else, and passes nothing secret but that token and the run's git credential.
 //
-// Env values go to the docker CLI through its own environment and `-e NAME` (no value), so the token
-// never appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to
+// Env values go to the docker CLI through its own environment and `-e NAME` (no value), so no token
+// ever appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to
 // find its daemon, not the server's environment.
 //
-// `runFixer` resolves once `docker run -d` has created the container (it rejects, starting nothing,
-// when docker refuses: bad image, bad name, no daemon). `cancel` is `docker stop -t <grace>`: SIGTERM,
-// then SIGKILL after the grace; `--rm` removes the container afterwards. A container that is already
-// gone makes `cancel` a no-op.
+// The work item is prepared on the host before the container starts (#256), because nothing in the
+// container can turn an artifact id into a request: `runFixer` loads the implementation request (and
+// on a retry the review) from `artifacts`, makes `<workdirRoot>/<runId>` a checkout on the work branch
+// with `prepareWorkdir` (bot identity, guardrail hooks under `.git/snapwing/hooks`, as the `local`
+// runner does), and writes the request to `.git/snapwing/implementation-request.xml` and the review to
+// `.git/snapwing/review.json`, named in the container as `SNAPWING_PRIOR_REVIEW_FILE` under `/work`.
+// The installation token from `git.token` reaches the container only as `SNAPWING_GIT_TOKEN`, by name:
+// never in argv, a file, or the remote URL in the checkout's config. The image's wrapper points
+// `GIT_ASKPASS` at its own askpass script and `core.hooksPath` at `/work/.git/snapwing/hooks`, so the
+// host paths in the prepared `.git/config` are never needed. The agent opens its pull request with
+// the same token (`pull_requests: write`) through the GitHub API (prompts/fixer.xml).
+//
+// The fixer container runs as the server's uid:gid (`--user`, as test and review runs do) with HOME
+// and TMPDIR at its `/tmp`, so it can write the host-prepared checkout and the server can remove it.
+// After `docker run -d` the runner waits for the container in the background (`docker wait`) and
+// removes the scratch directory once the container is gone (`wait(runId)` resolves then). A container
+// whose end the runner cannot observe (the daemon unreachable, the server restarted) leaves its
+// directory behind; it holds no token.
+//
+// `runFixer` resolves once `docker run -d` has created the container. It rejects, starting nothing and
+// leaving no directory, when the work item cannot be prepared (a missing or wrong-kind artifact, a
+// request that does not parse, no token, a failed clone) or when docker refuses (bad image, bad name,
+// no daemon). `cancel` is `docker stop -t <grace>`: SIGTERM, then SIGKILL after the grace; `--rm`
+// removes the container afterwards. A container that is already gone makes `cancel` a no-op.
 //
 // `runTests` runs one regression-proof test run (main 11.1, ADR 0017, #234) in the same image, as an
 // attached `docker run --rm` named `snapwing-tests-<runId>`: the command is `sh -c <command>` in place
@@ -37,11 +57,16 @@
 // item until the token expires. Without it the container has no model access at all.
 
 import { execFile, spawn } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { prepareWorkdir, SNAPWING_GIT_DIR } from '@snapwing/pipeline/fixer/workdir/index.ts';
+import { TOKEN_ENV } from '@snapwing/pipeline/fixer/workdir/hooks.ts';
 import type { WorkItemRef } from '@snapwing/pipeline/ports/harness.ts';
 import type { FixerJob, HarnessChoice, ReviewRunJob, ReviewRunner, RunnerPort, TestRunner, TestRunResult } from '@snapwing/pipeline/ports/runner.ts';
+import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { parseImplementationRequest } from '@snapwing/pipeline/prompts/implementation-request.ts';
+import { PRIOR_REVIEW_ENV, type LocalRunnerGit } from '@snapwing/pipeline/providers/local/runner.ts';
 import { parseDuration } from '@snapwing/pipeline/util/duration.ts';
 
 export interface DockerRunnerEnv {
@@ -83,6 +108,17 @@ export interface DockerRunnerOptions {
   /** `--network`; the docker default when omitted. */
   network?: string;
   env: DockerRunnerEnv;
+  /**
+   * Where the implementation request and review artifacts are read from. Required by `runFixer`
+   * (it rejects without it); a runner used only for test and review runs may omit it.
+   */
+  artifacts?: Pick<StatePort, 'getArtifact'>;
+  /**
+   * How the work item's checkout is prepared and pushed, as for the `local` runner: an installation
+   * token per run (`contents: write`, `pull_requests: write`, never `workflows`), the clone URL, the
+   * commit identity. Required by `runFixer` (it rejects without it).
+   */
+  git?: LocalRunnerGit;
   /** Parent of the per-run scratch directories. Default `<tmpdir>/snapwing-fixer`. */
   workdirRoot?: string;
   /** `--memory`. Default `4g`. */
@@ -94,11 +130,26 @@ export interface DockerRunnerOptions {
   /** SIGTERM to SIGKILL grace on cancel, ISO 8601. Default `PT10S`. */
   killGrace?: string;
   /**
-   * `--user` for test and review runs. Default the server's own `uid:gid`, so the files a run writes
-   * in the mounted tree belong to the server and its cleanup can remove them.
+   * `--user` for every run (fixer, test, review). Default the server's own `uid:gid`, so the run can
+   * write the tree the server prepared and every file it writes there stays removable by the server.
    */
   testUser?: string;
 }
+
+export type DockerRunner = RunnerPort &
+  TestRunner &
+  ReviewRunner & {
+    /**
+     * Resolves once the fixer container `runId` is gone and its scratch directory removed (or left
+     * behind because docker could not say the container ended). Resolves at once for an unknown id.
+     */
+    wait(runId: string): Promise<void>;
+  };
+
+/** The implementation request in the prepared checkout (`FIXER_REQUEST_PATH` in the image's wrapper). */
+export const FIXER_REQUEST_FILE = `.git/${SNAPWING_GIT_DIR}/implementation-request.xml`;
+/** The prior review on a retry run, beside the request. */
+export const FIXER_REVIEW_FILE = `.git/${SNAPWING_GIT_DIR}/review.json`;
 
 export const DOCKER_WORKDIR = '/work';
 export const DOCKER_NAME_PREFIX = 'snapwing-fixer-';
@@ -119,10 +170,12 @@ export function containerName(runId: string): string {
   return `${DOCKER_NAME_PREFIX}${runId}`;
 }
 
-export function createDockerRunner(options: DockerRunnerOptions): RunnerPort & TestRunner & ReviewRunner {
+export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
   const docker = options.docker ?? 'docker';
   const workdirRoot = options.workdirRoot ?? join(tmpdir(), 'snapwing-fixer');
   const graceSec = Math.max(1, Math.ceil(parseDuration(options.killGrace ?? 'PT10S') / 1000));
+  /** Fixer runs being prepared or whose container has not been seen to end. */
+  const runs = new Map<string, Promise<void>>();
 
   const cli = (args: string[], extra: Record<string, string> = {}): Promise<{ code: number; stderr: string }> => {
     return new Promise((resolve, reject) => {
@@ -137,29 +190,78 @@ export function createDockerRunner(options: DockerRunnerOptions): RunnerPort & T
   return {
     async runFixer(job) {
       const name = containerName(job.runId);
-      const jobEnv = fixerEnv(job, options.env);
+      const { artifacts, git } = options;
+      if (artifacts === undefined || git === undefined) throw new Error('the docker runner needs `artifacts` and `git` to prepare a fixer run');
+      if (runs.has(job.runId)) throw new Error(`run ${job.runId} already exists`);
+      let settle: () => void = () => undefined;
+      runs.set(job.runId, new Promise<void>((resolve) => (settle = resolve)));
       const scratch = join(workdirRoot, job.runId);
-      await mkdir(scratch, { recursive: true });
+      let created = false;
+      try {
+        const work = await loadWorkItem(job, artifacts);
+        const jobEnv = fixerEnv(job, options.env);
+        await mkdir(workdirRoot, { recursive: true });
+        // Not recursive: a directory left by an earlier run of this id is never reused or removed.
+        await mkdir(scratch);
+        created = true;
+        const token = await git.token(job.workItem);
+        try {
+          await prepareWorkdir({
+            repo: job.workItem.repo,
+            base: work.base,
+            branch: work.branch ?? `fix/${job.workItem.issueKey}`,
+            issueKey: job.workItem.issueKey,
+            token,
+            workdir: scratch,
+            ...(git.remoteUrl === undefined ? {} : { remoteUrl: git.remoteUrl(job.workItem.repo) }),
+            ...(git.identity === undefined ? {} : { identity: git.identity }),
+          });
+        } catch (e) {
+          throw new Error(`workdir: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+        }
+        await writeFile(join(scratch, FIXER_REQUEST_FILE), work.request, { mode: 0o600 });
+        if (work.review !== undefined) {
+          await writeFile(join(scratch, FIXER_REVIEW_FILE), work.review, { mode: 0o600 });
+          jobEnv[PRIOR_REVIEW_ENV] = `${DOCKER_WORKDIR}/${FIXER_REVIEW_FILE}`;
+        }
+        jobEnv[TOKEN_ENV] = token;
 
-      const args = [
-        'run',
-        '--rm',
-        '-d',
-        '--name', name,
-        '--memory', options.memory ?? '4g',
-        '--cpus', options.cpus ?? '2',
-        '--pids-limit', String(options.pidsLimit ?? 512),
-        '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges',
-        ...(options.network === undefined ? [] : ['--network', options.network]),
-        '-v', `${scratch}:${DOCKER_WORKDIR}`,
-        '-w', DOCKER_WORKDIR,
-        ...Object.keys(jobEnv).flatMap((k) => ['-e', k]),
-        options.image,
-      ];
-      const r = await cli(args, jobEnv);
-      if (r.code !== 0) throw new Error(`docker run failed (exit ${r.code}): ${firstLine(r.stderr)}`);
+        const args = [
+          'run',
+          '--rm',
+          '-d',
+          '--name', name,
+          '--memory', options.memory ?? '4g',
+          '--cpus', options.cpus ?? '2',
+          '--pids-limit', String(options.pidsLimit ?? 512),
+          '--cap-drop', 'ALL',
+          '--security-opt', 'no-new-privileges',
+          ...(options.network === undefined ? [] : ['--network', options.network]),
+          ...user(options.testUser),
+          '-v', `${scratch}:${DOCKER_WORKDIR}`,
+          '-w', DOCKER_WORKDIR,
+          ...Object.keys(jobEnv).flatMap((k) => ['-e', k]),
+          '-e', 'HOME=/tmp',
+          '-e', 'TMPDIR=/tmp',
+          options.image,
+        ];
+        const r = await cli(args, jobEnv);
+        if (r.code !== 0) throw new Error(`docker run failed (exit ${r.code}): ${firstLine(r.stderr)}`);
+      } catch (e) {
+        if (created) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+        runs.delete(job.runId);
+        settle();
+        throw e;
+      }
+      void afterExit(name, scratch).finally(() => {
+        runs.delete(job.runId);
+        settle();
+      });
       return { runId: job.runId };
+    },
+
+    async wait(runId) {
+      await runs.get(runId);
     },
 
     async cancel(runId) {
@@ -234,6 +336,22 @@ export function createDockerRunner(options: DockerRunnerOptions): RunnerPort & T
   };
 
   /**
+   * Waits for a detached fixer container to end (`docker wait`; with `--rm` it may already be gone,
+   * which docker reports as no such container) and then removes its scratch directory. When docker
+   * cannot say the container ended, the directory stays: removing it under a live run would be worse.
+   */
+  async function afterExit(name: string, scratch: string): Promise<void> {
+    for (let attempt = 1; attempt <= WAIT_ATTEMPTS; attempt++) {
+      const r = await cli(['wait', name]).catch((e: unknown) => ({ code: -1, stderr: e instanceof Error ? e.message : String(e) }));
+      if (r.code === 0 || /no such (container|object)/i.test(r.stderr)) {
+        await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+        return;
+      }
+      if (attempt < WAIT_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, WAIT_RETRY_MS));
+    }
+  }
+
+  /**
    * Runs the docker CLI attached, keeping a bounded tail of its output. Past `timeoutMs` it calls
    * `kill` (the container) and then kills the CLI itself.
    */
@@ -266,6 +384,34 @@ export function createDockerRunner(options: DockerRunnerOptions): RunnerPort & T
       });
     });
   }
+}
+
+/** `docker wait` attempts before a fixer's scratch directory is left behind. */
+const WAIT_ATTEMPTS = 3;
+const WAIT_RETRY_MS = 2000;
+
+interface WorkItemFiles {
+  request: string;
+  base: string | undefined;
+  branch: string | undefined;
+  review: string | undefined;
+}
+
+/**
+ * The implementation request (and on a retry the review) a fixer run needs in its mount. Rejects for a
+ * missing or wrong-kind artifact or a request that does not parse, as the `local` runner does.
+ */
+async function loadWorkItem(job: FixerJob, artifacts: Pick<StatePort, 'getArtifact'>): Promise<WorkItemFiles> {
+  const artifact = await artifacts.getArtifact(job.implementationRequestArtifactId, job.implementationRequestVersion);
+  if (artifact.kind !== 'implementation-request') throw new Error(`artifact ${artifact.id} is a ${artifact.kind}, not an implementation-request`);
+  const { handoff } = parseImplementationRequest(artifact.body);
+  let review: string | undefined;
+  if (job.review !== undefined) {
+    const r = await artifacts.getArtifact(job.review.artifactId, job.review.version);
+    if (r.kind !== 'review') throw new Error(`artifact ${r.id} is a ${r.kind}, not a review`);
+    review = r.body;
+  }
+  return { request: artifact.body, base: handoff.base, branch: handoff.branch, review };
 }
 
 /** The CLI's environment: the few variables it needs to find its daemon, then `extra`. */
@@ -371,7 +517,12 @@ export function modelEnv(proxy: DockerModelProxy | undefined, run: ModelTokenReq
   };
 }
 
-/** The container's whole environment: the job (harness contract variables, docs/harness-generic.md), API access, and the model proxy when configured. */
+/**
+ * The container's environment from the job alone: the harness contract variables
+ * (docs/harness-generic.md), API access, and the model proxy when configured. `runFixer` adds the
+ * run's git credential (`SNAPWING_GIT_TOKEN`) and, on a retry, `SNAPWING_PRIOR_REVIEW_FILE` once it
+ * has prepared the checkout.
+ */
 export function fixerEnv(job: FixerJob, env: DockerRunnerEnv): Record<string, string> {
   const out: Record<string, string> = {
     SNAPWING_HARNESS_CONTRACT: '1',
