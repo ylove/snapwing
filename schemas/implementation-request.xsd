@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Implementation request (main 9.2, Companion B 6.2).
+  Written by triage into the Jira custom field, read by the fixer and the review agent.
+  One root element, two shapes selected by @kind:
+    single (default): intent, evidence, diagnosis?, constraints, handoff
+    parent:           intent, workItems, mergeOrder, handoff   (multi-repo, B 6.2)
+  XSD 1.0 cannot tie the content shape to @kind; the parseImplementationRequest helper does.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:snapwing:impl:v1"
+           targetNamespace="urn:snapwing:impl:v1"
+           elementFormDefault="qualified">
+
+  <xs:simpleType name="IssueKey">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="[A-Z][A-Z0-9]*-[0-9]+"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="NonEmptyText">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1"/>
+      <xs:pattern value="\s*\S[\s\S]*"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Kind">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="single"/>
+      <xs:enumeration value="parent"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="HandoffMode">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="review"/>
+      <xs:enumeration value="auto"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Autonomy">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="0"/>
+      <xs:maxInclusive value="3"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Confidence">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="low"/>
+      <xs:enumeration value="medium"/>
+      <xs:enumeration value="high"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="WorkItemId">
+    <xs:restriction base="xs:NCName"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="WorkItemIdList">
+    <xs:list itemType="WorkItemId"/>
+  </xs:simpleType>
+
+  <xs:simpleType name="NonEmptyWorkItemIdList">
+    <xs:restriction base="WorkItemIdList">
+      <xs:minLength value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="implementation-request">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="intent" type="NonEmptyText"/>
+        <xs:choice>
+          <xs:sequence>
+            <xs:element name="evidence" type="Evidence"/>
+            <xs:element name="diagnosis" type="Diagnosis" minOccurs="0"/>
+            <xs:element name="constraints" type="Constraints"/>
+          </xs:sequence>
+          <xs:sequence>
+            <xs:element name="workItems" type="WorkItems"/>
+            <xs:element name="mergeOrder" type="NonEmptyWorkItemIdList"/>
+          </xs:sequence>
+        </xs:choice>
+        <xs:element name="handoff" type="Handoff"/>
+      </xs:sequence>
+      <xs:attribute name="issue" type="IssueKey" use="required"/>
+      <xs:attribute name="surface" type="xs:string"/>
+      <xs:attribute name="component" type="xs:string"/>
+      <xs:attribute name="kind" type="Kind" default="single"/>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="Evidence">
+    <xs:choice minOccurs="1" maxOccurs="unbounded">
+      <xs:element name="report">
+        <xs:complexType>
+          <xs:simpleContent>
+            <xs:extension base="xs:string">
+              <xs:attribute name="source" type="xs:string" use="required"/>
+              <xs:attribute name="channel" type="xs:string"/>
+              <xs:attribute name="reporter" type="xs:string"/>
+              <xs:attribute name="ts" type="xs:string"/>
+            </xs:extension>
+          </xs:simpleContent>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="screenshot">
+        <xs:complexType>
+          <xs:attribute name="ref" type="xs:string" use="required"/>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="alert">
+        <xs:complexType mixed="true">
+          <xs:attribute name="none" type="xs:boolean"/>
+          <xs:attribute name="source" type="xs:string"/>
+          <xs:attribute name="ref" type="xs:string"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:choice>
+  </xs:complexType>
+
+  <xs:complexType name="Diagnosis">
+    <xs:sequence>
+      <xs:element name="file" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:simpleContent>
+            <xs:extension base="xs:string">
+              <xs:attribute name="path" type="NonEmptyText" use="required"/>
+            </xs:extension>
+          </xs:simpleContent>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+    <xs:attribute name="confidence" type="Confidence" use="required"/>
+    <xs:attribute name="by" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="Constraints">
+    <xs:sequence>
+      <xs:element name="scope" type="NonEmptyText"/>
+      <xs:element name="tests">
+        <xs:complexType>
+          <xs:simpleContent>
+            <xs:extension base="xs:string">
+              <xs:attribute name="required" type="xs:boolean" use="required"/>
+            </xs:extension>
+          </xs:simpleContent>
+        </xs:complexType>
+      </xs:element>
+      <xs:element name="forbidden" type="NonEmptyText" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="WorkItems">
+    <xs:sequence>
+      <xs:element name="workItem" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="scope" type="NonEmptyText"/>
+            <xs:element name="produces" type="ContractRef" minOccurs="0" maxOccurs="unbounded"/>
+            <xs:element name="consumes" type="ContractRef" minOccurs="0" maxOccurs="unbounded"/>
+          </xs:sequence>
+          <xs:attribute name="id" type="WorkItemId" use="required"/>
+          <xs:attribute name="repo" type="NonEmptyText" use="required"/>
+          <xs:attribute name="issue" type="IssueKey" use="required"/>
+          <xs:attribute name="dependsOn" type="WorkItemIdList"/>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="ContractRef">
+    <xs:attribute name="contract" type="NonEmptyText" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="Handoff">
+    <xs:attribute name="mode" type="HandoffMode" use="required"/>
+    <xs:attribute name="autonomy" type="Autonomy" use="required"/>
+    <xs:attribute name="branch" type="NonEmptyText"/>
+    <xs:attribute name="base" type="NonEmptyText"/>
+    <xs:attribute name="allOrNothing" type="xs:boolean"/>
+  </xs:complexType>
+</xs:schema>
