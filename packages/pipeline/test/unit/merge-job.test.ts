@@ -127,7 +127,7 @@ interface World {
   map: { policies: WorkspaceMap['policies'] };
 }
 
-async function setup(opts: { level?: 0 | 1 | 2 | 3; mapDefault?: 0 | 1 | 2 | 3; overrides?: AutonomyOverride[]; merge?: Partial<MergeConfig>; toCi?: boolean } = {}): Promise<World> {
+async function setup(opts: { mapRepo?: string; level?: 0 | 1 | 2 | 3; mapDefault?: 0 | 1 | 2 | 3; overrides?: AutonomyOverride[]; merge?: Partial<MergeConfig>; toCi?: boolean } = {}): Promise<World> {
   const github = new FakeGitHub();
   const windowClosed: string[] = [];
   const map: World['map'] = { policies: { autonomy: { default: opts.mapDefault ?? 3, levels: [], overrides: opts.overrides ?? [] } } };
@@ -155,7 +155,7 @@ async function setup(opts: { level?: 0 | 1 | 2 | 3; mapDefault?: 0 | 1 | 2 | 3; 
     fixerRuns.push(job.data);
     return Promise.resolve();
   });
-  await append(...toFiled(opts.level ?? 3));
+  await append(...toFiled(opts.level ?? 3, opts.mapRepo ?? REPO));
   if (opts.toCi !== false) {
     await append(...toPr());
     await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }, 'agent'));
@@ -176,7 +176,7 @@ function ev<T extends EventType>(type: T, payload: EventPayloads[T], source: 'ag
   } as unknown as NewEvent<T>;
 }
 
-function toFiled(level: 0 | 1 | 2 | 3): NewEvent[] {
+function toFiled(level: 0 | 1 | 2 | 3, repo: string = REPO): NewEvent[] {
   return [
     ev('captured', {
       kind: 'incident',
@@ -187,7 +187,7 @@ function toFiled(level: 0 | 1 | 2 | 3): NewEvent[] {
       channelId: 'C-FAKE',
     }),
     ev('context-assembled', { bundle: { artifactId: '01K6BUNDLE00000000000000001', version: 1 }, includedCount: 2, excludedCount: 0 }),
-    ev('resolved', { surfaceId: 'web', componentId: 'checkout', repo: REPO, resolvedBy: 'channel-explicit', confidence: 0.9 }),
+    ev('resolved', { surfaceId: 'web', componentId: 'checkout', repo, resolvedBy: 'channel-explicit', confidence: 0.9 }),
     ev('dedupe-checked', { candidates: [], decision: 'none' }),
     ev('planned', {
       action: 'create_issue',
@@ -283,6 +283,14 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     // Running again after the merge does nothing.
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'already-merged' });
     expect(w.github.merges).toHaveLength(1);
+  });
+
+  it('a map-form repo (github.com/owner/name) is normalized to owner/name before any GitHub call', async () => {
+    const w = await setup({ mapRepo: `github.com/${REPO}` });
+    // The FakeGitHub factory throws for any repo but owner/name, so a completed merge proves it.
+    await startMergeEvaluate(w.deps, INC);
+    await wf.drain();
+    expect(await status()).toBe('merged');
   });
 
   it('uses the configured revert window', async () => {
