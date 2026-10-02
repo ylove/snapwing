@@ -3,11 +3,14 @@
 // Flags used (checked against `codex exec --help`, Codex CLI, 2026-10):
 //   exec                          non-interactive run; a trailing `-` reads the prompt from stdin
 //   --sandbox danger-full-access  the fixer container is the boundary and `git push` needs the network
+//   --sandbox workspace-write     the review role instead: it can run commands and read, but not write outside the
+//                                 workdir and temp dirs. Codex has no per-tool allow list, and read-only would block
+//                                 the verdict file (SNAPWING_REVIEW_FILE), so this is the tightest sandbox that works.
 //   --skip-git-repo-check         never fail on the checkout's git state
 //   --output-last-message <file>  the agent's final message is written to this file (stdout carries progress)
 //   --model <model>               only when configured
 //
-// Codex has no system prompt flag, so the stdin text is the fixer prompt (src/prompts/fixer.xml) followed
+// Codex has no system prompt flag, so the stdin text is the fixer prompt (src/prompts/fixer.xml, or review.xml for the review role) followed
 // by the implementation request. Stop, budget, and checkpoints are shared with the other adapters through
 // ../cli-agent.ts and ../process.ts (docs/harness-generic.md sections 5 to 7).
 
@@ -15,7 +18,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HarnessPort, HarnessResult } from '../../ports/harness.ts';
-import { resultFromMessage, runCliAgent, type Extracted } from '../cli-agent.ts';
+import { REVIEW_PROMPT_URL, resultFromMessage, runCliAgent, type Extracted } from '../cli-agent.ts';
 import { DEFAULT_KILL_GRACE_MS } from '../process.ts';
 
 export interface CodexHarnessConfig {
@@ -35,13 +38,11 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
 
   return {
     async run(workItem, implementationRequest, workdir, opts): Promise<HarnessResult> {
-      if (opts.role !== 'fixer') {
-        return { outcome: 'failed', reason: `codex harness: role ${opts.role} is not supported yet`, attempts: 0 };
-      }
-      const systemPrompt = await readFile(FIXER_PROMPT_URL, 'utf8');
+      const review = opts.role === 'review';
+      const systemPrompt = await readFile(review ? REVIEW_PROMPT_URL : FIXER_PROMPT_URL, 'utf8');
       const scratch = await mkdtemp(join(tmpdir(), 'snapwing-codex-'));
       const lastMessageFile = join(scratch, 'last-message.txt');
-      const args = ['exec', '--sandbox', 'danger-full-access', '--skip-git-repo-check', '--output-last-message', lastMessageFile];
+      const args = ['exec', '--sandbox', review ? 'workspace-write' : 'danger-full-access', '--skip-git-repo-check', '--output-last-message', lastMessageFile];
       if (config.model !== undefined) args.push('--model', config.model);
       args.push('-');
       try {
@@ -56,6 +57,7 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
           checkpointFile: join(scratch, 'checkpoints.jsonl'),
           extraFile: lastMessageFile,
           extract: extractResult,
+          doneOnExit: review,
           inheritEnv: ['OPENAI_API_KEY', 'CODEX_API_KEY'],
         });
       } finally {
