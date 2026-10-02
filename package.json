@@ -19,7 +19,7 @@
     "lint:prose": "node scripts/lint-prose.mjs",
     "demo": "node scripts/not-yet.mjs demo 2",
     "demo:state": "node scripts/not-yet.mjs demo:state 1",
-    "state": "node scripts/not-yet.mjs state 1"
+    "state": "tsx packages/app/src/cli/main.ts state"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

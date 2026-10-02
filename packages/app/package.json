@@ -5,6 +5,9 @@
   "description": "Server (API plus worker), Slack, Teams, and alert adapters, providers, the snapwing CLI, and onboarding.",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "snapwing": "./src/cli/main.ts"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*"
