@@ -7,13 +7,17 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadAppConfig } from '@snapwing/pipeline/config/app-config.ts';
+import type { NewEvent } from '@snapwing/pipeline/contracts/events.ts';
+import { buildImplementationRequest } from '@snapwing/pipeline/prompts/implementation-request.ts';
+import { runReviewJob } from '@snapwing/pipeline/review/job.ts';
 import { GITHUB_API, DEMO_GITHUB_TOKEN, GitHubWorld, githubHandlers } from '@snapwing/pipeline/demo/msw/github.ts';
 import { DEMO_JIRA_EMAIL, DEMO_JIRA_TOKEN, JIRA_BASE, JiraWorld, jiraHandlers } from '@snapwing/pipeline/demo/msw/jira.ts';
 import { parseScenario, RecordedModel } from '@snapwing/pipeline/demo/run.ts';
@@ -25,9 +29,12 @@ import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets
 import { PgBossWorkflow } from '@snapwing/pipeline/workflow/pgboss/index.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import { createBareRepo, git } from '../../../pipeline/test/helpers/git.ts';
+import { verifyModelToken } from '../../src/model-proxy/token.ts';
 import type { SocketLike } from '../../src/adapters/slack/transport.ts';
 import { repoFullName, sameRepo } from '../../src/github/repo.ts';
 import { compose, mergePrometheus, MissingSecretsError, type Composed, type ComposeFn, type ComposeOverrides } from '../../src/server/compose.ts';
+import { createApiServer } from '../../src/server/http.ts';
 import { createWorkflow, LOCAL_RUNNER_WARNING, runServe } from '../../src/server/serve.ts';
 import {
   blockIds,
@@ -271,6 +278,281 @@ describe('compose', () => {
     );
   });
 });
+
+describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1, #247)', () => {
+  it('mounts the proxy only for docker, and only for providers whose key is set', async () => {
+    const localState = await tdb.open();
+    const local = await composeDirect({ secrets: fakeSecrets(), overrides: { slackBotUserId: BOT_USER }, state: localState, workflow: new InProcessWorkflow(localState) });
+    expect(local.routes.filter((r) => r.path.startsWith('/model/'))).toEqual([]);
+
+    const secrets = fakeSecrets();
+    delete secrets['OPENAI_API_KEY'];
+    const state = await tdb.open();
+    const docker = await composeDirect({
+      secrets,
+      env: { SNAPWING_FIXER_IMAGE: 'snapwing-fixer-test:1' },
+      // The fake model needs no key, so OPENAI_API_KEY is not required here.
+      overrides: { slackBotUserId: BOT_USER, model: withValidation(new RecordedModel()) },
+      state,
+      workflow: new InProcessWorkflow(state),
+      provider: 'docker',
+    });
+    const proxied = docker.routes.filter((r) => r.path.startsWith('/model/')).map((r) => r.path);
+    expect(proxied).toEqual(expect.arrayContaining(['/model/:workItemId/anthropic/v1/messages', '/model/:workItemId/google/v1beta/models/:call']));
+    expect(proxied.some((p) => p.includes('/openai/'))).toBe(false);
+  });
+
+  it('a composed review run goes through runReview, and a container reaches the model only with its per-run token', async () => {
+    // GitHub: the App token, the PR, its files, the review, the check run, and CI for the approval.
+    const repoPath = `${GITHUB_API}/repos/${REPO_FULL}`;
+    const origin = await createBareRepo({ files: { 'src/cart/total.txt': 'buggy\n' }, branches: [BRANCH] });
+    const headSha = git(origin.url, ['rev-parse', `refs/heads/${BRANCH}`]);
+    const github: string[] = [];
+    server.use(
+      http.post(`${GITHUB_API}/app/installations/:id/access_tokens`, () =>
+        HttpResponse.json({ token: DEMO_GITHUB_TOKEN, expires_at: new Date(Date.now() + 3_600_000).toISOString() }, { status: 201 }),
+      ),
+      http.get(`${repoPath}/pulls/${PR}`, () =>
+        HttpResponse.json({ number: PR, state: 'open', merged: false, head: { sha: headSha, ref: BRANCH }, base: { ref: 'main' }, user: { login: 'snapwing-test[bot]' } }),
+      ),
+      http.get(`${repoPath}/pulls/${PR}/files`, () => HttpResponse.json([{ filename: 'src/cart/total.txt', status: 'modified', additions: 1, deletions: 1, changes: 2 }])),
+      http.post(`${repoPath}/pulls/${PR}/reviews`, async ({ request }) => {
+        github.push(`review ${String(((await request.json()) as { event?: string }).event)}`);
+        return HttpResponse.json({ id: 31, state: 'APPROVED' });
+      }),
+      http.post(`${repoPath}/check-runs`, () => HttpResponse.json({ id: 41, name: 'snapwing/review', status: 'in_progress' }, { status: 201 })),
+      http.patch(`${repoPath}/check-runs/:id`, async ({ request }) => {
+        github.push(`check ${String(((await request.json()) as { conclusion?: string }).conclusion)}`);
+        return HttpResponse.json({ id: 41, name: 'snapwing/review', status: 'completed' });
+      }),
+      http.get(`${repoPath}/branches/main/protection/required_status_checks`, () => HttpResponse.json({ message: 'Branch not protected' }, { status: 404 })),
+      http.get(`${repoPath}/commits/:sha/check-runs`, () => HttpResponse.json({ total_count: 0, check_runs: [] })),
+      http.get(`${repoPath}/commits/:sha/status`, () => HttpResponse.json({ state: 'success', statuses: [] })),
+    );
+    // The model provider: it must see the real key and never the token a container presented.
+    const upstream: { apiKey: string | null; headers: string }[] = [];
+    server.use(
+      http.post('https://api.anthropic.com/v1/messages', ({ request }) => {
+        upstream.push({ apiKey: request.headers.get('x-api-key'), headers: JSON.stringify([...request.headers]) });
+        if (request.headers.get('x-api-key') !== 'test-anthropic-key') return HttpResponse.json({ error: 'bad key' }, { status: 401 });
+        return HttpResponse.json({ id: 'msg-test', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'looks fine' }] });
+      }),
+    );
+
+    // The fake docker CLI: each "container" calls the model proxy as its CLI would, then (review) writes
+    // its verdict into the mounted tree.
+    const bin = join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(join(bin, 'docker'), fakeDocker(), { mode: 0o755 });
+    const port = await freePort();
+    const containerApi = `http://127.0.0.1:${port}`;
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const secrets: Record<string, string> = { ...fakeSecrets(), GITHUB_APP_PRIVATE_KEY: privateKey };
+    const state = await tdb.open();
+    const composed = await composeDirect({
+      secrets,
+      env: {
+        SNAPWING_FIXER_IMAGE: 'snapwing-fixer-test:1',
+        // The fixer API as containers reach it, and the model proxy where they reach the server directly.
+        SNAPWING_FIXER_API_URL: 'http://fixer-api.invalid',
+        SNAPWING_CONTAINER_API_URL: containerApi,
+      },
+      overrides: { slackBotUserId: BOT_USER, gitRemoteUrl: () => origin.url },
+      state,
+      workflow: new InProcessWorkflow(state),
+      provider: 'docker',
+    });
+    const review = composed.deps?.review;
+    if (review === undefined) throw new Error('compose returned no review deps');
+    expect(review.runner).toBe(composed.deps?.fixer.runner);
+    expect(review.config.harness).toEqual({ adapter: 'generic', templateId: 'aider' });
+
+    // The incident, filed, with a PR the fixer opened.
+    const workspaceId = review.workspaceId;
+    const put = await state.putArtifact({ workspaceId, incidentId: INC, kind: 'implementation-request', contentType: 'application/xml', body: REQUEST_BODY, createdBy: 'orchestrator' });
+    await state.append(INC, incidentToPr(workspaceId, { artifactId: put.id, version: put.version }), 0);
+
+    const api = createApiServer({ routes: composed.routes, port, host: '127.0.0.1' });
+    await api.start();
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}:${savedPath ?? ''}`;
+    try {
+      // The review job, as `review.run` runs it.
+      const outcome = await runReviewJob(review, { incidentId: INC, prNumber: PR, headSha });
+      expect(outcome, JSON.stringify(outcome)).toMatchObject({ outcome: 'reviewed', verdict: { verdict: 'approve' } });
+      expect((await state.read(INC)).some((e) => e.type === 'review-passed')).toBe(true);
+      expect(github).toEqual(['review APPROVE', 'check success']);
+
+      // A fixer run on the same runner.
+      await composed.deps?.fixer.runner.runFixer({
+        runId: FIXER_RUN,
+        workItem: { id: INC, issueKey: 'WEB-1042', repo: REPO },
+        implementationRequestArtifactId: put.id,
+        harness: { adapter: 'claude-code' },
+        budget: { wallClock: 'PT30M', attempts: 1 },
+      });
+    } finally {
+      if (savedPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = savedPath;
+      await api.stop();
+      await origin.remove();
+    }
+
+    const runs = (await readFile(join(bin, 'runs.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as ContainerRun);
+    const reviewRun = runs.find((r) => r.name.startsWith('snapwing-review-'));
+    const fixerRun = runs.find((r) => r.name === `snapwing-fixer-${FIXER_RUN}`);
+    if (reviewRun === undefined || fixerRun === undefined) throw new Error(`expected a review and a fixer container, got ${runs.map((r) => r.name).join(', ')}`);
+
+    // The review container: the configured harness, the proxy as its base URL, and a model token.
+    expect(reviewRun.env['SNAPWING_ROLE']).toBe('review');
+    expect(reviewRun.env['SNAPWING_HARNESS']).toBe('generic');
+    expect(reviewRun.env['SNAPWING_HARNESS_TEMPLATE']).toBe('aider');
+    expect(reviewRun.env['ANTHROPIC_BASE_URL']).toBe(`${containerApi}/model/${INC}/anthropic`);
+    expect(reviewRun.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
+    expect(reviewRun.calls.modelToken).toEqual({ status: 200, body: expect.stringContaining('looks fine') });
+    const keys = { secret: secrets['SNAPWING_FIXER_TOKEN_SECRET'] ?? '', clock: () => new Date() };
+    const reviewToken = verifyModelToken(reviewRun.env['ANTHROPIC_API_KEY'] ?? '', INC, keys);
+    if (!reviewToken.ok) throw new Error(`review model token: ${reviewToken.reason}`);
+    expect(reviewToken.claims.runId).toBe(reviewRun.env['SNAPWING_RUN_ID']);
+    // The review's wall clock (PT30M) plus the margin.
+    expect(reviewToken.claims.expiresAt.getTime() - reviewToken.claims.issuedAt.getTime()).toBe(35 * 60_000);
+
+    // The fixer container: its fixer API URL, and the model proxy where it reaches the server.
+    expect(fixerRun.env['SNAPWING_API_URL']).toBe('http://fixer-api.invalid');
+    expect(fixerRun.env['ANTHROPIC_BASE_URL']).toBe(`${containerApi}/model/${INC}/anthropic`);
+    expect(fixerRun.env['SNAPWING_FIXER_TOKEN']).toMatch(/^swf1\./);
+    expect(fixerRun.calls.modelToken).toEqual({ status: 200, body: expect.stringContaining('looks fine') });
+    // A fixer token is not a model token: the proxy refuses it and never calls the provider.
+    expect(fixerRun.calls.fixerToken?.status).toBe(401);
+    expect(upstream).toHaveLength(2);
+
+    // No provider key entered a container, and no container token reached the provider.
+    for (const run of [reviewRun, fixerRun]) {
+      for (const key of ['test-anthropic-key', 'test-openai-key', 'test-google-key']) expect(JSON.stringify(run.env)).not.toContain(key);
+    }
+    for (const call of upstream) {
+      expect(call.apiKey).toBe('test-anthropic-key');
+      expect(call.headers).not.toContain('swm1.');
+      expect(call.headers).not.toContain('swf1.');
+    }
+    expect(unhandled).toEqual([]);
+  }, 60_000);
+});
+
+const REPO = 'github.com/fake-org/web';
+const REPO_FULL = 'fake-org/web';
+const INC = '01K6COMPOSEREVIEW000000001';
+const FIXER_RUN = '01K6COMPOSEFIXERRUN0000001';
+const PR = 418;
+const BRANCH = 'fix/WEB-1042';
+const REQUEST_BODY = buildImplementationRequest({
+  issue: 'WEB-1042',
+  intent: 'Checkout total is wrong for an empty cart',
+  evidence: [{ kind: 'report', source: 'slack', text: 'Checkout says 500' }],
+  constraints: { scope: 'Only src/cart and its tests', tests: { required: false, text: 'No new test needed' }, forbidden: ['Do not touch .github/workflows'] },
+  handoff: { mode: 'review', autonomy: 2, branch: BRANCH, base: 'main' },
+});
+
+/** What the fake docker CLI recorded of one container. */
+interface ContainerRun {
+  name: string;
+  env: Record<string, string>;
+  calls: { modelToken?: { status: number; body: string }; fixerToken?: { status: number; body: string } };
+}
+
+/**
+ * A fake `docker` CLI (a Node script): `run` builds the container's environment from `-e` exactly as
+ * docker would, then acts as the agent inside: one model call through `ANTHROPIC_BASE_URL` with the
+ * container's `ANTHROPIC_API_KEY`, one with its fixer token when it has one, and a review writes an
+ * approving verdict to `SNAPWING_REVIEW_FILE` in the mounted tree. Each run is appended to `runs.jsonl`.
+ */
+function fakeDocker(): string {
+  const verdict = JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] });
+  return `#!${process.execPath}
+const fs = require('node:fs');
+const path = require('node:path');
+const args = process.argv.slice(2);
+async function main() {
+  if (args[0] !== 'run') return 0;
+  const env = {};
+  let mount = '';
+  let name = '';
+  for (let i = 1; i < args.length; i++) {
+    const a = args[i];
+    if (a === '-e') {
+      const v = args[++i];
+      const eq = v.indexOf('=');
+      if (eq >= 0) env[v.slice(0, eq)] = v.slice(eq + 1);
+      else env[v] = process.env[v] || '';
+    } else if (a === '-v') {
+      const [src, dst] = args[++i].split(':');
+      if (dst === '/work') mount = src;
+    } else if (a === '--name') name = args[++i];
+  }
+  const call = async (key) => {
+    const res = await fetch(env.ANTHROPIC_BASE_URL + '/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': key },
+      body: JSON.stringify({ model: 'claude-test', max_tokens: 16, messages: [{ role: 'user', content: 'review this' }] }),
+    });
+    return { status: res.status, body: await res.text() };
+  };
+  const calls = {};
+  if (env.ANTHROPIC_BASE_URL) {
+    calls.modelToken = await call(env.ANTHROPIC_API_KEY);
+    if (env.SNAPWING_FIXER_TOKEN) calls.fixerToken = await call(env.SNAPWING_FIXER_TOKEN);
+  }
+  if (env.SNAPWING_REVIEW_FILE && mount !== '') fs.writeFileSync(path.join(mount, env.SNAPWING_REVIEW_FILE.slice('/work/'.length)), ${JSON.stringify(verdict)});
+  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, env, calls }) + '\\n');
+  return 0;
+}
+main().then((code) => process.exit(code), (e) => { console.error(String(e)); process.exit(1); });
+`;
+}
+
+async function freePort(): Promise<number> {
+  const probe = createNetServer();
+  await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
+  const port = (probe.address() as AddressInfo).port;
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  return port;
+}
+
+/** From capture to a PR the fixer opened: filed, the fixer ran and reported done, the PR is open. */
+function incidentToPr(workspaceId: string, request: { artifactId: string; version: number }): NewEvent[] {
+  const ev = (type: string, payload: unknown, source: 'agent' | 'fixer' = 'agent'): NewEvent =>
+    ({ workspaceId, incidentId: INC, type, v: 1, source, occurredAt: new Date().toISOString(), payload }) as unknown as NewEvent;
+  return [
+    ev('captured', {
+      kind: 'incident',
+      idempotencyKey: `slack:C-FAKE:${INC}`,
+      source: 'slack',
+      reporter: { id: 'U-FAKE-REPORTER', name: 'Pat', role: 'reporter' },
+      anchorText: 'Checkout says 500',
+      channelId: 'C-FAKE',
+    }),
+    ev('context-assembled', { bundle: { artifactId: '01K6BUNDLE00000000000000001', version: 1 }, includedCount: 1, excludedCount: 0 }),
+    ev('resolved', { surfaceId: 'web', componentId: 'checkout', repo: REPO, resolvedBy: 'channel-explicit', confidence: 0.9 }),
+    ev('dedupe-checked', { candidates: [], decision: 'none' }),
+    ev('planned', {
+      action: 'create_issue',
+      projectKey: 'WEB',
+      issueType: 'Bug',
+      summary: 'Checkout total is wrong for an empty cart',
+      priority: 'High',
+      labels: ['snapwing'],
+      autonomyLevel: 2,
+      implementationRequest: request,
+    }),
+    ev('filed', { jiraKey: 'WEB-1042' }),
+    ev('fixer-started', { runId: '01K6COMPOSEFIXERRUN0000000', harness: 'claude-code', attempt: 1 }),
+    ev('fixer-done', { prNumber: PR, branch: BRANCH, summary: 'Fixed the empty cart total', testsAdded: [] }, 'fixer'),
+    ev('pr-opened', { prNumber: PR, branch: BRANCH }, 'fixer'),
+  ];
+}
 
 describe('the --api and --worker split on Postgres', () => {
   it.runIf(process.env['SNAPWING_DB'] === 'postgres')('an --api only process never queues again a job the worker process is running', async () => {

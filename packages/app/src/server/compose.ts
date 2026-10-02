@@ -29,6 +29,13 @@
 //                or the container reports over HTTP with an `issueFixerToken` (docker runner). The
 //                reporter's `onDone` cancels the budget timer and starts the review; `onFailed` runs
 //                the failure degrade. The review starts `merge.evaluate` (or the fixer retry).
+//   Containers   with the docker runner the review agent and the regression proof run in the fixer's
+//                runner too (`runReview`, `runTests`; `ReviewConfig.harness` is `<harness review>`),
+//                and `POST /model/:workItemId/{provider}/...` is the model proxy (ADR 0017 amendment
+//                1): fixer and review containers reach it at SNAPWING_CONTAINER_API_URL (else
+//                SNAPWING_FIXER_API_URL, else SNAPWING_PUBLIC_URL) with a per-run `issueModelToken`,
+//                and it calls the provider with the key from the secrets port. No provider key ever
+//                enters a container; a provider whose key is unset has no proxy routes.
 //   Reconciler   follow-ups after a reconciled event: `ci-green` starts `merge.evaluate`, `ci-red` the
 //                fixer retry (`retryFixerAfterCiRed`), a transition to In Progress the fixer.
 //
@@ -77,6 +84,7 @@ import type { ReconciledEventType } from '@snapwing/pipeline/reconcile/marker.ts
 import { runReviewJob, startReview, type ReviewDeps } from '@snapwing/pipeline/review/job.ts';
 import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
+import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
 import { createSlackAdapter } from '../adapters/slack/adapter.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
@@ -99,7 +107,9 @@ import { createJiraClient, jiraSearch, type JiraClient } from '../jira/client/in
 import { createJiraProjector } from '../jira/projector/drain.ts';
 import { CUSTOM_FIELD_ENV, requireCustomFieldIds } from '../jira/projector/fields.ts';
 import { fetchScreenshot, screenshotFilename, type LoadScreenshot } from '../jira/projector/ops.ts';
-import { createDockerRunner } from '../providers/docker/runner.ts';
+import { createModelProxyRoutes, MODEL_PROXY_PREFIX, type ModelProviderUpstream, type ModelProxyProvider } from '../model-proxy/routes.ts';
+import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier } from '../model-proxy/token.ts';
+import { createDockerRunner, type DockerModelProxy } from '../providers/docker/runner.ts';
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
 import { createJiraWebhookRoute, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
@@ -135,8 +145,17 @@ export const REQUIRED_SECRETS: readonly string[] = Object.freeze([
   'SNAPWING_FIXER_TOKEN_SECRET',
 ]);
 
-/** Read when present: Socket Mode, and the Jira webhook's shared secret. */
-export const OPTIONAL_SECRETS: readonly string[] = Object.freeze(['SLACK_APP_TOKEN', 'JIRA_WEBHOOK_SECRET']);
+/**
+ * Read when present: Socket Mode, the Jira webhook's shared secret, and every model provider key (the
+ * model proxy serves each provider whose key is set, whether or not a task routes to it).
+ */
+export const OPTIONAL_SECRETS: readonly string[] = Object.freeze(['SLACK_APP_TOKEN', 'JIRA_WEBHOOK_SECRET', ...Object.values(PROVIDER_KEY_ENV)]);
+
+/** How long a model token outlives its run's wall clock, so the run's last call is not refused. */
+export const MODEL_TOKEN_MARGIN_MS = 5 * 60_000;
+
+/** The model provider each CLI harness calls; its containers need that provider's proxy routes. */
+const HARNESS_PROVIDER: Partial<Record<HarnessAdapter, ModelProxyProvider>> = { 'claude-code': 'anthropic', codex: 'openai', gemini: 'google' };
 
 /** Startup found secrets unset. The message names them; it never carries a value. */
 export class MissingSecretsError extends Error {
@@ -323,6 +342,21 @@ function screenshotLoader(web: SlackWeb): LoadScreenshot {
   };
 }
 
+/** The proxy's upstreams: one per provider whose key the secrets port holds. */
+function modelProxyProviders(key: (name: string) => string | undefined): Partial<Record<ModelProxyProvider, ModelProviderUpstream>> {
+  const out: Partial<Record<ModelProxyProvider, ModelProviderUpstream>> = {};
+  for (const provider of ['anthropic', 'openai', 'google'] as const) {
+    const apiKey = key(PROVIDER_KEY_ENV[provider]);
+    if (apiKey !== undefined) out[provider] = { apiKey };
+  }
+  return out;
+}
+
+/** A model token's TTL: the run's wall clock plus `MODEL_TOKEN_MARGIN_MS`, at most `MAX_MODEL_TOKEN_TTL`. */
+export function modelTokenTtl(wallClock: string): string {
+  return formatDuration(Math.min(parseDuration(wallClock) + MODEL_TOKEN_MARGIN_MS, parseDuration(MAX_MODEL_TOKEN_TTL)));
+}
+
 function fixerMayStart(incident: IncidentView): boolean {
   return incident.status !== 'claimed' && incident.status !== 'human-fixing' && !isTerminalStatus(incident.status);
 }
@@ -405,6 +439,23 @@ export const compose: ComposeFn = async (deps) => {
   // and review deps, which need the runner: the hooks reach those deps through closures, called only
   // once everything below exists.
   const fixerTokenKeys: FixerTokenKeys = { secret: secret('SNAPWING_FIXER_TOKEN_SECRET'), clock };
+  // The model proxy (ADR 0017 amendment 1). Only the docker runner hands out model tokens, so only then
+  // is it mounted. The containers' view of the API can differ from the fixer API URL they are given.
+  const docker = config.runtime.provider === 'docker';
+  const fixerApiUrl = env['SNAPWING_FIXER_API_URL']?.trim() || secret('SNAPWING_PUBLIC_URL');
+  const proxyProviders = modelProxyProviders((name) => s.get(name));
+  const modelProxy: DockerModelProxy = {
+    url: `${(env['SNAPWING_CONTAINER_API_URL']?.trim() || fixerApiUrl).replace(/\/+$/, '')}${MODEL_PROXY_PREFIX}`,
+    token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: modelTokenTtl(run.wallClock) }, fixerTokenKeys),
+  };
+  if (docker) {
+    for (const [role, adapter] of [['fixer', config.harness.fixer], ['review', config.harness.review]] as const) {
+      const provider = HARNESS_PROVIDER[adapter];
+      if (provider !== undefined && proxyProviders[provider] === undefined) {
+        log.error(`model proxy: the ${role} harness ${adapter} calls ${provider}, but ${PROVIDER_KEY_ENV[provider]} is not set, so its containers have no model access`);
+      }
+    }
+  }
   const reporter: FixerReporter = createFixerReporter({
     state,
     clock,
@@ -421,8 +472,9 @@ export const compose: ComposeFn = async (deps) => {
       ? createDockerRunner({
           image: fixerImage,
           env: {
-            apiUrl: env['SNAPWING_FIXER_API_URL']?.trim() || secret('SNAPWING_PUBLIC_URL'),
+            apiUrl: fixerApiUrl,
             token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, ttl: DEFAULT_FIXER_TOKEN_TTL }, fixerTokenKeys),
+            modelProxy,
           },
           workdirRoot: join(workRoot, 'fixer'),
         })
@@ -462,12 +514,13 @@ export const compose: ComposeFn = async (deps) => {
     workflow,
     github,
     harness: resolveHarness(reviewChoice),
-    // The fixer's runner: with docker (`runTests`) the regression proof runs the PR's tests only
-    // inside the container; the local runner has none, so the proof runs on the host (ADR 0017).
+    // The fixer's runner: with docker (`runTests`, `runReview`) the regression proof's test command and
+    // the review agent (`config.harness`, `<harness review>`) run only inside containers; the local
+    // runner has neither, so both run on the host (ADR 0017, development only).
     runner,
     git: { token: gitToken(REVIEW_GIT_PERMISSIONS), remoteUrl },
     workdirRoot: join(workRoot, 'review'),
-    config: { testCommand: (): string | undefined => env['SNAPWING_TEST_COMMAND']?.trim() || undefined },
+    config: { testCommand: (): string | undefined => env['SNAPWING_TEST_COMMAND']?.trim() || undefined, harness: reviewChoice },
     clock,
   };
   const mergeDeps: MergeDeps = { workspaceId, state, workflow, github, merge: config.merge, map: getMap, clock };
@@ -628,6 +681,7 @@ export const compose: ComposeFn = async (deps) => {
       }),
     },
     ...createFixerRoutes(reporter, fixerTokenVerifier(fixerTokenKeys)),
+    ...(docker ? createModelProxyRoutes({ verify: modelTokenVerifier(fixerTokenKeys), providers: proxyProviders, clock }) : []),
     ...oauth.routes,
   ];
   if (!s.has('JIRA_WEBHOOK_SECRET')) log.info(`JIRA_WEBHOOK_SECRET is not set: ${JIRA_WEBHOOK_PATH} accepts unauthenticated deliveries`);
@@ -678,7 +732,8 @@ export const compose: ComposeFn = async (deps) => {
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
   ];
-  log.info(`composed: slack ${socket ? 'socket mode' : 'http'}, runner ${config.runtime.provider}, workspace ${workspaceId}`);
+  const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
+  log.info(`composed: slack ${socket ? 'socket mode' : 'http'}, runner ${config.runtime.provider}${proxied}, workspace ${workspaceId}`);
 
   return {
     routes,
