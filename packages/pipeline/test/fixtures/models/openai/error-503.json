@@ -1,0 +1,8 @@
+{
+  "error": {
+    "message": "Synthetic contract failure",
+    "type": "api_error",
+    "param": null,
+    "code": "api_error"
+  }
+}

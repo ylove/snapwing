@@ -1,0 +1,23 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "{\"readings\": [{\"plainDescription\": \"A white square.\", \"sensitive\": false, \"uiElements\": [], \"surfaceSignals\": {}}]}"
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 23,
+    "candidatesTokenCount": 11,
+    "totalTokenCount": 34
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "response_test_0001"
+}
