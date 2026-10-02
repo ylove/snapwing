@@ -5,6 +5,13 @@
 // wall-clock budget timer, the abort-signal listener, stderr line splitting into checkpoints, and
 // in-order delivery of checkpoints to `onCheckpoint`. Deciding what the run's outcome is stays with
 // each adapter, because the stdout formats differ.
+//
+// Process group safety: once the group leader is reaped and the group is empty, its id may be reused
+// by an unrelated process group (on the local runner that is a developer's machine), so nothing here
+// signals `-pid` after the leader has exited, except one final SIGKILL sent from the `exit` event
+// itself when a stop or budget kill was in progress. Node emits `exit` as the leader is reaped, so
+// that call lands while any straggler still holds the group alive. A run that ends on its own
+// (no stop, no budget kill) sends no group signal after exit; `finish()` never signals.
 
 import type { ChildProcess } from 'node:child_process';
 import type { HarnessCheckpoint, HarnessPhase, HarnessRunOptions } from '../ports/harness.ts';
@@ -44,8 +51,8 @@ export interface ProcessSupervisor {
   feedLine(line: string): void;
   /**
    * Call once the child has exited: stops the timers and the abort listener, flushes a trailing
-   * stderr line, reaps stragglers in the process group, and resolves when every checkpoint has
-   * been delivered.
+   * stderr line, and resolves when every checkpoint has been delivered. It sends no signal:
+   * stragglers of a stopped or budget-killed run are reaped from the `exit` event instead.
    */
   finish(): Promise<void>;
   /** Sends `signal` to the child's process group (falls back to the child alone). */
@@ -60,9 +67,10 @@ export function superviseProcess(child: ChildProcess, options: SupervisorOptions
   let stderrBuf = '';
   let killTimer: NodeJS.Timeout | undefined;
   let chain: Promise<void> = Promise.resolve();
+  let exited = false;
 
   const signalGroup = (sig: NodeJS.Signals): void => {
-    if (child.pid === undefined) return;
+    if (child.pid === undefined || exited) return;
     try {
       process.kill(-child.pid, sig);
     } catch {
@@ -79,6 +87,21 @@ export function superviseProcess(child: ChildProcess, options: SupervisorOptions
     signalGroup('SIGTERM');
     killTimer = setTimeout(() => signalGroup('SIGKILL'), options.graceMs);
   };
+
+  // The leader is reaped. If a stop or budget kill was in progress, SIGKILL the group now, while a
+  // straggler (if any) still keeps the group id allocated; otherwise leave the group alone.
+  child.once('exit', () => {
+    const killing = killTimer !== undefined;
+    if (killTimer !== undefined) clearTimeout(killTimer);
+    if (killing && child.pid !== undefined) {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        // group already empty
+      }
+    }
+    exited = true;
+  });
 
   const onAbort = (): void => {
     stopRequested = true;
@@ -126,7 +149,6 @@ export function superviseProcess(child: ChildProcess, options: SupervisorOptions
       if (killTimer !== undefined) clearTimeout(killTimer);
       clearTimeout(budgetTimer);
       options.signal.removeEventListener('abort', onAbort);
-      signalGroup('SIGKILL'); // reap stragglers in the group; a no-op when none remain
       if (stderrBuf !== '') feedLine(stderrBuf);
       stderrBuf = '';
       await chain;
