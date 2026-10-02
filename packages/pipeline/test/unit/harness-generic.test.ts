@@ -138,15 +138,19 @@ describe('generic harness: stop', () => {
   });
 
   it('escalates to SIGKILL after the grace period', async () => {
-    const { controller, opts } = setup({
-      onCheckpoint: async () => {
-        controller.abort();
+    const captured = setup({
+      onCheckpoint: async (c) => {
+        captured.checkpoints.push(c);
+        if (c.phase === 'branched') captured.controller.abort();
       },
     });
-    const started = Date.now();
+    const { opts } = captured;
+    // The agent ignores SIGTERM but reports it as a `tested` checkpoint, and it never exits on its own.
+    // Seeing `tested` proves SIGTERM went first; getting a result at all proves SIGKILL followed.
+    const { checkpoints } = captured;
     const result = await run(harness('stop-stubborn', { killGraceMs: 300 }), opts);
-    expect(result).toEqual({ outcome: 'stopped', atPhase: 'branched' });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+    expect(result).toEqual({ outcome: 'stopped', atPhase: 'tested' });
+    expect(checkpoints.map((c) => c.phase)).toEqual(['branched', 'tested']);
   });
 
   it('an already-aborted signal stops without running the command', async () => {

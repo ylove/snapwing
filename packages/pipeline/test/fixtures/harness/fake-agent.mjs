@@ -56,9 +56,11 @@ switch (mode) {
     hang();
     break;
   case 'stop-stubborn':
-    // Ignores SIGTERM, so only SIGKILL ends it.
+    // Ignores SIGTERM, so only SIGKILL ends it. The handler is installed before the first checkpoint so
+    // a SIGTERM sent in response to that checkpoint can never beat it, and each SIGTERM is reported as
+    // a `tested` checkpoint so tests can assert the signal sequence instead of measuring time.
+    process.on('SIGTERM', () => checkpoint('tested'));
     checkpoint('branched');
-    process.on('SIGTERM', () => {});
     hang();
     break;
   case 'hang':

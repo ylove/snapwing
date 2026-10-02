@@ -132,27 +132,35 @@ describe('claude-code harness: checkpoints', () => {
 });
 
 describe('claude-code harness: Stop', () => {
-  it('uses the stopped result the agent prints after SIGTERM', async () => {
+  /** Options whose signal aborts as soon as a checkpoint at `phase` arrives; `seen` records them all. */
+  function abortAt(phase: HarnessCheckpoint['phase'], seen: HarnessCheckpoint[] = []): HarnessRunOptions {
     const ac = new AbortController();
-    const p = run('hang-stopped', opts({ signal: ac.signal }));
-    setTimeout(() => ac.abort(), 400);
-    expect(await p).toEqual({ outcome: 'stopped', atPhase: 'tested' });
+    return opts(
+      {
+        signal: ac.signal,
+        onCheckpoint: async (c) => {
+          seen.push(c);
+          if (c.phase === phase) ac.abort();
+        },
+      },
+      seen,
+    );
+  }
+
+  it('uses the stopped result the agent prints after SIGTERM', async () => {
+    expect(await run('hang-stopped', abortAt('implemented'))).toEqual({ outcome: 'stopped', atPhase: 'tested' });
   });
 
   it('names the last checkpoint when the agent prints nothing', async () => {
-    const ac = new AbortController();
-    const p = run('hang', opts({ signal: ac.signal }));
-    setTimeout(() => ac.abort(), 400);
-    expect(await p).toEqual({ outcome: 'stopped', atPhase: 'branched' });
+    expect(await run('hang', abortAt('branched'))).toEqual({ outcome: 'stopped', atPhase: 'branched' });
   });
 
   it('escalates to SIGKILL after the grace period', async () => {
-    const ac = new AbortController();
-    const started = Date.now();
-    const p = run('hang-stubborn', opts({ signal: ac.signal }));
-    setTimeout(() => ac.abort(), 400);
-    expect(await p).toEqual({ outcome: 'stopped', atPhase: 'tested' });
-    expect(Date.now() - started).toBeGreaterThanOrEqual(650);
+    // The agent ignores SIGTERM and reports each one as a `tested` checkpoint, and it never exits on its
+    // own. Seeing `tested` proves SIGTERM went first; getting a result at all proves SIGKILL followed.
+    const seen: HarnessCheckpoint[] = [];
+    expect(await run('hang-stubborn', abortAt('branched', seen))).toEqual({ outcome: 'stopped', atPhase: 'tested' });
+    expect(seen.map((c) => c.phase)).toEqual(['branched', 'tested']);
   });
 
   it('stops at cloned when aborted before any checkpoint', async () => {
