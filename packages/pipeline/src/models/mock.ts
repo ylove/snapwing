@@ -2,6 +2,9 @@
 //
 // A recording is keyed by (task, schemaName, sha256(prompt)) and lives at
 //   <fixturesDir>/<task>/<schemaName>/<sha256 hex>.json
+// A vision request also keys on its images: sha256 of the image bytes joined in order, written
+//   <fixturesDir>/vision/_vision/<prompt sha256>-<images sha256>.json
+// so two requests with one prompt and different screenshots never share a recording.
 // `complete` and `vision` have no schema; their slot is `_complete` and `_vision`. File shape:
 //   { "task": "triage", "schemaName": "triage-plan", "promptSha256": "<hex>",
 //     "prompt": "<optional, for humans reading the fixture>",
@@ -18,6 +21,7 @@ import type {
   CompletionResult,
   ImageReading,
   ModelBackend,
+  ModelImage,
   ModelPort,
   ModelTask,
   ModelUsage,
@@ -37,6 +41,8 @@ export interface MockKey {
   /** The classify schemaName, or `_complete` / `_vision`. */
   schemaName: string;
   promptSha256: string;
+  /** Vision only: sha256 over the decoded bytes of every image, in order (see `imagesSha256`). */
+  imagesSha256?: string;
 }
 
 export type MockResponse = { text: string } | { readings: ImageReading[] } | { value: unknown };
@@ -56,15 +62,24 @@ export function sha256Hex(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
+/** Hash of the image bytes of a vision request: each image hashed, the hex digests joined with newlines, hashed again. */
+export function imagesSha256(images: ModelImage[]): string {
+  const parts = images.map((image) => createHash('sha256').update(Buffer.from(image.data, 'base64')).digest('hex'));
+  return sha256Hex(parts.join('\n'));
+}
+
 /** The replay key for a request. `classify` uses its schemaName; the other two use their slot name. */
 export function mockKey(request: CompletionRequest | VisionRequest | ClassifyRequest<unknown>): MockKey {
   const schemaName =
     'schemaName' in request ? request.schemaName : 'images' in request ? MOCK_VISION_SLOT : MOCK_COMPLETE_SLOT;
-  return { task: request.task, schemaName, promptSha256: sha256Hex(request.prompt) };
+  const key: MockKey = { task: request.task, schemaName, promptSha256: sha256Hex(request.prompt) };
+  if ('images' in request) key.imagesSha256 = imagesSha256(request.images);
+  return key;
 }
 
 export function formatMockKey(key: MockKey): string {
-  return `(task=${key.task}, schemaName=${key.schemaName}, sha256=${key.promptSha256})`;
+  const images = key.imagesSha256 === undefined ? '' : `, images=${key.imagesSha256}`;
+  return `(task=${key.task}, schemaName=${key.schemaName}, sha256=${key.promptSha256}${images})`;
 }
 
 /** Where the recording for `key` lives under `fixturesDir`. Rejects schema names that are not safe path segments. */
@@ -75,7 +90,8 @@ export function mockFixturePath(fixturesDir: string, key: MockKey): string {
       `schemaName "${key.schemaName}" is not usable as a fixture path segment (letters, digits, ".", "_", "-"; no leading "." or "_")`,
     );
   }
-  return join(fixturesDir, key.task, key.schemaName, `${key.promptSha256}.json`);
+  const name = key.imagesSha256 === undefined ? key.promptSha256 : `${key.promptSha256}-${key.imagesSha256}`;
+  return join(fixturesDir, key.task, key.schemaName, `${name}.json`);
 }
 
 /**
@@ -190,7 +206,7 @@ function parseFixture(text: string, path: string, key: MockKey): MockFixture {
   }
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) throw new MockFixtureError(path, 'not a JSON object');
   const f = raw as Record<string, unknown>;
-  for (const field of ['task', 'schemaName', 'promptSha256'] as const) {
+  for (const field of ['task', 'schemaName', 'promptSha256', 'imagesSha256'] as const) {
     if (f[field] !== key[field]) {
       throw new MockFixtureError(path, `${field} is ${JSON.stringify(f[field])}, expected ${JSON.stringify(key[field])}`);
     }

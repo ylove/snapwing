@@ -1,0 +1,27 @@
+{
+  "task": "vision",
+  "schemaName": "_vision",
+  "promptSha256": "add57f6c0a847ed48ad40e2550f2f10f19304da08663f5c641a4f9c35540dc2f",
+  "imagesSha256": "e9baff00cb47857d40e3bfd504500ad5f5f5cb59f0e972e54ad0f6ecb7d8002e",
+  "response": {
+    "readings": [
+      {
+        "errorText": "Cannot read properties of undefined",
+        "surfaceSignals": {
+          "urlBar": "https://app.example.test/checkout",
+          "pageTitle": "Checkout",
+          "chrome": "web"
+        },
+        "uiElements": [
+          "Total",
+          "Pay now",
+          "Promo code"
+        ],
+        "environmentHint": "production",
+        "plainDescription": "the total field is blank on the checkout page",
+        "sensitive": false
+      }
+    ]
+  },
+  "model": "mock/recorded"
+}

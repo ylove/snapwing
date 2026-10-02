@@ -1,0 +1,26 @@
+{
+  "task": "vision",
+  "schemaName": "_vision",
+  "promptSha256": "f7760043f99229eeb12beb123c7d07233670bf02aa328bc8ac084d64d2978e3b",
+  "imagesSha256": "4f9a7467b9212b4bd799e2aae622a1bc298ea6f3e0ec0329b5f6476c2bdd8686",
+  "response": {
+    "readings": [
+      {
+        "errorText": "Invalid API key sk-test-0000-not-a-real-key",
+        "surfaceSignals": {
+          "urlBar": "unknown",
+          "pageTitle": "Settings",
+          "chrome": "web"
+        },
+        "uiElements": [
+          "API key: sk-test-0000-not-a-real-key",
+          "Save"
+        ],
+        "environmentHint": "unknown",
+        "plainDescription": "saving the settings fails with an invalid key message",
+        "sensitive": true
+      }
+    ]
+  },
+  "model": "mock/recorded"
+}

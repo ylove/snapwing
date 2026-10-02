@@ -1,0 +1,25 @@
+{
+  "task": "vision",
+  "schemaName": "_vision",
+  "promptSha256": "3593f706a1f795db82590fa3a47cb58b9235198ad9c5fcf2e202be173276b618",
+  "imagesSha256": "6d898ff65306c1cfb277f63781d64d2e326986fe15eb5eb16453d7e6c8785392",
+  "response": {
+    "readings": [
+      {
+        "errorText": "Something went wrong",
+        "surfaceSignals": {
+          "pageTitle": "Cart",
+          "chrome": "mobile"
+        },
+        "uiElements": [
+          "Cart",
+          "Checkout"
+        ],
+        "environmentHint": "production",
+        "plainDescription": "the cart shows an error after tapping Checkout",
+        "sensitive": false
+      }
+    ]
+  },
+  "model": "mock/recorded"
+}
