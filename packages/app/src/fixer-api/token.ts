@@ -8,7 +8,7 @@
 // Nothing here logs or echoes a token or the secret.
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { parseDuration } from '@snapwing/pipeline/util/duration.ts';
+import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 
 /** The env var (and repository secret) holding the HMAC key; CONTEXT.md 6b. */
 export const FIXER_TOKEN_SECRET_ENV = 'SNAPWING_FIXER_TOKEN_SECRET';
@@ -18,6 +18,17 @@ export const MIN_FIXER_TOKEN_SECRET_LENGTH = 32;
 export const MAX_FIXER_TOKEN_TTL = 'P1D';
 /** A TTL that covers the default fixer budget (PT30M) with room for the final report. */
 export const DEFAULT_FIXER_TOKEN_TTL = 'PT45M';
+/** How long a run's fixer token outlives its wall clock budget, for the final report. */
+export const FIXER_TOKEN_MARGIN_MS = 15 * 60_000;
+
+/**
+ * A run's fixer token TTL: its wall clock budget plus `FIXER_TOKEN_MARGIN_MS` (`DEFAULT_FIXER_TOKEN_TTL`
+ * for the default PT30M), at most `MAX_FIXER_TOKEN_TTL`. A run longer than an hour keeps reporting and
+ * keeps getting fresh git tokens (`GET /fixer/{id}/git-token`, #266) to its end.
+ */
+export function fixerTokenTtl(wallClock: string): string {
+  return formatDuration(Math.min(parseDuration(wallClock) + FIXER_TOKEN_MARGIN_MS, parseDuration(MAX_FIXER_TOKEN_TTL)));
+}
 
 const PREFIX = 'swf1';
 const MAC_BYTES = 32;

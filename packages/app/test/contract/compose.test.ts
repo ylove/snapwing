@@ -158,7 +158,7 @@ describe('compose under snapwing serve', () => {
     const log = run.out.join('\n');
     expect(log).toContain('composed: slack http, runner local');
     expect(log).toContain('worker polling (7 job types)');
-    for (const service of ['reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport']) expect(log).toContain(`${service} started`);
+    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport']) expect(log).toContain(`${service} started`);
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
@@ -300,6 +300,14 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     const proxied = docker.routes.filter((r) => r.path.startsWith('/model/')).map((r) => r.path);
     expect(proxied).toEqual(expect.arrayContaining(['/model/:workItemId/anthropic/v1/messages', '/model/:workItemId/google/v1beta/models/:call']));
     expect(proxied.some((p) => p.includes('/openai/'))).toBe(false);
+
+    // Fresh git tokens for containers (#266): docker only.
+    const gitToken = (c: Composed): string[] => c.routes.filter((r) => r.path.endsWith('/git-token')).map((r) => `${r.method} ${r.path}`);
+    expect(gitToken(docker)).toEqual(['GET /fixer/:workItemId/git-token']);
+    expect(gitToken(local)).toEqual([]);
+    // The worker's first service sweeps stale scratch directories, on both runners.
+    expect(docker.workerServices?.[0]?.name).toBe('fixer scratch sweep');
+    expect(local.workerServices?.[0]?.name).toBe('fixer scratch sweep');
   });
 
   it('a composed review run goes through runReview, and a container reaches the model only with its per-run token', async () => {

@@ -55,3 +55,13 @@ export function ulid(now: number = Date.now()): string {
   lastTime = time;
   return encodeTime(time) + lastRandom.map((d) => ALPHABET.charAt(d)).join('');
 }
+
+const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** The creation time encoded in a ULID, in epoch milliseconds; undefined for anything else. */
+export function ulidTime(id: string): number | undefined {
+  if (!ULID.test(id)) return undefined;
+  let time = 0;
+  for (const ch of id.slice(0, TIME_LEN)) time = time * 32 + ALPHABET.indexOf(ch);
+  return time <= MAX_TIME ? time : undefined;
+}

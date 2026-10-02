@@ -18,6 +18,16 @@
 //   fixer token. A missing work item is reported as `failed`, so the run degrades instead of hanging
 //   until its budget timer.
 //
+//   Git credential (#266): no git token is in the container's environment. Installation tokens
+//   expire after an hour and a run may last longer, so while the harness runs the wrapper serves
+//   `GET /git-credential` on a unix socket in a private temp directory
+//   (`SNAPWING_GIT_CREDENTIAL_SOCKET`), and git's only credential helper is the image's
+//   `git-credential` script, which asks that socket. Each ask makes the wrapper fetch
+//   `GET /fixer/{workItemId}/git-token` with the fixer token and answer in git's credential format;
+//   the token is held in memory only, never written to a file or put in an argv. The harness can ask
+//   the socket too (that is how the agent reads a token for the GitHub API, `git credential fill`),
+//   but it gets git tokens from it and nothing else: never the fixer token.
+//
 // `SNAPWING_ROLE=review` (`snapwing-review-<runId>`, attached):
 //   Feeds `SNAPWING_REVIEW_INPUT_FILE` to the configured review harness on stdin, with
 //   `SNAPWING_REVIEW_FILE` in its environment, and exits 0 only when the harness finished and the
@@ -30,8 +40,9 @@
 // variable only when it holds a model token (`swm1.`); anything else, a real provider key passed by
 // mistake included, is removed before any harness starts. Without a proxy there is no model access.
 
-import { lstat, readFile, stat } from 'node:fs/promises';
-import { devNull } from 'node:os';
+import { lstat, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { devNull, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClaudeCodeHarness } from '../../../packages/pipeline/src/harness/claude-code/index.ts';
@@ -48,8 +59,14 @@ export const FIXER_REQUEST_PATH = '.git/snapwing/implementation-request.xml';
 export const FIXER_HOOKS_PATH = '.git/snapwing/hooks';
 /** Where an image keeps generic harness command templates, one file per template id. */
 export const DEFAULT_GENERIC_DIR = '/etc/snapwing/generic';
-/** The image's GIT_ASKPASS script: answers with `$SNAPWING_GIT_TOKEN`, never from a file. */
-export const ASKPASS = fileURLToPath(new URL('./askpass', import.meta.url));
+/** The image's git credential helper: asks the wrapper's socket for a fresh token, never a file. */
+export const GIT_CREDENTIAL_HELPER = fileURLToPath(new URL('./git-credential', import.meta.url));
+/** Names the wrapper's credential socket in the harness environment. */
+export const GIT_CREDENTIAL_SOCKET_ENV = 'SNAPWING_GIT_CREDENTIAL_SOCKET';
+/** The username GitHub expects with an installation token over HTTPS. */
+const GIT_TOKEN_USERNAME = 'x-access-token';
+/** A token the wrapper hands to git: printable ASCII without spaces, so it cannot break the protocol. */
+const GIT_TOKEN_SHAPE = /^[\x21-\x7e]{1,4096}$/;
 /** Stop poll interval while the harness runs (docs/harness-generic.md section 6). */
 export const STOP_POLL_MS = 5000;
 /** SIGTERM to SIGKILL grace for the harness; under docker stop's default PT10S so the wrapper exits first. */
@@ -89,6 +106,8 @@ export interface WrapperDeps {
   killGraceMs?: number;
   /** Delays between report retries. Default 1 s, then 3 s. */
   retryDelaysMs?: readonly number[];
+  /** Parent of the credential socket's private directory. Default the OS temp directory. */
+  gitSocketDir?: string;
 }
 
 /**
@@ -151,6 +170,8 @@ export async function runWrapper(deps: WrapperDeps): Promise<number> {
   if (deps.processEnv !== undefined) {
     applyModelAccess(deps.processEnv, model.vars);
     delete deps.processEnv['SNAPWING_FIXER_TOKEN'];
+    // Not set by the runner since #266; never passed on if something else sets it.
+    delete deps.processEnv['SNAPWING_GIT_TOKEN'];
   }
   return role === 'fixer' ? runFixer(deps, job, model.vars, log) : runReview(deps, job, model.vars, log);
 }
@@ -290,14 +311,16 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
   const harness = await resolver(deps)(job.harness, job.templateId);
   if (typeof harness === 'string') return fail(`fixer container: ${harness}`);
 
-  const runEnv: Record<string, string> = { ...GIT_ENV, ...modelVars };
-  const gitToken = deps.env['SNAPWING_GIT_TOKEN'];
-  if (gitToken !== undefined && gitToken !== '') {
-    runEnv['SNAPWING_GIT_TOKEN'] = gitToken;
-    runEnv['GIT_ASKPASS'] = deps.env['SNAPWING_ASKPASS'] ?? ASKPASS;
-  }
+  // Git's one credential helper is the image's script (the empty value first drops any other), and
+  // the checkout's own hooks replace the host path its config names.
+  const gitConfig: [string, string][] = [
+    ['credential.helper', ''],
+    ['credential.helper', GIT_CREDENTIAL_HELPER],
+  ];
   const hooks = join(job.workdir, FIXER_HOOKS_PATH);
-  if (await isDirectory(hooks)) Object.assign(runEnv, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: hooks });
+  if (await isDirectory(hooks)) gitConfig.push(['core.hooksPath', hooks]);
+  const runEnv: Record<string, string> = { ...GIT_ENV, ...modelVars, GIT_CONFIG_COUNT: String(gitConfig.length) };
+  gitConfig.forEach(([key, value], i) => Object.assign(runEnv, { [`GIT_CONFIG_KEY_${i}`]: key, [`GIT_CONFIG_VALUE_${i}`]: value }));
   const prior = deps.env['SNAPWING_PRIOR_REVIEW_FILE'];
   if (prior !== undefined && isAbsolute(prior) && inside(job.workdir, prior)) runEnv['SNAPWING_PRIOR_REVIEW_FILE'] = prior;
 
@@ -320,8 +343,47 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
     await pollStop();
   };
 
+  /** A fresh installation token from the fixer API, or undefined (logged without any token). */
+  const gitToken = async (): Promise<string | undefined> => {
+    let last = '';
+    for (let attempt = 0; attempt <= delays.length; attempt++) {
+      if (attempt > 0) await sleep(delays[attempt - 1] ?? 0);
+      try {
+        const res = await doFetch(`${base}/git-token`, { method: 'GET', headers });
+        if (res.ok) {
+          const body = (await res.json().catch(() => undefined)) as { token?: unknown } | undefined;
+          const token = body?.token;
+          if (typeof token === 'string' && GIT_TOKEN_SHAPE.test(token)) return token;
+          log('git token: the fixer API answered without a usable token');
+          return undefined;
+        }
+        await res.body?.cancel();
+        last = `HTTP ${res.status}`;
+        if (res.status === 409) {
+          log('git token refused (409): the run has ended');
+          stop.abort();
+          return undefined;
+        }
+        if (res.status < 500) break;
+      } catch (e) {
+        last = e instanceof Error ? e.message : String(e);
+      }
+    }
+    log(`git token: ${last}`);
+    return undefined;
+  };
+
   await checkpoint({ phase: 'cloned' });
   if (stop.signal.aborted) return EXIT_OK;
+
+  let relay: CredentialRelay;
+  try {
+    relay = await startCredentialRelay(gitToken, deps.gitSocketDir);
+  } catch (e) {
+    deps.signal.removeEventListener('abort', onSignal);
+    return fail(`fixer container: git credential relay: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  runEnv[GIT_CREDENTIAL_SOCKET_ENV] = relay.socket;
 
   const poller = setInterval(() => void pollStop(), deps.stopPollMs ?? STOP_POLL_MS);
   let result: HarnessResult;
@@ -332,6 +394,7 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
   } finally {
     clearInterval(poller);
     deps.signal.removeEventListener('abort', onSignal);
+    await relay.close();
   }
 
   switch (result.outcome) {
@@ -397,6 +460,55 @@ async function runReview(deps: WrapperDeps, job: Job, modelVars: Record<string, 
     return EXIT_FAILED;
   }
   return EXIT_OK;
+}
+
+// Git credential relay ---------------------------------------------------------------------------
+
+interface CredentialRelay {
+  /** The unix socket the `git-credential` helper asks. */
+  socket: string;
+  close(): Promise<void>;
+}
+
+/**
+ * Serves `GET /git-credential` on a unix socket in a fresh `0700` directory: each request fetches a
+ * token with `fetchToken` and answers in git's credential format (`username=`, `password=`), or 503.
+ * The token stays in memory; nothing is cached or written.
+ */
+async function startCredentialRelay(fetchToken: () => Promise<string | undefined>, parent: string | undefined): Promise<CredentialRelay> {
+  const dir = await mkdtemp(join(parent ?? tmpdir(), 'snapwing-git-'));
+  const socket = join(dir, 'credential.sock');
+  const server = createServer((req, res) => {
+    req.resume();
+    if (req.method !== 'GET' || req.url !== '/git-credential') {
+      res.writeHead(404).end();
+      return;
+    }
+    fetchToken().then(
+      (token) => {
+        if (token === undefined) res.writeHead(503).end();
+        else res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }).end(`username=${GIT_TOKEN_USERNAME}\npassword=${token}\n`);
+      },
+      () => res.writeHead(503).end(),
+    );
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socket, () => resolve());
+    });
+  } catch (e) {
+    await rm(dir, { recursive: true, force: true });
+    throw e;
+  }
+  return {
+    socket,
+    async close() {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 function sleep(ms: number): Promise<void> {

@@ -33,8 +33,14 @@
 //
 // Checkpoints and the result go to `onCheckpoint` and `onFinished`, which the app points at the
 // fixer API (B 9); errors they throw are swallowed so a reporting failure never kills a run.
+//
+// A server that stops mid-run (a restart, a crash) never reaches step 4, so `sweep` exists for
+// startup (#266): it removes every directory under `workdirRoot` that belongs to no run this runner
+// knows and is older than the longest fixer wall clock plus `SCRATCH_SWEEP_MARGIN` (`sweepScratch`,
+// shared with the docker runner). Age is the later of the run id's ULID time and the directory's
+// mtime, so nothing a live run could still be using is removed, even one another process started.
 
-import { rm, writeFile } from 'node:fs/promises';
+import { readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { HarnessConfig } from '../../config/app-config.ts';
 import { prepareWorkdir, SNAPWING_GIT_DIR, type GitIdentity, type PreparedWorkdir } from '../../fixer/workdir/index.ts';
@@ -47,6 +53,8 @@ import type { HarnessCheckpoint, HarnessPort, HarnessResult, WorkItemRef } from 
 import type { FixerJob, HarnessChoice, RunnerPort } from '../../ports/runner.ts';
 import type { StatePort } from '../../ports/state.ts';
 import { parseImplementationRequest } from '../../prompts/implementation-request.ts';
+import { parseDuration } from '../../util/duration.ts';
+import { ulidTime } from '../../util/ulid.ts';
 
 export interface RunInfo {
   runId: string;
@@ -75,13 +83,82 @@ export interface LocalRunnerOptions {
   keepFailedWorkdir?: boolean;
   onCheckpoint?: (run: RunInfo, checkpoint: HarnessCheckpoint) => Promise<void>;
   onFinished?: (run: RunInfo, result: HarnessResult) => Promise<void>;
+  /** The clock `sweep` ages directories by. Default the system clock. */
+  clock?: () => Date;
 }
 
-export interface LocalRunner extends RunnerPort {
+/** What a startup sweep is told: the longest wall clock a fixer run may have (ISO 8601). */
+export interface ScratchSweepOptions {
+  maxWallClock: string;
+}
+
+/** Directory names under `workdirRoot` a sweep removed, and the run directories it left alone. */
+export interface ScratchSweep {
+  removed: string[];
+  kept: string[];
+}
+
+/** A runner whose scratch directories a startup sweep can clean (#266). */
+export interface ScratchSweeper {
+  /**
+   * Removes the scratch directories under `workdirRoot` that belong to no run or container still
+   * known and are older than `maxWallClock` plus `SCRATCH_SWEEP_MARGIN`. Call once at startup.
+   */
+  sweep(options: ScratchSweepOptions): Promise<ScratchSweep>;
+}
+
+export interface LocalRunner extends RunnerPort, ScratchSweeper {
   /** The result of `runId` once it ends (after `onFinished` has returned). Rejects for an unknown id. */
   wait(runId: string): Promise<HarnessResult>;
   /** Ids of the runs not yet ended. */
   active(): string[];
+}
+
+/** How much longer than the longest wall clock a scratch directory must have lived to be swept. */
+export const SCRATCH_SWEEP_MARGIN = 'PT15M';
+
+export interface SweepScratchInput extends ScratchSweepOptions {
+  /** The runner's `workdirRoot`; a missing root sweeps nothing. */
+  root: string;
+  now: Date;
+  /** True for a directory name that is a run or container the runner still knows. */
+  inUse: (name: string) => boolean;
+}
+
+/**
+ * The startup sweep both runners share. Only directories named like a run id are considered (never a
+ * file or a symlink). A directory is removed when nothing uses it and both its run id's ULID time (when
+ * it is a ULID) and its mtime lie more than `maxWallClock` plus `SCRATCH_SWEEP_MARGIN` before `now`.
+ */
+export async function sweepScratch(input: SweepScratchInput): Promise<ScratchSweep> {
+  const cutoff = input.now.getTime() - parseDuration(input.maxWallClock) - parseDuration(SCRATCH_SWEEP_MARGIN);
+  let entries;
+  try {
+    entries = await readdir(input.root, { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return { removed: [], kept: [] };
+    throw e;
+  }
+  const removed: string[] = [];
+  const kept: string[] = [];
+  for (const entry of entries) {
+    const name = entry.name;
+    if (!entry.isDirectory() || !RUN_ID.test(name)) continue;
+    if (input.inUse(name)) {
+      kept.push(name);
+      continue;
+    }
+    const path = join(input.root, name);
+    const mtime = await stat(path).then((s) => s.mtimeMs, () => undefined);
+    if (mtime === undefined) continue;
+    if (Math.max(ulidTime(name) ?? 0, mtime) > cutoff) {
+      kept.push(name);
+      continue;
+    }
+    await rm(path, { recursive: true, force: true });
+    removed.push(name);
+  }
+  return { removed: removed.sort(), kept: kept.sort() };
 }
 
 export class UnknownRunError extends Error {
@@ -223,6 +300,13 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
 
     active() {
       return [...runs].filter(([, r]) => !r.progress.ended).map(([id]) => id);
+    },
+
+    sweep({ maxWallClock }) {
+      // Every run this runner started is kept, ended or not: an ended run's directory is already gone
+      // unless `keepFailedWorkdir` kept it on purpose.
+      const now = (options.clock ?? (() => new Date()))();
+      return sweepScratch({ root: options.workdirRoot, maxWallClock, now, inUse: (name) => runs.has(name) });
     },
   };
 }

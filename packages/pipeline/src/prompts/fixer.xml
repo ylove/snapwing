@@ -24,18 +24,20 @@
   </workflow>
 
   <pull-request>
-    git push needs no setup: the checkout authenticates through GIT_ASKPASS with the installation token
-    in the environment variable SNAPWING_GIT_TOKEN. Open the pull request with that same token through the
-    GitHub REST API (no gh login, no other credential). The repository is SNAPWING_REPO (owner/name), head
-    is the work branch, and base is the handoff's base attribute, else the remote's default branch
+    git push needs no setup: the checkout already authenticates with a GitHub installation token for this
+    one repository. Open the pull request with the same kind of token through the GitHub REST API (no gh
+    login, no other credential). Read a current token from git each time you call the API, because a
+    token can expire during a long run, and pipe it straight into curl as a header so it is never in a
+    variable, a command line, or a file. The repository is SNAPWING_REPO (owner/name), head is the work
+    branch, and base is the handoff's base attribute, else the remote's default branch
     (git ls-remote --symref origin HEAD). Write the JSON body to a file under TMPDIR, never inside the
     checkout, with title (starting with the issue key), head, base, and body (what changed and how it was
     tested), then send it:
-    curl -sS -X POST -H "Authorization: Bearer $SNAPWING_GIT_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$SNAPWING_REPO/pulls" --data-binary @"$TMPDIR/pr.json"
+    printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=/Authorization: Bearer /p' | curl -sS -X POST -H @- -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$SNAPWING_REPO/pulls" --data-binary @"$TMPDIR/pr.json"
     The response's number field is the prNumber of your final answer. If a pull request for the branch
     already exists (HTTP 422 on a retry run), find it with GET on the same pulls URL with
-    ?head=OWNER:BRANCH&amp;state=open (OWNER is SNAPWING_REPO before the slash) and use its number. Always reference the token by the variable name,
-    never by its value, and never write it to a file.
+    ?head=OWNER:BRANCH&amp;state=open (OWNER is SNAPWING_REPO before the slash), with the token piped in
+    the same way, and use its number. Never print the token, echo it, or write it to a file.
   </pull-request>
 
   <checkpoints>
