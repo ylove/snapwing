@@ -1,0 +1,53 @@
+{
+  "text": "Diagnosis: Null `price` on cart line item when a promo code is applied after quantity change.",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🔧 *Fixing now.* *Diagnosis:* Null `price` on cart line item when a promo code is applied after quantity change."
+      }
+    },
+    {
+      "type": "context",
+      "elements": [
+        {
+          "type": "mrkdwn",
+          "text": "*Surface:* Website › Checkout  *Owner:* <@U0WEBDEV1>  *Priority:* High"
+        }
+      ]
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*Proposed fix touches:* `src/cart/lineItem.ts`, `src/promo/apply.ts`"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "triage_actions",
+      "elements": [
+        {
+          "type": "button",
+          "style": "danger",
+          "text": {
+            "type": "plain_text",
+            "text": "Stop"
+          },
+          "action_id": "stop",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Not a bug"
+          },
+          "action_id": "dismiss",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        }
+      ]
+    }
+  ]
+}

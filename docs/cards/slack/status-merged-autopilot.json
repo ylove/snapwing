@@ -1,0 +1,27 @@
+{
+  "text": "✅ Merged automatically (review: approve, CI: green).",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "✅ Merged automatically (review: approve, CI: green)."
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "status_actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Revert"
+          },
+          "action_id": "revert",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        }
+      ]
+    }
+  ]
+}

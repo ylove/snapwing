@@ -1,0 +1,45 @@
+{
+  "text": "Which page were you on when the price went missing?",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Which page were you on when the price went missing?"
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "clarify_actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Cart"
+          },
+          "action_id": "Cart",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Checkout"
+          },
+          "action_id": "Checkout",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Product page"
+          },
+          "action_id": "Product page",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  "text": "Reading 11 messages from 2:10 to 2:31, including Dana's screenshot and the thread under Marcus's reply.",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Reading 11 messages from 2:10 to 2:31, including Dana's screenshot and the thread under Marcus's reply."
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "scope_actions",
+      "elements": [
+        {
+          "type": "button",
+          "style": "primary",
+          "text": {
+            "type": "plain_text",
+            "text": "Looks right"
+          },
+          "action_id": "looks-right",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Widen"
+          },
+          "action_id": "widen",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Narrow"
+          },
+          "action_id": "narrow",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        }
+      ]
+    }
+  ]
+}

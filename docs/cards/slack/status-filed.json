@@ -1,0 +1,12 @@
+{
+  "text": "🐛 Filed as WEB-1042, assigned to <@U0WEBDEV1>.",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🐛 Filed as WEB-1042, assigned to <@U0WEBDEV1>."
+      }
+    }
+  ]
+}

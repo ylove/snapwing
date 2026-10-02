@@ -308,6 +308,10 @@ function renderCard(card: InteractiveCard): { text: string; level?: number } {
         level: plan.autonomyLevel,
       };
     }
+    case 'pr-ready':
+      return {
+        text: `PR #${card.prNumber} is ready for ${card.issueKey} (review agent: ${card.reviewVerdict}, CI: ${card.ciState}). [Open PR] [Merge] [Request changes] [Stop]`,
+      };
   }
 }
 
