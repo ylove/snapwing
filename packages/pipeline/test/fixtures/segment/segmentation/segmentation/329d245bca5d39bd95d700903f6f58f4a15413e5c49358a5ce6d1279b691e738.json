@@ -1,0 +1,16 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "329d245bca5d39bd95d700903f6f58f4a15413e5c49358a5ce6d1279b691e738",
+  "prompt": "<anchor id=\"m1\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-dana\" time=\"2026-10-01T14:10:00Z\">\n      <text>cannot log in, 403 on every page</text>\n    </message>\n    <message id=\"m2\" author=\"U-dana\" time=\"2026-10-01T14:14:00Z\">\n      <text>already fixed in the deploy that just went out</text>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m1",
+        "m2"
+      ],
+      "excluded": [],
+      "resolutionMessageId": "m2"
+    }
+  }
+}

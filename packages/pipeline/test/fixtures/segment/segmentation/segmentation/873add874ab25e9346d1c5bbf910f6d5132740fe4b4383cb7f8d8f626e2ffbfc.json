@@ -1,0 +1,21 @@
+{
+  "task": "segmentation",
+  "schemaName": "segmentation",
+  "promptSha256": "873add874ab25e9346d1c5bbf910f6d5132740fe4b4383cb7f8d8f626e2ffbfc",
+  "prompt": "<anchor id=\"m1\"/>\n    <messages>\n    <message id=\"m1\" author=\"U-dana\" time=\"2026-10-01T14:10:00Z\">\n      <text>the pay button is dead</text>\n      <image-reading url-bar=\"app.example.test/checkout\" page-title=\"Checkout\" chrome=\"web\">the pay button does nothing</image-reading>\n    </message>\n    <message id=\"m2\" author=\"U-marcus\" time=\"2026-10-01T14:11:00Z\" thread-parent=\"m1\">\n      <text>seeing it too</text>\n    </message>\n    <message id=\"m3\" author=\"U-sam\" time=\"2026-10-01T14:12:00Z\">\n      <text>unrelated: new hire starts monday</text>\n    </message>\n    </messages>",
+  "response": {
+    "value": {
+      "included": [
+        "m1",
+        "m2"
+      ],
+      "excluded": [
+        {
+          "id": "m3",
+          "reason": "different topic"
+        }
+      ],
+      "resolutionMessageId": ""
+    }
+  }
+}
