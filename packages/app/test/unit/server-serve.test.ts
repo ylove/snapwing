@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { StateOptions } from '@snapwing/pipeline/contracts/state.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { openState, type OpenStateHooks } from '@snapwing/pipeline/state/db.ts';
@@ -118,10 +118,7 @@ describe('snapwing serve', () => {
     const posted = await fetch(`${url}/test/echo`, { method: 'POST', body });
     expect(posted.status).toBe(202);
     expect(received).toEqual(body);
-    const deadline = Date.now() + 15_000;
-    while (ran.length === 0 && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 25));
-    }
+    await vi.waitFor(() => expect(ran).toHaveLength(1), { timeout: 15_000, interval: 25 });
     expect(ran).toEqual([{ from: 'route' }]);
 
     expect(run.closed()).toBe(false);
