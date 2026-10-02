@@ -1,0 +1,55 @@
+{
+  "title": "Level 2, fix now: the ask-back gate asks which part of the site, then the fixer starts",
+  "channel": { "id": "C0WEBBUGS", "name": "web-bugs" },
+  "reporter": { "id": "U0SALESLEAD", "name": "Pat" },
+  "anchor": "1790852400.000100",
+  "messages": [
+    { "ts": "1790852400.000100", "user": "U0SALESLEAD", "text": "Applying a coupon makes the order total disappear on the site" },
+    { "ts": "1790852520.000100", "user": "U0SUPPORT", "text": "Seeing the same with SAVE10 on my laptop" }
+  ],
+  "github": {
+    "acme/web": {
+      "src/checkout/coupon.ts": "export function applyCoupon(cart: Cart, code: string): Cart {\n  const total = undefined; // the coupon path drops the total\n  return { ...cart, code, total };\n}\n",
+      "src/search/results.ts": "export function renderResults(results: Result[]): string {\n  return results.map(String).join('');\n}\n"
+    }
+  },
+  "model": {
+    "segmentation": {
+      "included": ["1790852400.000100", "1790852520.000100"],
+      "excluded": [],
+      "resolutionMessageId": ""
+    },
+    "clarify": {
+      "audience": "reporter",
+      "kind": "experiential",
+      "asks": "component",
+      "text": "Which part of the website were you on?",
+      "options": ["Navigation", "Checkout", "Search"],
+      "screenshotRequest": false
+    },
+    "scout": {
+      "confidence": "medium",
+      "files": [{ "path": "src/checkout/coupon.ts", "note": "applyCoupon sets total to undefined." }]
+    },
+    "triage": {
+      "action": "create_issue",
+      "issueType": "Bug",
+      "summary": "Order total disappears after applying a coupon",
+      "description": "Applying a coupon at checkout blanks the order total. Two people see it, one with the code SAVE10.",
+      "priority": "High",
+      "labels": ["checkout"],
+      "componentId": "checkout"
+    }
+  },
+  "taps": [
+    { "card": "scope-preview", "choice": "looks-right", "by": "U0SALESLEAD" },
+    { "card": "clarify", "choice": "Checkout", "by": "U0SALESLEAD" }
+  ],
+  "expect": {
+    "status": "filed",
+    "outbox": [
+      { "op": "create-issue", "issueKey": "WEB-1", "autonomyLevel": 2 },
+      { "op": "transition", "issueKey": "WEB-1", "to": "In Progress" }
+    ]
+  }
+}

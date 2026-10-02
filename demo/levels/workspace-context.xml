@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The workspace map `pnpm demo` runs on. One surface per autonomy level, so each recording lands on
+     its level through the same policy a real install uses. Every id, email, and repo is a fake. -->
+<workspace xmlns="urn:snapwing:workspace:v1" org="acme" updated="2026-10-01T00:00:00Z">
+
+  <surfaces>
+    <surface id="help" label="Help Center">
+      <repo>github.com/acme/help</repo>
+      <jira project="HELP" defaultIssueType="Bug" />
+    </surface>
+    <surface id="admin" label="B2B Admin Portal">
+      <repo>github.com/acme/admin</repo>
+      <jira project="ADM" defaultIssueType="Bug" />
+    </surface>
+    <surface id="web" label="Website">
+      <repo>github.com/acme/web</repo>
+      <jira project="WEB" defaultIssueType="Bug" />
+      <components>
+        <component id="nav" label="Navigation" />
+        <component id="checkout" label="Checkout" />
+        <component id="search" label="Search" />
+      </components>
+    </surface>
+    <surface id="mobile" label="Mobile App">
+      <repo>github.com/acme/mobile</repo>
+      <jira project="APP" defaultIssueType="Bug" />
+    </surface>
+  </surfaces>
+
+  <channels>
+    <channel id="C0HELPBUGS" name="help-bugs" surface="help" confidence="explicit" />
+    <channel id="C0ADMBUGS" name="admin-bugs" surface="admin" confidence="explicit" />
+    <channel id="C0WEBBUGS" name="web-bugs" surface="web" confidence="explicit" />
+    <channel id="C0MKTBUGS" name="market-bugs" surface="web" confidence="explicit" />
+    <channel id="C0APPBUGS" name="app-bugs" surface="mobile" confidence="explicit" />
+  </channels>
+
+  <triggers>
+    <messageAction label="Fix it from here" />
+    <emoji slack="bug" teams="bug" />
+  </triggers>
+
+  <vocabulary>
+    <term surface="web">the site</term>
+    <term surface="admin">the portal</term>
+    <term surface="mobile">the app</term>
+  </vocabulary>
+
+  <people>
+    <person slackId="U0HELPDEV" handle="helpDev" email="hana@example.com" role="engineer">
+      <owns surface="help" />
+    </person>
+    <person slackId="U0ADMDEV" handle="adminDev" email="ari@example.com" role="engineer">
+      <owns surface="admin" />
+    </person>
+    <person slackId="U0WEBDEV" handle="webDev" email="dana@example.com" role="engineer">
+      <owns surface="web" />
+    </person>
+    <person slackId="U0MOBDEV" handle="mobDev" email="marcus@example.com" role="engineer">
+      <owns surface="mobile" />
+    </person>
+    <person slackId="U0SALESLEAD" handle="salesLead" email="pat@example.com" role="reporter" />
+    <person slackId="U0SUPPORT" handle="supportLead" email="sam@example.com" role="reporter" />
+  </people>
+
+  <policies>
+    <askBack maxQuestionsPerIncident="1" suppressWhenReportersAtLeast="3" />
+
+    <autonomy default="0">
+      <level id="0" name="ticket-only" fixer="never"     merge="none" />
+      <level id="1" name="fix-on-tap"  fixer="on-tap"    merge="human" />
+      <level id="2" name="fix-now"     fixer="immediate" merge="human" />
+      <level id="3" name="autopilot"   fixer="immediate" merge="agent" requires="review-agent ci-green risk-gate" />
+      <overrides>
+        <surface ref="help" level="0" />
+        <surface ref="admin" level="1" />
+        <surface ref="web" level="2" />
+        <surface ref="mobile" level="3" />
+      </overrides>
+    </autonomy>
+
+    <riskGate maxFilesTouched="6" maxDiffLines="300">
+      <forbiddenPath>src/auth/**</forbiddenPath>
+      <forbiddenPath>infra/**</forbiddenPath>
+    </riskGate>
+  </policies>
+
+</workspace>

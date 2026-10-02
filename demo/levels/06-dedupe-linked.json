@@ -1,0 +1,28 @@
+{
+  "title": "Dedupe: a second report links to the open Jira issue instead of filing a new one",
+  "channel": { "id": "C0MKTBUGS", "name": "market-bugs" },
+  "reporter": { "id": "U0SUPPORT", "name": "Sam" },
+  "anchor": "1790863200.000100",
+  "messages": [
+    { "ts": "1790863200.000100", "user": "U0SUPPORT", "text": "Search results page spins forever on the market site" },
+    { "ts": "1790863260.000100", "user": "U0SALESLEAD", "text": "Yep, same here since this morning" }
+  ],
+  "jira": {
+    "issues": [{ "key": "WEB-41", "summary": "Search results page spins forever after filtering", "assignee": "webDev" }]
+  },
+  "model": {
+    "segmentation": {
+      "included": ["1790863200.000100", "1790863260.000100"],
+      "excluded": [],
+      "resolutionMessageId": ""
+    }
+  },
+  "taps": [
+    { "card": "scope-preview", "choice": "looks-right", "by": "U0SUPPORT" },
+    { "card": "dedupe", "choice": "link", "by": "U0SUPPORT" }
+  ],
+  "expect": {
+    "status": "linked-to-existing",
+    "outbox": [{ "op": "add-comment", "issueKey": "WEB-41" }]
+  }
+}

@@ -245,6 +245,9 @@ importers:
       kysely:
         specifier: ^0.29.6
         version: 0.29.6
+      msw:
+        specifier: ^3.0.1
+        version: 3.0.1(@types/node@26.6.3)(typescript@6.0.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15))
       node-schematron:
         specifier: ^2.1.0
         version: 2.1.0
@@ -273,9 +276,6 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
-      msw:
-        specifier: ^3.0.1
-        version: 3.0.1(@types/node@26.6.3)(typescript@6.0.3)(vite@8.3.1(@types/node@26.6.3)(esbuild@0.28.2)(tsx@4.23.15))
       typescript:
         specifier: ~6.0.3
         version: 6.0.3

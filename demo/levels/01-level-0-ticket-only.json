@@ -1,0 +1,41 @@
+{
+  "title": "Level 0, ticket only: a help center article is out of date",
+  "channel": { "id": "C0HELPBUGS", "name": "help-bugs" },
+  "reporter": { "id": "U0SUPPORT", "name": "Sam" },
+  "anchor": "1790845200.000100",
+  "messages": [
+    { "ts": "1790845080.000100", "user": "U0SUPPORT", "text": "Morning all, fresh coffee in the kitchen" },
+    { "ts": "1790845200.000100", "user": "U0SUPPORT", "text": "The refund policy article on the help center still says 14 days, it should be 30" },
+    { "ts": "1790845320.000100", "user": "U0SALESLEAD", "text": "Customers keep quoting the 14 days back to us on calls" }
+  ],
+  "github": {
+    "acme/help": {
+      "content/articles/refund-policy.md": "# Refund policy\n\nYou can ask for a refund within 14 days of purchase.\n",
+      "content/articles/shipping.md": "# Shipping\n\nOrders ship within two business days.\n"
+    }
+  },
+  "model": {
+    "segmentation": {
+      "included": ["1790845200.000100", "1790845320.000100"],
+      "excluded": [{ "id": "1790845080.000100", "reason": "unrelated chatter" }],
+      "resolutionMessageId": ""
+    },
+    "scout": {
+      "confidence": "high",
+      "files": [{ "path": "content/articles/refund-policy.md", "note": "The first paragraph still says 14 days." }]
+    },
+    "triage": {
+      "action": "create_issue",
+      "issueType": "Bug",
+      "summary": "Refund policy article says 14 days instead of 30",
+      "description": "The help center refund policy article states a 14 day window, but the policy is 30 days. Customers quote the old number on sales calls.",
+      "priority": "Medium",
+      "labels": ["content"]
+    }
+  },
+  "taps": [{ "card": "scope-preview", "choice": "looks-right", "by": "U0SUPPORT" }],
+  "expect": {
+    "status": "filed",
+    "outbox": [{ "op": "create-issue", "issueKey": "HELP-1", "autonomyLevel": 0 }]
+  }
+}

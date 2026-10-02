@@ -1,0 +1,19 @@
+{
+  "title": "Resolution signal: the reporter says it works now, so nothing is filed",
+  "channel": { "id": "C0ADMBUGS", "name": "admin-bugs" },
+  "reporter": { "id": "U0SALESLEAD", "name": "Pat" },
+  "anchor": "1790859600.000100",
+  "messages": [
+    { "ts": "1790859600.000100", "user": "U0SALESLEAD", "text": "The portal login spins forever for me" },
+    { "ts": "1790859720.000100", "user": "U0SALESLEAD", "text": "nvm, it was the office VPN, works now" }
+  ],
+  "model": {
+    "segmentation": {
+      "included": ["1790859600.000100", "1790859720.000100"],
+      "excluded": [],
+      "resolutionMessageId": "1790859720.000100"
+    }
+  },
+  "taps": [],
+  "expect": { "status": "not-filed", "outbox": [] }
+}
