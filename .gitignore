@@ -40,3 +40,6 @@ secrets/
 *.secrets.*
 credentials*.json
 service-account*.json
+
+# agent worktrees
+.claude/worktrees/
