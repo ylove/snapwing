@@ -38,7 +38,7 @@ export type {
   StateOptions,
   Subscription,
 } from '../contracts/state.ts';
-export { ExpectedSeqConflictError, isExpectedSeqConflict, LOG_START, StateNotFoundError, stateOptionsFromEnv } from '../contracts/state.ts';
+export { ExpectedSeqConflictError, isExpectedSeqConflict, isParkedOutbox, LOG_START, StateNotFoundError, stateOptionsFromEnv } from '../contracts/state.ts';
 
 export interface StatePort {
   // Event log
@@ -94,12 +94,29 @@ export interface StatePort {
   seenWebhook(source: string, deliveryId: string, ttlSec: number): Promise<boolean>;
   enqueueOutbox(item: OutboxItem): Promise<void>;
   /**
-   * Up to `limit` rows for `target` with no `doneAt` and `nextAttempt <= now`, oldest `createdAt`
-   * first. Does not mark them: draining again before `ackOutbox` returns the same rows.
+   * Up to `limit` rows for `target` (in `workspaceId` when given) with no `doneAt` and
+   * `nextAttempt <= now`, oldest `createdAt` first (then `id`). Order holds per incident: a row is
+   * withheld while an earlier undone row of the same incident and target is not yet due, so a
+   * deferred row is never overtaken. Rows with no `incidentId` are independent. Does not mark them:
+   * draining again before `ackOutbox` returns the same rows.
    */
-  drainOutbox(target: OutboxTarget, limit: number): Promise<OutboxItem[]>;
-  /** Sets `doneAt` on each row. Unknown ids are ignored. */
+  drainOutbox(target: OutboxTarget, limit: number, workspaceId?: string): Promise<OutboxItem[]>;
+  /** Sets `doneAt` and clears `lastError` on each undone row. Unknown ids are ignored. */
   ackOutbox(ids: string[]): Promise<void>;
+  /**
+   * Moves an undone row's `nextAttempt` (ISO 8601). With `error`, the send failed: `attempts` goes
+   * up by one and `lastError` is set. Without it the row is only held (a comment waiting out its
+   * batch window), and nothing counts as a failure. Unknown or done ids are ignored.
+   */
+  deferOutbox(id: string, nextAttempt: string, error?: string): Promise<void>;
+  /**
+   * Gives up on an undone row: `attempts` up by one, `lastError = error`, `doneAt = now`. It leaves
+   * the drain and stops holding back its incident's later rows; `listParkedOutbox` shows it.
+   * Unknown or done ids are ignored.
+   */
+  parkOutbox(id: string, error: string): Promise<void>;
+  /** Up to `limit` parked rows for `target` (see `isParkedOutbox`), most recently parked first. */
+  listParkedOutbox(target: OutboxTarget, limit: number): Promise<OutboxItem[]>;
 
   // Config cache
 
