@@ -270,6 +270,15 @@ async function runIsolated(
 }
 
 /**
+ * A self-contained checkout of `sha` at `dest` for a runner's boundary (the review agent's tree, #239):
+ * its own objects and fresh config, no alternates, no remote, no hooks run while building it. The
+ * caller runs nothing of git in it after the runner had it.
+ */
+export function isolatedTree(workdir: string, dest: string, sha: string): Promise<{ ok: boolean; out: string }> {
+  return scratchTree(workdir, dest, sha, true);
+}
+
+/**
  * A checkout of `sha` at `dest` with its own fresh config: `clone --shared` borrows `workdir`'s objects
  * through an alternates file and copies none of its config, so nothing in `workdir`'s config (a
  * credential helper, an auth header, a remote URL with a token) is visible from the scratch tree.

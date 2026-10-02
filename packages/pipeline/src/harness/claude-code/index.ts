@@ -53,7 +53,7 @@ export function createClaudeCodeHarness(config: ClaudeCodeHarnessConfig = {}): H
 
       const scratch = await mkdtemp(join(tmpdir(), 'snapwing-claude-'));
       try {
-        return await runCliAgent({ bin, args, workItem, request: implementationRequest, workdir, opts, graceMs, checkpointFile: join(scratch, 'checkpoints.jsonl'), extract: (stdout) => extractResult(stdout), doneOnExit: review, inheritEnv: ['ANTHROPIC_API_KEY'] });
+        return await runCliAgent({ bin, args, workItem, request: implementationRequest, workdir, opts, graceMs, checkpointFile: join(scratch, 'checkpoints.jsonl'), extract: (stdout) => extractResult(stdout), doneOnExit: review, inheritEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL'] });
       } finally {
         await rm(scratch, { recursive: true, force: true });
       }

@@ -24,9 +24,11 @@ The command template is split into an argument vector (whitespace separated, dou
 
 The harness process never talks to the Snapwing database or the fixer API. The wrapper in the container that starts it holds the short-lived fixer token (B 9), posts checkpoints and the result to the fixer endpoints, and polls for Stop.
 
+**The review role runs in a container of its own (ADR 0017 amendment 1, #239).** With a runner that has a boundary, the review job starts the same image with `SNAPWING_ROLE=review` (docker: `snapwing-review-<runId>`, attached). Its only mount is a self-contained copy of the pull request's head (no remote, no Git credential, no hooks), with the review input at `SNAPWING_REVIEW_INPUT_FILE` and the verdict going to `SNAPWING_REVIEW_FILE`, both under `.git/snapwing/` in the mount. The wrapper starts the configured review harness with the input file on stdin and exits 0 once the harness is done; it holds no fixer token and reports nothing to the fixer API. Snapwing reads the verdict file from the mount after the container is gone, accepting only a small regular file (no symlink), and validates it with `parseReviewVerdict`.
+
 ## 2. Stdin
 
-The implementation request (main 9, the XML document `schemas/implementation-request.xsd` validates), encoded as UTF-8, then end of file. Stdin is closed after the request; a harness that waits for more input will hang until its budget ends.
+The implementation request (main 9, the XML document `schemas/implementation-request.xsd` validates), encoded as UTF-8, then end of file. For the review role it is the review request instead (`prompts/review.xml`: the request's constraints and the pull request diff). Stdin is closed after the request; a harness that waits for more input will hang until its budget ends.
 
 ## 3. Stdout: exactly one JSON object
 
@@ -91,7 +93,7 @@ The wall clock budget (`timeout` on the `generic` element, else `PT30M`, main 10
 
 ## 7. Environment
 
-The process does not inherit the server's environment. It gets exactly these variables, plus the secrets in the last row:
+The process does not inherit the server's environment. It gets exactly these variables, plus the credentials in the last rows:
 
 | Variable | Value |
 |---|---|
@@ -104,11 +106,14 @@ The process does not inherit the server's environment. It gets exactly these var
 | `SNAPWING_BUDGET_WALL_CLOCK` | ISO 8601 duration, for example `PT30M` |
 | `SNAPWING_BUDGET_ATTEMPTS` | positive integer |
 | `SNAPWING_CHECKPOINT_FILE` | adapter-specific, set only by the CLI adapters (`claude-code`, `codex`, `gemini`): absolute path of a file the agent appends checkpoint JSON lines to (those CLIs' own stderr cannot carry them); the adapter reads it and delivers each line like a stderr checkpoint. The `generic` adapter never sets it |
+| `SNAPWING_REVIEW_FILE` | review role only: absolute path the agent writes its verdict JSON to (`prompts/review.xml`), under `.git/snapwing/` so no commit can include it |
+| `SNAPWING_REVIEW_INPUT_FILE` | review role in a runner container only: absolute path of the review request inside the mount, for the wrapper to feed the harness on stdin (section 2) |
 | `SNAPWING_PRIOR_REVIEW_FILE` | fixer retry runs only: absolute path of the `review` artifact of the `request-changes` verdict that caused the retry (JSON, main 11.1), under `.git/snapwing/` so no commit can include it. Absent on a first run |
-| `GIT_ASKPASS`, `SNAPWING_GIT_TOKEN` | the Git credential for the one repository: `git push` and `git fetch` in the checkout authenticate through the askpass script, which answers with `SNAPWING_GIT_TOKEN` (a GitHub App installation token). The token is in no file, remote URL, or Git config |
+| `GIT_ASKPASS`, `SNAPWING_GIT_TOKEN` | fixer role only: the Git credential for the one repository (a reviewer never fetches or pushes, so the review role gets none): `git push` and `git fetch` in the checkout authenticate through the askpass script, which answers with `SNAPWING_GIT_TOKEN` (a GitHub App installation token). The token is in no file, remote URL, or Git config |
 | `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, the null device, and `0`: Git reads only the checkout's own config and never prompts |
 | `PATH`, `LANG` | from the runner image |
 | `HOME`, `TMPDIR` | a fresh, empty, private (`0700`) scratch directory per run, removed when the run ends; never the server user's home, and neither the config nor the run's environment can override them (ADR 0017). A CLI agent authenticates with its API key variable, not a login stored in a home directory |
-| model and Git credentials | only those the harness needs, from the secrets port under their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, main 14.5) and a Git credential scoped to the one repository; never the fixer API token |
+| model access in a runner container | **no model provider key ever enters a container** (ADR 0017 amendment 1). With the server's model proxy configured, the runner sets each CLI's base URL to the proxy (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, and `SNAPWING_MODEL_PROXY_URL` for a wrapper) and puts a per-run model token in the conventional key variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`). The token works only on the proxy's generation endpoints, only for this work item, only until shortly after the run's budget, and is not a fixer API token. Without a proxy the container has no model access |
+| model access on the `local` runner (development only) | the CLI adapters copy their key and base URL variables from the server's environment (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and the base URL names above); never the fixer API token |
 
 The variables exist so a wrapper script can route or log a run without parsing the implementation request.

@@ -58,7 +58,7 @@ export function createGeminiHarness(config: GeminiHarnessConfig = {}): HarnessPo
           checkpointFile: join(scratch, 'checkpoints.jsonl'),
           extract: (stdout) => extractResult(stdout),
           doneOnExit: review,
-          inheritEnv: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
+          inheritEnv: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL'],
         });
       } finally {
         await rm(scratch, { recursive: true, force: true });
