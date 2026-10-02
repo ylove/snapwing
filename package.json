@@ -18,7 +18,7 @@
     "lint": "eslint . && pnpm run typecheck",
     "lint:prose": "node scripts/lint-prose.mjs",
     "demo": "node scripts/not-yet.mjs demo 2",
-    "demo:state": "node scripts/not-yet.mjs demo:state 1",
+    "demo:state": "tsx packages/pipeline/src/demo/state.ts",
     "state": "tsx packages/app/src/cli/main.ts state"
   },
   "devDependencies": {

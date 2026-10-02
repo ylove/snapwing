@@ -15,7 +15,10 @@ import { LOG_START, stateOptionsFromEnv } from '@snapwing/pipeline/contracts/sta
 import type { NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { openState } from '@snapwing/pipeline/state/db.ts';
+import { lineDiff } from '@snapwing/pipeline/demo/state.ts';
 import { rebuild, snapshotProjections, type RebuildTarget } from '@snapwing/pipeline/state/rebuild.ts';
+
+export { lineDiff };
 
 export interface CliIo {
   env: Readonly<Record<string, string | undefined>>;
@@ -165,37 +168,6 @@ function parseEventLine(line: string, where: string): NewEvent {
   }
   // The state port validates the rest on append; a recording may carry seq and recordedAt, which it assigns.
   return event as unknown as NewEvent;
-}
-
-// Diff --------------------------------------------------------------------------------------------
-
-/** A readable line diff of two canonical snapshots: `-` before, `+` after, with line numbers. */
-export function lineDiff(before: string, after: string): string {
-  const a = before.split('\n');
-  const b = after.split('\n');
-  // Longest common subsequence on lines; snapshots are small enough for the quadratic table.
-  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i--) {
-    for (let j = b.length - 1; j >= 0; j--) {
-      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
-    }
-  }
-  const out: string[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) {
-      i++;
-      j++;
-    } else if (j >= b.length || (i < a.length && lcs[i + 1]![j]! >= lcs[i]![j + 1]!)) {
-      out.push(`- ${a[i]}  (before, line ${i + 1})`);
-      i++;
-    } else {
-      out.push(`+ ${b[j]}  (after, line ${j + 1})`);
-      j++;
-    }
-  }
-  return out.join('\n');
 }
 
 function errorMessage(e: unknown): string {
