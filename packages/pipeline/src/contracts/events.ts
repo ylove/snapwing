@@ -14,7 +14,9 @@
 // `artifacts` table stores (bundles, implementation requests, diagnoses, reviews) are referenced by
 // `ArtifactRef`, never inlined. Coordination events (B 6) join this union with the coordinator.
 
+import type { InteractiveCard } from './adapters.ts';
 import type {
+  ApprovalAction,
   ChannelSource,
   ActorRole,
   DedupeResult,
@@ -62,6 +64,8 @@ export type EventType =
   | 'linked-to-existing'
   | 'not-a-bug'
   | 'let-agent-take'
+  // B 5 awaitInteractive: the button handler records the tap
+  | 'tapped'
   // B 4 corrections
   | 'corrected'
   // B 7.3 Jira inbound
@@ -106,6 +110,7 @@ export const EVENT_TYPES = Object.freeze([
   'linked-to-existing',
   'not-a-bug',
   'let-agent-take',
+  'tapped',
   'corrected',
   'jira-priority-changed',
   'jira-assignee-changed',
@@ -302,12 +307,12 @@ export interface FixerArtifactPayload {
   artifact: ArtifactRef;
 }
 
-/** B 9 `done`. `testsAdded` is a count. */
+/** B 9 `done`. `testsAdded` lists file paths, the same shape as `HarnessResult.testsAdded` (main 14.5). */
 export interface FixerDonePayload {
   prNumber: number;
   branch: string;
   summary: string;
-  testsAdded: number;
+  testsAdded: string[];
 }
 
 /** B 9 `failed`. Also appended when the fixer budget timer cancels the run (B 5). */
@@ -396,7 +401,7 @@ export interface EscalatedPayload {
  */
 export interface CommentPayload {
   intent: Intent;
-  platform: SignalEvent['platform'] | 'jira';
+  platform: SignalEvent['platform'];
   signalSource: SignalEvent['source'];
   /** Absent for Jira comments, which have no chat target. */
   target?: SignalEvent['target'];
@@ -422,6 +427,24 @@ export interface RevertedPayload {
   prNumber: number;
   revertPrNumber?: number;
   reason?: string;
+}
+
+/**
+ * What a person picked on an interactive card: an approval button, a scope or dedupe choice, or the
+ * option text of a clarify answer. `(string & {})` keeps the literals in editor completion.
+ */
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export type TappedChoice = ApprovalAction | 'looks-right' | 'widen' | 'narrow' | 'link' | 'create-anyway' | 'not-related' | (string & {});
+
+/**
+ * B 5 awaitInteractive: the button handler records the tap as an event. It never changes the status;
+ * the step that awaited the card reads it and appends the event that does (for example `clarified`).
+ */
+export interface TappedPayload {
+  /** The id of the card interaction being answered. */
+  eventId: string;
+  card: InteractiveCard['kind'];
+  choice: TappedChoice;
 }
 
 /** B 4: events are never edited; a correction references the seq it corrects. */
@@ -485,6 +508,7 @@ export interface EventPayloads {
   'linked-to-existing': LinkedToExistingPayload;
   'not-a-bug': NotABugPayload;
   'let-agent-take': LetAgentTakePayload;
+  tapped: TappedPayload;
   corrected: CorrectedPayload;
   'jira-priority-changed': JiraPriorityChangedPayload;
   'jira-assignee-changed': JiraAssigneeChangedPayload;

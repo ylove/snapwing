@@ -27,7 +27,7 @@ describe('contract types', () => {
   it('SignalEvent', () => {
     expectTypeOf<SignalEvent['actor']>().toEqualTypeOf<IncidentActor>();
     expectTypeOf<SignalEvent['source']>().toEqualTypeOf<'reaction' | 'reaction-removed' | 'message'>();
-    expectTypeOf<SignalEvent['platform']>().toEqualTypeOf<'slack' | 'teams'>();
+    expectTypeOf<SignalEvent['platform']>().toEqualTypeOf<'slack' | 'teams' | 'jira'>();
     expectTypeOf<SignalEvent['target']['messageId']>().toEqualTypeOf<string>();
     expectTypeOf<SignalEvent['incidentId']>().toEqualTypeOf<string | undefined>();
   });

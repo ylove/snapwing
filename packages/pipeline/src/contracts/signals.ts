@@ -13,7 +13,7 @@ export interface SignalEvent {
   intent: Intent;
   confidence: number;              // 1.0 for reactions and lexicon hits
   source: 'reaction' | 'reaction-removed' | 'message';
-  platform: 'slack' | 'teams';
+  platform: 'slack' | 'teams' | 'jira';
   actor: IncidentActor;            // includes role from the map
   target: { role: TargetRole; messageId: string };
   environment?: string;            // "staging", when the signal names one
