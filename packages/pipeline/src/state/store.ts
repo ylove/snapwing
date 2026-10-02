@@ -112,6 +112,10 @@ export class StateStore implements StatePort {
     return outbox.listParkedOutbox(this.ctx, target, limit);
   }
 
+  dropOutbox(target: OutboxTarget, batchKey: string): Promise<string[]> {
+    return outbox.dropOutbox(this.ctx, target, batchKey);
+  }
+
   // Config cache
 
   putConfigVersion(kind: ConfigKind, hash: string, body: string): Promise<void> {

@@ -1,0 +1,32 @@
+{
+  "timestamp": 1790942580000,
+  "webhookEvent": "jira:issue_updated",
+  "issue_event_type_name": "issue_updated",
+  "user": {
+    "self": "https://example.atlassian.net/rest/api/2/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+    "accountId": "5b10ac8d82e05b22cc7d4ef5",
+    "displayName": "Dana Fake",
+    "active": true,
+    "timeZone": "Etc/UTC",
+    "accountType": "atlassian"
+  },
+  "issue": {
+    "id": "10042",
+    "self": "https://example.atlassian.net/rest/api/2/10042",
+    "key": "WEB-1042",
+    "fields": {
+      "summary": "Checkout returns 500 on submit",
+      "updated": "2026-10-02T12:03:00.000+0000",
+      "status": { "name": "In Progress", "id": "3" },
+      "labels": ["snapwing", "snapwing:stop"],
+      "assignee": null,
+      "customfield_10050": "<implementation-request version=\"1\"/>"
+    }
+  },
+  "changelog": {
+    "id": "10503",
+    "items": [
+      { "field": "labels", "fieldtype": "jira", "fieldId": "labels", "from": null, "fromString": "snapwing", "to": null, "toString": "snapwing snapwing:stop" }
+    ]
+  }
+}

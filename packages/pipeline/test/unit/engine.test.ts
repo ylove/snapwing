@@ -264,10 +264,11 @@ async function status(h: Harness): Promise<string | undefined> {
 
 /**
  * The Jira rows the engine enqueued itself. The field writes `outboxFor` derives from the lifecycle
- * (Agent Status after `filed`, #141) are left out; test/unit/outbox-jira.test.ts covers them.
+ * (Agent Status after `filed`, #141) are left out; test/unit/outbox-jira.test.ts covers them. The
+ * engine's In Progress transition carries a status field key too (#143), so it is kept by op.
  */
 async function outbox(): Promise<OutboxItem[]> {
-  return (await state.drainOutbox('jira', 50)).filter((r) => r.batchKey?.startsWith('field:') !== true);
+  return (await state.drainOutbox('jira', 50)).filter((r) => r.op === 'transition' || r.batchKey?.startsWith('field:') !== true);
 }
 
 function eventOf<T extends EventType>(log: IncidentEvent[], type: T): IncidentEvent<T> | undefined {

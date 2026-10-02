@@ -1,5 +1,5 @@
 // Outbox (B 1, B 7.1): every external write (Jira, GitHub, Slack, Teams) is a row here, drained in
-// order by one projector per target and workspace. This file stores, drains, defers, and parks rows;
+// order by one projector per target and workspace. This file stores, drains, defers, parks, and drops rows;
 // it does not merge rows that share a `batch_key` (the projector does that) and does not choose
 // retry times (the projector passes them to `deferOutbox`).
 //
@@ -104,6 +104,29 @@ export async function ackOutbox(ctx: StateContext, ids: string[]): Promise<void>
       .where('done_at', 'is', null)
       .execute();
   }
+}
+
+/**
+ * See `StatePort.dropOutbox`. Marks every undone row of `target` with `batch_key = batchKey` done,
+ * as `ackOutbox` does, without sending it, and returns their ids (oldest first). B 7.3: a human's
+ * edit of a Jira field drops the agent's pending write to it.
+ */
+export async function dropOutbox(ctx: StateContext, target: OutboxTarget, batchKey: string): Promise<string[]> {
+  if (batchKey === '') {
+    throw new RangeError('dropOutbox: batchKey must be non-empty');
+  }
+  const rows = await ctx.db
+    .selectFrom('outbox')
+    .select('id')
+    .where('target', '=', target)
+    .where('batch_key', '=', batchKey)
+    .where('done_at', 'is', null)
+    .orderBy('created_at', 'asc')
+    .orderBy('id', 'asc')
+    .execute();
+  const ids = rows.map((row) => row.id);
+  await ackOutbox(ctx, ids);
+  return ids;
 }
 
 /** See `StatePort.deferOutbox`. */

@@ -117,6 +117,13 @@ export interface StatePort {
   parkOutbox(id: string, error: string): Promise<void>;
   /** Up to `limit` parked rows for `target` (see `isParkedOutbox`), most recently parked first. */
   listParkedOutbox(target: OutboxTarget, limit: number): Promise<OutboxItem[]>;
+  /**
+   * Drops the undone rows of `target` whose `batchKey` is `batchKey`: each gets `doneAt = now` (and no
+   * `lastError`, so it is not parked) without being sent. Resolves to their ids, oldest first. B 7.3:
+   * a human's edit of a Jira field drops the agent's pending write to that field. A row a projector
+   * already drained is still sent; its later `ackOutbox` is then a no-op.
+   */
+  dropOutbox(target: OutboxTarget, batchKey: string): Promise<string[]>;
 
   // Config cache
 
