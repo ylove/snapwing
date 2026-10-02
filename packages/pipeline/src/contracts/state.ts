@@ -133,6 +133,11 @@ export interface IncidentView {
   priority?: string;
   autonomyLevel?: AutonomyLevel;
   assigneeId?: string;
+  /**
+   * The resolved owner (main 4.4): the map handle the latest `resolved` event named (`ownerId`).
+   * Known before anyone is assigned in Jira; the status message names it (main 12).
+   */
+  ownerRef?: string;
   reporterId?: string;
   source: ChannelSource;
   channelId?: string;

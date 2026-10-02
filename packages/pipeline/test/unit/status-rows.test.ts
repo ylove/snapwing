@@ -44,8 +44,8 @@ function draft<T extends EventType>(type: T, payload: EventPayloads[T], actor?: 
 
 type Level = 0 | 1 | 2 | 3;
 
-/** The captured-to-planned prefix at `level` from `source`; `filed` is left to the test. */
-function prefix(level: Level, source: 'slack' | 'cli' = 'slack'): Draft<EventType>[] {
+/** The captured-to-planned prefix at `level` from `source`, resolving `owner` when given; `filed` is left to the test. */
+function prefix(level: Level, source: 'slack' | 'cli' = 'slack', owner?: string): Draft<EventType>[] {
   return [
     draft('captured', {
       kind: 'incident',
@@ -56,7 +56,14 @@ function prefix(level: Level, source: 'slack' | 'cli' = 'slack'): Draft<EventTyp
       channelId: 'C-FAKE',
     }),
     draft('context-assembled', { bundle: { artifactId: '01JZ00000000000000000000F1', version: 1 }, includedCount: 2, excludedCount: 0 }),
-    draft('resolved', { surfaceId: 'web', componentId: 'checkout', repo: 'fake-org/web', resolvedBy: 'channel-explicit', confidence: 0.9 }),
+    draft('resolved', {
+      surfaceId: 'web',
+      componentId: 'checkout',
+      repo: 'fake-org/web',
+      ...(owner === undefined ? {} : { ownerId: owner }),
+      resolvedBy: 'channel-explicit',
+      confidence: 0.9,
+    }),
     draft('dedupe-checked', { candidates: [], decision: 'none' }),
     draft('planned', {
       action: 'create_issue',
@@ -110,19 +117,19 @@ class Script {
   }
 }
 
-/** Filed at `level`: returns the script and the status `filed` set. */
-function filed(level: Level, source: 'slack' | 'cli' = 'slack'): { s: Script; status: StatusUpdate | undefined } {
+/** Filed at `level`, with the resolved `owner` when given: returns the script and the status `filed` set. */
+function filed(level: Level, source: 'slack' | 'cli' = 'slack', owner?: string): { s: Script; status: StatusUpdate | undefined } {
   const s = new Script();
-  expect(s.all(prefix(level, source))).toEqual([]);
+  expect(s.all(prefix(level, source, owner))).toEqual([]);
   return { s, status: s.status(draft('filed', { jiraKey: KEY })) };
 }
 
 const started = (attempt = 1) => draft('fixer-started', { runId: `run-${String(attempt)}`, harness: 'claude-code', attempt });
 const prOpened = () => draft('pr-opened', { prNumber: 418, branch: 'fix/WEB-1042' }, undefined, 'github');
 
-/** `s` driven from filed at level 2 to a mergeable PR. */
-function mergeable(level: Level = 2): Script {
-  const { s } = filed(level);
+/** `s` driven from filed at `level` (with the resolved `owner` when given) to a mergeable PR. */
+function mergeable(level: Level = 2, owner?: string): Script {
+  const { s } = filed(level, 'slack', owner);
   s.all([started(), prOpened(), draft('review-passed', { prNumber: 418 }), draft('ci-green', { prNumber: 418, headSha: 'abc' })]);
   return s;
 }
@@ -296,6 +303,51 @@ describe('statusFor: one row of main 12 per event', () => {
     expect(statusFor({ type: 'filed' } as IncidentEvent, { ...(linked.view as IncidentView) })).toBeUndefined();
   });
 
+  it('names the resolved owner before anyone is assigned in Jira (#191)', () => {
+    expect(filed(0, 'slack', 'webDev1').status).toEqual({ issueKey: KEY, stage: 'filed', text: `Filed as ${KEY}, assigned to <@webDev1>.` });
+    expect(filed(1, 'slack', 'webDev1').status?.text).toBe(`Filed as ${KEY}, assigned to <@webDev1>.`);
+
+    const review = filed(2, 'slack', 'webDev1').s;
+    review.push(started());
+    expect(review.status(prOpened())?.text).toBe('A fix is up. Review requested from <@webDev1>.');
+
+    expect(mergeable(2, 'webDev1').status(draft('held', { kind: 'gate', reason: 'risk gate (touched infrastructure)' }))).toEqual({
+      issueKey: KEY,
+      stage: 'held',
+      text: 'Held for human review: risk gate (touched infrastructure). <@webDev1> requested.',
+    });
+
+    const failing = filed(2, 'slack', 'webDev1').s;
+    failing.push(started());
+    expect(failing.status(draft('fixer-failed', { reason: 'tests never passed', attempts: 2 }, undefined, 'fixer'))?.text).toBe(
+      "Couldn't produce a passing fix. <@webDev1> pinged.",
+    );
+  });
+
+  it('a human reassignment in Jira wins over the resolved owner; unassigning falls back to it (B 7.3, #191)', () => {
+    const jiraHuman: EventActor = { id: 'jira-account-pat', role: 'human' };
+    const { s } = filed(0, 'slack', 'webDev1');
+    s.all([draft('jira-assignee-changed', { jiraKey: KEY, to: 'dana' }, jiraHuman, 'jira'), started()]);
+    expect(s.status(prOpened())?.text).toBe('A fix is up. Review requested from <@dana>.');
+
+    const held = mergeable(2, 'webDev1');
+    held.push(draft('jira-assignee-changed', { jiraKey: KEY, to: 'dana' }, jiraHuman, 'jira'));
+    held.push(draft('jira-assignee-changed', { jiraKey: KEY, from: 'dana' }, jiraHuman, 'jira'));
+    expect(held.status(draft('held', { kind: 'gate', reason: 'risk gate (touched infrastructure)' }))?.text).toBe(
+      'Held for human review: risk gate (touched infrastructure). <@webDev1> requested.',
+    );
+  });
+
+  it('a later resolution without an owner falls back to the assignee, then to no name (#191)', () => {
+    const { s } = filed(0, 'slack', 'webDev1');
+    s.all([draft('resolved', { surfaceId: 'web', resolvedBy: 'clarify', confidence: 0.9 }), started()]);
+    expect(s.status(prOpened())?.text).toBe('A fix is up. Review requested.');
+
+    const assigned = filed(0, 'slack', 'webDev1').s;
+    assigned.all([draft('resolved', { surfaceId: 'web', resolvedBy: 'clarify', confidence: 0.9 }), draft('jira-assignee-changed', { jiraKey: KEY, to: 'dana' }), started()]);
+    expect(assigned.status(prOpened())?.text).toBe('A fix is up. Review requested from <@dana>.');
+  });
+
   it('every text it writes is safe for a reporter (20.1)', () => {
     const s = mergeable();
     const texts: string[] = [];
@@ -421,7 +473,7 @@ describe('replay of the level 2 recording', () => {
     });
     expect(updates.map((u) => [u.stage, u.text, u.actions ?? []])).toEqual([
       ['fixing', 'Filed as DEMO-3. Working on a fix now.', ['stop']],
-      ['pr-open', 'A fix is up. Review requested.', []],
+      ['pr-open', 'A fix is up. Review requested from <@webDev1>.', []],
       ['review-passed', 'Review passed, waiting on merge.', []],
       ['merged', 'Merged. Rolling out to staging.', []],
       ['staging', 'Fix is on staging. <@U-FAKE-REPORTER>, can you check?', []],

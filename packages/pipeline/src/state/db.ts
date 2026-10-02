@@ -91,6 +91,7 @@ export interface IncidentsTable {
   priority: Opt<string>;
   autonomy_level: Opt<number>;
   assignee_id: Opt<string>;
+  owner_ref: Opt<string>;
   reporter_id: Opt<string>;
   source: string;
   channel_id: Opt<string>;

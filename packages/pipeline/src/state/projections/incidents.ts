@@ -4,8 +4,9 @@
 // What each event writes (every field not listed keeps its value):
 // - `captured` creates the row: kind, parent, reporter, source, channel, anchor, `opened_at`.
 //   Events for an incident with no row (no `captured` yet) fold to nothing.
-// - `resolved`: surface, component, repo (the resolution replaces all three, absent ones included).
-//   A later `resolved` (a clarify answer that named the surface or component, ADR 0015) replaces them again.
+// - `resolved`: surface, component, repo, and `owner_ref` from `ownerId` (the resolution replaces all
+//   four, absent ones included). A later `resolved` (a clarify answer that named the surface or
+//   component, ADR 0015) replaces them again.
 // - `scope-changed`, `dedupe-decided`, `clarify-answered` (ADR 0015): nothing but `last_seq` and
 //   `updated_at`. What they change reaches the row through the events they lead to: a Link is
 //   followed by `linked-to-existing`, a clarify answer that names a map entry by a second `resolved`.
@@ -99,7 +100,7 @@ function step(prev: IncidentView | undefined, statusEvent: IncidentEvent, dataEv
 }
 
 /** The optional fields an event may clear. */
-type ClearableField = 'surfaceId' | 'componentId' | 'repo' | 'assigneeId' | 'waitingOn';
+type ClearableField = 'surfaceId' | 'componentId' | 'repo' | 'ownerRef' | 'assigneeId' | 'waitingOn';
 
 /** Sets `key` to `value`, or removes it when `value` is undefined (absent, never `undefined`). */
 function withOpt<K extends ClearableField>(view: IncidentView, key: K, value: IncidentView[K] | undefined): IncidentView {
@@ -117,7 +118,8 @@ function applyFields(v: IncidentView, e: IncidentEvent): IncidentView {
     case 'resolved': {
       let next = withOpt(v, 'surfaceId', e.payload.surfaceId);
       next = withOpt(next, 'componentId', e.payload.componentId);
-      return withOpt(next, 'repo', e.payload.repo);
+      next = withOpt(next, 'repo', e.payload.repo);
+      return withOpt(next, 'ownerRef', e.payload.ownerId);
     }
     case 'planned': {
       const next: IncidentView = { ...v, summary: e.payload.summary, priority: e.payload.priority, autonomyLevel: e.payload.autonomyLevel };
@@ -317,6 +319,7 @@ export function rowToIncident(ctx: StateContext, r: IncidentRow): IncidentView {
     ...(r.priority !== null ? { priority: r.priority } : {}),
     ...(r.autonomy_level !== null ? { autonomyLevel: toAutonomyLevel(ctx.codec.fromNumber(r.autonomy_level), r.id) } : {}),
     ...(r.assignee_id !== null ? { assigneeId: r.assignee_id } : {}),
+    ...(r.owner_ref !== null ? { ownerRef: r.owner_ref } : {}),
     ...(r.reporter_id !== null ? { reporterId: r.reporter_id } : {}),
     source: r.source as ChannelSource,
     ...(r.channel_id !== null ? { channelId: r.channel_id } : {}),
@@ -348,6 +351,7 @@ function incidentToRow(ctx: StateContext, v: IncidentView) {
     priority: v.priority ?? null,
     autonomy_level: v.autonomyLevel ?? null,
     assignee_id: v.assigneeId ?? null,
+    owner_ref: v.ownerRef ?? null,
     reporter_id: v.reporterId ?? null,
     source: v.source,
     channel_id: v.channelId ?? null,
