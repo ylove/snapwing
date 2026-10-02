@@ -95,6 +95,8 @@ const ARROWS: Row[] = [
   ['fixing', ev('comment'), 'fixing'],
   ['mergeable', envHold, 'mergeable'],
   ['closed', ev('comment'), 'closed'],
+  ['deduped', ev('tapped'), 'deduped'],
+  ['closed', ev('tapped'), 'closed'],
   ['filed', ev('level-changed'), 'filed'],
   ['filed', ev('jira-priority-changed'), 'filed'],
   ['fixing', ev('fixer-checkpoint'), 'fixing'],

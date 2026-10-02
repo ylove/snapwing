@@ -255,6 +255,7 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'fixer-artifact',
   'held',
   'clarified',
+  'tapped',
 ]);
 
 export interface TransitionResult {

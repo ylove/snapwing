@@ -7,7 +7,8 @@ import {
   type IncidentEvent,
   type NewEvent,
 } from '../../src/contracts/events.ts';
-import type { IncidentEvent as SignalsIncidentEvent } from '../../src/contracts/signals.ts';
+import type { InteractiveCard } from '../../src/contracts/adapters.ts';
+import type { IncidentEvent as SignalsIncidentEvent, SignalEvent } from '../../src/contracts/signals.ts';
 import type { IncidentActor } from '../../src/contracts/incident.ts';
 
 const WS = '01JZ00000000000000000000W1';
@@ -76,13 +77,14 @@ const SAMPLES = {
   'linked-to-existing': { issueKey: 'WEB-1000' },
   'not-a-bug': { reason: 'expected behaviour' },
   'let-agent-take': { claimerId: 'U0FAKEENG' },
+  tapped: { eventId: 'card-1', card: 'dedupe', choice: 'link' },
   corrected: { correctsSeq: 3, fields: { surfaceId: 'cart' }, reason: 'wrong surface' },
   'jira-priority-changed': { jiraKey: 'WEB-1042', from: 'High', to: 'Highest' },
   'jira-assignee-changed': { jiraKey: 'WEB-1042', to: 'fake-account-id' },
   'jira-transitioned': { jiraKey: 'WEB-1042', from: 'To Do', to: 'In Progress' },
   'fixer-checkpoint': { phase: 'branched', detail: 'fix/WEB-1042' },
   'fixer-artifact': { kind: 'diagnosis', artifact: ART },
-  'fixer-done': { prNumber: 7, branch: 'fix/WEB-1042', summary: 'restore total', testsAdded: 2 },
+  'fixer-done': { prNumber: 7, branch: 'fix/WEB-1042', summary: 'restore total', testsAdded: ['test/cart.test.ts', 'test/total.test.ts'] },
   'fixer-failed': { reason: 'tests red', partialBranch: 'fix/WEB-1042', attempts: 2 },
 } as const satisfies { readonly [K in EventType]: EventPayloads[K] };
 
@@ -103,7 +105,7 @@ describe('EVENT_TYPES', () => {
     const required: EventType[] = [
       'stopped', 'escalated', 'level-changed', 'held', 'released', 'reverted', 'corrected',
       'jira-priority-changed', 'jira-assignee-changed', 'jira-transitioned',
-      'fixer-checkpoint', 'fixer-artifact', 'fixer-done', 'fixer-failed',
+      'fixer-checkpoint', 'fixer-artifact', 'fixer-done', 'fixer-failed', 'tapped',
     ];
     for (const t of required) expect(EVENT_TYPES).toContain(t);
   });
@@ -200,5 +202,23 @@ describe('NewEvent', () => {
       payload: { prNumber: 7 },
     };
     expect(bad.type).toBe('filed');
+  });
+});
+
+describe('catalog follow-ups', () => {
+  it('types the tapped payload from the card kinds and the approval actions', () => {
+    expectTypeOf<EventPayloads['tapped']['card']>().toEqualTypeOf<InteractiveCard['kind']>();
+    const approve: EventPayloads['tapped'] = { eventId: 'c1', card: 'fix-preview', choice: 'approve_fix' };
+    const clarify: EventPayloads['tapped'] = { eventId: 'c2', card: 'clarify', choice: 'Checkout page' };
+    expect([approve.choice, clarify.choice]).toEqual(['approve_fix', 'Checkout page']);
+  });
+
+  it('accepts jira as a comment platform through SignalEvent', () => {
+    expectTypeOf<SignalEvent['platform']>().toEqualTypeOf<'slack' | 'teams' | 'jira'>();
+    expectTypeOf<EventPayloads['comment']['platform']>().toEqualTypeOf<SignalEvent['platform']>();
+  });
+
+  it('lists file paths in fixer-done testsAdded, as HarnessResult does', () => {
+    expectTypeOf<EventPayloads['fixer-done']['testsAdded']>().toEqualTypeOf<string[]>();
   });
 });
