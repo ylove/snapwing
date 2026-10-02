@@ -1,0 +1,29 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/out/
+coverage/
+*.tsbuildinfo
+.turbo/
+
+# env and secrets (never committed)
+.env
+.env.*
+.env.live
+!.env.example
+
+# local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# os and editor
+.DS_Store
+.idea/
+.vscode/
+*.log
+npm-debug.log*
+pnpm-debug.log*
