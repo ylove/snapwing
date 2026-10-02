@@ -35,12 +35,24 @@
 //                   Progress], status
 //   early exit:   a resolution signal in the bundle appends resolution-signal with the bundle
 //                   (or with a Widen's correction) and stops as not-filed.
+//   stop:         a `stopped` appended before `filed` (a Stop on a card, or the trigger reaction removed
+//                   within 60 s, main 15.1) ends the job with nothing more appended: a parked card's
+//                   tap is refused (`not-pending`), its timeout does nothing, and a `filed` from a
+//                   create-issue row queued before the stop runs no after-filed step.
 //
 // Deviations from the main 14.1 shape, each deliberate: the scope preview comes before `resolve`, so a
 // widened bundle is resolved once (main 5.5: "before any downstream action"); a level 2 or 3
 // transition waits for `filed`, since it needs the Jira key; a `noop` plan appends `not-a-bug`, and a
 // `link_existing` plan is filed as a new issue because the dedupe card already decided. Card answers
 // are decision events, never `corrected` (ADR 0015).
+//
+// A pre-filing Stop appends no terminal event (decided in #192): the incident stays `stopped`. B 5 says
+// `stopped` is not terminal, no event type means "ended unfiled" (`not-filed` is reached only by
+// `resolution-signal`, and only from `captured` or `assembling`), and staying in `stopped` lets a
+// create-issue row already queued still land as `filed` (`stopped` accepts it), so its Jira issue is
+// tracked rather than orphaned. The fixer's own guard (`stoppedSinceFiled`) does not cover that late
+// `filed`; the engine does, since it then never runs the after-filed step whose In Progress transition
+// starts the fixer.
 
 import type { ApprovalAction, CanonicalIncidentPayload, ChannelSource } from '../contracts/incident.ts';
 import type { EventActorRole, TappedChoice, TappedPayload } from '../contracts/events.ts';

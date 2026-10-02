@@ -56,6 +56,12 @@ export interface Cursor {
   /** The planned level, then any later `level-changed`. */
   level?: AutonomyLevel;
   filed?: { seq: number; jiraKey: string };
+  /**
+   * Seq of the first `stopped` appended while nothing was filed yet (main 15.1: a Stop button on a
+   * card, or the trigger reaction removed within 60 s). It ends the process job for good, even when a
+   * `create-issue` row already queued lands as `filed` afterwards.
+   */
+  stoppedBeforeFiling?: number;
   linkedTo?: string;
   /** True while the last `waiting-changed` set a wait and no status change has ended it. */
   waiting: boolean;
@@ -166,6 +172,9 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
       case 'filed':
         cursor.filed ??= { seq: e.seq, jiraKey: e.payload.jiraKey };
         break;
+      case 'stopped':
+        if (cursor.filed === undefined) cursor.stoppedBeforeFiling ??= e.seq;
+        break;
       case 'tapped':
         cursor.taps.push({ seq: e.seq, payload: e.payload, ...(e.actor === undefined ? {} : { actor: e.actor }) });
         break;
@@ -217,6 +226,8 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
   const { captured, assembled, resolved, dedupe, planned, filed } = cursor;
   if (captured === undefined) return { kind: 'capture' };
   if (cursor.status !== undefined && isTerminalStatus(cursor.status)) return { kind: 'done' };
+  // A Stop before filing ends the job: no card stays pending, so a later tap or timeout does nothing.
+  if (cursor.stoppedBeforeFiling !== undefined) return { kind: 'done' };
   if (assembled === undefined) return { kind: 'assemble' };
 
   if (resolved === undefined) {
