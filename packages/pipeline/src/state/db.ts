@@ -204,6 +204,22 @@ export interface JobWaitsTable {
   created_at: TsDefault;
 }
 
+/** A chat user's linked GitHub account (#153); the token columns hold sealed values (util/seal.ts). */
+export interface LinkedIdentitiesTable {
+  workspace_id: string;
+  chat: 'slack' | 'teams';
+  chat_user_id: string;
+  github_login: string;
+  /** bigint: reads back as a string on Postgres. */
+  github_user_id: ColumnType<number | string, number, number>;
+  access_token: string;
+  access_token_expires_at: TsOpt;
+  refresh_token: Opt<string>;
+  refresh_token_expires_at: TsOpt;
+  linked_at: TsDefault;
+  updated_at: TsDefault;
+}
+
 export interface Database {
   workspaces: WorkspacesTable;
   config_versions: ConfigVersionsTable;
@@ -218,6 +234,7 @@ export interface Database {
   kv: KvTable;
   jobs: JobsTable;
   job_waits: JobWaitsTable;
+  linked_identities: LinkedIdentitiesTable;
 }
 
 /** Every table the migration set creates, in creation order. */
@@ -235,6 +252,7 @@ export const STATE_TABLES: readonly (keyof Database)[] = Object.freeze([
   'kv',
   'jobs',
   'job_waits',
+  'linked_identities',
 ] as const);
 
 // Factory ------------------------------------------------------------------------------------------

@@ -170,7 +170,7 @@ describe(`0002 event tx_order (${TEST_DIALECT})`, () => {
           row('01JZ00000000000000000000C1', 1, '2026-10-01T10:00:00.000Z'),
         ])
         .execute();
-      expect(await migrateState(db, TEST_DIALECT)).toEqual(['0002-event-tx-order']);
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 2))).toEqual(['0002-event-tx-order']);
       const rows = await db.selectFrom('incident_events').select(['incident_id', 'seq', 'tx_order']).orderBy('tx_order').execute();
       expect(rows.map((r) => [r.incident_id.slice(-2), r.seq, codec.fromNumber(r.tx_order)])).toEqual([
         ['C1', 1, -4],

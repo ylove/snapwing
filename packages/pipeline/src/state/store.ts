@@ -1,5 +1,5 @@
 // StateStore: the StatePort (B 1) over Kysely. Every method delegates one-to-one to a function in
-// events.ts, projections/index.ts, artifacts.ts, inbox.ts, outbox.ts, config.ts, or kv.ts, passing
+// events.ts, projections/index.ts, artifacts.ts, inbox.ts, outbox.ts, config.ts, identities.ts, or kv.ts, passing
 // the store's context, so each of those files is filled in without touching this one.
 // Construct through `openState` (db.ts); `transaction` hands `fn` a store bound to the transaction.
 
@@ -18,11 +18,12 @@ import type {
   StateDialect,
   Subscription,
 } from '../contracts/state.ts';
-import type { StatePort } from '../ports/state.ts';
+import type { LinkedIdentity, LinkedIdentityKey, NewLinkedIdentity, StatePort } from '../ports/state.ts';
 import * as artifacts from './artifacts.ts';
 import * as config from './config.ts';
 import { inTransaction, type StateContext } from './context.ts';
 import * as events from './events.ts';
+import * as identities from './identities.ts';
 import * as inbox from './inbox.ts';
 import * as kv from './kv.ts';
 import * as outbox from './outbox.ts';
@@ -124,6 +125,20 @@ export class StateStore implements StatePort {
 
   getConfigVersion(kind: ConfigKind): Promise<ConfigVersion> {
     return config.getConfigVersion(this.ctx, kind);
+  }
+
+  // Linked identities
+
+  linkIdentity(identity: NewLinkedIdentity): Promise<void> {
+    return identities.linkIdentity(this.ctx, identity);
+  }
+
+  getLinkedIdentity(key: LinkedIdentityKey): Promise<LinkedIdentity | null> {
+    return identities.getLinkedIdentity(this.ctx, key);
+  }
+
+  unlinkIdentity(key: LinkedIdentityKey): Promise<boolean> {
+    return identities.unlinkIdentity(this.ctx, key);
   }
 
   // kv (cache-port fallback; not part of StatePort)

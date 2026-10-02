@@ -40,6 +40,41 @@ export type {
 } from '../contracts/state.ts';
 export { ExpectedSeqConflictError, isExpectedSeqConflict, isParkedOutbox, LOG_START, StateNotFoundError, stateOptionsFromEnv } from '../contracts/state.ts';
 
+/** The chat platform a linked identity's user belongs to. */
+export type ChatPlatform = 'slack' | 'teams';
+
+/** One chat user in one workspace: the key of a linked identity. */
+export interface LinkedIdentityKey {
+  workspaceId: string;
+  chat: ChatPlatform;
+  /** The platform's user id (Slack `U...`, Teams AAD object id). */
+  chatUserId: string;
+}
+
+/**
+ * A chat user's linked GitHub account (main 11.2, ADR 0007): the GitHub App user-to-server token
+ * that lets a `Merge` tap act as that human. Token fields hold sealed values (`seal` in
+ * `util/seal.ts`, AES-256-GCM under `SNAPWING_ENCRYPTION_KEY`), never a token; the store rejects a
+ * value that is not sealed. Times are ISO 8601.
+ */
+export interface LinkedIdentity extends LinkedIdentityKey {
+  githubLogin: string;
+  githubUserId: number;
+  /** Sealed user-to-server token. */
+  accessToken: string;
+  /** Absent when the App's user tokens do not expire. */
+  accessTokenExpiresAt?: string;
+  /** Sealed refresh token; absent when the App's user tokens do not expire. */
+  refreshToken?: string;
+  refreshTokenExpiresAt?: string;
+  /** When this chat user was linked to this GitHub account. */
+  linkedAt: string;
+  /** When the row last changed (a link or a token refresh). */
+  updatedAt: string;
+}
+
+export type NewLinkedIdentity = Omit<LinkedIdentity, 'linkedAt' | 'updatedAt'>;
+
 export interface StatePort {
   // Event log
 
@@ -130,6 +165,19 @@ export interface StatePort {
   putConfigVersion(kind: ConfigKind, hash: string, body: string): Promise<void>;
   /** The most recently loaded version. Rejects with `StateNotFoundError` when none is loaded. */
   getConfigVersion(kind: ConfigKind): Promise<ConfigVersion>;
+
+  // Linked identities (main 11.2, ADR 0007)
+
+  /**
+   * Links the chat user to a GitHub account, or updates the link (a re-link or a token refresh):
+   * one row per `(workspaceId, chat, chatUserId)`. `linkedAt` is kept unless the GitHub account
+   * changes. Rejects with a TypeError, writing nothing, when a token field is not a sealed value.
+   */
+  linkIdentity(identity: NewLinkedIdentity): Promise<void>;
+  /** The chat user's link, or null when there is none. */
+  getLinkedIdentity(key: LinkedIdentityKey): Promise<LinkedIdentity | null>;
+  /** Removes the chat user's link; true when there was one. */
+  unlinkIdentity(key: LinkedIdentityKey): Promise<boolean>;
 
   /**
    * Runs `fn` in one database transaction: commits when it resolves, rolls back and rejects when it
