@@ -1,0 +1,57 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 52000002,
+    "name": "test",
+    "node_id": "CR_kwDOfake02",
+    "head_sha": "1111111111111111111111111111111111111111",
+    "external_id": "",
+    "url": "https://api.github.com/repos/fake-org/web/check-runs/52000002",
+    "html_url": "https://github.com/fake-org/web/runs/52000002",
+    "status": "completed",
+    "conclusion": "failure",
+    "started_at": "2026-10-02T12:20:00Z",
+    "completed_at": "2026-10-02T12:31:00Z",
+    "output": { "title": "2 tests failed", "summary": "checkout.test.ts", "annotations_count": 0 },
+    "check_suite": {
+      "id": 31000001,
+      "head_branch": "snapwing/WEB-1042",
+      "head_sha": "1111111111111111111111111111111111111111",
+      "status": "completed",
+      "conclusion": "failure",
+      "before": "0000000000000000000000000000000000000001",
+      "after": "1111111111111111111111111111111111111111",
+      "pull_requests": [
+        {
+          "url": "https://api.github.com/repos/fake-org/web/pulls/418",
+          "id": 1924000418,
+          "number": 418,
+          "head": { "ref": "snapwing/WEB-1042", "sha": "1111111111111111111111111111111111111111", "repo": { "id": 77000001, "url": "https://api.github.com/repos/fake-org/web", "name": "web" } },
+          "base": { "ref": "main", "sha": "0000000000000000000000000000000000000001", "repo": { "id": 77000001, "url": "https://api.github.com/repos/fake-org/web", "name": "web" } }
+        }
+      ]
+    },
+    "app": { "id": 15368, "slug": "github-actions", "name": "GitHub Actions" },
+    "pull_requests": [
+      {
+        "url": "https://api.github.com/repos/fake-org/web/pulls/418",
+        "id": 1924000418,
+        "number": 418,
+        "head": { "ref": "snapwing/WEB-1042", "sha": "1111111111111111111111111111111111111111", "repo": { "id": 77000001, "url": "https://api.github.com/repos/fake-org/web", "name": "web" } },
+        "base": { "ref": "main", "sha": "0000000000000000000000000000000000000001", "repo": { "id": 77000001, "url": "https://api.github.com/repos/fake-org/web", "name": "web" } }
+      }
+    ]
+  },
+  "repository": {
+    "id": 77000001,
+    "node_id": "R_kgDOfake01",
+    "name": "web",
+    "full_name": "fake-org/web",
+    "private": true,
+    "owner": { "login": "fake-org", "id": 9900001, "type": "Organization" },
+    "default_branch": "main"
+  },
+  "organization": { "login": "fake-org", "id": 9900001 },
+  "sender": { "login": "github-actions[bot]", "id": 41898282, "type": "Bot" },
+  "installation": { "id": 12345678, "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uMTIzNDU2Nzg=" }
+}
