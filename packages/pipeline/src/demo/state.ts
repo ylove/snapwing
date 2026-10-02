@@ -62,8 +62,8 @@ const PAYLOAD_SHAPES = {
   'context-assembled': { bundle: 'object', includedCount: 'number', excludedCount: 'number' },
   resolved: { resolvedBy: 'string', confidence: 'number', surfaceId: 'string?', componentId: 'string?', ownerId: 'string?', repo: 'string?', jiraProject: 'string?' },
   'dedupe-checked': { candidates: 'array', decision: 'string' },
-  clarified: { audience: 'string', question: 'string', answer: 'string?', timedOut: 'boolean' },
-  planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?' },
+  clarified: { audience: 'string', question: 'string', asks: 'string?', options: 'array?', answer: 'string?', timedOut: 'boolean' },
+  planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?', plan: 'object?', degraded: 'string?' },
   filed: { jiraKey: 'string' },
   claimed: { claimerId: 'string', expiresAt: 'string' },
   'fixer-started': { runId: 'string', harness: 'string', attempt: 'number' },
@@ -89,6 +89,9 @@ const PAYLOAD_SHAPES = {
   'not-a-bug': { reason: 'string?' },
   'let-agent-take': { claimerId: 'string' },
   tapped: { eventId: 'string', card: 'string', choice: 'string' },
+  'scope-changed': { choice: 'string', bundle: 'object', includedCount: 'number', excludedCount: 'number' },
+  'dedupe-decided': { decision: 'string', issueKey: 'string?', timedOut: 'boolean?' },
+  'clarify-answered': { questionSeq: 'number', answer: 'string', appliesTo: 'object?' },
   corrected: { correctsSeq: 'number', fields: 'object', reason: 'string' },
   'status-message-posted': { messageId: 'string' },
   'waiting-changed': { waitingOn: 'object?' },
@@ -111,6 +114,8 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
   'review-failed': { verdict: ['request-changes', 'escalate'] },
   tapped: { card: ['scope-preview', 'dedupe', 'clarify', 'fix-preview'] },
   'dedupe-checked': { decision: ['none', 'link', 'create-anyway', 'pending-user'] },
+  'scope-changed': { choice: ['widen', 'narrow'] },
+  'dedupe-decided': { decision: ['link', 'create-anyway', 'not-related'] },
 };
 
 function kindOf(value: unknown): Kind | 'null' | 'other' {

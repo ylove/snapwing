@@ -14,7 +14,8 @@
 // - `claimed` moves to `human-fixing` when the claimer's Jira ticket moves (`jira-transitioned`);
 //   `released` and `let-agent-take` hand a claim or human fix back to the agent (`fixing`).
 // - `fixer-failed` escalates: the fixer budget or the fixer itself gave up.
-// - `clarified` is the optional ask-back; it leaves the status where it is.
+// - `clarified` is the optional ask-back; it leaves the status where it is. An answer that names the
+//   surface or component appends a second `resolved`, which `deduped` accepts and keeps (ADR 0015).
 // - `stopped` behaves as `filed` (B 5: it "returns to filed"): same accepted events, same targets,
 //   so a fixer start after a stop shows `fixing`, and a human PR shows `in-review`.
 // - `fixer-done` and a repeated `fixer-started` are rows of `fixing` and `fixing-retry`, not
@@ -130,6 +131,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'not-a-bug': 'not-a-bug',
   },
   deduped: {
+    // A clarify answer that names the surface or component re-resolves (ADR 0015).
+    resolved: 'deduped',
     planned: 'planned',
     'linked-to-existing': 'linked-to-existing',
     'not-a-bug': 'not-a-bug',
@@ -270,6 +273,10 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'waiting-changed',
   'monitoring-started',
   'monitoring-stopped',
+  // Decisions on cards (ADR 0015): what a person chose, never a correction.
+  'scope-changed',
+  'dedupe-decided',
+  'clarify-answered',
 ]);
 
 export interface TransitionResult {

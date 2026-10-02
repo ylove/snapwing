@@ -2,6 +2,10 @@
 // the incident's event log to find where they were"). `foldCursor` folds the log, with corrections
 // merged into the events they correct, and `nextPhase` names the one step the process job runs next.
 // The tap handler uses the same two functions to decide whether a card is still waiting.
+//
+// Card answers are decision events (ADR 0015), and the latest of each wins: `scope-changed` replaces
+// the bundle, `dedupe-decided` settles a pending dedupe, `clarify-answered` (or the `waiting-changed {}`
+// a timeout appends) ends an ask-back round, and a later `resolved` replaces the resolution.
 
 import type { InteractiveCard } from '../contracts/adapters.ts';
 import type {
@@ -12,6 +16,7 @@ import type {
   EventActor,
   IncidentEvent,
   PlannedPayload,
+  DedupeDecidedPayload,
   TappedPayload,
 } from '../contracts/events.ts';
 import type { DedupeResult, Resolution } from '../contracts/incident.ts';
@@ -34,14 +39,19 @@ export interface Cursor {
   assembled?: {
     seq: number;
     payload: ContextAssembledPayload;
-    /** Seq of the last change to the bundle: the event itself or its latest correction. */
+    /** Seq of the last change to the bundle: the event itself or the latest `scope-changed`. */
     changedAt: number;
-    /** The Widen and Narrow taps the corrections applied, in order. */
+    /** The Widen and Narrow choices `scope-changed` applied, in order. */
     scopeHistory: ('widen' | 'narrow')[];
   };
+  /** The latest `resolved`. */
   resolved?: { seq: number; resolution: Resolution };
-  dedupe?: { seq: number; result: DedupeResult };
-  clarified: { seq: number; payload: ClarifiedPayload }[];
+  /**
+   * `dedupe-checked`, with `result.decision` settled by the latest `dedupe-decided` (Link is `link`;
+   * Create anyway, Not related, and the timeout default are `create-anyway`).
+   */
+  dedupe?: { seq: number; result: DedupeResult; decided?: { seq: number; payload: DedupeDecidedPayload } };
+  clarified: ClarifyRound[];
   planned?: { seq: number; payload: PlannedPayload };
   /** The planned level, then any later `level-changed`. */
   level?: AutonomyLevel;
@@ -54,6 +64,26 @@ export interface Cursor {
   /** Seqs of every `waiting-changed` event. */
   waitChanges: number[];
   taps: Tap[];
+}
+
+/** One ask-back round: the `clarified` question and how it ended. */
+export interface ClarifyRound {
+  seq: number;
+  payload: ClarifiedPayload;
+  /** The latest `clarify-answered` for this question. */
+  answer?: { seq: number; answer: string };
+  /** Seq of the `waiting-changed {}` after the question with no answer: the round timed out. */
+  endedAt?: number;
+}
+
+/** True once a round has an answer or has ended without one (including #47's corrected fields). */
+export function roundClosed(round: ClarifyRound): boolean {
+  return round.answer !== undefined || round.endedAt !== undefined || round.payload.answer !== undefined || round.payload.timedOut;
+}
+
+/** True when a closed round ended with no answer, so the ticket gets `needs-clarification`. */
+export function roundUnanswered(round: ClarifyRound): boolean {
+  return round.answer === undefined && round.payload.answer === undefined;
 }
 
 /** Payloads with every applicable correction merged, stacking in log order (ADR 0014). */
@@ -92,12 +122,32 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
       case 'context-assembled':
         cursor.assembled ??= { seq: e.seq, payload: e.payload, changedAt: e.seq, scopeHistory: [] };
         break;
+      case 'scope-changed':
+        if (cursor.assembled !== undefined) {
+          const { bundle, includedCount, excludedCount, choice } = e.payload;
+          cursor.assembled.payload = { bundle, includedCount, excludedCount };
+          cursor.assembled.changedAt = e.seq;
+          cursor.assembled.scopeHistory.push(choice);
+        }
+        break;
       case 'resolved':
-        cursor.resolved ??= { seq: e.seq, resolution: e.payload };
+        cursor.resolved = { seq: e.seq, resolution: e.payload };
         break;
       case 'dedupe-checked':
         cursor.dedupe ??= { seq: e.seq, result: e.payload };
         break;
+      case 'dedupe-decided':
+        if (cursor.dedupe !== undefined) {
+          const decision = e.payload.decision === 'link' ? 'link' : 'create-anyway';
+          cursor.dedupe.result = { ...cursor.dedupe.result, decision };
+          cursor.dedupe.decided = { seq: e.seq, payload: e.payload };
+        }
+        break;
+      case 'clarify-answered': {
+        const round = cursor.clarified.find((c) => c.seq === e.payload.questionSeq);
+        if (round !== undefined) round.answer = { seq: e.seq, answer: e.payload.answer };
+        break;
+      }
       case 'linked-to-existing':
         cursor.linkedTo ??= e.payload.issueKey;
         break;
@@ -119,21 +169,14 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
       case 'tapped':
         cursor.taps.push({ seq: e.seq, payload: e.payload, ...(e.actor === undefined ? {} : { actor: e.actor }) });
         break;
-      case 'waiting-changed':
+      case 'waiting-changed': {
         cursor.waitChanges.push(e.seq);
         cursor.waiting = e.payload.waitingOn !== undefined;
-        if (e.payload.waitingOn === undefined) cursor.waitEnds.push(e.seq);
-        break;
-      case 'corrected': {
-        const assembled = cursor.assembled;
-        if (assembled !== undefined && e.payload.correctsSeq === assembled.seq) {
-          // The bundle as of this correction; the Widen or Narrow it applied is the last scope tap before it.
-          assembled.payload = (corrected.get(assembled.seq) ?? assembled.payload) as unknown as ContextAssembledPayload;
-          assembled.changedAt = e.seq;
-          const applied = lastTap(cursor.taps, 'scope-preview')?.payload.choice;
-          if (applied === 'widen') assembled.scopeHistory.push('widen');
-          else if (applied === 'narrow') assembled.scopeHistory.push('narrow');
-        }
+        if (e.payload.waitingOn !== undefined) break;
+        cursor.waitEnds.push(e.seq);
+        // A wait that ends with the last question still open is that question's timeout.
+        const last = cursor.clarified[cursor.clarified.length - 1];
+        if (last !== undefined && cursor.planned === undefined && !roundClosed(last)) last.endedAt = e.seq;
         break;
       }
       default:
@@ -141,19 +184,7 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
     }
   }
   if (status !== undefined) cursor.status = status;
-  // Corrections may follow the event they correct; report each event's final form.
-  if (cursor.resolved) cursor.resolved.resolution = (corrected.get(cursor.resolved.seq) ?? cursor.resolved.resolution) as unknown as Resolution;
-  if (cursor.dedupe) cursor.dedupe.result = (corrected.get(cursor.dedupe.seq) ?? cursor.dedupe.result) as unknown as DedupeResult;
-  cursor.clarified = cursor.clarified.map((c) => ({ seq: c.seq, payload: (corrected.get(c.seq) ?? c.payload) as unknown as ClarifiedPayload }));
   return cursor;
-}
-
-function lastTap(taps: readonly Tap[], card: CardKind): Tap | undefined {
-  for (let i = taps.length - 1; i >= 0; i--) {
-    const t = taps[i];
-    if (t?.payload.card === card) return t;
-  }
-  return undefined;
 }
 
 /** The first tap on `card` after `seq`: the answer to the card posted then. Later taps are ignored. */
@@ -204,11 +235,11 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
   if (planned === undefined) {
     const last = cursor.clarified[cursor.clarified.length - 1];
     if (last === undefined) return { kind: 'clarify' };
-    if (last.payload.answer === undefined && !last.payload.timedOut) {
+    if (!roundClosed(last)) {
       const answer = answerAfter(cursor, 'clarify', last.seq);
       return answer === undefined ? { kind: 'clarify-card' } : { kind: 'clarify-card', answer };
     }
-    return { kind: 'plan', needsClarification: last.payload.timedOut };
+    return { kind: 'plan', needsClarification: roundUnanswered(last) };
   }
 
   if (filed === undefined) {

@@ -7,7 +7,7 @@ export const DEFAULT_MAX_QUESTIONS = 1;
 export const DEFAULT_SUPPRESS_REPORTERS = 3;
 
 export type QuestionKind = 'experiential' | 'technical';
-export type QuestionAsks = 'surface' | 'component' | 'environment' | 'symptom' | 'other';
+export type QuestionAsks = NonNullable<ClarifyQuestion['asks']>;
 
 /** A question as drafted by the model, before the gate. */
 export interface CandidateQuestion {
@@ -119,6 +119,7 @@ export function toClarifyQuestion(candidate: CandidateQuestion, failures: string
     audience: candidate.audience,
     text: candidate.text,
     ...(candidate.options.length > 0 ? { options: candidate.options } : {}),
+    asks: candidate.asks,
     gatePassed: failures.length === 0,
     gateFailures: failures,
   };

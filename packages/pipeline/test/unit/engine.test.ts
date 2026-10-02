@@ -2,6 +2,9 @@
 // real state store (SNAPWING_DB picks the dialect), with fakes for the adapter, the chat reader, Jira
 // search, and the model (a scripted backend behind the shared classify contract). The outbox worker
 // is simulated: it drains `create-issue`, appends `filed`, and continues the incident.
+//
+// Card answers are decision events, never corrections (ADR 0015): `afterEach` checks that no scenario
+// appends `corrected`.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +17,7 @@ import type { OutboxItem } from '../../src/contracts/state.ts';
 import type { JiraSearch, JiraSearchHit } from '../../src/dedupe/index.ts';
 import { IncidentOrchestrator, UnauthorizedError, UnsupportedChannelError, type TapInput } from '../../src/engine/orchestrator.ts';
 import type { CardKind } from '../../src/engine/cursor.ts';
-import type { EngineDeps } from '../../src/engine/deps.ts';
+import type { EngineDeps, EngineOptions } from '../../src/engine/deps.ts';
 import { parseWorkspaceMap } from '../../src/map/parse.ts';
 import type { AutonomyLevelId, WorkspaceMap } from '../../src/map/types.ts';
 import { withValidation } from '../../src/models/router.ts';
@@ -96,7 +99,10 @@ function fakeJira(hits: JiraSearchHit[]): JiraSearch & { queries: string[] } {
   };
 }
 
-/** Answers classify by task; anything else is a test bug. Wrapped in withValidation like every port. */
+/**
+ * Answers classify by `task:schemaName`, then by task; anything else is a test bug. Wrapped in
+ * withValidation like every port.
+ */
 function scriptedModel(answers: Partial<Record<string, unknown>>): ModelBackend & { tasks: string[] } {
   const tasks: string[] = [];
   return {
@@ -105,6 +111,8 @@ function scriptedModel(answers: Partial<Record<string, unknown>>): ModelBackend 
     vision: () => Promise.reject(new Error('vision is not scripted')),
     classify(request: ClassifyRequest<unknown>) {
       tasks.push(request.task);
+      const key = `${request.task}:${request.schemaName}`;
+      if (key in answers) return Promise.resolve({ value: answers[key], model: 'scripted/test' });
       if (!(request.task in answers)) return Promise.reject(new Error(`classify ${request.task} is not scripted`));
       return Promise.resolve({ value: answers[request.task], model: 'scripted/test' });
     },
@@ -140,28 +148,38 @@ let state: OpenedState;
 let wf: InProcessWorkflow;
 let now: number;
 let errors: unknown[];
+let incidents: string[];
 
 beforeEach(async () => {
   tdb = await createTestDatabase();
   now = T0.getTime() + 5 * 60_000;
   errors = [];
+  incidents = [];
   state = await tdb.open({ now: () => new Date(now) });
   wf = new InProcessWorkflow(state, { onError: (e) => errors.push(e) });
 });
 
 afterEach(async () => {
   await wf.stop();
+  // ADR 0015: a person's choice is a decision event; no scenario records one as a correction.
+  const appended = (await Promise.all(incidents.map((id) => state.read(id)))).flat().map((e) => e.type);
   await tdb.drop();
   expect(errors).toEqual([]);
+  expect(appended).not.toContain('corrected');
 });
 
 interface Scene {
   level?: AutonomyLevelId;
+  anchor?: SourceMessage;
   messages?: SourceMessage[];
   segment?: unknown;
   jira?: JiraSearchHit[];
   channel?: string;
   clarify?: unknown;
+  triage?: Record<string, unknown>;
+  /** The step 7 answer (task triage, schema resolution); only asked when steps 1 to 6 miss. */
+  resolve?: unknown;
+  options?: EngineOptions;
 }
 
 interface Harness {
@@ -173,12 +191,14 @@ interface Harness {
 }
 
 function setup(scene: Scene = {}): Harness {
-  const messages = scene.messages ?? [ANCHOR, SECOND];
+  const anchor = scene.anchor ?? ANCHOR;
+  const messages = scene.messages ?? [anchor, SECOND];
   const adapter = new FakeAdapter();
   const channel = scene.channel ?? CHANNEL;
   const model = scriptedModel({
     segmentation: scene.segment ?? segmentation(messages),
-    triage: TRIAGE,
+    triage: { ...TRIAGE, ...scene.triage },
+    ...(scene.resolve === undefined ? {} : { 'triage:resolution': scene.resolve }),
     ...(scene.clarify === undefined ? {} : { clarify: scene.clarify }),
   });
   if (!(state instanceof StateStore)) throw new Error('expected a StateStore');
@@ -193,7 +213,7 @@ function setup(scene: Scene = {}): Harness {
         'slack',
         {
           reader: fakeReader(messages),
-          anchor: (p) => Promise.resolve({ channelId: p.context.channelId, message: ANCHOR }),
+          anchor: (p) => Promise.resolve({ channelId: p.context.channelId, message: anchor }),
         },
       ],
     ]),
@@ -201,18 +221,20 @@ function setup(scene: Scene = {}): Harness {
     cache: createKvCache(state),
     map: withLevel(baseMap, scene.level ?? 0),
     clock: () => new Date(now),
+    ...(scene.options === undefined ? {} : { options: scene.options }),
   };
   const engine = new IncidentOrchestrator(deps);
   engine.register();
   const payload: CanonicalIncidentPayload = {
     eventId: ulid(T0.getTime()),
-    idempotencyKey: `slack-${channel}-${ANCHOR.id}`,
+    idempotencyKey: `slack-${channel}-${anchor.id}`,
     source: 'slack',
     reporter: { id: REPORTER.id, name: 'Pat', role: 'reporter' },
-    anchorText: ANCHOR.text,
-    context: { channelId: channel, deepLink: 'https://example.test/archives/C0APPBUGS/p1', rawPayloadSnapshot: { ts: ANCHOR.id } },
-    timestamp: ANCHOR.timestamp,
+    anchorText: anchor.text,
+    context: { channelId: channel, deepLink: 'https://example.test/archives/C0APPBUGS/p1', rawPayloadSnapshot: { ts: anchor.id } },
+    timestamp: anchor.timestamp,
   };
+  incidents.push(payload.eventId);
   return { engine, adapter, model, payload, raw: { signature: 'sig-test', payload } };
 }
 
@@ -240,6 +262,21 @@ async function status(h: Harness): Promise<string | undefined> {
 
 async function outbox(): Promise<OutboxItem[]> {
   return state.drainOutbox('jira', 50);
+}
+
+function eventOf<T extends EventType>(log: IncidentEvent[], type: T): IncidentEvent<T> | undefined {
+  return log.find((e) => e.type === type) as IncidentEvent<T> | undefined;
+}
+
+interface CreateRow {
+  fields: { project: { key: string }; labels: string[]; description: { content: { content: { text: string }[] }[] } };
+  customFields: Record<string, unknown>;
+  suggestedAssigneeEmail?: string;
+}
+
+/** The plain text of each paragraph in a create-issue description. */
+function paragraphs(row: CreateRow): string[] {
+  return row.fields.description.content.map((p) => p.content.map((n) => n.text).join(''));
 }
 
 /** The Jira outbox worker, simulated: create-issue succeeded, so `filed` is appended and the incident continues. */
@@ -389,7 +426,10 @@ describe('early exits and waits', () => {
     expect(h.adapter.cards[1]).toEqual({ kind: 'dedupe', issueKey: 'APP-7', summary: 'The app crashes when I open settings', assignee: 'mobDev' });
 
     await tap(h, 'dedupe', 'link');
-    expect(await types(h)).toEqual([...PREFIX, 'waiting-changed', 'tapped', 'corrected', 'linked-to-existing']);
+    expect(await types(h)).toEqual([...PREFIX, 'waiting-changed', 'tapped', 'dedupe-decided', 'linked-to-existing']);
+    const decided = eventOf(await events(h), 'dedupe-decided');
+    expect(decided?.payload).toEqual({ decision: 'link', issueKey: 'APP-7' });
+    expect(decided).toMatchObject({ actor: REPORTER, source: 'slack' });
     expect(await status(h)).toBe('linked-to-existing');
     const incident = await state.getIncident(h.payload.eventId);
     expect(incident?.jiraKey).toBe('APP-7');
@@ -425,7 +465,7 @@ describe('early exits and waits', () => {
     expect((await types(h)).filter((t) => t === 'tapped')).toEqual([]);
   });
 
-  it('widens the scope as a corrected bundle and shows the preview again', async () => {
+  it('widens the scope with a scope-changed event and shows the preview again', async () => {
     const early = message('m0', -45, 'settings page looks odd since this morning');
     const messages = [early, ANCHOR, SECOND];
     const h = setup({ messages, segment: segmentation(messages) });
@@ -433,18 +473,52 @@ describe('early exits and waits', () => {
     expect(h.adapter.cards[0]).toEqual({ kind: 'scope-preview', summary: expect.stringContaining('Reading 2 messages') as unknown });
 
     await tap(h, 'scope-preview', 'widen');
-    expect(await types(h)).toEqual(['captured', 'context-assembled', 'waiting-changed', 'tapped', 'corrected']);
+    expect(await types(h)).toEqual(['captured', 'context-assembled', 'waiting-changed', 'tapped', 'scope-changed']);
     expect(h.adapter.cards[1]).toEqual({ kind: 'scope-preview', summary: expect.stringContaining('Reading 3 messages') as unknown });
     const incident = await events(h);
-    const assembled = incident.find((e): e is IncidentEvent<'context-assembled'> => e.type === 'context-assembled');
-    const corrected = incident.find((e): e is IncidentEvent<'corrected'> => e.type === 'corrected');
-    expect(corrected?.payload).toMatchObject({ correctsSeq: assembled?.seq, fields: { includedCount: 3, bundle: { version: 2 } } });
+    const assembled = eventOf(incident, 'context-assembled');
+    const changed = eventOf(incident, 'scope-changed');
+    expect(changed?.payload).toEqual({
+      choice: 'widen',
+      bundle: { artifactId: assembled?.payload.bundle.artifactId, version: 2 },
+      includedCount: 3,
+      excludedCount: 0,
+    });
+    expect(changed).toMatchObject({ actor: REPORTER, source: 'slack' });
+    // The projection only stamps the decision; the status and the data columns stay.
+    expect(await state.getIncident(h.payload.eventId)).toMatchObject({ status: 'assembling', lastSeq: changed?.seq, updatedAt: changed?.recordedAt });
 
     await tap(h, 'scope-preview', 'looks-right');
     expect((await types(h)).slice(-4)).toEqual(['tapped', 'resolved', 'dedupe-checked', 'planned']);
   });
 
-  it('asks back when the gate passes and records the answer on the clarified event (main 7)', async () => {
+  const HIT = { key: 'APP-7', summary: 'The app crashes when I open settings', assignee: 'mobDev' };
+
+  it('records Not related on the dedupe card as dedupe-decided by the tapper, then files (main 6.2)', async () => {
+    const h = setup({ jira: [HIT] });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    await tap(h, 'dedupe', 'not-related');
+    const decided = eventOf(await events(h), 'dedupe-decided');
+    expect(decided?.payload).toEqual({ decision: 'not-related' });
+    expect(decided?.actor).toEqual(REPORTER);
+    expect((await types(h)).slice(-4)).toEqual(['tapped', 'dedupe-decided', 'waiting-changed', 'planned']);
+    expect((await outbox()).map((r) => r.op)).toEqual(['create-issue']);
+  });
+
+  it('records the dedupe timeout default as dedupe-decided with no actor (B 5)', async () => {
+    const h = setup({ jira: [HIT] });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    now += DAY + 1;
+    await wf.drain();
+    const decided = eventOf(await events(h), 'dedupe-decided');
+    expect(decided?.payload).toEqual({ decision: 'create-anyway', timedOut: true });
+    expect(decided?.actor).toBeUndefined();
+    expect((await types(h)).slice(-3)).toEqual(['dedupe-decided', 'waiting-changed', 'planned']);
+  });
+
+  it('asks back when the gate passes and applies a component answer to the resolution (main 7, #115)', async () => {
     const question = {
       audience: 'reporter',
       kind: 'experiential',
@@ -461,12 +535,132 @@ describe('early exits and waits', () => {
     expect(await h.engine.handleTap({ eventId: h.payload.eventId, card: 'clarify', choice: ' ', actor: REPORTER })).toEqual({ accepted: false, reason: 'invalid-choice' });
 
     await tap(h, 'clarify', 'Checkout');
-    expect(await types(h)).toEqual([...PREFIX, 'clarified', 'waiting-changed', 'tapped', 'corrected', 'waiting-changed', 'planned']);
+    expect(await types(h)).toEqual([...PREFIX, 'clarified', 'waiting-changed', 'tapped', 'clarify-answered', 'resolved', 'waiting-changed', 'planned']);
     const log = await events(h);
-    const clarified = log.find((e): e is IncidentEvent<'clarified'> => e.type === 'clarified');
-    expect(clarified?.payload).toEqual({ audience: 'reporter', question: question.text, timedOut: false });
-    expect(log.find((e) => e.type === 'corrected')?.payload).toMatchObject({ correctsSeq: clarified?.seq, fields: { answer: 'Checkout' } });
+    const clarified = eventOf(log, 'clarified');
+    expect(clarified?.payload).toEqual({ audience: 'reporter', question: question.text, asks: 'component', options: question.options, timedOut: false });
+    const answered = eventOf(log, 'clarify-answered');
+    expect(answered?.payload).toEqual({ questionSeq: clarified?.seq, answer: 'Checkout', appliesTo: { field: 'component', id: 'checkout' } });
+    expect(answered).toMatchObject({ actor: REPORTER, source: 'slack' });
+    const resolved = log.filter((e): e is IncidentEvent<'resolved'> => e.type === 'resolved');
+    expect(resolved.map((e) => e.payload.resolvedBy)).toEqual(['channel-explicit', 'clarify']);
+    expect(resolved[1]?.payload).toMatchObject({ surfaceId: 'web', componentId: 'checkout', jiraProject: 'WEB' });
+    expect(await state.getIncident(h.payload.eventId)).toMatchObject({ status: 'planned', surfaceId: 'web', componentId: 'checkout' });
     const [create] = await outbox();
-    expect((create?.payload as { fields: { labels: string[] } }).fields.labels).not.toContain('needs-clarification');
+    const row = create?.payload as unknown as CreateRow;
+    expect(row.fields.labels).not.toContain('needs-clarification');
+    expect(row.fields.project.key).toBe('WEB');
+  });
+});
+
+// #114: the full plan is an artifact, so a parked level 1 job files the ticket triage wrote.
+describe('stored triage plan (#114)', () => {
+  const WRITE_UP = 'Opening Settings crashes the app on Android.\n\nIt started after the 4.2 release.';
+
+  it('files a level 1 ticket after the tap with the triage write-up and the suggested assignee', async () => {
+    const h = setup({ level: 1, triage: { description: WRITE_UP, suggestedAssigneeEmail: 'marcus@example.com' } });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    const planned = eventOf(await events(h), 'planned');
+    const ref = planned?.payload.plan;
+    expect(ref).toBeDefined();
+    const artifact = await state.getArtifact(ref?.artifactId ?? '', ref?.version);
+    expect(artifact).toMatchObject({ kind: 'plan', contentType: 'application/json' });
+    expect(JSON.parse(artifact.body)).toMatchObject({ suggestedAssigneeEmail: 'marcus@example.com', projectKey: 'APP', autonomyLevel: 1 });
+
+    // The job parked on the fix preview; the tap resumes it with only the log to go on.
+    await tap(h, 'fix-preview', 'ticket_only', ENGINEER);
+    const [create] = await outbox();
+    const row = create?.payload as unknown as CreateRow;
+    expect(row.suggestedAssigneeEmail).toBe('marcus@example.com');
+    expect(paragraphs(row)).toEqual(expect.arrayContaining(['Opening Settings crashes the app on Android.', 'It started after the 4.2 release.']));
+  });
+
+  it('shows the stored plan in the informational fix preview after filed (level 2)', async () => {
+    const h = setup({ level: 2, triage: { description: WRITE_UP, suggestedAssigneeEmail: 'marcus@example.com' } });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    await file(h, 'APP-110');
+    const preview = h.adapter.cards[1];
+    expect(preview?.kind).toBe('fix-preview');
+    expect(preview?.kind === 'fix-preview' ? preview.plan : undefined).toMatchObject({
+      suggestedAssigneeEmail: 'marcus@example.com',
+      descriptionAdf: { content: [{ content: [{ text: 'Opening Settings crashes the app on Android.' }] }, { content: [{ text: 'It started after the 4.2 release.' }] }] },
+    });
+  });
+});
+
+// #115: an unresolved surface is asked about; the answer routes the ticket, a timeout degrades it.
+describe('unresolved surface (#115)', () => {
+  const VAGUE = message('m1', 0, 'it crashes when I open settings');
+  const SURFACE_QUESTION = {
+    audience: 'reporter',
+    kind: 'experiential',
+    asks: 'surface',
+    text: 'Were you on the website, the phone app, or the admin portal?',
+    options: ['Website', 'Mobile App', 'B2B Admin Portal'],
+    screenshotRequest: false,
+  };
+  const scene = (extra: Scene = {}): Scene => ({
+    anchor: VAGUE,
+    channel: 'C0RANDOM',
+    resolve: { surfaceId: 'unknown', confidence: 0 },
+    clarify: SURFACE_QUESTION,
+    ...extra,
+  });
+
+  async function toQuestion(h: Harness): Promise<void> {
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(eventOf(await events(h), 'resolved')?.payload).toEqual({ resolvedBy: 'unresolved', confidence: 0 });
+    expect(h.adapter.cards.at(-1)).toMatchObject({ kind: 'clarify', question: { asks: 'surface', options: SURFACE_QUESTION.options } });
+  }
+
+  it('resolves the surface from the answer and files the ticket to that project', async () => {
+    const h = setup(scene());
+    await toQuestion(h);
+    await tap(h, 'clarify', 'Website');
+    const log = await events(h);
+    expect(eventOf(log, 'clarify-answered')?.payload).toMatchObject({ answer: 'Website', appliesTo: { field: 'surface', id: 'web' } });
+    const resolved = log.filter((e): e is IncidentEvent<'resolved'> => e.type === 'resolved').at(-1);
+    expect(resolved?.payload).toEqual({ surfaceId: 'web', ownerId: 'webDev1', repo: 'github.com/acme/web', jiraProject: 'WEB', resolvedBy: 'clarify', confidence: 0.9 });
+    expect(eventOf(log, 'planned')?.payload.degraded).toBeUndefined();
+    const [create] = await outbox();
+    const row = create?.payload as unknown as CreateRow;
+    expect(row.fields.project.key).toBe('WEB');
+    expect(row.fields.labels).toContain('web');
+    expect(row.fields.labels).not.toContain('needs-clarification');
+  });
+
+  it('files an incident still unresolved after the timeout to the fallback project, ticket only, and says so', async () => {
+    const h = setup(scene({ level: 2 }));
+    await toQuestion(h);
+    now += DAY + 1;
+    await wf.drain(); // nobody answers
+    expect((await types(h)).slice(-3)).toEqual(['waiting-changed', 'waiting-changed', 'planned']);
+    const planned = eventOf(await events(h), 'planned');
+    expect(planned?.payload).toMatchObject({ projectKey: 'WEB', autonomyLevel: 0, degraded: 'unresolved-surface' });
+    expect(planned?.payload.labels).toContain('needs-clarification');
+    expect(await status(h)).toBe('planned');
+
+    const [create] = await outbox();
+    const row = create?.payload as unknown as CreateRow;
+    expect(row.fields.project.key).toBe('WEB');
+    expect(row.fields.labels).toContain('needs-clarification');
+    expect(row.customFields['Autonomy Level']).toBe(0);
+    expect(paragraphs(row)).toContainEqual(expect.stringContaining('could not tell which product this report is about'));
+
+    await file(h, 'WEB-120');
+    expect(await outbox()).toEqual([]); // ticket only: no transition, whatever the policy said
+    expect(h.adapter.statuses.at(-1)?.text).toBe('Filed as WEB-120. I could not tell which product this is about, so it is in WEB for someone to route.');
+  });
+
+  it('takes the install fallback project when one is set', async () => {
+    const h = setup(scene({ options: { fallbackJiraProject: 'ADM' } }));
+    await toQuestion(h);
+    now += DAY + 1;
+    await wf.drain();
+    const [create] = await outbox();
+    expect((create?.payload as unknown as CreateRow).fields.project.key).toBe('ADM');
   });
 });

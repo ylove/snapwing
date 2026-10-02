@@ -39,6 +39,7 @@ const ARROWS: Row[] = [
   ['resolved', ev('dedupe-checked'), 'deduped'],
   ['deduped', ev('linked-to-existing'), 'linked-to-existing'],
   ['deduped', ev('clarified'), 'deduped'],
+  ['deduped', ev('resolved'), 'deduped'], // a clarify answer re-resolves (ADR 0015)
   ['deduped', ev('planned'), 'planned'],
   ['planned', ev('filed'), 'filed'],
   ['deduped', ev('not-a-bug'), 'not-a-bug'],
@@ -144,7 +145,7 @@ describe('lifecycle machine', () => {
     },
   );
 
-  it.each(['status-message-posted', 'waiting-changed', 'monitoring-started', 'monitoring-stopped'] as const)(
+  it.each(['status-message-posted', 'waiting-changed', 'monitoring-started', 'monitoring-stopped', 'scope-changed', 'dedupe-decided', 'clarify-answered'] as const)(
     '%s is valid and status-preserving in every status',
     (type) => {
       for (const status of LIFECYCLE_STATUSES) {

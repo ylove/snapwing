@@ -5,6 +5,10 @@
 // - `captured` creates the row: kind, parent, reporter, source, channel, anchor, `opened_at`.
 //   Events for an incident with no row (no `captured` yet) fold to nothing.
 // - `resolved`: surface, component, repo (the resolution replaces all three, absent ones included).
+//   A later `resolved` (a clarify answer that named the surface or component, ADR 0015) replaces them again.
+// - `scope-changed`, `dedupe-decided`, `clarify-answered` (ADR 0015): nothing but `last_seq` and
+//   `updated_at`. What they change reaches the row through the events they lead to: a Link is
+//   followed by `linked-to-existing`, a clarify answer that names a map entry by a second `resolved`.
 // - `planned`: summary, priority, autonomy level, and the component when the plan names one.
 // - `filed`, `linked-to-existing`: Jira key. `pr-opened`, `fixer-done`: PR number and branch.
 // - `level-changed`, and `released` with a `restoredLevel`: autonomy level.
