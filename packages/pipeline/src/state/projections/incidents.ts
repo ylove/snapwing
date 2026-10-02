@@ -23,7 +23,7 @@
 // Deterministic: timestamps come from the events, never the clock.
 
 import type { Selectable } from 'kysely';
-import type { AutonomyLevel, EventType, IncidentEvent } from '../../contracts/events.ts';
+import type { AutonomyLevel, IncidentEvent } from '../../contracts/events.ts';
 import type { ChannelSource } from '../../contracts/incident.ts';
 import type { IncidentKind, IncidentStatus, IncidentView, IncidentWaitingOn } from '../../contracts/state.ts';
 import { INITIAL_STATUS, isTerminalStatus, isValidTransition, LIFECYCLE_STATUSES, nextStatus } from '../../lifecycle/machine.ts';
@@ -38,17 +38,6 @@ export interface IncidentFold {
   /** Why a `corrected` event was ignored. Unset for a status misfit. */
   problem?: string;
 }
-
-/**
- * Events only this projection reads (A 4.3, A 4.5): valid in every status, and they never move it.
- * The lifecycle table (#11) does not list them, so `isValidTransition` alone would call them misfits.
- */
-const STATUS_NEUTRAL: ReadonlySet<EventType> = new Set<EventType>([
-  'status-message-posted',
-  'waiting-changed',
-  'monitoring-started',
-  'monitoring-stopped',
-]);
 
 /**
  * Folds one event into the row. Pure: no clock, no I/O. `log` is the incident's event log; only a
@@ -90,7 +79,7 @@ function step(prev: IncidentView | undefined, statusEvent: IncidentEvent, dataEv
   }
 
   const e = statusEvent;
-  const valid = STATUS_NEUTRAL.has(e.type) || isValidTransition(prev.status, e);
+  const valid = isValidTransition(prev.status, e);
   const status = nextStatus(prev.status, e);
   let next: IncidentView = { ...applyFields(prev, dataEvent), status, lastSeq: Math.max(prev.lastSeq, e.seq), updatedAt: e.recordedAt };
   if (status !== prev.status) {

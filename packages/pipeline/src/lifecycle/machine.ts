@@ -256,6 +256,11 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'held',
   'clarified',
   'tapped',
+  // A 4.3, A 4.5: status message, waiting-on, and monitoring bookkeeping (ADR 0014).
+  'status-message-posted',
+  'waiting-changed',
+  'monitoring-started',
+  'monitoring-stopped',
 ]);
 
 export interface TransitionResult {
