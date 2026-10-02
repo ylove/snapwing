@@ -1,0 +1,9 @@
+{
+  "01-level-0-ticket-only.jsonl": { "status": "filed" },
+  "02-level-1-fix-on-tap.jsonl": { "status": "merged" },
+  "03-level-2-fix-now-review-retry.jsonl": { "status": "deployed:staging" },
+  "04-level-3-autopilot-closed.jsonl": { "status": "closed" },
+  "05-stop-mid-fix.jsonl": { "status": "stopped" },
+  "06-claim-then-release.jsonl": { "status": "fixing" },
+  "07-dedupe-linked-to-existing.jsonl": { "status": "linked-to-existing" }
+}
