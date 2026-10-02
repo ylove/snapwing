@@ -12,6 +12,7 @@ import { StateNotFoundError, type Artifact } from '../../src/contracts/state.ts'
 import type { HarnessCheckpoint, HarnessResult } from '../../src/ports/harness.ts';
 import { InvalidObjectKeyError, ObjectNotFoundError } from '../../src/ports/object-store.ts';
 import type { FixerJob } from '../../src/ports/runner.ts';
+import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
 import { SecretNotFoundError } from '../../src/ports/secrets.ts';
 import { createKvCache } from '../../src/providers/local/cache.ts';
 import { createLocalObjectStore } from '../../src/providers/local/object-store.ts';
@@ -22,6 +23,7 @@ import type { OpenedState } from '../../src/ports/state.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { ulid } from '../../src/util/ulid.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
+import { createBareRepo, type BareRepo } from '../helpers/git.ts';
 
 let scratch: string;
 
@@ -349,7 +351,20 @@ describe('local object store (disk)', () => {
 describe('local runner (child process over the generic harness)', () => {
   const AGENT = fileURLToPath(new URL('../fixtures/harness/fake-agent.mjs', import.meta.url));
   const REQUEST_ID = '01HZXTESTREQUEST0000000000';
-  const REQUEST_BODY = '<implementation-request>fix the login button</implementation-request>';
+  const REQUEST_BODY = buildImplementationRequest({
+    issue: 'WEB-1042',
+    intent: 'fix the login button',
+    evidence: [{ kind: 'report', source: 'slack', text: 'the login button does nothing' }],
+    constraints: { scope: 'login only', tests: { required: true, text: 'add a test' }, forbidden: [] },
+    handoff: { mode: 'review', autonomy: 2 },
+  });
+  let origin: BareRepo;
+  beforeAll(async () => {
+    origin = await createBareRepo();
+  });
+  afterAll(async () => {
+    await origin.remove();
+  });
 
   const artifacts: Record<string, Artifact> = {
     [REQUEST_ID]: {
@@ -412,6 +427,7 @@ describe('local runner (child process over the generic harness)', () => {
       resolveHarness: harnessResolver(harnessConfig, { env: { FAKE_AGENT_MODE: mode }, killGraceMs: 200 }),
       artifacts: artifactStore,
       workdirRoot,
+      git: { token: async () => 'test-git-token-not-real', remoteUrl: () => origin.url },
       onCheckpoint:
         hooks.onCheckpoint ??
         (async (run, checkpoint) => {
@@ -424,7 +440,7 @@ describe('local runner (child process over the generic harness)', () => {
     return { r, checkpoints, finished };
   }
 
-  it('runs the fixer under the job run id in its own work directory and reports checkpoints and the result', async () => {
+  it('runs the fixer under the job run id in its own checkout, reports checkpoints and the result, and removes the checkout', async () => {
     const { r, checkpoints, finished } = runner('success');
     const given = job();
     const { runId } = await r.runFixer(given);
@@ -432,11 +448,11 @@ describe('local runner (child process over the generic harness)', () => {
     expect(r.active()).toEqual([runId]);
     const result = await r.wait(runId);
     expect(result).toEqual({ outcome: 'done', branch: 'fix/WEB-1', summary: 'ok', testsAdded: ['t.test.ts'] });
-    expect(checkpoints.map((c) => c.checkpoint.phase)).toEqual(['branched', 'implemented', 'tested']);
+    expect(checkpoints.map((c) => c.checkpoint.phase)).toEqual(['cloned', 'branched', 'implemented', 'tested']);
     expect(checkpoints.every((c) => c.runId === runId)).toBe(true);
     expect(finished).toEqual([{ runId, result }]);
     expect(r.active()).toEqual([]);
-    expect((await stat(join(workdirRoot, runId))).isDirectory()).toBe(true);
+    await expect(stat(join(workdirRoot, runId))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('passes the artifact body on stdin and the job to the harness environment', async () => {
@@ -446,14 +462,16 @@ describe('local runner (child process over the generic harness)', () => {
     if (result.outcome !== 'done') throw new Error(`expected done, got ${JSON.stringify(result)}`);
     const seen = JSON.parse(result.summary) as { request: string; env: Record<string, string>; cwd: string };
     expect(seen.request).toBe(REQUEST_BODY);
-    expect(await realpath(seen.cwd)).toBe(await realpath(join(workdirRoot, runId)));
+    expect(seen.cwd).toBe(join(await realpath(workdirRoot), runId));
     expect(seen.env).toMatchObject({
       SNAPWING_ROLE: 'fixer',
       SNAPWING_ISSUE_KEY: 'WEB-1042',
       SNAPWING_REPO: 'acme/web',
       SNAPWING_BUDGET_WALL_CLOCK: 'PT1M',
       SNAPWING_BUDGET_ATTEMPTS: '2',
+      SNAPWING_GIT_TOKEN: 'test-git-token-not-real',
     });
+    expect(seen.env).not.toHaveProperty('SNAPWING_PRIOR_REVIEW_FILE');
   });
 
   it('reports a failed run', async () => {

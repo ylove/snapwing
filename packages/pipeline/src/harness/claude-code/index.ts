@@ -150,6 +150,7 @@ async function runProcess(input: RunInput): Promise<HarnessResult> {
 function buildEnv(input: RunInput): NodeJS.ProcessEnv {
   const { workItem, opts, workdir } = input;
   const env: NodeJS.ProcessEnv = {
+    ...opts.env,
     SNAPWING_HARNESS_CONTRACT: '1',
     SNAPWING_ROLE: opts.role,
     SNAPWING_WORK_ITEM_ID: workItem.id,

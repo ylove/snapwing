@@ -82,7 +82,7 @@ function buildEnv(config: GenericHarnessConfig, workItem: WorkItemRef, workdir: 
     const v = process.env[name];
     if (v !== undefined) env[name] = v;
   }
-  Object.assign(env, config.env ?? {});
+  Object.assign(env, config.env ?? {}, opts.env ?? {});
   env['SNAPWING_HARNESS_CONTRACT'] = '1';
   env['SNAPWING_ROLE'] = opts.role;
   env['SNAPWING_WORK_ITEM_ID'] = workItem.id;
