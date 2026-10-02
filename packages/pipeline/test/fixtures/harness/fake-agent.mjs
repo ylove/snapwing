@@ -2,6 +2,7 @@
 // It reads the whole of stdin first, as the contract says, then acts.
 
 import { Buffer } from 'node:buffer';
+import { readdirSync } from 'node:fs';
 import process from 'node:process';
 import { setInterval } from 'node:timers';
 
@@ -34,7 +35,16 @@ switch (mode) {
     result({
       outcome: 'done',
       branch: 'b',
-      summary: JSON.stringify({ request, env, cwd: process.cwd(), args: process.argv.slice(2), leaked: process.env.FAKE_SERVER_SECRET ?? null }),
+      summary: JSON.stringify({
+        request,
+        env,
+        cwd: process.cwd(),
+        args: process.argv.slice(2),
+        leaked: process.env.FAKE_SERVER_SECRET ?? null,
+        home: process.env.HOME ?? null,
+        tmp: process.env.TMPDIR ?? null,
+        homeEntries: process.env.HOME === undefined ? null : readdirSync(process.env.HOME),
+      }),
       testsAdded: [],
     });
     break;

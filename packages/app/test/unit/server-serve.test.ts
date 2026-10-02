@@ -14,7 +14,7 @@ import { openState, type OpenStateHooks } from '@snapwing/pipeline/state/db.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { main } from '../../src/cli/main.ts';
 import type { ComposeFn } from '../../src/server/compose.ts';
-import { runServe, type ServeDeps } from '../../src/server/serve.ts';
+import { LOCAL_RUNNER_REFUSED, LOCAL_RUNNER_WARNING, localRunnerCheck, runServe, type ServeDeps } from '../../src/server/serve.ts';
 
 const EXAMPLE_CONFIG = fileURLToPath(new URL('../../../../examples/snapwing.config.example.xml', import.meta.url));
 
@@ -46,7 +46,7 @@ interface Run {
   closed: () => boolean;
 }
 
-function start(args: string[], compose?: ComposeFn): Run {
+function start(args: string[], compose?: ComposeFn, env: Record<string, string> = {}): Run {
   const out: string[] = [];
   const err: string[] = [];
   const signals = new EventEmitter();
@@ -70,7 +70,7 @@ function start(args: string[], compose?: ComposeFn): Run {
   };
   const code = runServe(
     args,
-    { env: { ...envFor(tdb), SNAPWING_ENV_FILE: join(dir, 'absent.env') }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
+    { env: { ...envFor(tdb), SNAPWING_ENV_FILE: join(dir, 'absent.env'), ...env }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
     deps,
   );
   // Surface a startup failure instead of waiting on `ready` forever.
@@ -125,7 +125,8 @@ describe('snapwing serve', () => {
     run.signals.emit('SIGTERM');
     expect(await run.code).toBe(0);
     expect(run.closed()).toBe(true);
-    expect(run.err).toEqual([]);
+    // The example config uses the local runner, which always warns (ADR 0017).
+    expect(run.err).toEqual([`snapwing serve: ${LOCAL_RUNNER_WARNING}`]);
     expect(run.out.join('\n')).toContain('SIGTERM: shutting down');
     await expect(fetch(`${url}/healthz`)).rejects.toThrow();
   });
@@ -153,10 +154,38 @@ describe('snapwing serve', () => {
     expect(invalid.err.join('\n')).toContain('is not valid');
   });
 
+  it('refuses the local runner with NODE_ENV=production, before opening the store', async () => {
+    const run = start(['--config', EXAMPLE_CONFIG], undefined, { NODE_ENV: 'production' });
+    expect(await run.code).toBe(1);
+    expect(run.err.join('\n')).toContain(LOCAL_RUNNER_REFUSED);
+    expect(run.err.join('\n')).toContain('--allow-local-runner');
+    expect(run.closed()).toBe(false);
+    expect(run.out.join('\n')).not.toContain('state open');
+  });
+
+  it('starts the local runner in production with --allow-local-runner, and warns', async () => {
+    const run = start(['--worker', '--allow-local-runner', '--config', EXAMPLE_CONFIG], undefined, { NODE_ENV: 'production' });
+    await run.ready;
+    expect(run.out.join('\n')).toContain('worker polling');
+    expect(run.err).toEqual([`snapwing serve: ${LOCAL_RUNNER_WARNING}`]);
+    run.signals.emit('SIGTERM');
+    expect(await run.code).toBe(0);
+  });
+
+  it('decides the local runner policy from the provider, NODE_ENV, and the flag', () => {
+    expect(localRunnerCheck('docker', { NODE_ENV: 'production' }, false)).toBeUndefined();
+    expect(localRunnerCheck('local', { NODE_ENV: 'production' }, false)).toEqual({ refuse: LOCAL_RUNNER_REFUSED });
+    expect(localRunnerCheck('local', { NODE_ENV: ' production ' }, false)).toEqual({ refuse: LOCAL_RUNNER_REFUSED });
+    expect(localRunnerCheck('local', { NODE_ENV: 'production' }, true)).toEqual({ warn: LOCAL_RUNNER_WARNING });
+    expect(localRunnerCheck('local', { NODE_ENV: 'development' }, false)).toEqual({ warn: LOCAL_RUNNER_WARNING });
+    expect(localRunnerCheck('local', {}, false)).toEqual({ warn: LOCAL_RUNNER_WARNING });
+  });
+
   it('is reachable from the CLI and prints its usage', async () => {
     const out: string[] = [];
     const code = await main(['serve', '--help'], { env: {}, stdout: (l) => out.push(l), stderr: () => undefined });
     expect(code).toBe(0);
     expect(out.join('\n')).toContain('snapwing serve [--api] [--worker]');
+    expect(out.join('\n')).toContain('--allow-local-runner');
   });
 });

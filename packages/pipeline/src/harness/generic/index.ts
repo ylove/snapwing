@@ -3,7 +3,9 @@
 // to stdin, checkpoints come back as JSON lines on stderr, the result is one JSON object on stdout.
 // The command is split into an argument vector and executed without a shell, so request content can
 // never reach a command line. Everything the process prints is untrusted and goes through the
-// validators in ../contract.ts.
+// validators in ../contract.ts. The process itself is untrusted too (ADR 0017): it gets a fresh scratch
+// HOME and TMPDIR per run, never the server user's, and a workdir in or above the server's own tree is
+// refused.
 
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
@@ -11,6 +13,7 @@ import type { HarnessPhase, HarnessPort, HarnessResult, HarnessRunOptions, WorkI
 import { InvalidDurationError, parseDuration } from '../../util/duration.ts';
 import { MAX_RESULT_LENGTH, parseHarnessResult } from '../contract.ts';
 import { budgetExceededReason, DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
+import { createScratchHome, serverTreeConflict, type ScratchHome } from '../untrusted-host.ts';
 
 export interface GenericHarnessConfig {
   /** Command template, split on whitespace with double quotes respected; never run through a shell. */
@@ -26,7 +29,8 @@ export interface GenericHarnessConfig {
 export const DEFAULT_TIMEOUT = 'PT30M';
 export { DEFAULT_KILL_GRACE_MS };
 const STDERR_TAIL_CHARS = 2000;
-const INHERITED_ENV = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const;
+/** From the server's environment; HOME and TMPDIR are the run's scratch directories instead. */
+const INHERITED_ENV = ['PATH', 'LANG'] as const;
 
 /** Splits a command template into an argument vector. Whitespace separates; double quotes group. */
 export function splitCommand(command: string): string[] {
@@ -58,8 +62,17 @@ export function createGenericHarness(config: GenericHarnessConfig): HarnessPort 
   const graceMs = config.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
   return {
-    run: (workItem, implementationRequest, workdir, opts) =>
-      runGeneric(argv, config, graceMs, workItem, implementationRequest, workdir, opts),
+    async run(workItem, implementationRequest, workdir, opts) {
+      if (opts.signal.aborted) return { outcome: 'stopped', atPhase: 'cloned' };
+      const conflict = serverTreeConflict(workdir);
+      if (conflict !== undefined) return { outcome: 'failed', reason: `harness workdir: ${conflict}`, attempts: 0 };
+      const scratch = await createScratchHome('agent-home');
+      try {
+        return await runGeneric(argv, config, graceMs, workItem, implementationRequest, workdir, opts, scratch);
+      } finally {
+        await scratch.dispose();
+      }
+    },
   };
 }
 
@@ -76,7 +89,7 @@ function wallClockMs(config: GenericHarnessConfig, opts: HarnessRunOptions): { m
   return candidates.reduce((a, b) => (b.ms < a.ms ? b : a));
 }
 
-function buildEnv(config: GenericHarnessConfig, workItem: WorkItemRef, workdir: string, opts: HarnessRunOptions): Record<string, string> {
+function buildEnv(config: GenericHarnessConfig, workItem: WorkItemRef, workdir: string, opts: HarnessRunOptions, scratch: ScratchHome): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV) {
     const v = process.env[name];
@@ -91,6 +104,9 @@ function buildEnv(config: GenericHarnessConfig, workItem: WorkItemRef, workdir: 
   env['SNAPWING_WORKDIR'] = workdir;
   env['SNAPWING_BUDGET_WALL_CLOCK'] = opts.budget.wallClock;
   env['SNAPWING_BUDGET_ATTEMPTS'] = String(opts.budget.attempts);
+  // Last, so neither the config nor the run's env can point the process at the server user's home.
+  env['HOME'] = scratch.home;
+  env['TMPDIR'] = scratch.tmp;
   return env;
 }
 
@@ -102,9 +118,8 @@ function runGeneric(
   implementationRequest: string,
   workdir: string,
   opts: HarnessRunOptions,
+  scratch: ScratchHome,
 ): Promise<HarnessResult> {
-  if (opts.signal.aborted) return Promise.resolve({ outcome: 'stopped', atPhase: 'cloned' });
-
   const budget = wallClockMs(config, opts);
   const [file, ...args] = argv;
 
@@ -113,7 +128,7 @@ function runGeneric(
     try {
       child = spawn(file as string, args, {
         cwd: workdir,
-        env: buildEnv(config, workItem, workdir, opts),
+        env: buildEnv(config, workItem, workdir, opts, scratch),
         shell: false,
         detached: true,
         stdio: ['pipe', 'pipe', 'pipe'],

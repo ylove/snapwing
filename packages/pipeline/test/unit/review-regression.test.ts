@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { SNAPWING_ROOT, serverTreeConflict } from '../../src/harness/untrusted-host.ts';
 import { MAX_RUN_OUTPUT, proveRegression, regressionEnv, selectTestFiles } from '../../src/review/regression.ts';
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'regression');
@@ -176,29 +177,70 @@ describe('proveRegression environment (the test command is untrusted pull reques
     );
     expect(r.status).toBe('fails-with-fix');
     expect(r.output).toContain('probe=[] flag=[from-input]');
-    expect(r.output).toContain(`home=[${process.env['HOME'] ?? ''}]`);
+    expect(r.output).not.toContain(`home=[${homedir()}]`);
     expect(r.output).toContain('askpass=[]');
     expect(r.output).not.toContain('server-only-value');
     expect(r.output).not.toContain('test-fixer-secret');
     expect(r.output).not.toContain('/nonexistent/askpass');
 
     const names = new Set([...r.output.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]));
-    const allowed = new Set([...Object.keys(regressionEnv({ REPO_TEST_FLAG: 'x' })), 'PWD', 'OLDPWD', 'SHLVL', '_']);
+    const allowed = new Set([...Object.keys(regressionEnv({ home: '/h', tmp: '/t' }, { REPO_TEST_FLAG: 'x' })), 'PWD', 'OLDPWD', 'SHLVL', '_']);
     expect([...names].filter((n) => n !== undefined && !allowed.has(n))).toEqual([]);
     expect(names.has('PATH')).toBe(true);
   });
 
-  it('builds the environment from PATH, HOME, LANG, TMPDIR, env, and the git guards only', () => {
+  it('builds the environment from PATH, LANG, env, the scratch HOME and TMPDIR, and the git guards only', () => {
     const env = withProcessEnvSync({ PATH: '/bin', HOME: '/home/x', LANG: 'C', TMPDIR: '/tmp/x', OTHER_SERVER_VALUE: 'nope' }, () =>
-      regressionEnv({ NODE_ENV: 'test', GIT_ASKPASS: '/from/caller', GIT_CONFIG_GLOBAL: '/from/caller' }),
+      regressionEnv(
+        { home: '/scratch/home', tmp: '/scratch/tmp' },
+        { NODE_ENV: 'test', HOME: '/home/x', TMPDIR: '/tmp/x', GIT_ASKPASS: '/from/caller', GIT_CONFIG_GLOBAL: '/from/caller' },
+      ),
     );
-    expect(env).toMatchObject({ PATH: '/bin', HOME: '/home/x', LANG: 'C', TMPDIR: '/tmp/x', NODE_ENV: 'test' });
+    // The caller's env cannot put HOME or TMPDIR back on the server's.
+    expect(env).toMatchObject({ PATH: '/bin', HOME: '/scratch/home', LANG: 'C', TMPDIR: '/scratch/tmp', NODE_ENV: 'test' });
     expect(env['OTHER_SERVER_VALUE']).toBeUndefined();
     // The caller's env cannot switch the git guards off.
     expect(env['GIT_ASKPASS']).toBe('');
     expect(env['GIT_CONFIG_GLOBAL']).not.toBe('/from/caller');
     expect(env['GIT_CONFIG_NOSYSTEM']).toBe('1');
     expect([env['GIT_CONFIG_KEY_0'], env['GIT_CONFIG_VALUE_0']]).toEqual(['credential.helper', '']);
+  });
+
+  it('runs the test command with a fresh empty HOME and TMPDIR, never the server user\'s, outside the server tree', async () => {
+    // The server user's home, with a credential a test command could read by `~` path.
+    const serverHome = join(root, 'server-home');
+    mkdirSync(join(serverHome, '.config', 'gh'), { recursive: true });
+    writeFileSync(join(serverHome, '.git-credentials'), 'https://x:planted@example.com\n');
+    writeFileSync(join(serverHome, '.config', 'gh', 'hosts.yml'), 'example.com:\n  oauth_token: planted\n');
+    const serverTmp = join(root, 'server-tmp');
+    mkdirSync(serverTmp, { recursive: true });
+    const r = await withProcessEnv({ HOME: serverHome, TMPDIR: serverTmp }, () =>
+      proveRegression({
+        ...base(),
+        env: { HOME: serverHome, TMPDIR: serverTmp },
+        testCommand:
+          'echo "home=[$HOME] tmp=[$TMPDIR] cwd=[$(pwd -P)] listing=[$(ls -A "$HOME")] creds=[$(cat ~/.git-credentials ~/.config/gh/hosts.yml 2>/dev/null)]"; exit 1',
+      }),
+    );
+    expect(r.status).toBe('fails-with-fix');
+    const runs = [...r.output.matchAll(/home=\[(.*?)\] tmp=\[(.*?)\] cwd=\[(.*?)\] listing=\[(.*?)\] creds=\[(.*?)\]/g)];
+    expect(runs).toHaveLength(2); // base and head
+    const homes = new Set<string>();
+    for (const [, home = '', tmp = '', cwd = '', listing, creds] of runs) {
+      expect(home).not.toBe('');
+      expect(home).not.toBe(homedir());
+      expect(home).not.toBe(serverHome);
+      expect(tmp).not.toBe(serverTmp);
+      expect(listing).toBe('');
+      expect(creds).toBe('');
+      expect(serverTreeConflict(cwd)).toBeUndefined();
+      expect(serverTreeConflict(cwd, [SNAPWING_ROOT, process.cwd()])).toBeUndefined();
+      homes.add(home);
+    }
+    expect(r.output).not.toContain('planted');
+    // Each proof gets its own scratch home, removed afterwards.
+    expect(homes.size).toBe(1);
+    expect(() => readdirSync([...homes][0] ?? '')).toThrow();
   });
 
   it('gives the scratch tree a fresh git config: no helper or header from the repository or HOME, and no writes back', async () => {
