@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ArtifactRef, EventPayloads, EventType, IncidentEvent, NewEvent } from '../../src/contracts/events.ts';
 import { isReviewRunData, reviewRunKey } from '../../src/contracts/jobs.ts';
 import { handleFixerDone, latest, registerFixerJobs, startFixer, type FixerDeps } from '../../src/fixer/job.ts';
-import { reviewVerdict } from '../../src/merge/job.ts';
+import { reviewVerdict, type MergeCombinedStatus } from '../../src/merge/job.ts';
 import type { HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../src/ports/harness.ts';
 import type { FixerJob, RunnerPort } from '../../src/ports/runner.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
@@ -162,6 +162,9 @@ class FakeGitHub implements ReviewGitHub {
   readonly checks: FakeCheck[] = [];
   /** GitHub's answer when an App approves or requests changes on its own PR. */
   rejectOwnReviews = false;
+  /** The base branch's required checks for the head. Default: CI still running. */
+  required: MergeCombinedStatus['required'] = [{ name: 'ci', state: 'pending', source: 'check-run' }];
+  readonly statusFor: string[] = [];
 
   getPullRequest(number: number): Promise<ReviewPullRequest> {
     if (number !== this.pr.number) return Promise.reject(Object.assign(new Error('Not Found'), { status: 404 }));
@@ -196,6 +199,11 @@ class FakeGitHub implements ReviewGitHub {
     if (check === undefined) return Promise.reject(Object.assign(new Error('Not Found'), { status: 404 }));
     check.history.push({ ...input });
     return Promise.resolve({ id });
+  }
+
+  combinedStatus(sha: string): Promise<MergeCombinedStatus> {
+    this.statusFor.push(sha);
+    return Promise.resolve({ required: this.required.map((c) => ({ ...c })) });
   }
 
   /** The final state of the latest check run. */
@@ -440,6 +448,44 @@ describe(`review job (${TEST_DIALECT})`, () => {
     expect(w.merges).toEqual([INC]);
     expect(w.runner.started).toHaveLength(1);
     expect(await status()).toBe('ci');
+  });
+
+  it('CI that finished green before the review passed is recorded when the review passes (#214)', async () => {
+    const w = await setup();
+    const head = await fixerOpensPr(w, FIXED);
+    w.github.required = [{ name: 'ci', state: 'success', source: 'check-run' }];
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    const types = (await log()).map((e) => e.type);
+    expect(types.slice(types.indexOf('review-passed'))).toEqual(['review-passed', 'ci-green']);
+    expect((await lastOf('ci-green'))?.payload).toEqual({ prNumber: PR, headSha: head });
+    expect(w.github.statusFor).toEqual([head]);
+    expect(await status()).toBe('mergeable');
+    expect(w.merges).toEqual([INC]);
+  });
+
+  it('CI that finished red before the review passed: ci-red, then the fixer retry with the failing checks (main 10)', async () => {
+    const w = await setup();
+    const head = await fixerOpensPr(w, FIXED);
+    w.github.required = [
+      { name: 'build', state: 'success', source: 'check-run' },
+      { name: 'test', state: 'failure', source: 'check-run' },
+    ];
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect((await lastOf('ci-red'))?.payload).toEqual({ prNumber: PR, headSha: head, failingChecks: ['test'] });
+    expect(w.merges).toEqual([]);
+    expect(w.runner.started).toHaveLength(2);
+    expect(w.runner.started[1]?.review).toBeDefined();
+    const prior = await storedVerdict(w.runner.started[1]?.review);
+    expect(prior.verdict).toBe('request-changes');
+    expect(prior.constraintViolations).toEqual([{ constraint: 'ci', note: 'required check test failed' }]);
+    expect((await lastOf('fixer-started'))?.payload.attempt).toBe(2);
+    expect(await status()).toBe('fixing-retry');
   });
 
   it('request-changes, then approve: the fixer runs once more with the review, and the second review passes', async () => {

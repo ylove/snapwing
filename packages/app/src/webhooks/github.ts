@@ -24,15 +24,19 @@
 //     merged it), once per pull request. The App's own merges are recorded by `merge.evaluate`
 //     (merge/job.ts), which may still be appending when this delivery lands.
 //   check_suite or check_run completed, or a status that is not pending, for the open pull request's
-//     current head: once every check the base branch requires has completed, one `ci-green`, or
-//     `ci-red` with the failing check names, per head sha, then `merge.evaluate` is started with its
-//     singleton key (main 14.1). Only while the lifecycle awaits CI (`ci`, `ci-retry`): a result
-//     recorded while the review is still running would not fit B 5, and `merge.evaluate` appends
-//     `ci-green` itself for an incident still in `ci` (merge/job.ts); the status check and a per-head
-//     check keep the two from recording the same head twice. The review agent's own check run
-//     (`snapwing/review`) completing is a check_run delivery too, so a head whose CI finished first
-//     is evaluated again when that run completes. A base branch that requires no checks is never green
-//     (`combinedStatus.state` is vacuously `success` then; this reads `required` only).
+//     current head: `recordCiResult` (pipeline merge/ci.ts, #214), the one place that records CI for
+//     the webhook, the review job, and `merge.evaluate` alike. Once every check the base branch
+//     requires has completed it appends one `ci-green`, or `ci-red` with the failing check names, per
+//     head sha, and only while the lifecycle awaits CI (`ci`, `ci-retry`; B 5 takes no result while
+//     the review is still running); after `ci-red` it starts the fixer retry (main 10). After
+//     `ci-green` this handler starts `merge.evaluate` with its singleton key (main 14.1). CI that
+//     finished before the review passed is recorded by the review job when it appends
+//     `review-passed`, so nothing waits for another check delivery. A base branch that requires no
+//     checks is never green (`combinedStatus.state` is vacuously `success` then; only `required` is
+//     read). The projection's status is checked before any GitHub call, since most check deliveries
+//     arrive while nothing waits for them. The result is recorded before the delivery is marked seen,
+//     so a delivery that fails is not marked seen; a redelivery finds its head recorded and appends
+//     nothing.
 //   deployment_status success: `deployed:staging` or `deployed:production`, by the environment name
 //     (`environments`, case-insensitive; else GitHub's `production_environment` flag), for every merged
 //     incident of the repository whose merge commit is the deployed sha, once per incident and
@@ -46,6 +50,7 @@ import type { EventActor, IncidentEvent, NewEvent } from '@snapwing/pipeline/con
 import { isExpectedSeqConflict, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import { currentLevel, lastSeqOf, latest, newEvent } from '@snapwing/pipeline/fixer/job.ts';
 import { isTerminalStatus, isValidTransition, LIFECYCLE_STATUSES, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
+import { AWAITING_CI, recordCiResult } from '@snapwing/pipeline/merge/ci.ts';
 import { startMergeEvaluate, statusOf } from '@snapwing/pipeline/merge/job.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkflowPort } from '@snapwing/pipeline/ports/workflow.ts';
@@ -111,18 +116,16 @@ export function createGitHubWebhookRoute(deps: GitHubWebhookDeps): (req: Request
 interface Step {
   incidentId: string;
   decide: (log: readonly IncidentEvent[]) => NewEvent[];
-  /** Run after the commit when `decide` appended something. */
-  after?: () => Promise<unknown>;
 }
 
 async function handle(deps: GitHubWebhookDeps, event: string, body: Record<string, unknown>, key: string): Promise<GitHubWebhookOutcome> {
+  if (CHECK_EVENTS.includes(event)) return handleCheck(deps, event, body, key);
   const steps = await plan(deps, event, body);
   if (steps.length === 0) {
     return (await deps.state.seenWebhook(GITHUB_WEBHOOK_SOURCE, key, GITHUB_WEBHOOK_TTL_SEC)) ? 'duplicate' : 'ignored';
   }
   const appended = await commitDelivery(deps.state, key, steps);
   if (appended === undefined) return 'duplicate';
-  for (const step of appended) await step.after?.();
   return appended.length > 0 ? 'processed' : 'ignored';
 }
 
@@ -132,10 +135,6 @@ async function plan(deps: GitHubWebhookDeps, event: string, body: Record<string,
   switch (event) {
     case 'pull_request':
       return pullRequestSteps(deps, repo, body);
-    case 'check_suite':
-    case 'check_run':
-    case 'status':
-      return checkSteps(deps, repo, event, body);
     case 'deployment_status':
       return deploymentSteps(deps, repo, body);
     default:
@@ -234,49 +233,31 @@ function prOpenedSinceFiled(log: readonly IncidentEvent[], number: number): bool
 
 // check_suite, check_run, status -----------------------------------------------------------------
 
-/** The statuses in which the lifecycle waits for a CI result (B 5). */
-const AWAITING_CI: readonly LifecycleStatus[] = ['ci', 'ci-retry'];
+const CHECK_EVENTS: readonly string[] = ['check_suite', 'check_run', 'status'];
 
-async function checkSteps(deps: GitHubWebhookDeps, repo: string, event: string, body: Record<string, unknown>): Promise<Step[]> {
+async function handleCheck(deps: GitHubWebhookDeps, event: string, body: Record<string, unknown>, key: string): Promise<GitHubWebhookOutcome> {
+  const target = await checkTarget(deps, event, body);
+  const result = target === undefined ? undefined : await recordCiResult(deps, target.incidentId, { headSha: target.headSha });
+  const seen = await deps.state.seenWebhook(GITHUB_WEBHOOK_SOURCE, key, GITHUB_WEBHOOK_TTL_SEC);
+  if (target !== undefined && result?.recorded === 'ci-green') await startMergeEvaluate(deps, target.incidentId);
+  if (seen) return 'duplicate';
+  return result !== undefined && result.recorded !== false ? 'processed' : 'ignored';
+}
+
+/** The incident awaiting CI that a completed check delivery is about, and the head it reports. */
+async function checkTarget(deps: GitHubWebhookDeps, event: string, body: Record<string, unknown>): Promise<{ incidentId: string; headSha: string } | undefined> {
+  const repo = str(rec(body['repository']), 'full_name');
   const head = checkHead(event, body);
-  if (head === undefined) return [];
+  if (repo === undefined || head === undefined) return undefined;
   let incident: IncidentView | undefined;
   for (const n of head.prNumbers) {
     incident = await incidentByPr(deps, repo, n);
     if (incident !== undefined) break;
   }
   incident ??= await incidentByBranch(deps, repo, head.branches);
-  const prNumber = incident?.prNumber;
   // Before any GitHub call: most check deliveries arrive while nothing waits for them.
-  if (incident === undefined || prNumber === undefined || !AWAITING_CI.includes(incident.status)) return [];
-
-  const gh = deps.github(repo);
-  const pr = await gh.getPullRequest(prNumber);
-  if (pr.state !== 'open' || pr.merged || pr.headSha !== head.sha) return [];
-  const status = await gh.combinedStatus(pr.headSha, pr.baseRef);
-  const required = status.required;
-  if (required.length === 0 || required.some((c) => c.source === null || c.state === 'pending')) return [];
-  const failingChecks = required.filter((c) => c.state === 'failure').map((c) => c.name);
-
-  const incidentId = incident.id;
-  const headSha = pr.headSha;
-  return [
-    {
-      incidentId,
-      decide: (log) => {
-        const opened = latest(log, 'pr-opened');
-        if (opened?.payload.prNumber !== prNumber || !AWAITING_CI.includes(statusOf(log))) return [];
-        const recorded = log.some((e) => e.seq > opened.seq && (e.type === 'ci-green' || e.type === 'ci-red') && e.payload.headSha === headSha);
-        if (recorded) return [];
-        return [
-          failingChecks.length === 0
-            ? newEvent(deps, incidentId, 'ci-green', { prNumber, headSha }, { source: 'github' })
-            : newEvent(deps, incidentId, 'ci-red', { prNumber, headSha, failingChecks }, { source: 'github' }),
-        ];
-      },
-      after: () => startMergeEvaluate(deps, incidentId),
-    },
-  ];
+  if (incident === undefined || incident.prNumber === undefined || !AWAITING_CI.includes(incident.status)) return undefined;
+  return { incidentId: incident.id, headSha: head.sha };
 }
 
 interface CheckHead {

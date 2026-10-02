@@ -37,8 +37,11 @@
 //   merge step parses it with `parseReviewVerdict` and treats anything else as not approved), and
 //   appends `review-passed` or `review-failed` with that artifact. `request-changes` then starts the
 //   fixer once more (`startFixer` attempt 2 with the review artifact, which the runner hands the
-//   harness as `SNAPWING_PRIOR_REVIEW_FILE`); `approve` and `escalate` start `merge.evaluate`
-//   (main 14.1), which merges or holds at level 3 and does nothing below it.
+//   harness as `SNAPWING_PRIOR_REVIEW_FILE`). After `review-passed` the lifecycle waits for CI (B 5),
+//   and CI often finished first, with no check delivery left to report it: `recordCiResult`
+//   (merge/ci.ts, #214) records it for the reviewed head now, and a `ci-red` starts the fixer retry
+//   there. Otherwise `approve` and `escalate` start `merge.evaluate` (main 14.1), which merges or
+//   holds at level 3 and below it records nothing but a CI result.
 //
 // Every append passes `expectedSeq` through `appendDecided` and decides again on a conflict.
 
@@ -50,7 +53,8 @@ import type { ArtifactRef, IncidentEvent } from '../contracts/events.ts';
 import { isReviewRunData, reviewRunKey, type ReviewRunData } from '../contracts/jobs.ts';
 import { activeRun, appendDecided, latest, lastSeqOf, newEvent, startFixer, stoppedSinceFiled } from '../fixer/job.ts';
 import { prepareWorkdir, SNAPWING_GIT_DIR, type GitIdentity, type PreparedWorkdir } from '../fixer/workdir/index.ts';
-import { httpStatus, startMergeEvaluate } from '../merge/job.ts';
+import { recordCiResult } from '../merge/ci.ts';
+import { httpStatus, startMergeEvaluate, type MergeCombinedStatus } from '../merge/job.ts';
 import type { HarnessPort, WorkItemRef } from '../ports/harness.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
@@ -121,6 +125,8 @@ export interface ReviewGitHub {
     externalId?: string;
   }): Promise<{ id: number }>;
   updateCheckRun(checkRunId: number, input: { status?: ReviewCheckStatus; conclusion?: ReviewCheckConclusion; output?: ReviewCheckOutput }): Promise<unknown>;
+  /** The base branch's required checks for `sha`, for the CI result after `review-passed` (merge/ci.ts). */
+  combinedStatus(sha: string, baseBranch: string): Promise<MergeCombinedStatus>;
 }
 
 // Dependencies -----------------------------------------------------------------------------------
@@ -298,6 +304,11 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
   if (verdict.verdict === 'request-changes') {
     await startFixer(deps, { incidentId, attempt: attempt + 1, reviewArtifact: review });
     return { outcome: 'reviewed', verdict, review, fixerRestarted: true };
+  }
+  if (verdict.verdict === 'approve') {
+    // CI that finished before the review did (#214).
+    const ci = await recordCiResult(deps, incidentId, { headSha });
+    if (ci.recorded === 'ci-red') return { outcome: 'reviewed', verdict, review, fixerRestarted: ci.fixerRestarted };
   }
   await startMergeEvaluate(deps, incidentId);
   return { outcome: 'reviewed', verdict, review, fixerRestarted: false };
