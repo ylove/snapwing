@@ -566,11 +566,49 @@ describe('deployments (main 12)', () => {
     expect((await log()).slice(-2).map((e) => e.type)).toEqual(['deployed:staging', 'deployed:production']);
   });
 
+  const LATER_SHA = '4444444444444444444444444444444444444444';
+  const OTHER_SHA = '5555555555555555555555555555555555555555';
+
+  function compare(head: string, compareStatus: string): void {
+    server.use(http.get(`${R}/compare/${MERGE_SHA}...${head}`, () => HttpResponse.json({ status: compareStatus, ahead_by: compareStatus === 'ahead' ? 3 : 0, behind_by: compareStatus === 'behind' ? 2 : 0 })));
+  }
+
+  it('a deployment of a later commit that contains the merge appends deployed:<env> for it, once', async () => {
+    await merged();
+    compare(LATER_SHA, 'ahead');
+    expect(await deliver(route(), 'deployment_status', deployment('staging', { sha: LATER_SHA }))).toEqual({ status: 200, outcome: 'processed' });
+    const [staging] = await ofType('deployed:staging');
+    expect(staging).toMatchObject({ source: 'deploy', payload: { commitSha: LATER_SHA } });
+    expect(githubCalls).toEqual([`GET /repos/${REPO}/compare/${MERGE_SHA}...${LATER_SHA}`]);
+
+    // A redelivery under a new delivery id appends nothing and makes no further call.
+    expect(await deliver(route(), 'deployment_status', deployment('staging', { sha: LATER_SHA }))).toEqual({ status: 200, outcome: 'ignored' });
+    expect(await ofType('deployed:staging')).toHaveLength(1);
+    expect(githubCalls).toHaveLength(1);
+
+    compare(LATER_SHA, 'identical');
+    expect(await deliver(route(), 'deployment_status', deployment('production', { sha: LATER_SHA }))).toEqual({ status: 200, outcome: 'processed' });
+    expect(await ofType('deployed:production')).toHaveLength(1);
+    expect(await status()).toBe('deployed:production');
+  });
+
+  it('a deployment of a commit that does not contain the merge, or that GitHub does not know, appends nothing', async () => {
+    await merged();
+    for (const s of ['behind', 'diverged']) {
+      compare(OTHER_SHA, s);
+      expect(await deliver(route(), 'deployment_status', deployment('staging', { sha: OTHER_SHA }))).toEqual({ status: 200, outcome: 'ignored' });
+    }
+    server.use(http.get(`${R}/compare/${MERGE_SHA}...${OTHER_SHA}`, () => HttpResponse.json({ message: 'Not Found' }, { status: 404 })));
+    expect(await deliver(route(), 'deployment_status', deployment('staging', { sha: OTHER_SHA }))).toEqual({ status: 200, outcome: 'ignored' });
+    expect(await ofType('deployed:staging')).toHaveLength(0);
+  });
+
   it('ignores an unmapped environment, an unsuccessful deployment, another sha, and a repeat', async () => {
     await merged();
     expect(await deliver(route(), 'deployment_status', deployment('preview'))).toEqual({ status: 200, outcome: 'ignored' });
     expect(await deliver(route(), 'deployment_status', deployment('staging', { state: 'failure' }))).toEqual({ status: 200, outcome: 'ignored' });
-    expect(await deliver(route(), 'deployment_status', deployment('staging', { sha: '5555555555555555555555555555555555555555' }))).toEqual({ status: 200, outcome: 'ignored' });
+    compare(OTHER_SHA, 'behind');
+    expect(await deliver(route(), 'deployment_status', deployment('staging', { sha: OTHER_SHA }))).toEqual({ status: 200, outcome: 'ignored' });
     expect(await deliver(route(), 'deployment_status', deployment('staging'))).toEqual({ status: 200, outcome: 'processed' });
     expect(await deliver(route(), 'deployment_status', deployment('staging'))).toEqual({ status: 200, outcome: 'ignored' });
     expect(await ofType('deployed:staging')).toHaveLength(1);
