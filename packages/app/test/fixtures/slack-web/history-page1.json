@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "messages": [
+    { "type": "message", "user": "U0BBB", "text": "Same here, <@U0CCC> can you look?", "ts": "1790000300.000200", "reactions": [{ "name": "eyes", "count": 1, "users": ["U0CCC"] }] },
+    { "type": "message", "user": "U0AAA", "text": "Cart total is blank after promo", "ts": "1790000100.000100", "reply_count": 2, "thread_ts": "1790000100.000100",
+      "files": [{ "id": "F0001", "name": "cart.png", "mimetype": "image/png", "url_private": "https://files.slack.com/files-pri/T0-F0001/cart.png", "url_private_download": "https://files.slack.com/files-pri/T0-F0001/download/cart.png" }] }
+  ],
+  "has_more": true,
+  "response_metadata": { "next_cursor": "cursor-2" }
+}
