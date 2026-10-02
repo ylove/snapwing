@@ -67,6 +67,11 @@ const ARROWS: Row[] = [
   ['in-review-retry', ev('review-failed'), 'escalated'],
   ['ci-retry', ev('ci-green'), 'mergeable'],
   ['ci-retry', ev('ci-red'), 'escalated'],
+  // A human's Request changes after the review passed (main 11.2)
+  ['ci', ev('review-failed'), 'fixing-retry'],
+  ['mergeable', ev('review-failed'), 'fixing-retry'],
+  ['held', ev('review-failed'), 'fixing-retry'],
+  ['ci-retry', ev('review-failed'), 'escalated'],
   ['fixing', ev('fixer-failed'), 'escalated'],
   ['fixing-retry', ev('fixer-failed'), 'escalated'],
   // Merge and deploy
