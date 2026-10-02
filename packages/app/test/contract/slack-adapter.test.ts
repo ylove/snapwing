@@ -44,7 +44,7 @@ function fakeWeb(over: Partial<SlackWeb> = {}): SlackWeb & Record<string, Return
     postEphemeral: vi.fn(() => Promise.resolve({})),
     pinsAdd: vi.fn(() => Promise.resolve()),
     reactionsAdd: vi.fn(() => Promise.resolve()),
-    reactionsGet: vi.fn(() => Promise.resolve([{ name: 'bug', users: ['U0REPORTER'] }])),
+    reactionsGet: vi.fn(() => Promise.resolve({ reactions: [{ name: 'bug', users: ['U0REPORTER'] }] })),
     conversationsHistory: vi.fn(() => Promise.resolve({ messages: [{ ts: '1700000000.000200', text: 'Checkout total shows NaN' }] })),
     conversationsReplies: vi.fn(() => Promise.resolve({ messages: [] })),
     conversationsJoin: vi.fn(() => Promise.resolve()),
@@ -133,6 +133,40 @@ describe('SlackAdapter over HTTP', () => {
     expect(payloads[0]?.anchorText).toBe('Checkout total shows NaN');
     expect(payloads[0]?.idempotencyKey).toBe('slack-C0WEB-1700000000.000200-bug');
     expect(web.reactionsGet).toHaveBeenCalledTimes(1);
+  });
+
+  it('emoji trigger on a thread reply: the reply text is the anchor and the parent ts is the thread', async () => {
+    const PARENT = '1699999900.000100';
+    const reply = { ts: '1700000000.000200', thread_ts: PARENT, text: 'It also fails on Safari' };
+    const web = fakeWeb({
+      reactionsGet: vi.fn(() => Promise.resolve({ reactions: [{ name: 'bug', users: ['U0REPORTER'] }], message: reply })),
+      // A reply inside a thread is absent from conversations.history.
+      conversationsHistory: vi.fn(() => Promise.resolve({ messages: [] })),
+    });
+    const { route, payloads } = setup({ web });
+    const res = await route(SLACK_EVENTS_PATH)(signedRequest(SLACK_EVENTS_PATH, JSON.stringify(fixture('reaction-added'))), ctx);
+    expect(res.status).toBe(200);
+    expect(payloads[0]?.anchorText).toBe('It also fails on Safari');
+    expect(payloads[0]?.context.threadId).toBe(PARENT);
+    expect(web.conversationsHistory).not.toHaveBeenCalled();
+  });
+
+  it('emoji trigger on a thread reply without text in reactions.get: falls back to conversations.replies', async () => {
+    const PARENT = '1699999900.000100';
+    const web = fakeWeb({
+      reactionsGet: vi.fn(() =>
+        Promise.resolve({ reactions: [{ name: 'bug', users: ['U0REPORTER'] }], message: { ts: '1700000000.000200', thread_ts: PARENT } }),
+      ),
+      conversationsHistory: vi.fn(() => Promise.resolve({ messages: [] })),
+      conversationsReplies: vi.fn(() =>
+        Promise.resolve({ messages: [{ ts: '1700000000.000200', thread_ts: PARENT, text: 'Reply text from replies' }] }),
+      ),
+    });
+    const { route, payloads } = setup({ web });
+    await route(SLACK_EVENTS_PATH)(signedRequest(SLACK_EVENTS_PATH, JSON.stringify(fixture('reaction-added'))), ctx);
+    expect(web.conversationsReplies).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C0WEB', ts: PARENT }));
+    expect(payloads[0]?.anchorText).toBe('Reply text from replies');
+    expect(payloads[0]?.context.threadId).toBe(PARENT);
   });
 
   it('DM with an image: acks in the DM without a thread, and cards post in the DM', async () => {

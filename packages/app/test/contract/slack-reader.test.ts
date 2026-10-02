@@ -87,12 +87,17 @@ describe('client', () => {
         HttpResponse.json({ ok: true, members: [{ id: 'U1' }], response_metadata: { next_cursor: 'n' } }),
       ),
       http.get(`${API}/reactions.get`, () =>
-        HttpResponse.json({ ok: true, message: { reactions: [{ name: 'bug', users: ['U1', 'U2'], count: 2 }] } }),
+        HttpResponse.json({
+          ok: true,
+          message: { ts: '1.000001', thread_ts: '1.000000', text: 'a reply', reactions: [{ name: 'bug', users: ['U1', 'U2'], count: 2 }] },
+        }),
       ),
     );
     expect((await web.usersInfo('U9')).id).toBe('U9');
     expect(await web.usersList()).toEqual({ members: [{ id: 'U1' }], nextCursor: 'n' });
-    expect(await web.reactionsGet('C1', '1.000001')).toEqual([{ name: 'bug', users: ['U1', 'U2'], count: 2 }]);
+    const got = await web.reactionsGet('C1', '1.000001');
+    expect(got.reactions).toEqual([{ name: 'bug', users: ['U1', 'U2'], count: 2 }]);
+    expect(got.message).toMatchObject({ ts: '1.000001', thread_ts: '1.000000', text: 'a reply' });
   });
 
   it('maps HTTP 429 to SlackRateLimitError with Retry-After', async () => {

@@ -16,7 +16,7 @@ import { normalizeSlack, type SlackIgnoreReason, type SlackNormalizeResult } fro
 import { buildCard, type CardOptions } from './cards/cards.ts';
 import { buildStatusMessage } from './cards/status.ts';
 import { anchorTsOf } from './reader.ts';
-import type { SlackWeb } from './web.ts';
+import type { SlackMessage, SlackWeb } from './web.ts';
 
 export const ACK_TEXT = 'On it, pulling context';
 
@@ -108,19 +108,26 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
     return ts === undefined ? {} : { thread_ts: ts };
   };
 
+  /** The anchor message: what `reactions.get` sent, else the thread's replies (a reply is absent from history), else history. */
+  async function anchorMessage(channel: string, ts: string, sent: SlackMessage | undefined): Promise<SlackMessage | undefined> {
+    if (sent?.text !== undefined) return sent;
+    const threadTs = sent?.thread_ts;
+    const lookup =
+      threadTs !== undefined && threadTs !== ts
+        ? web.conversationsReplies({ channel, ts: threadTs, oldest: ts, latest: ts, inclusive: true, limit: 1 })
+        : web.conversationsHistory({ channel, latest: ts, oldest: ts, inclusive: true, limit: 1 });
+    const found = await lookup.then((page) => page.messages.find((m) => m.ts === ts)).catch(() => undefined);
+    if (found === undefined) return sent;
+    return { ...found, ...(threadTs === undefined ? {} : { thread_ts: threadTs }) };
+  }
+
   async function reactionsGet(channel: string, ts: string) {
-    const [reactions, anchor] = await Promise.all([
-      web.reactionsGet(channel, ts),
-      // `reactions.get` through the client returns only the reactions; the anchor text and thread come from history.
-      web
-        .conversationsHistory({ channel, latest: ts, oldest: ts, inclusive: true, limit: 1 })
-        .then((page) => page.messages.find((m) => m.ts === ts))
-        .catch(() => undefined),
-    ]);
+    const got = await web.reactionsGet(channel, ts);
+    const anchor = await anchorMessage(channel, ts, got.message);
     return {
       ...(anchor?.text === undefined ? {} : { text: anchor.text }),
       ...(anchor?.thread_ts === undefined ? {} : { threadTs: anchor.thread_ts }),
-      reactions: reactions.map((r) => ({ name: r.name, users: r.users ?? [] })),
+      reactions: got.reactions.map((r) => ({ name: r.name, users: r.users ?? [] })),
     };
   }
 
