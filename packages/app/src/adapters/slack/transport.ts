@@ -1,0 +1,268 @@
+// Slack transports (main 14.1, 15.1, ADR 0016): HTTP handlers for the Events API and interactivity,
+// and a Socket Mode client, both feeding one dispatcher. The dispatcher only authenticates,
+// normalizes, and calls `handleInbound`, so every request is answered inside Slack's 3 s budget; the
+// slow work is a queued job behind `handleInbound`, and the "On it" reply is posted after the answer.
+//
+// - HTTP: `POST /slack/events` and `POST /slack/interactivity` (a `Route` each; `await req.text()` is
+//   the exact signed body). `url_verification` is answered with the challenge once the signature checks.
+// - Socket Mode: `apps.connections.open` with `SLACK_APP_TOKEN`, then a WebSocket; each envelope is
+//   acknowledged by id before it is dispatched.
+// - Interactivity payloads other than the message shortcut (button taps, modals) go to `onAction`.
+// - The transport is chosen by `mode` ('http' | 'socket'); Socket Mode is for development (main 14.4).
+
+import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
+import type { Route } from '../../server/http.ts';
+import { parsedBodyOf, slackPayloadType, type SlackAdapter, type SlackInbound } from './adapter.ts';
+
+export const SLACK_EVENTS_PATH = '/slack/events';
+export const SLACK_INTERACTIVITY_PATH = '/slack/interactivity';
+
+/** Interactivity payload types that are not the message shortcut: taps, modal submits, other shortcuts. */
+const ACTION_TYPES: ReadonlySet<string> = new Set(['block_actions', 'view_submission', 'view_closed', 'interactive_message', 'shortcut']);
+
+export type SlackActionPayload = Readonly<Record<string, unknown>>;
+
+export interface SlackDispatchResult {
+  status: number;
+  body: string;
+  contentType?: string;
+}
+
+export interface SlackDispatcher {
+  dispatch(raw: SlackInbound): Promise<SlackDispatchResult>;
+  /** Resolves when the `onAction` calls started so far have settled (tests, shutdown). */
+  idle(): Promise<void>;
+}
+
+export interface SlackDispatcherOptions {
+  adapter: SlackAdapter;
+  /** `IncidentOrchestrator.handleInbound`: authenticate, normalize, dedupe, enqueue, acknowledge. */
+  handleInbound: (source: ChannelSource, raw: unknown) => Promise<unknown>;
+  /** Button taps and other interactivity (the interactivity issue implements it). Not awaited by the answer. */
+  onAction: (payload: SlackActionPayload) => Promise<void> | void;
+  onError?: (error: unknown) => void;
+}
+
+const empty = (status: number): SlackDispatchResult => ({ status, body: '' });
+
+export function createSlackDispatcher(options: SlackDispatcherOptions): SlackDispatcher {
+  const { adapter } = options;
+  const onError = options.onError ?? (() => undefined);
+  const inFlight = new Set<Promise<void>>();
+
+  function runAction(payload: SlackActionPayload): void {
+    const task = Promise.resolve()
+      .then(() => options.onAction(payload))
+      .catch(onError)
+      .finally(() => inFlight.delete(task));
+    inFlight.add(task);
+  }
+
+  return {
+    async dispatch(raw) {
+      const parsed = parsedBodyOf(raw);
+      if (parsed === undefined || typeof parsed !== 'object' || parsed === null) return empty(400);
+      if (!(await adapter.authenticateRequest(raw))) return empty(401);
+      const type = slackPayloadType(parsed);
+
+      if (type === 'url_verification') {
+        const challenge = (parsed as Record<string, unknown>)['challenge'];
+        return {
+          status: 200,
+          body: JSON.stringify({ challenge: typeof challenge === 'string' ? challenge : '' }),
+          contentType: 'application/json',
+        };
+      }
+      if (ACTION_TYPES.has(type)) {
+        runAction(parsed as SlackActionPayload);
+        return empty(200);
+      }
+      try {
+        const result = await adapter.normalizeResult(raw);
+        if (result.kind === 'ignored') return empty(200);
+        await options.handleInbound('slack', raw);
+        return empty(200);
+      } catch (e) {
+        onError(e);
+        // Slack retries a failed delivery; the idempotency key makes the retry safe.
+        return empty(500);
+      }
+    },
+    async idle() {
+      while (inFlight.size > 0) await Promise.all([...inFlight]);
+    },
+  };
+}
+
+function toResponse(r: SlackDispatchResult): Response {
+  return new Response(r.body, { status: r.status, headers: { 'content-type': r.contentType ?? 'text/plain; charset=utf-8' } });
+}
+
+/** The two HTTP routes. The handler reads the body as text, which is exactly what Slack signed. */
+export function createSlackRoutes(dispatcher: SlackDispatcher): Route[] {
+  const handler = async (req: Request): Promise<Response> =>
+    toResponse(await dispatcher.dispatch({ transport: 'http', headers: req.headers, body: await req.text() }));
+  return [
+    { method: 'POST', path: SLACK_EVENTS_PATH, handler },
+    { method: 'POST', path: SLACK_INTERACTIVITY_PATH, handler },
+  ];
+}
+
+// Socket Mode -------------------------------------------------------------------------------------
+
+/** The slice of the WebSocket API the client uses (the global `WebSocket` satisfies it). */
+export interface SocketLike {
+  send(data: string): void;
+  close(): void;
+  addEventListener(type: 'message', listener: (event: { data: unknown }) => void): void;
+  addEventListener(type: 'close' | 'error' | 'open', listener: (event: unknown) => void): void;
+}
+
+export interface SocketModeOptions {
+  /** `SLACK_APP_TOKEN` (`xapp-...`). */
+  appToken: string;
+  dispatcher: SlackDispatcher;
+  fetch?: typeof fetch;
+  /** Defaults to the global `WebSocket`. */
+  openSocket?: (url: string) => SocketLike;
+  /** Defaults to `https://slack.com/api/`. */
+  baseUrl?: string;
+  /** First reconnect delay; doubles to `maxReconnectDelayMs`. Default 1000. */
+  reconnectDelayMs?: number;
+  maxReconnectDelayMs?: number;
+  onError?: (error: unknown) => void;
+}
+
+export interface SocketModeClient {
+  /** Opens the connection; resolves once the socket is open. Reconnects on its own after that. */
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export function createSocketModeClient(options: SocketModeOptions): SocketModeClient {
+  const doFetch: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const openSocket = options.openSocket ?? ((url: string) => new WebSocket(url) as unknown as SocketLike);
+  const base = (options.baseUrl ?? 'https://slack.com/api/').replace(/\/?$/, '/');
+  const onError = options.onError ?? (() => undefined);
+  const firstDelay = options.reconnectDelayMs ?? 1000;
+  const maxDelay = options.maxReconnectDelayMs ?? 30_000;
+  let socket: SocketLike | undefined;
+  let stopped = true;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let delay = firstDelay;
+
+  async function connectionUrl(): Promise<string> {
+    const res = await doFetch(`${base}apps.connections.open`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${options.appToken}`, 'content-type': 'application/x-www-form-urlencoded' },
+    });
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; url?: string; error?: string };
+    if (body.ok !== true || typeof body.url !== 'string') throw new Error(`slack apps.connections.open failed: ${body.error ?? `http_${res.status}`}`);
+    return body.url;
+  }
+
+  function handleMessage(ws: SocketLike, data: unknown): void {
+    let envelope: Record<string, unknown>;
+    try {
+      envelope = JSON.parse(typeof data === 'string' ? data : String(data)) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const type = envelope['type'];
+    if (type === 'hello') {
+      delay = firstDelay;
+      return;
+    }
+    if (type === 'disconnect') {
+      ws.close();
+      return;
+    }
+    const id = envelope['envelope_id'];
+    // Acknowledge first: Slack redelivers an envelope that is not acknowledged within 3 s.
+    if (typeof id === 'string') ws.send(JSON.stringify({ envelope_id: id }));
+    if (type !== 'events_api' && type !== 'interactive') return;
+    void options.dispatcher.dispatch({ transport: 'socket', payload: envelope['payload'] }).catch(onError);
+  }
+
+  function scheduleReconnect(): void {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      connect().catch((e: unknown) => {
+        onError(e);
+        scheduleReconnect();
+      });
+    }, delay);
+    delay = Math.min(delay * 2, maxDelay);
+  }
+
+  async function connect(): Promise<void> {
+    const ws = openSocket(await connectionUrl());
+    socket = ws;
+    ws.addEventListener('message', (event) => handleMessage(ws, event.data));
+    ws.addEventListener('error', onError);
+    ws.addEventListener('close', () => {
+      if (socket === ws) socket = undefined;
+      scheduleReconnect();
+    });
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener('open', () => resolve());
+      ws.addEventListener('error', (e) => reject(e instanceof Error ? e : new Error('slack socket error')));
+    });
+  }
+
+  return {
+    async start() {
+      if (!stopped) return;
+      stopped = false;
+      try {
+        await connect();
+      } catch (e) {
+        stopped = true;
+        throw e;
+      }
+    },
+    async stop() {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+      socket?.close();
+      socket = undefined;
+      await options.dispatcher.idle();
+    },
+  };
+}
+
+// Transport choice --------------------------------------------------------------------------------
+
+export type SlackTransportOptions = SlackDispatcherOptions &
+  (
+    | { mode: 'http' }
+    | { mode: 'socket'; appToken: string; fetch?: typeof fetch; openSocket?: (url: string) => SocketLike; reconnectDelayMs?: number }
+  );
+
+export interface SlackTransport {
+  readonly dispatcher: SlackDispatcher;
+  /** HTTP routes to mount on the API process; empty in Socket Mode. */
+  readonly routes: readonly Route[];
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+/** Builds the dispatcher and the transport the config chose. Both transports share the dispatcher. */
+export function createSlackTransport(options: SlackTransportOptions): SlackTransport {
+  const dispatcher = createSlackDispatcher(options);
+  if (options.mode === 'http') {
+    return { dispatcher, routes: createSlackRoutes(dispatcher), start: () => Promise.resolve(), stop: () => dispatcher.idle() };
+  }
+  if (options.appToken === '') throw new Error('slack socket mode needs SLACK_APP_TOKEN');
+  const client = createSocketModeClient({
+    appToken: options.appToken,
+    dispatcher,
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.openSocket === undefined ? {} : { openSocket: options.openSocket }),
+    ...(options.reconnectDelayMs === undefined ? {} : { reconnectDelayMs: options.reconnectDelayMs }),
+    ...(options.onError === undefined ? {} : { onError: options.onError }),
+  });
+  return { dispatcher, routes: [], start: () => client.start(), stop: () => client.stop() };
+}
