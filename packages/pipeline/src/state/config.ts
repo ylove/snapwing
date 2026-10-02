@@ -80,7 +80,7 @@ export async function getConfigVersion(ctx: StateContext, kind: ConfigKind): Pro
 }
 
 /** The install's one workspace id, `undefined` when there is none; rejects when there are several. */
-async function installWorkspaceId(ctx: StateContext): Promise<string | undefined> {
+export async function installWorkspaceId(ctx: StateContext): Promise<string | undefined> {
   const rows = await ctx.db.selectFrom('workspaces').select('id').limit(2).execute();
   if (rows.length > 1) {
     const count = await ctx.db.selectFrom('workspaces').select((eb) => eb.fn.countAll().as('n')).executeTakeFirstOrThrow();
@@ -90,7 +90,7 @@ async function installWorkspaceId(ctx: StateContext): Promise<string | undefined
 }
 
 /** Creates the `default` workspace, or returns its id when a concurrent put created it first. */
-async function createDefaultWorkspace(ctx: StateContext): Promise<string> {
+export async function createDefaultWorkspace(ctx: StateContext): Promise<string> {
   await ctx.db
     .insertInto('workspaces')
     .values({ id: ulid(ctx.now().getTime()), slug: DEFAULT_WORKSPACE_SLUG, created_at: ctx.codec.timestamp(ctx.now()) })

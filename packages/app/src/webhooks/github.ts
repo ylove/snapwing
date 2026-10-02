@@ -58,6 +58,8 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkflowPort } from '@snapwing/pipeline/ports/workflow.ts';
 import { FIND_INCIDENTS_MAX_LIMIT } from '@snapwing/pipeline/state/projections/index.ts';
 import type { GitHubClient } from '../github/client.ts';
+// The map, and so the incident, may write `github.com/owner/name`; payloads say `owner/name`.
+import { sameRepo } from '../github/repo.ts';
 
 export const GITHUB_WEBHOOK_PATH = '/webhooks/github';
 /** The `seenWebhook` source. */
@@ -366,10 +368,6 @@ const ISSUE_KEY = /(?:^|[^A-Za-z0-9])([A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*)(?![0-9]
 /** Jira-shaped keys in a branch name, upper-cased, in order. */
 export function issueKeys(branch: string): string[] {
   return [...branch.matchAll(ISSUE_KEY)].flatMap((m) => opt(m[1]?.toUpperCase()));
-}
-
-function sameRepo(a: string | undefined, b: string): boolean {
-  return a !== undefined && a.toLowerCase() === b.toLowerCase();
 }
 
 // Lifecycle --------------------------------------------------------------------------------------

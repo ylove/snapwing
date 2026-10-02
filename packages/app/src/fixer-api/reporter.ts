@@ -20,12 +20,13 @@
 //   failed       appends `fixer-failed`, then calls `onFailed`.
 //   stop         reads only: `stop: true` when a `stopped` follows the latest `fixer-started`;
 //                refused for an unknown or closed incident; otherwise `stop: false`. A finished run
-//                is not refused here, because the RunnerPort mints the run id, so `fixer-started` is
-//                appended just after the run starts (pipeline/src/fixer/job.ts) and a fixer's first
-//                poll can arrive before it. Such a fixer learns at its next report (`run-finished`).
+//                is not refused here: polling is cheap and harmless, and a fixer whose run already
+//                ended learns at its next report (`run-finished`). `fixer.run` mints the run id and
+//                appends `fixer-started` before it calls `RunnerPort.runFixer` (pipeline/src/fixer/
+//                job.ts, #173), so a fixer's first report always finds its run.
 //
-// `onDone` and `onFailed` must be idempotent (the wiring points them at `handleFixerDone` and
-// `handleFixerFailed` in pipeline/src/fixer/job.ts, and at starting the review job). An error they
+// `onDone` and `onFailed` must be idempotent (compose.ts points `onDone` at `handleFixerDone` and
+// then `startReview`, `onFailed` at `handleFixerFailed`, in pipeline/src/fixer/job.ts). An error they
 // throw propagates after the event is durable; a retry of the same report is then refused as
 // `run-finished`, and the reporter calls the hook again first, so a crash between the append and the
 // hook heals on the fixer's retry.

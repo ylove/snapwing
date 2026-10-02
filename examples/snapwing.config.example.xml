@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <snapwing xmlns="urn:snapwing:config:v1" version="1">
+  <!-- `snapwing serve` reads this file, the workspace map (SNAPWING_MAP, default workspace-context.xml),
+       and the secrets named in build/CONTEXT.md 6b; every model provider used below needs its key. -->
   <!-- "local" runs the fixer and pull request tests on this host as the server's user: development only
        (ADR 0017). Wherever real secrets are held, use provider="docker" or a cloud provider. -->
   <runtime provider="local"/>
