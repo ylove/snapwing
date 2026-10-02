@@ -33,7 +33,16 @@ export interface CliRunInput {
   opts: HarnessRunOptions;
   graceMs: number;
   checkpointFile: string;
+  /**
+   * The review role (main 11.1): the agent reports through the file named by SNAPWING_REVIEW_FILE, not
+   * stdout, so exit code 0 is `done` and `extract` is not consulted. Stop, budget, and a non-zero exit
+   * map as for the fixer.
+   */
+  doneOnExit?: boolean;
 }
+
+/** The review agent's system prompt, shared by every CLI adapter that supports the review role. */
+export const REVIEW_PROMPT_URL = new URL('../prompts/review.xml', import.meta.url);
 
 export async function runCliAgent(input: CliRunInput): Promise<HarnessResult> {
   const { opts } = input;
@@ -101,6 +110,9 @@ export async function runCliAgent(input: CliRunInput): Promise<HarnessResult> {
     return { outcome: 'failed', reason: budgetExceededReason(opts.budget.wallClock), attempts: 1 };
   }
 
+  if (code === 0 && input.doneOnExit === true) {
+    return { outcome: 'done', branch: 'HEAD', summary: 'review complete; the verdict is in SNAPWING_REVIEW_FILE', testsAdded: [] };
+  }
   if (code === 0) {
     if (extracted?.kind === 'result') return extracted.result;
     const why = stdoutOverflow ? 'stdout exceeded the size limit' : (extracted?.message ?? 'stdout is empty');
