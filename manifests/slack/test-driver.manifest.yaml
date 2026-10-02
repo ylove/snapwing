@@ -1,0 +1,25 @@
+# Slack app manifest for the e2e test driver (main 14.4, 15.1). A separate, test-only app so Snapwing's own
+# app keeps its least-privilege bot scopes. It has no bot user, no event subscriptions and no interactivity:
+# it only holds user tokens that act as the two test users (reporter and engineer). Create it at
+# https://api.slack.com/apps (Create New App, From a manifest), then run `pnpm slack:test-users <role>`.
+# The redirect URL port must match DEFAULT_PORT in scripts/slack-test-users.ts (or the --port you pass).
+display_information:
+  name: Snapwing Test Driver
+  description: Test-only. Lets the Snapwing e2e tests act as two test users in the test channel.
+  background_color: "#1f2a44"
+oauth_config:
+  redirect_urls:
+    - http://localhost:53682/callback
+  scopes:
+    user:
+      - chat:write
+      - reactions:write
+      - files:write
+      - channels:history
+      - channels:read
+settings:
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false
