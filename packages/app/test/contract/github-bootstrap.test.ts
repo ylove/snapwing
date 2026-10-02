@@ -375,6 +375,10 @@ describe('bootstrap fixture (reset)', () => {
 describe('bootstrap verify', () => {
   function installServer(options: { installed: boolean; covers: boolean; protection: unknown }): void {
     server.use(
+      http.get(`${API}/app`, ({ request }) => {
+        record(request, null);
+        return HttpResponse.json({ id: 424242, slug: 'snapwing-test', owner: { login: 'ylove', type: 'User' } });
+      }),
       http.get(`${API}/app/installations`, ({ request }) => {
         record(request, null);
         return HttpResponse.json(options.installed ? [{ id: 555, account: { login: 'someone-else' } }, { id: 987, account: { login: 'ylove' } }] : [{ id: 555, account: { login: 'someone-else' } }]);
@@ -414,6 +418,9 @@ describe('bootstrap verify', () => {
     expect((JSON.parse(Buffer.from(p ?? '', 'base64url').toString()) as { iss: string }).iss).toBe('424242');
     const secrets = createEnvFileSecrets({ path: join(root, '.env.live'), fallbackEnv: {} });
     expect(await secrets.get('GITHUB_INSTALLATION_ID')).toBe('987');
+    expect(await secrets.get('GITHUB_APP_SLUG')).toBe('snapwing-test');
+    expect(calls.find((c) => c.path === '/app')?.auth).toBe(listCall?.auth);
+    expect(logs.join('\n')).toContain('wrote GITHUB_APP_SLUG');
     expect(await secrets.get('GITHUB_APP_PRIVATE_KEY')).toBe(privateKey);
     expect(logs.join('\n')).not.toContain('ghs_fakeinstalltoken');
   });
@@ -423,6 +430,8 @@ describe('bootstrap verify', () => {
     const result = await runVerify(deps());
     expect(result.ok).toBe(false);
     expect(result.installationId).toBeNull();
+    const secrets = createEnvFileSecrets({ path: join(root, '.env.live'), fallbackEnv: {} });
+    expect(await secrets.get('GITHUB_APP_SLUG')).toBe('snapwing-test');
   });
 
   it('fails when the installation does not cover the fixture repository', async () => {
@@ -448,26 +457,28 @@ describe('bootstrap secrets', () => {
     GITHUB_APP_PRIVATE_KEY: privateKey,
     GITHUB_INSTALLATION_ID: '987',
     GITHUB_WEBHOOK_SECRET: 'fake-webhook-secret',
+    GITHUB_APP_SLUG: 'snapwing-test',
   };
 
   it('sets the GH_ repository secrets with the value on stdin and never echoes it', async () => {
     await writeFile(join(root, '.env.live'), upsertEnv('', env));
     const result = await runSecrets(deps(), { repo: 'ylove/snapwing' });
-    expect(result.set).toEqual(['GH_APP_ID', 'GH_APP_PRIVATE_KEY', 'GH_INSTALLATION_ID', 'GH_WEBHOOK_SECRET']);
+    expect(result.set).toEqual(['GH_APP_ID', 'GH_APP_PRIVATE_KEY', 'GH_INSTALLATION_ID', 'GH_WEBHOOK_SECRET', 'GH_APP_SLUG']);
     expect(ghCalls.map((c) => c.args)).toEqual([
       ['secret', 'set', 'GH_APP_ID', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_APP_PRIVATE_KEY', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_INSTALLATION_ID', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_WEBHOOK_SECRET', '--repo', 'ylove/snapwing'],
+      ['secret', 'set', 'GH_APP_SLUG', '--repo', 'ylove/snapwing'],
     ]);
-    expect(ghCalls.map((c) => c.input)).toEqual(['424242', privateKey, '987', 'fake-webhook-secret']);
+    expect(ghCalls.map((c) => c.input)).toEqual(['424242', privateKey, '987', 'fake-webhook-secret', 'snapwing-test']);
     const visible = JSON.stringify(ghCalls.map((c) => c.args)) + logs.join('\n');
     for (const v of ['424242', 'fake-webhook-secret', 'BEGIN']) expect(visible).not.toContain(v);
   });
 
   it('sets nothing when a value is missing', async () => {
     await writeFile(join(root, '.env.live'), upsertEnv('', { GITHUB_APP_ID: '424242' }));
-    await expect(runSecrets(deps())).rejects.toThrow(/missing GITHUB_APP_PRIVATE_KEY, GITHUB_INSTALLATION_ID, GITHUB_WEBHOOK_SECRET/);
+    await expect(runSecrets(deps())).rejects.toThrow(/missing GITHUB_APP_PRIVATE_KEY, GITHUB_INSTALLATION_ID, GITHUB_WEBHOOK_SECRET, GITHUB_APP_SLUG/);
     expect(ghCalls).toEqual([]);
   });
 });
