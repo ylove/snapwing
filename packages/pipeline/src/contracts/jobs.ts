@@ -1,6 +1,8 @@
 // Job contracts for the WorkflowPort (Companion B 1) and the durable timers (Companion B 5).
 // Interface and helpers only; implementations live in pipeline/src/workflow/{inprocess,pgboss}.
 
+import type { ArtifactRef } from './events.ts';
+
 /** Every durable job the workflow port knows how to run. */
 export type JobName =
   // Pipeline work
@@ -124,4 +126,56 @@ const TIMER_SEGMENTS: { readonly [K in TimerKind]: (p: TimerParams[K]) => readon
 export function timerKey<K extends TimerKind>(kind: K, params: TimerParams[K]): string {
   const segments = (TIMER_SEGMENTS[kind] as (p: TimerParams[K]) => readonly (string | number)[])(params);
   return [kind, ...segments.map(keySegment)].join(':');
+}
+
+// Fixer jobs (main 10.1, main 10.4, B 5) ------------------------------------------------------
+
+/**
+ * `fixer.run` job data. `attempt` is 1 for the first run and 2 for the one retry after a
+ * `request-changes` review (main 11.1), which carries that review as `reviewArtifact`.
+ */
+export interface FixerRunData {
+  incidentId: string;
+  attempt: number;
+  reviewArtifact?: ArtifactRef;
+}
+
+/** `timer.fixer-budget` job data: the run the budget belongs to, so a stale timer finds nothing to cancel. */
+export interface FixerBudgetData {
+  incidentId: string;
+  runId: string;
+}
+
+/** Singleton key of an incident's `fixer.run` job, so a second start while one is queued adds nothing. */
+export function fixerRunKey(incidentId: string): string {
+  return `fixer:${keySegment(incidentId)}`;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === 'string' && v !== '';
+}
+
+function isPositiveInt(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 1;
+}
+
+export function isArtifactRef(v: unknown): v is ArtifactRef {
+  return isRecord(v) && isNonEmptyString(v['artifactId']) && isPositiveInt(v['version']);
+}
+
+export function isFixerRunData(v: unknown): v is FixerRunData {
+  return (
+    isRecord(v) &&
+    isNonEmptyString(v['incidentId']) &&
+    isPositiveInt(v['attempt']) &&
+    (v['reviewArtifact'] === undefined || isArtifactRef(v['reviewArtifact']))
+  );
+}
+
+export function isFixerBudgetData(v: unknown): v is FixerBudgetData {
+  return isRecord(v) && isNonEmptyString(v['incidentId']) && isNonEmptyString(v['runId']);
 }

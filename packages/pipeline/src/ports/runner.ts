@@ -6,6 +6,7 @@
 // fixer API (B 9), never through the runner and never into the database.
 
 import type { HarnessAdapter } from '../config/app-config.ts';
+import type { ArtifactRef } from '../contracts/events.ts';
 import type { HarnessRunOptions, WorkItemRef } from './harness.ts';
 
 /**
@@ -28,6 +29,11 @@ export interface FixerJob {
   implementationRequestVersion?: number;
   harness: HarnessChoice;
   budget: FixerBudget;
+  /**
+   * The `review` artifact of a `request-changes` verdict, on the one retry run (main 11.1). A runner
+   * hands it to the harness next to the implementation request; absent on a first run.
+   */
+  review?: ArtifactRef;
 }
 
 export interface RunnerPort {
