@@ -1,0 +1,54 @@
+{
+  "action": "closed",
+  "number": 418,
+  "pull_request": {
+    "url": "https://api.github.com/repos/fake-org/web/pulls/418",
+    "id": 1924000418,
+    "node_id": "PR_kwDOfake0418",
+    "html_url": "https://github.com/fake-org/web/pull/418",
+    "number": 418,
+    "state": "closed",
+    "locked": false,
+    "title": "WEB-1042: round the checkout total before submit",
+    "user": { "login": "snapwing[bot]", "id": 9100001, "node_id": "BOT_kgDOfake01", "type": "Bot", "site_admin": false },
+    "body": "Fixes WEB-1042.",
+    "created_at": "2026-10-02T12:05:00Z",
+    "updated_at": "2026-10-02T13:30:00Z",
+    "closed_at": "2026-10-02T13:30:00Z",
+    "merged_at": "2026-10-02T13:30:00Z",
+    "merge_commit_sha": "2222222222222222222222222222222222222222",
+    "draft": false,
+    "head": {
+      "label": "fake-org:snapwing/WEB-1042",
+      "ref": "snapwing/WEB-1042",
+      "sha": "1111111111111111111111111111111111111111",
+      "user": { "login": "fake-org", "id": 9900001, "type": "Organization" },
+      "repo": { "id": 77000001, "name": "web", "full_name": "fake-org/web" }
+    },
+    "base": {
+      "label": "fake-org:main",
+      "ref": "main",
+      "sha": "0000000000000000000000000000000000000001",
+      "user": { "login": "fake-org", "id": 9900001, "type": "Organization" },
+      "repo": { "id": 77000001, "name": "web", "full_name": "fake-org/web" }
+    },
+    "merged": true,
+    "mergeable": null,
+    "merged_by": { "login": "dana-dev", "id": 5821001, "node_id": "U_kgDOfake01", "type": "User", "site_admin": false },
+    "additions": 41,
+    "deletions": 6,
+    "changed_files": 2
+  },
+  "repository": {
+    "id": 77000001,
+    "node_id": "R_kgDOfake01",
+    "name": "web",
+    "full_name": "fake-org/web",
+    "private": true,
+    "owner": { "login": "fake-org", "id": 9900001, "type": "Organization" },
+    "default_branch": "main"
+  },
+  "organization": { "login": "fake-org", "id": 9900001 },
+  "sender": { "login": "dana-dev", "id": 5821001, "node_id": "U_kgDOfake01", "type": "User", "site_admin": false },
+  "installation": { "id": 12345678, "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uMTIzNDU2Nzg=" }
+}

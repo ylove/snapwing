@@ -1,0 +1,50 @@
+{
+  "action": "created",
+  "deployment_status": {
+    "url": "https://api.github.com/repos/fake-org/web/deployments/81000004/statuses/82000004",
+    "id": 82000004,
+    "node_id": "DES_kwDOfake04",
+    "state": "success",
+    "creator": { "login": "deploy-bot[bot]", "id": 9200004, "type": "Bot" },
+    "description": "Deployment finished",
+    "environment": "staging",
+    "target_url": "https://staging.example.com",
+    "created_at": "2026-10-02T14:00:00Z",
+    "updated_at": "2026-10-02T14:00:00Z",
+    "deployment_url": "https://api.github.com/repos/fake-org/web/deployments/81000004",
+    "repository_url": "https://api.github.com/repos/fake-org/web",
+    "environment_url": "https://staging.example.com",
+    "log_url": "https://ci.example.com/deploys/4"
+  },
+  "deployment": {
+    "url": "https://api.github.com/repos/fake-org/web/deployments/81000004",
+    "id": 81000004,
+    "node_id": "DE_kwDOfake04",
+    "sha": "2222222222222222222222222222222222222222",
+    "ref": "main",
+    "task": "deploy",
+    "payload": {},
+    "original_environment": "staging",
+    "environment": "staging",
+    "description": null,
+    "creator": { "login": "deploy-bot[bot]", "id": 9200004, "type": "Bot" },
+    "created_at": "2026-10-02T13:55:00Z",
+    "updated_at": "2026-10-02T14:00:00Z",
+    "statuses_url": "https://api.github.com/repos/fake-org/web/deployments/81000004/statuses",
+    "repository_url": "https://api.github.com/repos/fake-org/web",
+    "transient_environment": false,
+    "production_environment": false
+  },
+  "repository": {
+    "id": 77000001,
+    "node_id": "R_kgDOfake01",
+    "name": "web",
+    "full_name": "fake-org/web",
+    "private": true,
+    "owner": { "login": "fake-org", "id": 9900001, "type": "Organization" },
+    "default_branch": "main"
+  },
+  "organization": { "login": "fake-org", "id": 9900001 },
+  "sender": { "login": "deploy-bot[bot]", "id": 9200004, "type": "Bot" },
+  "installation": { "id": 12345678, "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uMTIzNDU2Nzg=" }
+}

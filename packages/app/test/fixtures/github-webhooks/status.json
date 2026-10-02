@@ -1,0 +1,31 @@
+{
+  "id": 61000003,
+  "sha": "1111111111111111111111111111111111111111",
+  "name": "fake-org/web",
+  "target_url": "https://ci.example.com/builds/9003",
+  "context": "ci/legacy",
+  "description": "The build succeeded",
+  "state": "success",
+  "commit": {
+    "sha": "1111111111111111111111111111111111111111",
+    "node_id": "C_kwDOfake03",
+    "commit": { "message": "WEB-1042: round the checkout total before submit" }
+  },
+  "branches": [
+    { "name": "snapwing/WEB-1042", "commit": { "sha": "1111111111111111111111111111111111111111" }, "protected": false }
+  ],
+  "created_at": "2026-10-02T12:31:00Z",
+  "updated_at": "2026-10-02T12:31:00Z",
+  "repository": {
+    "id": 77000001,
+    "node_id": "R_kgDOfake01",
+    "name": "web",
+    "full_name": "fake-org/web",
+    "private": true,
+    "owner": { "login": "fake-org", "id": 9900001, "type": "Organization" },
+    "default_branch": "main"
+  },
+  "organization": { "login": "fake-org", "id": 9900001 },
+  "sender": { "login": "ci-runner", "id": 5821009, "type": "User" },
+  "installation": { "id": 12345678, "node_id": "MDIzOkludGVncmF0aW9uSW5zdGFsbGF0aW9uMTIzNDU2Nzg=" }
+}
