@@ -2,7 +2,7 @@
 // records its argv and the SNAPWING_ and other environment it was given, and copies a fixer's mount
 // as it was at `docker run`; no real docker ever runs. Fixer checkouts clone a local bare repository.
 
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -26,7 +26,10 @@ dir=$(dirname "$0")
 # A kill comes from the runner's timer while the attached run may still be starting (slow under load):
 # wait, bounded, until the run has logged itself, so the two log blocks never interleave or swap.
 if [ "$1" = kill ]; then n=0; while [ ! -f "$dir/run-logged" ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n+1)); done; fi
-{ echo "---"; for a in "$@"; do echo "arg:$a"; done; env | sort | sed 's/^/env:/'; } >> "$dir/calls.log"
+# Built in a file and appended with one write, so concurrent calls (a background wait) never interleave.
+tmp=$(mktemp "$dir/call.XXXXXX")
+{ echo "---"; for a in "$@"; do echo "arg:$a"; done; env | sort | sed 's/^/env:/'; } > "$tmp"
+cat "$tmp" >> "$dir/calls.log"; rm -f "$tmp"
 [ "$1" = run ] && : > "$dir/run-logged"
 mode=$(cat "$dir/mode" 2>/dev/null)
 case "$1" in
@@ -48,6 +51,8 @@ case "$1" in
          echo "tests said hello"; echo "and warned on stderr" >&2
          exit "$(cat "$dir/exit" 2>/dev/null || echo 0)" ;;
        esac ;;
+  ps) [ "$mode" = ps-fail ] && { echo "Cannot connect to the Docker daemon" >&2; exit 1; }
+      cat "$dir/containers" 2>/dev/null; exit 0 ;;
   stop) [ "$mode" = gone ] && { echo "Error response from daemon: No such container: $4" >&2; exit 1; }
         [ "$mode" = stop-fail ] && { echo "daemon exploded" >&2; exit 1; } ;;
 esac
@@ -227,12 +232,16 @@ describe('createDockerRunner runFixer', () => {
     expect(calls()[0]!.env['SNAPWING_PRIOR_REVIEW_FILE']).toBeUndefined();
   });
 
-  it('passes the git credential only as SNAPWING_GIT_TOKEN by name: never in argv, a file, or the remote URL', async () => {
-    await runner().runFixer(job());
+  it('uses the git token for the host clone only: none enters the container, its argv, a file, or the remote URL (#266)', async () => {
+    let minted = 0;
+    await runner({ git: { token: async () => (minted++, GIT_TOKEN), remoteUrl: () => origin.url } }).runFixer(job());
+    expect(minted).toBe(1);
     const c = calls()[0]!;
-    expect(c.env['SNAPWING_GIT_TOKEN']).toBe(GIT_TOKEN);
+    // The container fetches fresh tokens through the fixer API instead (the image's credential helper).
+    expect(c.env['SNAPWING_GIT_TOKEN']).toBeUndefined();
+    expect(JSON.stringify(c.env)).not.toContain(GIT_TOKEN);
     const forwarded = c.args.flatMap((x, i) => (x === '-e' ? [c.args[i + 1]!] : []));
-    expect(forwarded).toContain('SNAPWING_GIT_TOKEN');
+    expect(forwarded).not.toContain('SNAPWING_GIT_TOKEN');
     expect(c.args.join(' ')).not.toContain(GIT_TOKEN);
     const snap = join(dir, 'snapshot');
     expect(git(snap, ['config', 'remote.origin.url'])).toBe(origin.url);
@@ -389,6 +398,70 @@ describe('createDockerRunner cancel', () => {
   it('rejects an invalid run id without calling docker', async () => {
     await expect(runner().cancel('../x')).rejects.toThrow(/plain path segment/);
     expect(calls()).toEqual([]);
+  });
+});
+
+describe('createDockerRunner sweep (#266)', () => {
+  const MIN = 60_000;
+  // A fake clock well past the real one: every directory's real mtime is old unless set.
+  const NOW = Date.now() + 6 * 60 * MIN;
+  const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  const runIdAt = (ms: number, tail: string): string => {
+    let t = ms;
+    let time = '';
+    for (let i = 0; i < 10; i++) {
+      time = CROCKFORD.charAt(t % 32) + time;
+      t = Math.floor(t / 32);
+    }
+    return time + tail;
+  };
+  const root = (): string => join(dir, 'scratch');
+  const makeDir = (name: string, mtime: number): string => {
+    const path = join(root(), name);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'file.txt'), 'checkout, no token');
+    utimesSync(path, new Date(mtime), new Date(mtime));
+    return name;
+  };
+
+  it('removes stale directories with no container and no run; keeps one with a container in any state, a young one, and a live run', async () => {
+    const r = runner({ clock: () => new Date(NOW) });
+    // A run of this runner whose container docker has not been seen to end.
+    writeFileSync(join(dir, 'waitmode'), 'running');
+    const live = runIdAt(NOW - 3 * 60 * MIN, 'TESTSWEEPLIVE000');
+    await r.runFixer(job({ runId: live }));
+    utimesSync(join(root(), live), new Date(NOW - 3 * 60 * MIN), new Date(NOW - 3 * 60 * MIN));
+
+    const stale = makeDir(runIdAt(NOW - 2 * 60 * MIN, 'TESTSWEEPSTALE00'), NOW - 2 * 60 * MIN);
+    const exited = makeDir(runIdAt(NOW - 2 * 60 * MIN, 'TESTSWEEPEXITED0'), NOW - 2 * 60 * MIN);
+    const young = makeDir(runIdAt(NOW - 20 * MIN, 'TESTSWEEPYOUNG00'), NOW - 20 * MIN);
+    writeFileSync(join(dir, 'containers'), `snapwing-fixer-${exited}\nsnapwing-fixer-other\nunrelated\n`);
+
+    const swept = await r.sweep({ maxWallClock: 'PT30M' });
+
+    expect(swept).toEqual({ removed: [stale], kept: [exited, live, young].sort() });
+    expect(existsSync(join(root(), stale))).toBe(false);
+    for (const name of [exited, live, young]) expect(statSync(join(root(), name)).isDirectory()).toBe(true);
+  });
+
+  it('removes nothing when docker cannot list its containers, and says why', async () => {
+    const stale = makeDir(runIdAt(NOW - 2 * 60 * MIN, 'TESTSWEEPSTALE00'), NOW - 2 * 60 * MIN);
+    writeFileSync(join(dir, 'mode'), 'ps-fail');
+    const swept = await runner({ clock: () => new Date(NOW) }).sweep({ maxWallClock: 'PT30M' });
+    expect(swept).toEqual({ removed: [], kept: [], skipped: 'docker ps failed (exit 1): Cannot connect to the Docker daemon' });
+    expect(existsSync(join(root(), stale))).toBe(true);
+  });
+
+  it('ages by the later of the run id time and the mtime, against the wall clock plus the margin', async () => {
+    const recentlyTouched = makeDir(runIdAt(NOW - 3 * 60 * MIN, 'TESTSWEEPTOUCHED'), NOW - 40 * MIN);
+    const pastCutoff = makeDir(runIdAt(NOW - 46 * MIN, 'TESTSWEEPCUTOFF0'), NOW - 46 * MIN);
+    const r = runner({ clock: () => new Date(NOW) });
+    expect(await r.sweep({ maxWallClock: 'PT30M' })).toEqual({ removed: [pastCutoff], kept: [recentlyTouched] });
+    expect(await r.sweep({ maxWallClock: 'PT1H' })).toEqual({ removed: [], kept: [recentlyTouched] });
+    // Only here, with no fixer run in flight, is the fake's log free of a concurrent `docker wait`.
+    const ps = calls().filter((c) => c.args[0] === 'ps');
+    expect(ps.map((c) => c.args)).toEqual(Array(2).fill(['ps', '-a', '--filter', 'name=snapwing-fixer-', '--format', '{{.Names}}']));
+    expect(Object.keys(ps[0]!.env).filter((k) => k.startsWith('SNAPWING_'))).toEqual([]);
   });
 });
 

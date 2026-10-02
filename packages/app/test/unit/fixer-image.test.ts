@@ -47,6 +47,8 @@ let api: ApiCall[];
 /** Stop answers 204 once a checkpoint with this phase arrived ('start': from the first poll). */
 let stopAfter: string | undefined;
 let checkpointStatus: number;
+/** What `GET .../git-token` answers; 200 mints `test-fresh-git-token-<n>` for the n-th call. */
+let gitTokenStatus: number;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'fixer-image-'));
@@ -57,6 +59,7 @@ beforeEach(async () => {
   api = [];
   stopAfter = undefined;
   checkpointStatus = 200;
+  gitTokenStatus = 200;
   server = createServer((req, res) => {
     let raw = '';
     req.on('data', (c: Buffer) => (raw += c.toString('utf8')));
@@ -68,6 +71,10 @@ beforeEach(async () => {
         res.writeHead(stopped ? 204 : 200).end(stopped ? undefined : '{"stop":false}');
       } else if (call.path.endsWith('/checkpoint')) {
         res.writeHead(checkpointStatus).end('{}');
+      } else if (call.path.endsWith('/git-token')) {
+        const n = api.filter((c) => c.path.endsWith('/git-token')).length;
+        if (gitTokenStatus !== 200) res.writeHead(gitTokenStatus).end('{"error":"nope"}');
+        else res.writeHead(200).end(JSON.stringify({ token: `test-fresh-git-token-${n}`, expiresAt: '2026-10-02T13:00:00.000Z' }));
       } else {
         res.writeHead(200).end('{"seq":1}');
       }
@@ -239,20 +246,59 @@ describe('fixer role', () => {
     expect(r.stderr).toContain('no model access');
   });
 
-  it('passes the git credential through the image askpass, never in a file', async () => {
+  it('gives git a fresh token from the fixer API on every ask, through the credential helper, never in a file or the env (#266)', async () => {
     checkout();
     mkdirSync(join(work, '.git', 'snapwing', 'hooks'));
-    fakeCli('claude', ['"$GIT_ASKPASS" "Username for https://github.com" > "$out/user"', '"$GIT_ASKPASS" "Password for https://github.com" > "$out/pass"', claudeResult({ outcome: 'done', branch: 'b', prNumber: 1, summary: '', testsAdded: [] })].join('\n'));
-    const env = fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN });
-
-    const r = await runEntrypoint(containerEnv(env, { SNAPWING_GIT_TOKEN: 'test-git-token-not-real' }));
+    const ask = `printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill`;
+    fakeCli(
+      'claude',
+      [
+        `${ask} > "$out/cred1"`,
+        `${ask} > "$out/cred2"`,
+        // The recipe prompts/fixer.xml gives the agent for the GitHub API: header from stdin, never argv.
+        `${ask} | sed -n 's/^password=/Authorization: Bearer /p' | curl -sS -H @- "${apiUrl}/github/pulls" > /dev/null`,
+        'printf %s "$SNAPWING_GIT_CREDENTIAL_SOCKET" > "$out/socket"',
+        claudeResult({ outcome: 'done', branch: 'b', prNumber: 1, summary: '', testsAdded: [] }),
+      ].join('\n'),
+    );
+    const token = FIXER_TOKEN();
+    const env = fixerEnv(fixerJob(), { apiUrl, token: () => token });
+    // A git token passed by mistake (the runner no longer passes one) never reaches the harness.
+    const r = await runEntrypoint(containerEnv(env, { SNAPWING_GIT_TOKEN: 'test-stale-git-token' }));
 
     expect(r.code, r.stderr).toBe(0);
-    expect(readFileSync(join(out, 'claude', 'user'), 'utf8')).toBe('x-access-token\n');
-    expect(readFileSync(join(out, 'claude', 'pass'), 'utf8')).toBe('test-git-token-not-real\n');
+    expect(readFileSync(join(out, 'claude', 'cred1'), 'utf8')).toContain('username=x-access-token\npassword=test-fresh-git-token-1\n');
+    expect(readFileSync(join(out, 'claude', 'cred2'), 'utf8')).toContain('password=test-fresh-git-token-2\n');
+    expect(api.find((c) => c.path === '/github/pulls')?.auth).toBe('Bearer test-fresh-git-token-3');
+    const asks = api.filter((c) => c.path.endsWith('/git-token'));
+    expect(asks.map((c) => [c.method, c.path, c.auth])).toEqual(Array(3).fill(['GET', '/fixer/WI01/git-token', `Bearer ${token}`]));
+
     const cli = seenEnv('claude');
-    expect(cli['GIT_ASKPASS']).toBe(join(FIXER_DIR, 'askpass'));
-    expect(cli['GIT_CONFIG_VALUE_0']).toBe(join(work, '.git', 'snapwing', 'hooks'));
+    expect([cli['GIT_CONFIG_KEY_0'], cli['GIT_CONFIG_VALUE_0']]).toEqual(['credential.helper', '']);
+    expect([cli['GIT_CONFIG_KEY_1'], cli['GIT_CONFIG_VALUE_1']]).toEqual(['credential.helper', join(FIXER_DIR, 'git-credential')]);
+    expect([cli['GIT_CONFIG_KEY_2'], cli['GIT_CONFIG_VALUE_2']]).toEqual(['core.hooksPath', join(work, '.git', 'snapwing', 'hooks')]);
+    expect(cli['GIT_CONFIG_COUNT']).toBe('3');
+    for (const absent of ['SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_FIXER_TOKEN']) expect(cli[absent]).toBeUndefined();
+    expect(seen('claude', 'env')).not.toContain('test-fresh-git-token');
+    expect(seen('claude', 'env')).not.toContain('test-stale-git-token');
+    expect(r.stderr).not.toContain('test-fresh-git-token');
+    // The socket and its private directory are gone with the run.
+    const socket = readFileSync(join(out, 'claude', 'socket'), 'utf8');
+    expect(socket).toMatch(/snapwing-git-[^/]+\/credential\.sock$/);
+    expect(existsSync(dirname(socket))).toBe(false);
+  });
+
+  it('answers git nothing when the fixer API will not mint, so git fails to authenticate', async () => {
+    checkout();
+    gitTokenStatus = 502;
+    fakeCli('claude', [`printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill > "$out/cred" 2> "$out/err"; echo $? > "$out/code"`, claudeResult({ outcome: 'done', branch: 'b', prNumber: 1, summary: '', testsAdded: [] })].join('\n'));
+
+    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN }), {}), 30_000);
+
+    expect(r.code, r.stderr).toBe(0);
+    expect(readFileSync(join(out, 'claude', 'code'), 'utf8').trim()).not.toBe('0');
+    expect(readFileSync(join(out, 'claude', 'cred'), 'utf8')).not.toContain('password=');
+    expect(r.stderr).toContain('git token: HTTP 502');
   });
 
   it('reports a failed harness result', async () => {
@@ -477,7 +523,7 @@ describe('the image definition', () => {
   it('bakes in no secret: no key or token variable, and only the wrapper and the pipeline source in the context', () => {
     for (const l of instructions.filter((x) => /^(ENV|ARG) /.test(x))) expect(l).not.toMatch(/KEY|TOKEN|SECRET|PASSWORD/i);
     const copies = instructions.filter((l) => l.startsWith('COPY ')).map((l) => l.split(/\s+/).slice(1, -1));
-    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/askpass', 'infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
+    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/git-credential', 'infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
     const ignore = readFileSync(join(FIXER_DIR, 'Dockerfile.dockerignore'), 'utf8').split('\n').filter((l) => l !== '' && !l.startsWith('#'));
     expect(ignore[0]).toBe('*');
     expect(ignore.slice(1).every((l) => l.startsWith('!packages/pipeline/src/') || l.startsWith('!infra/docker/fixer/'))).toBe(true);

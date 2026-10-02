@@ -2,7 +2,7 @@
 // SNAPWING_DB dialect), `.env` secrets, local-disk object store, and the child-process runner over
 // the generic harness with the fake agent.
 
-import { mkdtemp, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, realpath, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -568,5 +568,72 @@ describe('local runner (child process over the generic harness)', () => {
     const { r } = runner('success');
     await r.cancel('01HZXTESTUNKNOWNRUN0000000');
     await expect(r.wait('01HZXTESTUNKNOWNRUN0000000')).rejects.toBeInstanceOf(UnknownRunError);
+  });
+
+  describe('startup sweep (#266)', () => {
+    const MIN = 60_000;
+    // A fake clock well past the real one, so every directory's real mtime is old unless set.
+    const NOW = Date.now() + 6 * 60 * MIN;
+    const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    /** A ULID run id minted at `ms` (the shared generator would pin later ids to that time). */
+    const runIdAt = (ms: number, tail = 'TESTSWEEP0000000'): string => {
+      let t = ms;
+      let time = '';
+      for (let i = 0; i < 10; i++) {
+        time = CROCKFORD.charAt(t % 32) + time;
+        t = Math.floor(t / 32);
+      }
+      return time + tail;
+    };
+    const aged = async (path: string, ms: number): Promise<void> => {
+      await utimes(path, new Date(ms), new Date(ms));
+    };
+    const makeDir = async (name: string, mtime: number): Promise<string> => {
+      const path = join(workdirRoot, name);
+      await mkdir(path);
+      await writeFile(join(path, 'file.txt'), 'checkout');
+      await aged(path, mtime);
+      return name;
+    };
+
+    it('removes directories older than the wall clock plus the margin that no run owns, and nothing else', async () => {
+      // A failed run kept for inspection: this runner still knows it, so it stays, however old.
+      const known = runIdAt(NOW - 4 * 60 * MIN, 'TESTSWEEPKNOWN00');
+      const r = createLocalRunner({
+        resolveHarness: harnessResolver(harnessConfig, { env: { FAKE_AGENT_MODE: 'failure' }, killGraceMs: 200 }),
+        artifacts: artifactStore,
+        workdirRoot,
+        git: { token: async () => 'test-git-token-not-real', remoteUrl: () => origin.url },
+        keepFailedWorkdir: true,
+        clock: () => new Date(NOW),
+      });
+      await r.runFixer(job({ runId: known }));
+      expect((await r.wait(known)).outcome).toBe('failed');
+      await aged(join(workdirRoot, known), NOW - 4 * 60 * MIN);
+
+      // Max wall clock PT30M plus the PT15M margin: the cutoff is 45 minutes before NOW.
+      const stale = await makeDir(runIdAt(NOW - 2 * 60 * MIN), NOW - 2 * 60 * MIN);
+      const youngId = await makeDir(runIdAt(NOW - 30 * MIN), NOW - 3 * 60 * MIN);
+      const justPast = await makeDir(runIdAt(NOW - 46 * MIN), NOW - 46 * MIN);
+      const touched = await makeDir('manual-run', NOW - 10 * MIN);
+      const oldPlain = await makeDir('old-run', NOW - 5 * 60 * MIN);
+      await writeFile(join(workdirRoot, 'stray.txt'), 'not a run');
+      await aged(join(workdirRoot, 'stray.txt'), NOW - 5 * 60 * MIN);
+      await symlink(join(workdirRoot, oldPlain), join(workdirRoot, 'linked-run'));
+
+      const swept = await r.sweep({ maxWallClock: 'PT30M' });
+
+      expect(swept.removed).toEqual([justPast, oldPlain, stale].sort());
+      expect(swept.kept).toEqual([known, touched, youngId].sort());
+      expect((await readdir(workdirRoot)).sort()).toEqual([known, 'linked-run', touched, youngId, 'stray.txt'].sort());
+    });
+
+    it('keeps everything while the wall clock is long enough, and sweeps a missing root as empty', async () => {
+      const r = createLocalRunner({ resolveHarness: harnessResolver(harnessConfig), artifacts: artifactStore, workdirRoot, git: { token: async () => 'x' }, clock: () => new Date(NOW) });
+      const id = await makeDir(runIdAt(NOW - 2 * 60 * MIN), NOW - 2 * 60 * MIN);
+      expect(await r.sweep({ maxWallClock: 'PT2H' })).toEqual({ removed: [], kept: [id] });
+      await rm(workdirRoot, { recursive: true });
+      expect(await r.sweep({ maxWallClock: 'PT30M' })).toEqual({ removed: [], kept: [] });
+    });
   });
 });

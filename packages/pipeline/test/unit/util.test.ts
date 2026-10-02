@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { InvalidDurationError, formatDuration, parseDuration } from '../../src/util/duration.ts';
-import { ulid } from '../../src/util/ulid.ts';
+import { ulid, ulidTime } from '../../src/util/ulid.ts';
 
 describe('ulid', () => {
   it('returns 26 Crockford base32 characters', () => {
@@ -18,6 +18,14 @@ describe('ulid', () => {
   it('stays monotonic across real calls', () => {
     const ids = Array.from({ length: 500 }, () => ulid());
     expect([...ids].sort()).toEqual(ids);
+  });
+
+  it('decodes its creation time, and nothing from anything else (#266)', () => {
+    // The time part of the ULID spec's example, 1469918176385 ms.
+    expect(ulidTime('01ARYZ6S41TSV4RRFFQ69G5FAV')).toBe(1_469_918_176_385);
+    const now = Date.now();
+    expect(ulidTime(ulid())).toBeGreaterThanOrEqual(now);
+    for (const other of ['run-1', '01J9ZRUNID000000000000000', '01J9ZRUNID00000000000000IL', '81J9ZRUNID0000000000000001']) expect(ulidTime(other)).toBeUndefined();
   });
 });
 

@@ -12,8 +12,10 @@ import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.t
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createFixerReporter, type FixerHookContext, type FixerReporterDeps } from '../../src/fixer-api/reporter.ts';
 import { createFixerRoutes, type FixerRoute } from '../../src/fixer-api/routes.ts';
+import { createFixerGitToken, type GitTokenMinter } from '../../src/fixer-api/git-token.ts';
 import {
   fixerTokenKeysFromEnv,
+  fixerTokenTtl,
   fixerTokenVerifier,
   issueFixerToken,
   verifyFixerToken,
@@ -35,6 +37,8 @@ let keys: FixerTokenKeys;
 let server: Server | undefined;
 let base: string;
 let hooks: { done: FixerHookContext[]; failed: FixerHookContext[] };
+/** Response headers of the last `call`. */
+let lastHeaders: Headers | undefined;
 
 beforeEach(async () => {
   tdb = await createTestDatabase();
@@ -82,7 +86,7 @@ async function serve(routes: FixerRoute[]): Promise<void> {
   base = `http://127.0.0.1:${(server?.address() as AddressInfo).port}`;
 }
 
-async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps> } = {}): Promise<void> {
+async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps>; mint?: GitTokenMinter; gitState?: Pick<StatePort, 'read' | 'getIncident'> } = {}): Promise<void> {
   const reporter = createFixerReporter({
     state: opts.state ?? state,
     clock: () => new Date(now),
@@ -90,7 +94,8 @@ async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps
     onFailed: async (c) => void hooks.failed.push(c),
     ...opts.deps,
   });
-  await serve(createFixerRoutes(reporter, fixerTokenVerifier(keys)));
+  const gitToken = opts.mint === undefined ? undefined : createFixerGitToken({ state: opts.gitState ?? opts.state ?? state, mint: opts.mint });
+  await serve(createFixerRoutes(reporter, fixerTokenVerifier(keys), gitToken === undefined ? {} : { gitToken }));
 }
 
 function token(workItemId = INC, incidentId = INC, ttl = 'PT45M'): string {
@@ -105,11 +110,13 @@ async function call(
   const t = opts.token === undefined ? token() : opts.token;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (t !== null) headers['authorization'] = `Bearer ${t}`;
+  const get = op === 'stop' || op === 'git-token';
   const res = await fetch(`${base}/fixer/${opts.workItem ?? INC}/${op}`, {
-    method: op === 'stop' ? 'GET' : 'POST',
+    method: get ? 'GET' : 'POST',
     headers,
-    ...(op === 'stop' ? {} : { body: opts.rawBody ?? JSON.stringify(body) }),
+    ...(get ? {} : { body: opts.rawBody ?? JSON.stringify(body) }),
   });
+  lastHeaders = res.headers;
   const text = await res.text();
   return { status: res.status, json: text === '' ? undefined : (JSON.parse(text) as unknown) };
 }
@@ -215,6 +222,12 @@ describe('fixer tokens', () => {
     expect(() => fixerTokenKeysFromEnv({}, keys.clock)).toThrow(/SNAPWING_FIXER_TOKEN_SECRET is not set/);
     expect(fixerTokenKeysFromEnv({ SNAPWING_FIXER_TOKEN_SECRET: FAKE_SECRET }, keys.clock).secret).toBe(FAKE_SECRET);
     expect(() => token(INC, INC, 'P2D')).toThrow(RangeError);
+  });
+
+  it('lives as long as the run wall clock plus a margin, at most a day (#266)', () => {
+    expect(fixerTokenTtl('PT30M')).toBe('PT45M');
+    expect(fixerTokenTtl('PT2H')).toBe('PT2H15M');
+    expect(fixerTokenTtl('P1D')).toBe('P1D');
   });
 });
 
@@ -412,6 +425,97 @@ describe('fixer API over HTTP', () => {
     expect(racer.conflicts).toBe(1);
     expect((await types()).slice(-2)).toEqual(['fixer-started', 'stopped']);
     expect(hooks.done).toEqual([]);
+  });
+});
+
+describe('GET /fixer/{workItemId}/git-token (#266)', () => {
+  /** A fake installation token minter: a new value per call, recording the repos asked for. */
+  function minter(): { mint: GitTokenMinter; repos: string[] } {
+    const repos: string[] = [];
+    return {
+      repos,
+      mint: async (repo) => {
+        repos.push(repo);
+        return { token: `test-fresh-git-token-${repos.length}`, expiresAt: new Date(now + 60 * MINUTE).toISOString() };
+      },
+    };
+  }
+
+  it('mints a fresh token for the incident repository on every call while the run is going, and appends nothing', async () => {
+    await seedRunning();
+    const m = minter();
+    await start({ mint: m.mint });
+    const before = (await log()).length;
+    const expiresAt = new Date(T0 + 60 * MINUTE).toISOString();
+    expect(await call('git-token')).toEqual({ status: 200, json: { token: 'test-fresh-git-token-1', expiresAt } });
+    expect(lastHeaders?.get('cache-control')).toBe('no-store');
+    expect(await call('git-token')).toEqual({ status: 200, json: { token: 'test-fresh-git-token-2', expiresAt } });
+    expect(m.repos).toEqual(['fake-org/web', 'fake-org/web']);
+    expect((await log()).length).toBe(before);
+  });
+
+  it('still answers after the first installation token would have expired, while the fixer token lives (a long wall clock)', async () => {
+    await seedRunning();
+    const m = minter();
+    await start({ mint: m.mint });
+    const t = token(INC, INC, fixerTokenTtl('PT2H'));
+    now = T0 + 90 * MINUTE;
+    expect(await call('git-token', undefined, { token: t })).toMatchObject({ status: 200, json: { token: 'test-fresh-git-token-1', expiresAt: new Date(now + 60 * MINUTE).toISOString() } });
+  });
+
+  it('refuses, minting nothing, once the run ended, on a closed incident, and for an unknown one', async () => {
+    const m = minter();
+    await start({ mint: m.mint });
+    expect(await call('git-token')).toEqual({ status: 404, json: { error: 'unknown-incident' } });
+    await seedRunning();
+    await appendTo(INC, [ev('stopped', { reason: 'wrong approach' })]);
+    expect(await call('git-token')).toEqual({ status: 409, json: { error: 'run-finished' } });
+    await seedRunning(OTHER_INC);
+    await appendTo(OTHER_INC, [ev('fixer-done', { prNumber: 7, branch: 'fix/WEB-1042', summary: '', testsAdded: [] }, 'fixer', OTHER_INC)]);
+    expect(await call('git-token', undefined, { token: token(OTHER_INC, OTHER_INC), workItem: OTHER_INC })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect(m.repos).toEqual([]);
+  });
+
+  it('refuses a closed incident and one with no resolved repository with 409', async () => {
+    await seedRunning();
+    await appendTo(INC, [ev('closed', { reason: 'duplicate of WEB-1001' })]);
+    const m = minter();
+    await start({ mint: m.mint });
+    expect(await call('git-token')).toEqual({ status: 409, json: { error: 'incident-closed' } });
+    await seedRunning(OTHER_INC);
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    await start({ mint: m.mint, gitState: { read: (id) => state.read(id), getIncident: async () => null } });
+    expect(await call('git-token', undefined, { token: token(OTHER_INC, OTHER_INC), workItem: OTHER_INC })).toEqual({ status: 409, json: { error: 'no-repo' } });
+    expect(m.repos).toEqual([]);
+  });
+
+  it('rejects a missing, forged, or expired fixer token with 401 and another work item with 403', async () => {
+    await seedRunning();
+    await seedRunning(OTHER_INC);
+    const m = minter();
+    await start({ mint: m.mint });
+    expect(await call('git-token', undefined, { token: null })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'missing-token' } });
+    const forged = issueFixerToken({ workItemId: INC, incidentId: INC, ttl: 'PT45M' }, { ...keys, secret: `${FAKE_SECRET}-attacker` });
+    expect(await call('git-token', undefined, { token: forged })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'bad-signature' } });
+    const short = token(INC, INC, 'PT5M');
+    now = T0 + 5 * MINUTE;
+    expect(await call('git-token', undefined, { token: short })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'expired' } });
+    expect(await call('git-token', undefined, { token: token(OTHER_INC, OTHER_INC) })).toEqual({ status: 403, json: { error: 'forbidden' } });
+    expect(m.repos).toEqual([]);
+  });
+
+  it('answers 502 with no detail when no token can be minted', async () => {
+    await seedRunning();
+    await start({ mint: () => Promise.reject(new Error('GitHub said no to test-secret-detail')) });
+    const r = await call('git-token');
+    expect(r).toEqual({ status: 502, json: { error: 'git-token-unavailable' } });
+    expect(JSON.stringify(r)).not.toContain('test-secret-detail');
+  });
+
+  it('is not mounted without a minter (the local runner)', async () => {
+    await seedRunning();
+    await start();
+    expect((await fetch(`${base}/fixer/${INC}/git-token`, { headers: { authorization: `Bearer ${token()}` } })).status).toBe(404);
   });
 });
 

@@ -41,7 +41,11 @@
 //
 // GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
-// touches `.github/workflows`, the real guard; the workdir hooks can be skipped). The review's
+// touches `.github/workflows`, the real guard; the workdir hooks can be skipped). With docker the
+// container holds no git token: `GET /fixer/:workItemId/git-token` mints one with those scopes
+// whenever its git asks, so a run may outlive a token's hour (#266), and the fixer token's TTL is the
+// run's wall clock plus a margin (`fixerTokenTtl`). The worker's first service sweeps the runner's
+// stale scratch directories (`sweep`, older than the fixer wall clock plus a margin, #266). The review's
 // checkout gets `contents: read` and `metadata: read` only; the review posts through the server's own
 // client, never from inside the harness.
 //
@@ -57,7 +61,7 @@ import { isFixerBudgetData, isFixerRunData, isReviewRunData, type JobName } from
 import { StateNotFoundError, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import type { EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
-import { fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
+import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
 import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
@@ -78,7 +82,7 @@ import { SecretNotFoundError, type SecretsPort } from '@snapwing/pipeline/ports/
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkflowPort } from '@snapwing/pipeline/ports/workflow.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
-import { createLocalRunner, harnessResolver } from '@snapwing/pipeline/providers/local/runner.ts';
+import { createLocalRunner, harnessResolver, type ScratchSweeper } from '@snapwing/pipeline/providers/local/runner.ts';
 import { DEFAULT_RECONCILE_CRON, RECONCILE_JOB, runReconcile, type ReconcileDeps } from '@snapwing/pipeline/reconcile/job.ts';
 import type { ReconciledEventType } from '@snapwing/pipeline/reconcile/marker.ts';
 import { runReviewJob, startReview, type ReviewDeps } from '@snapwing/pipeline/review/job.ts';
@@ -95,7 +99,8 @@ import { createSlackTransport, type SocketLike } from '../adapters/slack/transpo
 import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
 import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
 import { createFixerRoutes } from '../fixer-api/routes.ts';
-import { DEFAULT_FIXER_TOKEN_TTL, fixerTokenVerifier, issueFixerToken, type FixerTokenKeys } from '../fixer-api/token.ts';
+import { createFixerGitToken } from '../fixer-api/git-token.ts';
+import { fixerTokenTtl, fixerTokenVerifier, issueFixerToken, type FixerTokenKeys } from '../fixer-api/token.ts';
 import { createGitHubAuth, type GitHubAuth, type GitHubPermissions } from '../github/auth.ts';
 import { createGitHubClient, type GitHubClient } from '../github/client.ts';
 import { createCodeownersResolver } from '../github/codeowners.ts';
@@ -480,13 +485,14 @@ export const compose: ComposeFn = async (deps) => {
       await handleFixerFailed(fixerDeps, incidentId);
     },
   });
-  const runner: RunnerPort =
+  const runner: RunnerPort & ScratchSweeper =
     config.runtime.provider === 'docker'
       ? createDockerRunner({
           image: fixerImage,
           env: {
             apiUrl: fixerApiUrl,
-            token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, ttl: DEFAULT_FIXER_TOKEN_TTL }, fixerTokenKeys),
+            // Valid for the whole run plus the final report, however long its wall clock (#266).
+            token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, ttl: fixerTokenTtl(j.budget.wallClock) }, fixerTokenKeys),
             modelProxy,
           },
           // The work item is prepared on the host before the container starts (#256).
@@ -701,7 +707,15 @@ export const compose: ComposeFn = async (deps) => {
         botLogin: `${secret('GITHUB_APP_SLUG').trim()}[bot]`,
       }),
     },
-    ...createFixerRoutes(reporter, fixerTokenVerifier(fixerTokenKeys)),
+    // With docker the container holds no git token: its wrapper asks for a fresh one per git
+    // operation (`GET /fixer/:workItemId/git-token`, #266), with the fixer's scopes on its one repo.
+    ...createFixerRoutes(
+      reporter,
+      fixerTokenVerifier(fixerTokenKeys),
+      docker
+        ? { gitToken: createFixerGitToken({ state, mint: (repo) => auth.installationToken({ repo: repoFullName(repo), permissions: FIXER_GIT_PERMISSIONS }) }) }
+        : {},
+    ),
     ...(docker ? createModelProxyRoutes({ verify: modelTokenVerifier(fixerTokenKeys), providers: proxyProviders, clock }) : []),
     ...oauth.routes,
   ];
@@ -749,6 +763,20 @@ export const compose: ComposeFn = async (deps) => {
     { name: `slack ${socket ? 'socket mode' : 'http'} transport`, start: () => transport.start(), stop: () => transport.stop() },
   ];
   const workerServices: ComposedService[] = [
+    {
+      // Scratch directories a crashed or restarted server left behind (#266). Never fails startup.
+      name: 'fixer scratch sweep',
+      start: async () => {
+        try {
+          const swept = await runner.sweep({ maxWallClock: fixerBudget(fixerDeps.config).wallClock });
+          if ('skipped' in swept && typeof swept.skipped === 'string') log.error(`fixer scratch sweep skipped: ${swept.skipped}`);
+          if (swept.removed.length > 0) log.info(`fixer scratch sweep removed ${swept.removed.length} stale run director${swept.removed.length === 1 ? 'y' : 'ies'}: ${swept.removed.join(', ')}`);
+        } catch (e) {
+          log.error(`fixer scratch sweep: ${message(e)}`);
+        }
+      },
+      stop: () => Promise.resolve(),
+    },
     { name: 'reconcile schedule', start: () => workflow.cron(RECONCILE_JOB, DEFAULT_RECONCILE_CRON), stop: () => Promise.resolve() },
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
