@@ -57,11 +57,58 @@ export interface HarnessConfig {
   generic: GenericHarnessTemplate[];
 }
 
+/** Merge risk gate limits (main 11.3). Durations are ISO 8601. */
+export interface MergeConfig {
+  maxFiles: number;
+  maxDiffLines: number;
+  revertWindow: string;
+  /** Glob patterns (`*`, `**`, `?`) matched against repo-relative paths; a hit blocks autopilot merge. */
+  forbidden: string[];
+}
+
+export const DEFAULT_MERGE_FORBIDDEN: readonly string[] = [
+  '.github/**',
+  'infra/**',
+  // Lockfiles
+  '**/pnpm-lock.yaml',
+  '**/package-lock.json',
+  '**/yarn.lock',
+  '**/npm-shrinkwrap.json',
+  '**/bun.lockb',
+  '**/Cargo.lock',
+  '**/poetry.lock',
+  '**/Gemfile.lock',
+  '**/go.sum',
+  // Test and CI configuration
+  '**/vitest.config.*',
+  '**/vitest.workspace.*',
+  '**/jest.config.*',
+  '**/playwright.config.*',
+  '**/cypress.config.*',
+  '**/.eslintrc*',
+  '**/eslint.config.*',
+  '**/tsconfig*.json',
+  '.circleci/**',
+  '.gitlab-ci.yml',
+  'Jenkinsfile',
+  'azure-pipelines.yml',
+  '.buildkite/**',
+];
+
+export const DEFAULT_MERGE_CONFIG: MergeConfig = {
+  maxFiles: 10,
+  maxDiffLines: 400,
+  revertWindow: 'PT72H',
+  forbidden: [...DEFAULT_MERGE_FORBIDDEN],
+};
+
 export interface AppConfig {
   version: 1;
   runtime: RuntimeConfig;
   models: ModelsConfig;
   harness: HarnessConfig;
+  /** Always present; defaults apply when `<merge>` is absent. */
+  merge: MergeConfig;
 }
 
 export class AppConfigError extends Error {
@@ -140,7 +187,9 @@ export function loadAppConfig(xml: string): AppConfig {
     throw new AppConfigError('harness uses "generic" but declares no <generic> command template');
   }
 
-  return { version: 1, runtime, models, harness };
+  const merge = loadMerge(children(root, 'merge')[0]);
+
+  return { version: 1, runtime, models, harness, merge };
 }
 
 function children(parent: Element, name: string): Element[] {
@@ -163,4 +212,28 @@ function oneOf<T extends string>(allowed: readonly T[], value: string, what: str
   const hit = allowed.find((a) => a === value);
   if (hit === undefined) throw new AppConfigError(`${what} "${value}" must be one of ${allowed.join(', ')}`);
   return hit;
+}
+
+function loadMerge(el: Element | undefined): MergeConfig {
+  if (!el) return { ...DEFAULT_MERGE_CONFIG, forbidden: [...DEFAULT_MERGE_FORBIDDEN] };
+  const positive = (name: string, fallback: number): number => {
+    const raw = el.getAttribute(name);
+    if (raw === null) return fallback;
+    if (!/^[1-9]\d*$/.test(raw.trim())) throw new AppConfigError(`<merge> ${name} "${raw}" must be a positive integer`);
+    return Number(raw);
+  };
+  const revertWindow = el.getAttribute('revert-window') ?? DEFAULT_MERGE_CONFIG.revertWindow;
+  try {
+    parseDuration(revertWindow);
+  } catch {
+    throw new AppConfigError(`<merge> revert-window "${revertWindow}" is not an ISO 8601 duration`);
+  }
+  const forbidden = children(el, 'forbidden').map((f) => requiredAttr(f, 'path'));
+  return {
+    maxFiles: positive('max-files', DEFAULT_MERGE_CONFIG.maxFiles),
+    maxDiffLines: positive('max-diff-lines', DEFAULT_MERGE_CONFIG.maxDiffLines),
+    revertWindow,
+    // Built-in protections always apply; <forbidden> elements only add to them (main 11.3).
+    forbidden: [...new Set([...DEFAULT_MERGE_FORBIDDEN, ...forbidden])],
+  };
 }

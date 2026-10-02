@@ -12,4 +12,10 @@
   <harness fixer="claude-code" review="generic">
     <generic id="aider" command="aider --yes --message-file - --json-result" timeout="PT30M"/>
   </harness>
+  <merge max-files="10" max-diff-lines="400" revert-window="PT72H">
+    <forbidden path=".github/**"/>
+    <forbidden path="infra/**"/>
+    <forbidden path="**/pnpm-lock.yaml"/>
+    <forbidden path="**/vitest.config.*"/>
+  </merge>
 </snapwing>
