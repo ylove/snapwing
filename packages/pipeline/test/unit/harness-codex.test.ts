@@ -60,12 +60,36 @@ describe('codex harness: invocation', () => {
     expect(seen.env).not.toHaveProperty('SERVER_ONLY_VAR');
   });
 
-  it('declines the review role and reports a missing binary as failed', async () => {
+  it('reports a missing binary as failed', async () => {
     const missing = createCodexHarness({ bin: '/nonexistent/codex' });
-    expect(await run('done', opts({ role: 'review' }), missing)).toMatchObject({ outcome: 'failed', attempts: 0 });
     const r = await run('done', opts(), missing);
     expect(r).toMatchObject({ outcome: 'failed', attempts: 0 });
     expect((r as { reason: string }).reason).toMatch(/could not start/);
+  });
+});
+
+describe('codex harness: review role', () => {
+  const reviewOpts = (over: Partial<HarnessRunOptions> = {}): HarnessRunOptions => opts({ role: 'review', ...over });
+
+  it('uses review.xml and read-and-run restrictions, with the verdict file env', async () => {
+    const record = join(scratch, 'record-review.json');
+    const r = await harness.run(workItem, `FAKE_MODE=no-json FAKE_RECORD=${record}`, scratch, reviewOpts({ env: { SNAPWING_REVIEW_FILE: '/tmp/verdict.json' } }));
+    expect(r.outcome).toBe('done');
+    const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[]; stdin: string; env: Record<string, string> };
+    expect(seen.stdin).toContain('<review-system-prompt');
+    expect(seen.argv[seen.argv.indexOf('--sandbox') + 1]).toBe('workspace-write');
+    expect(seen.env).toMatchObject({ SNAPWING_ROLE: 'review', SNAPWING_REVIEW_FILE: '/tmp/verdict.json' });
+  });
+  it('is done on exit 0 even with no JSON result', async () => {
+    expect((await run('no-json', reviewOpts())).outcome).toBe('done');
+  });
+  it('is failed on a non-zero exit', async () => {
+    expect(await run('exit3', reviewOpts())).toEqual({ outcome: 'failed', reason: 'harness exited with code 3', attempts: 1 });
+  });
+  it('is stopped when the signal aborts', async () => {
+    const ac = new AbortController();
+    const r = await run('hang', reviewOpts({ signal: ac.signal, onCheckpoint: async (c) => { if (c.phase === 'branched') ac.abort(); } }));
+    expect(r).toEqual({ outcome: 'stopped', atPhase: 'branched' });
   });
 });
 
