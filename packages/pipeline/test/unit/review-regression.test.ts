@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MAX_RUN_OUTPUT, proveRegression, selectTestFiles } from '../../src/review/regression.ts';
+import { MAX_RUN_OUTPUT, proveRegression, regressionEnv, selectTestFiles } from '../../src/review/regression.ts';
 
 const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'regression');
 
@@ -69,10 +69,14 @@ describe('proveRegression', () => {
   });
 
   it('cleans up its scratch worktrees and leaves the repository alone', async () => {
-    await proveRegression(base());
+    // A private TMPDIR: other test files (review-job) run proofs in parallel in the shared one.
+    const scratch = join(root, 'private-tmp');
+    mkdirSync(scratch, { recursive: true });
+    const r = await withProcessEnv({ TMPDIR: scratch }, () => proveRegression(base()));
+    expect(r.status).toBe('proven');
     expect(git('worktree', 'list').split('\n')).toHaveLength(1);
     expect(git('status', '--porcelain')).toBe('');
-    expect(readdirSync(tmpdir()).filter((n) => n.startsWith('snapwing-regression-') && existsSync(join(tmpdir(), n, 'base')))).toEqual([]);
+    expect(readdirSync(scratch)).toEqual([]);
   });
 
   it('reports a test that passes without the fix', async () => {
@@ -144,6 +148,99 @@ describe('proveRegression', () => {
     expect(r.output).toContain('LAST-LINE');
   });
 });
+
+/** Sets process.env entries for the length of `fn`, then restores them. */
+async function withProcessEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): Promise<T> {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    return await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+describe('proveRegression environment (the test command is untrusted pull request code)', () => {
+  it('does not show the test command the server environment, only the allowlist and env', async () => {
+    const r = await withProcessEnv(
+      { SNAPWING_REGRESSION_PROBE: 'server-only-value', SNAPWING_FIXER_TOKEN_SECRET: 'test-fixer-secret', GIT_ASKPASS: '/nonexistent/askpass' },
+      () =>
+        proveRegression({
+          ...base(),
+          env: { REPO_TEST_FLAG: 'from-input' },
+          testCommand: 'echo "seen: probe=[$SNAPWING_REGRESSION_PROBE] flag=[$REPO_TEST_FLAG] home=[$HOME] askpass=[$GIT_ASKPASS]"; env; exit 1',
+        }),
+    );
+    expect(r.status).toBe('fails-with-fix');
+    expect(r.output).toContain('probe=[] flag=[from-input]');
+    expect(r.output).toContain(`home=[${process.env['HOME'] ?? ''}]`);
+    expect(r.output).toContain('askpass=[]');
+    expect(r.output).not.toContain('server-only-value');
+    expect(r.output).not.toContain('test-fixer-secret');
+    expect(r.output).not.toContain('/nonexistent/askpass');
+
+    const names = new Set([...r.output.matchAll(/^([A-Za-z_][A-Za-z0-9_]*)=/gm)].map((m) => m[1]));
+    const allowed = new Set([...Object.keys(regressionEnv({ REPO_TEST_FLAG: 'x' })), 'PWD', 'OLDPWD', 'SHLVL', '_']);
+    expect([...names].filter((n) => n !== undefined && !allowed.has(n))).toEqual([]);
+    expect(names.has('PATH')).toBe(true);
+  });
+
+  it('builds the environment from PATH, HOME, LANG, TMPDIR, env, and the git guards only', () => {
+    const env = withProcessEnvSync({ PATH: '/bin', HOME: '/home/x', LANG: 'C', TMPDIR: '/tmp/x', OTHER_SERVER_VALUE: 'nope' }, () =>
+      regressionEnv({ NODE_ENV: 'test', GIT_ASKPASS: '/from/caller', GIT_CONFIG_GLOBAL: '/from/caller' }),
+    );
+    expect(env).toMatchObject({ PATH: '/bin', HOME: '/home/x', LANG: 'C', TMPDIR: '/tmp/x', NODE_ENV: 'test' });
+    expect(env['OTHER_SERVER_VALUE']).toBeUndefined();
+    // The caller's env cannot switch the git guards off.
+    expect(env['GIT_ASKPASS']).toBe('');
+    expect(env['GIT_CONFIG_GLOBAL']).not.toBe('/from/caller');
+    expect(env['GIT_CONFIG_NOSYSTEM']).toBe('1');
+    expect([env['GIT_CONFIG_KEY_0'], env['GIT_CONFIG_VALUE_0']]).toEqual(['credential.helper', '']);
+  });
+
+  it('gives the scratch tree a fresh git config: no helper or header from the repository or HOME, and no writes back', async () => {
+    const home = join(root, 'fake-home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, '.gitconfig'), '[credential]\n\thelper = store --file=/nonexistent/home-creds\n');
+    git('config', 'credential.helper', 'store --file=/nonexistent/repo-creds');
+    git('config', 'http.extraHeader', 'X-Test-Header: not-a-secret');
+    try {
+      const r = await withProcessEnv({ HOME: home }, () =>
+        proveRegression({
+          ...base(),
+          testCommand:
+            'echo "helpers=[$(git config --get-all credential.helper | tr "\\n" ",")] header=[$(git config --get-all http.extraheader)]"; ' +
+            'git config --local credential.helper written-by-test; exit 1',
+        }),
+      );
+      expect(r.status).toBe('fails-with-fix');
+      expect(r.output).toContain('helpers=[');
+      expect(r.output).toContain('header=[]');
+      expect(r.output).not.toContain('nonexistent');
+      expect(r.output).not.toContain('X-Test-Header');
+      expect(git('config', '--local', '--get-all', 'credential.helper')).toBe('store --file=/nonexistent/repo-creds');
+    } finally {
+      git('config', '--unset-all', 'credential.helper');
+      git('config', '--unset-all', 'http.extraHeader');
+    }
+  });
+});
+
+function withProcessEnvSync<T>(vars: Record<string, string>, fn: () => T): T {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, vars);
+  try {
+    return fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
 
 describe('selectTestFiles', () => {
   it('keeps the paths the review treats as tests', () => {
