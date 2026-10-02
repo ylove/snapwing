@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { GenerateContentResponse } from '@google/genai';
 import { ModelAuthError, ModelOutputError, ModelRateLimitError, ModelUnavailableError } from '../../src/models/errors.ts';
-import { createGoogleModel, googleProviderFactory } from '../../src/models/google/index.ts';
+import { createGoogleModel, googleProviderFactory, retryAfterPreservingFetch } from '../../src/models/google/index.ts';
 import type { GoogleGenAiClient, GoogleGenerateParams } from '../../src/models/google/index.ts';
 import { createModelRouter } from '../../src/models/router.ts';
 import type { ClassifyRequest, ModelTask } from '../../src/ports/model.ts';
@@ -205,6 +205,44 @@ describe('google adapter: error mapping', () => {
   it('reads a retry-after header on the error when present', async () => {
     const err = await run(Object.assign(apiError(429, 'x'), { headers: { 'retry-after': '5' } }));
     expect((err as ModelRateLimitError).retryAfterMs).toBe(5000);
+  });
+
+  it('reads a Retry-After HTTP date from a Headers object', async () => {
+    const when = new Date(Date.now() + 20_000).toUTCString();
+    const err = await run(Object.assign(apiError(429, 'x'), { headers: new Headers({ 'Retry-After': when }) }));
+    const ms = (err as ModelRateLimitError).retryAfterMs;
+    expect(ms).toBeGreaterThan(17_000);
+    expect(ms).toBeLessThanOrEqual(20_000);
+  });
+
+  it('reads delta-seconds from a Headers object', async () => {
+    const err = await run(Object.assign(apiError(429, 'x'), { headers: new Headers({ 'retry-after': '7' }) }));
+    expect((err as ModelRateLimitError).retryAfterMs).toBe(7000);
+  });
+
+  it('prefers the header over the body retryDelay', async () => {
+    const body = JSON.stringify({ error: { details: [{ retryDelay: '31s' }] } });
+    const err = await run(Object.assign(apiError(429, body), { headers: { 'Retry-After': '2' } }));
+    expect((err as ModelRateLimitError).retryAfterMs).toBe(2000);
+  });
+
+  it('copies a 429 Retry-After header into the body so the SDK error carries it', async () => {
+    const base = async () =>
+      new Response(JSON.stringify({ error: { code: 429, message: 'slow', status: 'RESOURCE_EXHAUSTED' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '4' },
+      });
+    const response = await retryAfterPreservingFetch(base)('https://example.invalid/x');
+    expect(response.status).toBe(429);
+    const err = await run(apiError(429, await response.text()));
+    expect((err as ModelRateLimitError).retryAfterMs).toBe(4000);
+  });
+
+  it('leaves non-429 responses and 429s without a header untouched', async () => {
+    const ok = new Response('{}', { status: 200 });
+    expect(await retryAfterPreservingFetch(async () => ok)('https://example.invalid/x')).toBe(ok);
+    const limited = new Response('nope', { status: 429 });
+    expect(await retryAfterPreservingFetch(async () => limited)('https://example.invalid/x')).toBe(limited);
   });
 
   it('maps 401, 403, and an invalid-key 400 to ModelAuthError', async () => {

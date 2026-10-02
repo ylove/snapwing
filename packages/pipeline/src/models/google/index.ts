@@ -68,7 +68,7 @@ export interface GoogleModelOptions {
 export function createGoogleModel(options: GoogleModelOptions): ModelBackend {
   if (options.apiKey.trim() === '') throw new ModelAuthError('Google model adapter needs a non-empty apiKey');
   const client: GoogleGenAiClient =
-    options.client ?? (new GoogleGenAI({ apiKey: options.apiKey }) as unknown as GoogleGenAiClient);
+    options.client ?? (new GoogleGenAI({ apiKey: options.apiKey, httpOptions: { fetch: retryAfterPreservingFetch() } }) as unknown as GoogleGenAiClient);
 
   const modelFor = (task: ModelTask): string => {
     const name = options.models[task];
@@ -260,11 +260,65 @@ function isNetworkError(err: unknown): boolean {
   return typeof code === 'string' && /^(ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|UND_ERR)/.test(code);
 }
 
-/** Retry delay in ms from a `retryAfter`-style header on the error, or the RetryInfo detail in the body. */
+/** Delta-seconds or HTTP date from a Retry-After header value, as milliseconds from now. */
+function parseRetryAfterHeader(value: string): number | undefined {
+  const v = value.trim();
+  if (v === '') return undefined;
+  if (/^\d+(\.\d+)?$/.test(v)) return Math.round(Number(v) * 1000);
+  const date = Date.parse(v);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (!isRecord(headers)) return undefined;
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === name && typeof value === 'string') return value;
+  }
+  return undefined;
+}
+
+/**
+ * The SDK's ApiError keeps only the status and the JSON body, so the HTTP Retry-After header is lost at its
+ * boundary. This fetch wrapper copies the header of a 429 into the body as a RetryInfo detail (the shape
+ * mapGoogleError already reads), unless the body has its own.
+ */
+export function retryAfterPreservingFetch(base?: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    const response = await (base ?? globalThis.fetch)(input, init);
+    if (response.status !== 429) return response;
+    const header = response.headers.get('retry-after');
+    const ms = header === null ? undefined : parseRetryAfterHeader(header);
+    if (ms === undefined) return response;
+    const text = await response.text();
+    let body: Record<string, unknown> = { error: { code: 429, message: text, status: response.statusText } };
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (isRecord(parsed)) body = parsed;
+    } catch {
+      // not JSON: keep the wrapped text
+    }
+    const error = isRecord(body['error']) ? body['error'] : {};
+    const details: unknown[] = Array.isArray(error['details']) ? error['details'] : [];
+    const hasHint = details.some((d) => isRecord(d) && typeof d['retryDelay'] === 'string');
+    if (!hasHint) details.push({ '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: `${ms / 1000}s` });
+    const headers = new Headers(response.headers);
+    headers.set('content-type', 'application/json');
+    headers.delete('content-length');
+    headers.delete('content-encoding');
+    return new Response(JSON.stringify({ ...body, error: { ...error, details } }), {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  };
+}
+
+/** Retry delay in ms from a Retry-After header on the error (seconds or HTTP date), or the RetryInfo detail in the body. */
 function retryAfterMs(err: unknown, message: string): number | undefined {
-  const headers = isRecord(err) ? err['headers'] : undefined;
-  const header = headers instanceof Headers ? headers.get('retry-after') : isRecord(headers) ? headers['retry-after'] : undefined;
-  if (typeof header === 'string' && /^\d+(\.\d+)?$/.test(header.trim())) return Math.round(Number(header) * 1000);
+  const header = headerValue(isRecord(err) ? err['headers'] : undefined, 'retry-after');
+  const fromHeader = header === undefined ? undefined : parseRetryAfterHeader(header);
+  if (fromHeader !== undefined) return fromHeader;
   try {
     const body: unknown = JSON.parse(message);
     const details = isRecord(body) && isRecord(body['error']) ? body['error']['details'] : undefined;

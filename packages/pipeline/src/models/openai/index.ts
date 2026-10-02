@@ -25,6 +25,9 @@ import {
   ModelUnavailableError,
 } from '../errors.ts';
 import { DEFAULT_MODELS, PROVIDER_KEY_ENV, type ModelProviderFactory } from '../router.ts';
+import { stripAddedNulls, toStrictSchema } from './strict.ts';
+
+export { ModelSchemaError, stripAddedNulls, toStrictSchema } from './strict.ts';
 
 /** The one SDK call this adapter makes. The real `OpenAI` client satisfies it; tests pass a fake. */
 export interface OpenAIChatClient {
@@ -79,11 +82,13 @@ export function createOpenAIModel(options: OpenAIModelOptions): ModelBackend {
     },
 
     async classify(request: ClassifyRequest<unknown>): Promise<RawClassifyResult> {
+      // Throws ModelSchemaError before any API call when the schema cannot be made strict.
+      const strict = toStrictSchema(request.schema);
       const { response, meta } = await call(request, {
         messages: textMessages(request),
-        response_format: jsonSchemaFormat(request.schemaName, request.schema),
+        response_format: jsonSchemaFormat(request.schemaName, strict),
       });
-      return { ...meta, value: parseJson(messageText(response, true)) };
+      return { ...meta, value: stripAddedNulls(parseJson(messageText(response, true)), request.schema) };
     },
 
     async vision(request: VisionRequest): Promise<VisionResult> {

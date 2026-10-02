@@ -8,9 +8,16 @@ import {
   ModelUnavailableError,
   ModelValidationError,
 } from '../../src/models/errors.ts';
-import { createOpenAIModel, openaiProvider, type OpenAIChatClient } from '../../src/models/openai/index.ts';
+import {
+  createOpenAIModel,
+  ModelSchemaError,
+  openaiProvider,
+  stripAddedNulls,
+  toStrictSchema,
+  type OpenAIChatClient,
+} from '../../src/models/openai/index.ts';
 import { createModelRouter, withValidation } from '../../src/models/router.ts';
-import type { ClassifyRequest } from '../../src/ports/model.ts';
+import type { ClassifyRequest, JsonSchema } from '../../src/ports/model.ts';
 
 // Obvious fakes only; no network, no key.
 const FAKE_KEY = 'fake-openai-key';
@@ -90,6 +97,116 @@ describe('openai complete', () => {
     await createOpenAIModel({ apiKey: FAKE_KEY, client }).complete({ task: 'segmentation', system: 's', prompt: 'p' });
     expect(calls[0]?.model).toBe('gpt-5-mini');
     expect(calls[0]).not.toHaveProperty('max_completion_tokens');
+  });
+});
+
+describe('openai strict schema transform', () => {
+  it('passes an already-strict schema through unchanged', () => {
+    expect(toStrictSchema(SCHEMA)).toEqual(SCHEMA);
+    expect(toStrictSchema(toStrictSchema(SCHEMA))).toEqual(toStrictSchema(SCHEMA));
+  });
+
+  it('makes a flat optional property required and nullable', () => {
+    const out = toStrictSchema({
+      type: 'object',
+      properties: { label: { type: 'string' }, note: { type: 'string' }, kind: { type: 'string', enum: ['a', 'b'] } },
+      required: ['label'],
+    });
+    expect(out).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['label', 'note', 'kind'],
+      properties: {
+        label: { type: 'string' },
+        note: { type: ['string', 'null'] },
+        kind: { type: ['string', 'null'], enum: ['a', 'b', null] },
+      },
+    });
+  });
+
+  it('recurses through nested objects and arrays of objects', () => {
+    const out = toStrictSchema({
+      type: 'object',
+      required: ['inner', 'list'],
+      properties: {
+        inner: { type: 'object', properties: { a: { type: 'string' } } },
+        list: { type: 'array', items: { type: 'object', properties: { b: { type: 'number' } }, required: [] } },
+      },
+    });
+    expect(out.properties?.inner).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['a'],
+      properties: { a: { type: ['string', 'null'] } },
+    });
+    expect(out.properties?.list?.items).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['b'],
+      properties: { b: { type: ['number', 'null'] } },
+    });
+  });
+
+  it('wraps an optional $ref or anyOf property with null', () => {
+    const out = toStrictSchema({
+      type: 'object',
+      properties: { r: { $ref: '#/$defs/x' }, u: { anyOf: [{ type: 'string' }, { type: 'number' }] } },
+      $defs: { x: { type: 'object', properties: { y: { type: 'string' } } } },
+    });
+    expect(out.properties?.r).toEqual({ anyOf: [{ $ref: '#/$defs/x' }, { type: 'null' }] });
+    expect(out.properties?.u).toEqual({ anyOf: [{ type: 'string' }, { type: 'number' }, { type: 'null' }] });
+    expect(out.$defs?.x?.required).toEqual(['y']);
+  });
+
+  it('throws ModelSchemaError for schemas strict mode cannot express', () => {
+    const bad = [
+      { type: 'object', patternProperties: { '^a': { type: 'string' } } },
+      { type: 'object', properties: {}, additionalProperties: true },
+      { type: 'object', properties: { a: { type: 'string' } }, additionalProperties: { type: 'string' } },
+      { type: 'object', properties: { a: { allOf: [{ type: 'string' }] } } },
+    ] as unknown as JsonSchema[];
+    for (const schema of bad) expect(() => toStrictSchema(schema)).toThrow(ModelSchemaError);
+  });
+
+  it('strips only the nulls that the transform introduced', () => {
+    const original: JsonSchema = {
+      type: 'object',
+      required: ['keep'],
+      properties: {
+        keep: { type: ['string', 'null'] },
+        gone: { type: 'string' },
+        nullOk: { type: ['string', 'null'] },
+        inner: { type: 'object', properties: { a: { type: 'string' } } },
+        list: { type: 'array', items: { type: 'object', properties: { b: { type: 'number' } } } },
+      },
+    };
+    const value = { keep: null, gone: null, nullOk: null, inner: { a: null }, list: [{ b: null }, { b: 2 }] };
+    expect(stripAddedNulls(value, original)).toEqual({ keep: null, nullOk: null, inner: {}, list: [{}, { b: 2 }] });
+  });
+});
+
+describe('openai classify with optional properties', () => {
+  const optionalRequest: ClassifyRequest<{ label: string; note?: string }> = {
+    ...classifyRequest,
+    schema: { type: 'object', properties: { label: { type: 'string' }, note: { type: 'string' } }, required: ['label'] },
+    validate: (v): v is { label: string; note?: string } => typeof v === 'object' && v !== null && !('note' in v && v.note === null),
+  };
+
+  it('sends a strict schema and hands validate the shape the caller asked for', async () => {
+    const { client, calls } = fakeClient(() => completion('{"label":"bug","note":null}'));
+    const result = await createOpenAIModel({ apiKey: FAKE_KEY, client }).classify(optionalRequest);
+    expect(result.value).toEqual({ label: 'bug' });
+    const format = calls[0]?.response_format as { json_schema: { schema: JsonSchema; strict: boolean } };
+    expect(format.json_schema.strict).toBe(true);
+    expect(format.json_schema.schema.required).toEqual(['label', 'note']);
+    expect(format.json_schema.schema.additionalProperties).toBe(false);
+  });
+
+  it('throws before any API call when the schema cannot be made strict', async () => {
+    const { client, calls } = fakeClient(() => completion('{}'));
+    const request = { ...optionalRequest, schema: { type: 'object', patternProperties: {} } as unknown as JsonSchema };
+    await expect(createOpenAIModel({ apiKey: FAKE_KEY, client }).classify(request)).rejects.toBeInstanceOf(ModelSchemaError);
+    expect(calls).toHaveLength(0);
   });
 });
 
