@@ -101,7 +101,7 @@ The process does not inherit the server's environment. It gets exactly these var
 | `SNAPWING_WORKDIR` | absolute path of the checkout (also the working directory) |
 | `SNAPWING_BUDGET_WALL_CLOCK` | ISO 8601 duration, for example `PT30M` |
 | `SNAPWING_BUDGET_ATTEMPTS` | positive integer |
-| `SNAPWING_CHECKPOINT_FILE` | adapter-specific, set only by the `claude-code` adapter: absolute path of a file the agent appends checkpoint JSON lines to (Claude Code's own stderr cannot carry them); the adapter reads it and delivers each line like a stderr checkpoint. The `generic` adapter never sets it |
+| `SNAPWING_CHECKPOINT_FILE` | adapter-specific, set only by the CLI adapters (`claude-code`, `codex`, `gemini`): absolute path of a file the agent appends checkpoint JSON lines to (those CLIs' own stderr cannot carry them); the adapter reads it and delivers each line like a stderr checkpoint. The `generic` adapter never sets it |
 | `SNAPWING_PRIOR_REVIEW_FILE` | fixer retry runs only: absolute path of the `review` artifact of the `request-changes` verdict that caused the retry (JSON, main 11.1), under `.git/snapwing/` so no commit can include it. Absent on a first run |
 | `GIT_ASKPASS`, `SNAPWING_GIT_TOKEN` | the Git credential for the one repository: `git push` and `git fetch` in the checkout authenticate through the askpass script, which answers with `SNAPWING_GIT_TOKEN` (a GitHub App installation token). The token is in no file, remote URL, or Git config |
 | `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, the null device, and `0`: Git reads only the checkout's own config and never prompts |

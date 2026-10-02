@@ -1,5 +1,5 @@
 // The `local` RunnerPort (main 14.3): runs the fixer as a child process on this machine. The child
-// is the configured HarnessPort's (generic or claude-code, both process based over the shared
+// is the configured HarnessPort's (generic, claude-code, codex, or gemini, all process based over the shared
 // supervisor in harness/process.ts), so stop, budget, and checkpoint handling are the harness's;
 // this runner adds a prepared checkout per run and cancellation by id.
 //
@@ -30,7 +30,9 @@ import { join } from 'node:path';
 import type { HarnessConfig } from '../../config/app-config.ts';
 import { prepareWorkdir, SNAPWING_GIT_DIR, type GitIdentity, type PreparedWorkdir } from '../../fixer/workdir/index.ts';
 import { createClaudeCodeHarness, type ClaudeCodeHarnessConfig } from '../../harness/claude-code/index.ts';
+import { createCodexHarness, type CodexHarnessConfig } from '../../harness/codex/index.ts';
 import { createGenericHarness } from '../../harness/generic/index.ts';
+import { createGeminiHarness, type GeminiHarnessConfig } from '../../harness/gemini/index.ts';
 import type { HarnessCheckpoint, HarnessPort, HarnessResult, WorkItemRef } from '../../ports/harness.ts';
 import type { FixerJob, HarnessChoice, RunnerPort } from '../../ports/runner.ts';
 import type { StatePort } from '../../ports/state.ts';
@@ -218,14 +220,15 @@ export interface HarnessResolverOptions {
   /** Extra environment for generic harness processes (for example secrets from the SecretsPort). */
   env?: Readonly<Record<string, string>>;
   claudeCode?: ClaudeCodeHarnessConfig;
+  codex?: CodexHarnessConfig;
+  gemini?: GeminiHarnessConfig;
   /** SIGTERM to SIGKILL grace for generic harnesses, in milliseconds. Tests shorten it. */
   killGraceMs?: number;
 }
 
 /**
- * Resolves a job's harness choice against the `<harness>` config (main 14.5): `claude-code` and each
- * `<generic id>` template become one adapter instance each, made on first use. `codex` and `gemini`
- * have no adapter yet and throw.
+ * Resolves a job's harness choice against the `<harness>` config (main 14.5): `claude-code`, `codex`,
+ * `gemini`, and each `<generic id>` template become one adapter instance each, made on first use.
  */
 export function harnessResolver(config: HarnessConfig, options: HarnessResolverOptions = {}): (choice: HarnessChoice) => HarnessPort {
   const made = new Map<string, HarnessPort>();
@@ -255,8 +258,9 @@ export function harnessResolver(config: HarnessConfig, options: HarnessResolverO
         );
       }
       case 'codex':
+        return once('codex', () => createCodexHarness(options.codex ?? {}));
       case 'gemini':
-        throw new Error(`the ${choice.adapter} harness adapter is not implemented yet`);
+        return once('gemini', () => createGeminiHarness(options.gemini ?? {}));
     }
   };
 }
