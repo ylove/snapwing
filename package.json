@@ -21,6 +21,7 @@
     "demo:state": "tsx packages/pipeline/src/demo/state.ts",
     "state": "tsx packages/app/src/cli/main.ts state",
     "serve": "tsx packages/app/src/cli/main.ts serve",
+    "jira:bootstrap": "tsx scripts/jira-bootstrap.ts",
     "slack:bootstrap": "tsx scripts/slack-bootstrap.ts"
   },
   "devDependencies": {
