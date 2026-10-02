@@ -27,6 +27,8 @@ export const DEMO_LEVELS = fileURLToPath(new URL('../../../../../demo/levels/', 
 export const SLACK_API = 'https://slack.com/api';
 export const SIGNING_SECRET = 'test-signing-secret';
 export const BOT_USER = 'U0SNAPWING';
+/** The workspace subdomain the fake `auth.test` reports. */
+export const WORKSPACE_DOMAIN = 'acme-test';
 
 /** Fakes only: none of these looks like a real credential. */
 export function fakeSecrets(): Record<string, string> {
@@ -119,6 +121,9 @@ export function slackWorld(server: SetupServer, channel: string, messages: reado
       const thread = messages.filter((m) => (m['ts'] === ts || m['thread_ts'] === ts) && inRange(m, q));
       return page(thread.sort((a, b) => Number(a['ts']) - Number(b['ts'])));
     }),
+    http.post(`${SLACK_API}/auth.test`, ({ request }) =>
+      authorized(request) ? HttpResponse.json({ ok: true, user_id: BOT_USER, url: `https://${WORKSPACE_DOMAIN}.slack.com/` }) : HttpResponse.json({ ok: false, error: 'invalid_auth' }),
+    ),
     http.post(`${SLACK_API}/:method`, async ({ request, params }) => {
       if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
       const method = String(params['method']);
