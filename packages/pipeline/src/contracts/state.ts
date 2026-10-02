@@ -12,6 +12,7 @@
 
 import type { AutonomyLevel } from './events.ts';
 import type { ChannelSource } from './incident.ts';
+import type { LifecycleStatus } from '../lifecycle/machine.ts';
 
 export type { NewEvent, IncidentEvent } from './events.ts';
 
@@ -99,11 +100,8 @@ export const LOG_START = '';
 
 // Projections: incidents --------------------------------------------------------------------------
 
-/**
- * `incidents.status`: a B 5 lifecycle state. Kept as `string` until the lifecycle reducer (#11)
- * merges, then narrowed to its `LifecycleStatus` union.
- */
-export type IncidentStatus = string;
+/** `incidents.status`: a B 5 lifecycle state, the `LifecycleStatus` union of the reducer (#11). */
+export type IncidentStatus = LifecycleStatus;
 
 export type IncidentKind = 'incident' | 'work-item';
 

@@ -16,6 +16,8 @@ import {
   type Subscription,
 } from '../../src/ports/state.ts';
 import type { NewEvent as CatalogNewEvent } from '../../src/contracts/events.ts';
+import type { IncidentQuery } from '../../src/contracts/state.ts';
+import type { LifecycleStatus } from '../../src/lifecycle/machine.ts';
 
 const INC = '01JZ0000000000000000000002';
 
@@ -45,6 +47,8 @@ describe('contract types match the B 3 columns', () => {
   it('IncidentView is the incidents row', () => {
     expectTypeOf<RequiredKeys<IncidentView>>().toEqualTypeOf<Camel<IncidentsNotNull>>();
     expectTypeOf<OptionalKeys<IncidentView>>().toEqualTypeOf<Camel<IncidentsNullable>>();
+    expectTypeOf<IncidentView['status']>().toEqualTypeOf<LifecycleStatus>();
+    expectTypeOf<NonNullable<IncidentQuery['status']>>().toEqualTypeOf<LifecycleStatus | readonly LifecycleStatus[]>();
     expectTypeOf<IncidentView['monitored']>().toEqualTypeOf<boolean>();
     expectTypeOf<IncidentView['autonomyLevel']>().toEqualTypeOf<0 | 1 | 2 | 3 | undefined>();
   });
