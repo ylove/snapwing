@@ -1,0 +1,73 @@
+// src/harness/codex/index.ts: the codex harness adapter (main 14.5, ADR 0003).
+//
+// Flags used (checked against `codex exec --help`, Codex CLI, 2026-10):
+//   exec                          non-interactive run; a trailing `-` reads the prompt from stdin
+//   --sandbox danger-full-access  the fixer container is the boundary and `git push` needs the network
+//   --skip-git-repo-check         never fail on the checkout's git state
+//   --output-last-message <file>  the agent's final message is written to this file (stdout carries progress)
+//   --model <model>               only when configured
+//
+// Codex has no system prompt flag, so the stdin text is the fixer prompt (src/prompts/fixer.xml) followed
+// by the implementation request. Stop, budget, and checkpoints are shared with the other adapters through
+// ../cli-agent.ts and ../process.ts (docs/harness-generic.md sections 5 to 7).
+
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { HarnessPort, HarnessResult } from '../../ports/harness.ts';
+import { resultFromMessage, runCliAgent, type Extracted } from '../cli-agent.ts';
+import { DEFAULT_KILL_GRACE_MS } from '../process.ts';
+
+export interface CodexHarnessConfig {
+  /** The executable. Default `codex`. */
+  bin?: string;
+  /** Passed as `--model` when set. */
+  model?: string;
+  /** SIGTERM to SIGKILL grace period in milliseconds. Default 10000 (PT10S). Tests shorten it. */
+  killGraceMs?: number;
+}
+
+const FIXER_PROMPT_URL = new URL('../../prompts/fixer.xml', import.meta.url);
+
+export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort {
+  const bin = config.bin ?? 'codex';
+  const graceMs = config.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
+
+  return {
+    async run(workItem, implementationRequest, workdir, opts): Promise<HarnessResult> {
+      if (opts.role !== 'fixer') {
+        return { outcome: 'failed', reason: `codex harness: role ${opts.role} is not supported yet`, attempts: 0 };
+      }
+      const systemPrompt = await readFile(FIXER_PROMPT_URL, 'utf8');
+      const scratch = await mkdtemp(join(tmpdir(), 'snapwing-codex-'));
+      const lastMessageFile = join(scratch, 'last-message.txt');
+      const args = ['exec', '--sandbox', 'danger-full-access', '--skip-git-repo-check', '--output-last-message', lastMessageFile];
+      if (config.model !== undefined) args.push('--model', config.model);
+      args.push('-');
+      try {
+        return await runCliAgent({
+          bin,
+          args,
+          workItem,
+          request: `${systemPrompt}\n${implementationRequest}`,
+          workdir,
+          opts,
+          graceMs,
+          checkpointFile: join(scratch, 'checkpoints.jsonl'),
+          extraFile: lastMessageFile,
+          extract: extractResult,
+          inheritEnv: ['OPENAI_API_KEY', 'CODEX_API_KEY'],
+        });
+      } finally {
+        await rm(scratch, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
+/** The result is the end of the last-message file; stdout (progress text) is the fallback if the file is missing. */
+export function extractResult(stdout: string, lastMessage: string | undefined): Extracted {
+  const message = (lastMessage ?? stdout).trim();
+  if (message === '') return { kind: 'error', message: 'codex printed no final message' };
+  return resultFromMessage(message);
+}

@@ -523,11 +523,19 @@ describe('local runner (child process over the generic harness)', () => {
     await expect(r.runFixer(job({ implementationRequestArtifactId: '01HZXTESTMISSING0000000000' }))).rejects.toBeInstanceOf(StateNotFoundError);
     await expect(r.runFixer(job({ implementationRequestArtifactId: '01HZXTESTDIAGNOSIS00000000' }))).rejects.toThrow(/not an implementation-request/);
     await expect(r.runFixer(job({ harness: { adapter: 'generic', templateId: 'nope' } }))).rejects.toThrow(/no <generic id="nope">/);
-    await expect(r.runFixer(job({ harness: { adapter: 'codex' } }))).rejects.toThrow(/not implemented/);
     await expect(r.runFixer(job({ runId: '../escape' }))).rejects.toThrow(/not a plain path segment/);
     await expect(r.runFixer(job({ runId: '' }))).rejects.toThrow(/not a plain path segment/);
     expect(r.active()).toEqual([]);
     expect(await readdir(workdirRoot)).toEqual([]);
+  });
+
+  it('builds codex and gemini harnesses from the config, one instance each', () => {
+    const resolve = harnessResolver(harnessConfig);
+    const codex = resolve({ adapter: 'codex' });
+    const gemini = resolve({ adapter: 'gemini' });
+    expect(codex).toBe(resolve({ adapter: 'codex' }));
+    expect(gemini).toBe(resolve({ adapter: 'gemini' }));
+    expect(codex).not.toBe(gemini);
   });
 
   it('treats cancel of an unknown run as a no-op and rejects wait for one', async () => {
