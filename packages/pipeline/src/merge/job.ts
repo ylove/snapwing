@@ -54,6 +54,7 @@ import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseReviewVerdict } from '../review/verdict.ts';
 import { parseDuration } from '../util/duration.ts';
+import { repoFullName } from '../util/repo.ts';
 import { awaitingCi, ciResultEvents, recordCiResult } from './ci.ts';
 import { evaluateMergeGate, type ChangedFile, type MergeGateResult, type RequiredCheck, type ReviewVerdict } from './gate.ts';
 
@@ -207,8 +208,9 @@ async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeO
   if (pre !== undefined) return pre;
 
   const incident = await deps.state.getIncident(incidentId);
-  const repo = incident?.repo;
-  if (repo === undefined || repo === '') return { outcome: 'skipped', reason: 'no-repo' };
+  const mapRepo = incident?.repo;
+  if (mapRepo === undefined || mapRepo === '') return { outcome: 'skipped', reason: 'no-repo' };
+  const repo = repoFullName(mapRepo);
 
   const review = await reviewVerdict(deps.state, log, prNumber);
   if (review === undefined) return { outcome: 'waiting', on: 'review' };

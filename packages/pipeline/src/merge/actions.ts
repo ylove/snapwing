@@ -33,6 +33,7 @@ import type { LifecycleStatus } from '../lifecycle/machine.ts';
 import type { MapActorRole } from '../map/types.ts';
 import { authorize, type DenyReason } from '../policy/authorize.ts';
 import type { ReviewVerdict } from '../review/verdict.ts';
+import { repoFullName } from '../util/repo.ts';
 import { loadMap, resolveReviewers, sameLogin, type ChatUserRef, type HumanDeps } from './human.ts';
 import { httpStatus, statusOf, type MergeResult } from './job.ts';
 import type { RevertOptions, RevertOutcome, RevertRefusal } from './revert.ts';
@@ -152,8 +153,9 @@ export async function humanMerge(deps: PrActionsDeps, input: HumanPrActionInput)
   const { log, incident, user, actor } = ctx;
   const pr = currentPr(action, log, input);
   if (typeof pr !== 'number') return pr;
-  const repo = incident?.repo;
-  if (repo === undefined || repo === '') return refuse(action, 'no-repo');
+  const mapRepo = incident?.repo;
+  if (mapRepo === undefined || mapRepo === '') return refuse(action, 'no-repo');
+  const repo = repoFullName(mapRepo);
 
   const token = await deps.identity.userToken(user);
   if (token === null) return refuse(action, 'not-linked', { linkUrl: await deps.identity.linkUrl(user) });

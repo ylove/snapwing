@@ -32,6 +32,7 @@ import type { MapPerson, WorkspaceMap } from '../map/types.ts';
 import type { CachePort } from '../ports/cache.ts';
 import type { ChatPlatform, StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
+import { repoFullName } from '../util/repo.ts';
 import { httpStatus, reviewVerdict, type MergeRequiredCheck, type MergeResult } from './job.ts';
 
 /** How long a posted-card record is kept (the card is posted once per trigger event). */
@@ -309,8 +310,9 @@ export async function requestHumanReview(deps: HumanReviewDeps, incidentId: stri
   if (!trigger.ready) return { requested: false, reason: trigger.reason };
   const { prNumber } = trigger;
   const incident = await deps.state.getIncident(incidentId);
-  const repo = incident?.repo;
-  if (repo === undefined || repo === '') return { requested: false, reason: 'no-repo' };
+  const mapRepo = incident?.repo;
+  if (mapRepo === undefined || mapRepo === '') return { requested: false, reason: 'no-repo' };
+  const repo = repoFullName(mapRepo);
 
   const gh = deps.github(repo);
   const pr = await gh.getPullRequest(prNumber);

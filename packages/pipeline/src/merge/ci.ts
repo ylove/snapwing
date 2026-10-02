@@ -44,6 +44,7 @@ import { INITIAL_STATUS, nextStatus, type LifecycleStatus } from '../lifecycle/m
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import type { ReviewVerdict } from '../review/verdict.ts';
+import { repoFullName } from '../util/repo.ts';
 import type { MergeCombinedStatus, MergeRequiredCheck } from './job.ts';
 
 /** The statuses in which the lifecycle waits for a CI result (B 5). */
@@ -148,8 +149,9 @@ export async function recordCiResult(deps: CiDeps, incidentId: string, opts: { h
   // Before any GitHub call: most callers ask while nothing waits for CI.
   if (opened === undefined || !awaitingCi(log)) return skip('not-awaiting');
   const prNumber = opened.payload.prNumber;
-  const repo = (await deps.state.getIncident(incidentId))?.repo;
-  if (repo === undefined || repo === '') return skip('no-repo');
+  const mapRepo = (await deps.state.getIncident(incidentId))?.repo;
+  if (mapRepo === undefined || mapRepo === '') return skip('no-repo');
+  const repo = repoFullName(mapRepo);
 
   const gh = deps.github(repo);
   const pr = await gh.getPullRequest(prNumber);

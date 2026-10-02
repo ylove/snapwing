@@ -314,13 +314,16 @@ interface World {
   runner: FakeRunner;
   merges: string[];
   workdirRoot: string;
+  /** The repo each installation-token request named. */
+  tokenRepos: string[];
 }
 
 /** `runner` is the fixer's RunnerPort, which the review job also gets, as the composition root passes it. */
-async function setup(config: Partial<ReviewDeps['config']> = {}, runner: FakeRunner = new FakeRunner()): Promise<World> {
+async function setup(config: Partial<ReviewDeps['config']> = {}, runner: FakeRunner = new FakeRunner(), mapRepo: string = REPO): Promise<World> {
   const harness = new FakeReviewHarness();
   const github = new FakeGitHub();
   const workdirRoot = join(scratch, 'reviews');
+  const tokenRepos: string[] = [];
   const fixer: FixerDeps = {
     workspaceId: WS,
     state,
@@ -345,7 +348,13 @@ async function setup(config: Partial<ReviewDeps['config']> = {}, runner: FakeRun
       return github;
     },
     harness,
-    git: { token: () => Promise.resolve('test-installation-token'), remoteUrl: () => origin.url },
+    git: {
+      token: (workItem) => {
+        tokenRepos.push(workItem.repo);
+        return Promise.resolve('test-installation-token');
+      },
+      remoteUrl: () => origin.url,
+    },
     workdirRoot,
     config: { testCommand: TEST_COMMAND, regressionTimeout: 'PT1M', ...config },
     clock: () => new Date(now),
@@ -361,15 +370,15 @@ async function setup(config: Partial<ReviewDeps['config']> = {}, runner: FakeRun
     body: REQUEST_BODY,
     createdBy: 'orchestrator',
   });
-  await append(...toFiled({ artifactId: put.id, version: put.version }));
-  return { deps, fixer, harness, github, runner, merges, workdirRoot };
+  await append(...toFiled({ artifactId: put.id, version: put.version }, mapRepo));
+  return { deps, fixer, harness, github, runner, merges, workdirRoot, tokenRepos };
 }
 
 function ev<T extends EventType>(type: T, payload: EventPayloads[T], source: 'agent' | 'fixer' | 'github' = 'agent'): NewEvent<T> {
   return { workspaceId: WS, incidentId: INC, type, v: 1, source, occurredAt: new Date(now).toISOString(), payload } as unknown as NewEvent<T>;
 }
 
-function toFiled(request: ArtifactRef): NewEvent[] {
+function toFiled(request: ArtifactRef, repo: string = REPO): NewEvent[] {
   return [
     ev('captured', {
       kind: 'incident',
@@ -380,7 +389,7 @@ function toFiled(request: ArtifactRef): NewEvent[] {
       channelId: 'C-FAKE',
     }),
     ev('context-assembled', { bundle: { artifactId: '01K6BUNDLE00000000000000001', version: 1 }, includedCount: 2, excludedCount: 0 }),
-    ev('resolved', { surfaceId: 'web', componentId: 'checkout', repo: REPO, resolvedBy: 'channel-explicit', confidence: 0.9 }),
+    ev('resolved', { surfaceId: 'web', componentId: 'checkout', repo, resolvedBy: 'channel-explicit', confidence: 0.9 }),
     ev('dedupe-checked', { candidates: [], decision: 'none' }),
     ev('planned', {
       action: 'create_issue',
@@ -528,6 +537,22 @@ describe(`review job (${TEST_DIALECT})`, () => {
     expect(w.merges).toEqual([INC]);
     expect(w.runner.started).toHaveLength(1);
     expect(await status()).toBe('ci');
+  });
+
+  it('a map-form repo (github.com/owner/name) reaches the harness env, the token request, and GitHub as owner/name', async () => {
+    const w = await setup({}, new FakeRunner(), `github.com/${REPO}`);
+    await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    const call = w.harness.calls[0];
+    if (call === undefined) throw new Error('unreachable');
+    expect(call.workItem).toEqual({ id: INC, issueKey: 'WEB-1042', repo: REPO });
+    expect(w.tokenRepos).toEqual([REPO]);
+    // The FakeGitHub factory throws for any repo but owner/name, so an approval proves the GitHub calls too.
+    expect(w.github.reviews).toHaveLength(1);
+    expect((await lastOf('review-passed'))?.payload.prNumber).toBe(PR);
   });
 
   it('CI that finished green before the review passed is recorded when the review passes (#214)', async () => {

@@ -71,6 +71,7 @@ import { reviewRunnerOf, testRunnerOf, type HarnessChoice, type ReviewRunner, ty
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseImplementationRequest, type ImplementationRequest } from '../prompts/implementation-request.ts';
+import { repoFullName } from '../util/repo.ts';
 import { ulid } from '../util/ulid.ts';
 import { isolatedTree, proveRegression, selectTestFiles, type RegressionResult, type RegressionStatus } from './regression.ts';
 import { checkConstraints, parseReviewVerdict, type ConstraintViolation, type ReviewVerdict } from './verdict.ts';
@@ -231,8 +232,9 @@ export async function startReview(
   if (prNumber === undefined) return undefined;
   let headSha = input.headSha;
   if (headSha === undefined) {
-    const repo = (await deps.state.getIncident(incidentId))?.repo;
-    if (repo === undefined || repo === '') return undefined;
+    const mapRepo = (await deps.state.getIncident(incidentId))?.repo;
+    if (mapRepo === undefined || mapRepo === '') return undefined;
+    const repo = repoFullName(mapRepo);
     headSha = (await deps.github(repo).getPullRequest(prNumber)).headSha;
   }
   const data: ReviewRunData = { incidentId, prNumber, headSha };
@@ -253,8 +255,9 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
   if (pre !== undefined) return skipped(pre);
 
   const incident = await deps.state.getIncident(incidentId);
-  const repo = incident?.repo;
-  if (repo === undefined || repo === '') return skipped('no-repo');
+  const mapRepo = incident?.repo;
+  if (mapRepo === undefined || mapRepo === '') return skipped('no-repo');
+  const repo = repoFullName(mapRepo);
   const issueKey = incident?.jiraKey ?? latest(log, 'filed')?.payload.jiraKey;
   const requestRef = latest(log, 'planned')?.payload.implementationRequest;
   if (requestRef === undefined || issueKey === undefined) return skipped('no-request');

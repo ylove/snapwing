@@ -15,6 +15,7 @@
 import type { AutonomyLevel, EventActor, EventSource, IncidentEvent } from '../contracts/events.ts';
 import { appendDecided, currentLevel, latest, newEvent } from '../fixer/job.ts';
 import { parseDuration } from '../util/duration.ts';
+import { repoFullName } from '../util/repo.ts';
 import { isMergeEvaluateData, revertTimerKey, type MergeDeps } from './job.ts';
 
 /** Prefix of the `level-changed` reason that records a revert. */
@@ -42,8 +43,9 @@ export async function revert(deps: MergeDeps, incidentId: string, actor: EventAc
   const merged = latest(log, 'merged');
   if (merged === undefined) return { reverted: false, reason: 'not-merged' };
   const incident = await deps.state.getIncident(incidentId);
-  const repo = incident?.repo;
-  if (repo === undefined || repo === '') return { reverted: false, reason: 'no-repo' };
+  const mapRepo = incident?.repo;
+  if (mapRepo === undefined || mapRepo === '') return { reverted: false, reason: 'no-repo' };
+  const repo = repoFullName(mapRepo);
 
   const prNumber = merged.payload.prNumber;
   const ticket = incident?.jiraKey === undefined ? '' : ` for ${incident.jiraKey}`;
