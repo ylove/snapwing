@@ -83,7 +83,7 @@ Stop is delivered as signals, never on stdin:
 
 A Stop is delivered when an approver taps Stop (the stop poll in B 9 returns 204) or the run's `AbortSignal` fires. The wrapper polls the stop endpoint after every checkpoint and at least every 5 seconds.
 
-The wall clock budget (`timeout` on the `generic` element, else `PT30M`, main 10.4) ends the run the same way, with `SIGTERM` then `SIGKILL`, but the recorded result is `failed` with `reason` `budget: wall clock <duration> exceeded`, because nobody asked it to stop. The attempts budget is the harness's own to respect; it is passed in the environment and `attempts` in a `failed` result reports how many it used.
+The wall clock budget (`timeout` on the `generic` element, else `PT30M`, main 10.4) ends the run the same way, with `SIGTERM` then `SIGKILL`, but the recorded result is `failed` with `reason` `budget-exceeded: wall clock <duration> exceeded`, because nobody asked it to stop. The attempts budget is the harness's own to respect; it is passed in the environment and `attempts` in a `failed` result reports how many it used.
 
 ## 7. Environment
 
