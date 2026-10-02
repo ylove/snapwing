@@ -46,6 +46,32 @@ export class ModelValidationError extends ModelError {
   }
 }
 
+/** The provider throttled the call (HTTP 429). `retryAfterMs` is set when the provider said how long to wait. */
+export class ModelRateLimitError extends ModelError {
+  readonly retryAfterMs: number | undefined;
+  constructor(message: string, retryAfterMs?: number, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ModelRateLimitError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/** The provider rejected the credentials or the key may not use the model (HTTP 401 or 403). Retrying will not help. */
+export class ModelAuthError extends ModelError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ModelAuthError';
+  }
+}
+
+/** The provider is down, overloaded, or unreachable (HTTP 5xx, connection failure, timeout). Worth retrying later. */
+export class ModelUnavailableError extends ModelError {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ModelUnavailableError';
+  }
+}
+
 /** The router cannot pick a provider or has no adapter registered for the one it picked. */
 export class ModelRoutingError extends ModelError {
   constructor(message: string) {

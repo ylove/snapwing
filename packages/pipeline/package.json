@@ -22,6 +22,7 @@
     "vitest": "^5.0.3"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
     "fast-xml-parser": "^5.11.2",
     "node-schematron": "^2.1.0",
     "slimdom": "4.3.5",
