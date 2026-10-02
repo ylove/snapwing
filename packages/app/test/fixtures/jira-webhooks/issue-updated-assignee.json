@@ -1,0 +1,32 @@
+{
+  "timestamp": 1790942460000,
+  "webhookEvent": "jira:issue_updated",
+  "issue_event_type_name": "issue_assigned",
+  "user": {
+    "self": "https://example.atlassian.net/rest/api/2/user?accountId=5b10ac8d82e05b22cc7d4ef5",
+    "accountId": "5b10ac8d82e05b22cc7d4ef5",
+    "displayName": "Dana Fake",
+    "active": true,
+    "timeZone": "Etc/UTC",
+    "accountType": "atlassian"
+  },
+  "issue": {
+    "id": "10042",
+    "self": "https://example.atlassian.net/rest/api/2/10042",
+    "key": "WEB-1042",
+    "fields": {
+      "summary": "Checkout returns 500 on submit",
+      "updated": "2026-10-02T12:01:00.000+0000",
+      "status": { "name": "Backlog", "id": "10000" },
+      "labels": ["snapwing"],
+      "assignee": { "accountId": "5b10ac8d82e05b22cc7d4ef5", "displayName": "Dana Fake" },
+      "customfield_10050": "<implementation-request version=\"1\"/>"
+    }
+  },
+  "changelog": {
+    "id": "10501",
+    "items": [
+      { "field": "assignee", "fieldtype": "jira", "fieldId": "assignee", "from": null, "fromString": null, "to": "5b10ac8d82e05b22cc7d4ef5", "toString": "Dana Fake", "tmpFromAccountId": null, "tmpToAccountId": "5b10ac8d82e05b22cc7d4ef5" }
+    ]
+  }
+}

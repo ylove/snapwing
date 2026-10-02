@@ -20,6 +20,7 @@ import type { WorkspaceMap } from '../map/types.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { findSurface } from '../resolve/lookup.ts';
+import { jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
@@ -737,7 +738,8 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
   const waitingOn: WaitingOn | undefined = fixer ? undefined : { kind: 'human', ...(owner === undefined ? {} : { who: owner }) };
   await commit(env, [...subscription.events, newEvent(env, 'waiting-changed', waitingOn === undefined ? {} : { waitingOn })], async (tx) => {
     for (const row of subscription.outbox) await tx.enqueueOutbox(row);
-    if (fixer) await tx.enqueueOutbox(outboxRow(env, 'transition', { issueKey, to: IN_PROGRESS }));
+    // Keyed as a write of the status field, so a human transition before it is sent drops it (B 7.3).
+    if (fixer) await tx.enqueueOutbox({ ...outboxRow(env, 'transition', { issueKey, to: IN_PROGRESS }), batchKey: jiraFieldBatchKey(env.cursor.incidentId, 'status') });
     return [];
   });
   return 'continue';

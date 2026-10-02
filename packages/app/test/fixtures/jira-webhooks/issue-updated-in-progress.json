@@ -1,0 +1,32 @@
+{
+  "timestamp": 1790942520000,
+  "webhookEvent": "jira:issue_updated",
+  "issue_event_type_name": "issue_generic",
+  "user": {
+    "self": "https://example.atlassian.net/rest/api/2/user?accountId=5b10a2844c20165700ede21g",
+    "accountId": "5b10a2844c20165700ede21g",
+    "displayName": "Mia Krystof",
+    "active": true,
+    "timeZone": "Etc/UTC",
+    "accountType": "atlassian"
+  },
+  "issue": {
+    "id": "10042",
+    "self": "https://example.atlassian.net/rest/api/2/10042",
+    "key": "WEB-1042",
+    "fields": {
+      "summary": "Checkout returns 500 on submit",
+      "updated": "2026-10-02T12:02:00.000+0000",
+      "status": { "self": "https://example.atlassian.net/rest/api/2/status/3", "name": "In Progress", "id": "3" },
+      "labels": ["snapwing"],
+      "assignee": null,
+      "customfield_10050": "<implementation-request version=\"1\"><problem>Checkout returns 500 on submit</problem></implementation-request>"
+    }
+  },
+  "changelog": {
+    "id": "10502",
+    "items": [
+      { "field": "status", "fieldtype": "jira", "fieldId": "status", "from": "10000", "fromString": "Backlog", "to": "3", "toString": "In Progress" }
+    ]
+  }
+}

@@ -44,11 +44,17 @@ export const JIRA_BACKLOG = 'Backlog';
 export const JIRA_IN_REVIEW = 'In Review';
 export const JIRA_DONE = 'Done';
 
-/** The fields these rows write, as `jiraFieldBatchKey` names them. */
-export type JiraField = 'status' | typeof CUSTOM_FIELD_AGENT_STATUS | typeof CUSTOM_FIELD_AUTONOMY_LEVEL;
+/**
+ * The fields agent writes name in `jiraFieldBatchKey`: the ones these rows write, plus `priority` and
+ * `assignee`, which B 7.2 has the agent write (on `escalated`, `claimed`, `planned`) and a human may
+ * edit (B 7.3); the inbound sync drops a pending write to any of them.
+ */
+export type JiraField = 'status' | 'priority' | 'assignee' | typeof CUSTOM_FIELD_AGENT_STATUS | typeof CUSTOM_FIELD_AUTONOMY_LEVEL;
 
 const FIELD_SLUGS: Readonly<Record<JiraField, string>> = {
   status: 'status',
+  priority: 'priority',
+  assignee: 'assignee',
   [CUSTOM_FIELD_AGENT_STATUS]: 'agent-status',
   [CUSTOM_FIELD_AUTONOMY_LEVEL]: 'autonomy-level',
 };

@@ -150,3 +150,23 @@ it('ack clears a deferred error, so a sent row is never listed as parked', async
   expect(await f.state().listParkedOutbox('github', 10)).toEqual([]);
   expect(await f.state().drainOutbox('github', 10)).toEqual([]);
 });
+it('drops the undone rows of one batch key and target, a deferred one too, without parking them (#143)', async () => {
+  const incident = id();
+  const key = `field:${incident}:priority`;
+  const first = outbox({ incidentId: incident, op: 'update-fields', batchKey: key });
+  const deferred = outbox({ incidentId: incident, op: 'update-fields', batchKey: key, createdAt: '2026-10-02T12:00:00.001Z', nextAttempt: '2026-10-02T12:00:00.001Z' });
+  const sent = outbox({ incidentId: incident, op: 'update-fields', batchKey: key, createdAt: '2026-10-02T11:59:00.000Z' });
+  const otherField = outbox({ incidentId: incident, op: 'update-fields', batchKey: `field:${incident}:status`, createdAt: '2026-10-02T12:00:00.002Z', nextAttempt: '2026-10-02T12:00:00.002Z' });
+  const otherTarget = outbox({ incidentId: incident, target: 'github', batchKey: key });
+  for (const row of [first, deferred, sent, otherField, otherTarget]) await f.state().enqueueOutbox(row);
+  await f.state().ackOutbox([sent.id]);
+  f.setTime(5);
+  await f.state().deferOutbox(deferred.id, '2026-10-02T12:05:00.000Z', 'jira answered 503');
+  expect((await f.state().drainOutbox('jira', 10)).map((r) => r.id)).toEqual([first.id]);
+  expect(await f.state().dropOutbox('jira', key)).toEqual([first.id, deferred.id]);
+  expect(await f.state().dropOutbox('jira', key)).toEqual([]);
+  expect((await f.state().drainOutbox('jira', 10)).map((r) => r.id)).toEqual([otherField.id]);
+  expect((await f.state().drainOutbox('github', 10)).map((r) => r.id)).toEqual([otherTarget.id]);
+  expect(await f.state().listParkedOutbox('jira', 10)).toEqual([]);
+  await expect(f.state().dropOutbox('jira', '')).rejects.toThrow(RangeError);
+});
