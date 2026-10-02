@@ -82,9 +82,32 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     },
     async drop() {
       await closeAll();
-      await withClient(adminUrl, (c) => c.query(`drop database if exists "${database}" with (force)`));
+      await withClient(adminUrl, async (c) => {
+        await waitForNoBackends(c, database);
+        await c.query(`drop database if exists "${database}" with (force)`);
+      });
     },
   };
+}
+
+/**
+ * `pool.end()` resolves once the pool's client list is empty, before each client's socket has closed,
+ * so `drop database ... with (force)` can terminate a backend whose client is still shutting down
+ * and the FATAL 57P01 surfaces as an unhandled error (#122). Wait (about 5 s) for the other
+ * backends to leave; FORCE still removes any that stay.
+ */
+async function waitForNoBackends(c: pg.Client, database: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const { rows } = await c.query<{ n: string }>(
+      'select count(*)::text as n from pg_stat_activity where datname = $1 and pid <> pg_backend_pid()',
+      [database],
+    );
+    if (rows[0]?.n === '0' || Date.now() >= deadline) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
 }
 
 async function withClient<T>(connectionString: string, fn: (c: pg.Client) => Promise<T>): Promise<T> {
