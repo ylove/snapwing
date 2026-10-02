@@ -6,6 +6,7 @@
 // Card answers are decision events, never corrections (ADR 0015): `afterEach` checks that no scenario
 // appends `corrected`.
 
+import { jiraCreateBatchKey } from '../../src/state/projections/outbox/jira.ts';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -660,6 +661,25 @@ describe('Stop before filing (#192, main 15.1)', () => {
     expect(await outbox()).toEqual([]); // no In Progress transition, so no fixer
     expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview']);
     expect(h.adapter.statuses).toEqual([]);
+  });
+
+  it('a stop between filed and the after-filed step leaves the issue in Backlog (#206)', async () => {
+    const h = setup({ level: 2 });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    const rows = await outbox();
+    expect(rows.find((r) => r.op === 'create-issue')?.batchKey).toBe(jiraCreateBatchKey(h.payload.eventId));
+    await state.ackOutbox(rows.map((r) => r.id));
+    const log = await events(h);
+    await state.append(h.payload.eventId, [{ workspaceId: WS, incidentId: h.payload.eventId, type: 'filed', v: 1, source: 'jira', occurredAt: new Date(now).toISOString(), payload: { jiraKey: 'APP-111' } }], log.length);
+    await stop(h);
+    await h.engine.continueIncident(h.payload.eventId);
+    await wf.drain();
+
+    expect((await types(h)).slice(-3)).toEqual(['filed', 'stopped', 'waiting-changed']);
+    // The stop's own projection moves the issue back to Backlog; the engine queues no In Progress, so no fixer.
+    expect((await outbox()).filter((r) => r.op === 'transition').map((r) => r.payload.to)).toEqual(['Backlog']);
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview']); // no fix preview
   });
 });
 

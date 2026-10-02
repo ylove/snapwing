@@ -10,6 +10,7 @@
 
 import type { EventActor, EventSource, IncidentEvent } from '../contracts/events.ts';
 import { fixerRunKey } from '../contracts/jobs.ts';
+import { jiraCreateBatchKey } from '../state/projections/outbox/jira.ts';
 import { isTerminalStatus } from '../lifecycle/machine.ts';
 import { activeRun, appendDecided, fixerBudgetKey, githubContext, lastSeqOf, latest, newEvent, stoppedSinceFiled, type FixerDeps } from './job.ts';
 
@@ -48,6 +49,9 @@ export async function stopIncident(deps: FixerDeps, input: StopInput): Promise<S
   if (!appended.appended) return { stopped: false, reason: refusal };
 
   const before = appended.before;
+  // Nothing filed yet: a create-issue row still waiting in the outbox is dropped, so a Stop before
+  // filing files nothing. A row already sent lands as `filed` later, which stays and is tracked (#206).
+  if (lastSeqOf(before, 'filed') === 0) await deps.state.dropOutbox('jira', jiraCreateBatchKey(incidentId));
   await deps.workflow.cancel(fixerRunKey(incidentId));
   await deps.workflow.cancel(fixerBudgetKey(incidentId));
 

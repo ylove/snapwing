@@ -24,6 +24,7 @@ import {
   type FixerGitHub,
   type FixerGitHubContext,
 } from '../../src/fixer/job.ts';
+import { jiraCreateBatchKey } from '../../src/state/projections/outbox/jira.ts';
 import { stopIncident } from '../../src/fixer/stop.ts';
 import type { HarnessPort } from '../../src/ports/harness.ts';
 import type { FixerJob, RunnerPort } from '../../src/ports/runner.ts';
@@ -106,7 +107,7 @@ interface World {
   request: { artifactId: string; version: number };
 }
 
-async function setup(opts: { level?: 0 | 1 | 2 | 3; wallClock?: string } = {}): Promise<World> {
+async function setup(opts: { level?: 0 | 1 | 2 | 3; wallClock?: string; unfiled?: boolean } = {}): Promise<World> {
   const runner = new FakeRunner();
   const github = new FakeGitHub();
   const deps: FixerDeps = {
@@ -128,7 +129,7 @@ async function setup(opts: { level?: 0 | 1 | 2 | 3; wallClock?: string } = {}): 
     createdBy: 'orchestrator',
   });
   const request = { artifactId: put.id, version: put.version };
-  await append(...toFiled(opts.level ?? 3, request));
+  await append(...(opts.unfiled === true ? toFiled(opts.level ?? 3, request).slice(0, -1) : toFiled(opts.level ?? 3, request)));
   return { deps, runner, github, request };
 }
 
@@ -455,6 +456,49 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     await advance(31 * MINUTE);
     expect(await types()).toEqual(afterStop);
     expect(w.runner.cancelled).toEqual([runId]);
+  });
+
+  it('stop before filing drops the queued create-issue row so nothing is filed (#206)', async () => {
+    const w = await setup({ unfiled: true });
+    const now0 = new Date(now).toISOString();
+    await state.enqueueOutbox({
+      id: '01K6CREATE0000000000000001',
+      workspaceId: WS,
+      target: 'jira',
+      incidentId: INC,
+      op: 'create-issue',
+      payload: {},
+      batchKey: jiraCreateBatchKey(INC),
+      attempts: 0,
+      nextAttempt: now0,
+      createdAt: now0,
+    });
+
+    expect(await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER })).toEqual({ stopped: true });
+    expect(await state.drainOutbox('jira', 10)).toEqual([]);
+  });
+
+  it('stop before filing keeps a create-issue row that was already sent; its later filed is tracked (#206)', async () => {
+    const w = await setup({ unfiled: true });
+    const now0 = new Date(now).toISOString();
+    await state.enqueueOutbox({
+      id: '01K6CREATE0000000000000002',
+      workspaceId: WS,
+      target: 'jira',
+      incidentId: INC,
+      op: 'create-issue',
+      payload: {},
+      batchKey: jiraCreateBatchKey(INC),
+      attempts: 0,
+      nextAttempt: now0,
+      createdAt: now0,
+    });
+    await state.ackOutbox(['01K6CREATE0000000000000002']); // sent: past the point of no return
+
+    expect(await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER })).toEqual({ stopped: true });
+    await append(ev('filed', { jiraKey: 'WEB-1042' }, 'agent'));
+    expect((await types()).slice(-2)).toEqual(['stopped', 'filed']);
+    expect((await state.getIncident(INC))?.jiraKey).toBe('WEB-1042');
   });
 
   it('stop with an open PR closes it with a comment; the second stop does not close it again', async () => {

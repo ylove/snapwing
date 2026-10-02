@@ -62,6 +62,8 @@ export interface Cursor {
    * `create-issue` row already queued lands as `filed` afterwards.
    */
   stoppedBeforeFiling?: number;
+  /** Seq of the latest `stopped` newer than `filed` (a Stop between filing and the after-filed step, #206). */
+  stoppedAfterFiled?: number;
   linkedTo?: string;
   /** True while the last `waiting-changed` set a wait and no status change has ended it. */
   waiting: boolean;
@@ -174,6 +176,7 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
         break;
       case 'stopped':
         if (cursor.filed === undefined) cursor.stoppedBeforeFiling ??= e.seq;
+        else cursor.stoppedAfterFiled = e.seq;
         break;
       case 'tapped':
         cursor.taps.push({ seq: e.seq, payload: e.payload, ...(e.actor === undefined ? {} : { actor: e.actor }) });
