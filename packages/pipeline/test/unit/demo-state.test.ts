@@ -19,6 +19,11 @@ import {
 import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
 
+// Replaying seeds ~40 events one transaction at a time and runs the migrations first. That is about
+// 1.5 s on an idle Postgres and over 5 s (vitest's default) when other test files load the same
+// server (#208), so the database-touching tests get a budget sized for a loaded machine.
+const DB_TIMEOUT_MS = 60_000;
+
 const DEMO_DIR = fileURLToPath(new URL('../../../../demo/state', import.meta.url));
 
 let recordings: Recording[];
@@ -102,16 +107,16 @@ describe('validateRecordedEvent', () => {
   });
 });
 
-describe('replay', () => {
+describe('replay', { timeout: DB_TIMEOUT_MS }, () => {
   let tdb: TestDatabase;
 
   beforeAll(async () => {
     tdb = await createTestDatabase();
-  });
+  }, DB_TIMEOUT_MS);
 
   afterAll(async () => {
     await tdb.drop();
-  });
+  }, DB_TIMEOUT_MS);
 
   it('replays every recording to its expected final status', async () => {
     const state = await tdb.open();
@@ -126,7 +131,7 @@ describe('replay', () => {
   });
 });
 
-describe('runDemoState', () => {
+describe('runDemoState', { timeout: DB_TIMEOUT_MS }, () => {
   it('seeds, rebuilds, prints a trace, and reports identical: yes with exit 0', async () => {
     const { code, out, err } = await run();
     expect(err).toBe('');
