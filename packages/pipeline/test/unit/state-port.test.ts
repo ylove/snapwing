@@ -8,7 +8,9 @@ import {
   type Artifact,
   type Claim,
   type IncidentView,
+  type LinkedIdentity,
   type NewArtifact,
+  type NewLinkedIdentity,
   type NewEvent,
   type OpenState,
   type OutboxItem,
@@ -75,6 +77,14 @@ describe('contract types match the B 3 columns', () => {
     expectTypeOf<OptionalKeys<OutboxItem>>().toEqualTypeOf<Camel<OutboxNullable>>();
   });
 
+  it('LinkedIdentity is the linked_identities row (#153); NewLinkedIdentity leaves linkedAt and updatedAt to the store', () => {
+    type NotNull = 'workspace_id' | 'chat' | 'chat_user_id' | 'github_login' | 'github_user_id' | 'access_token' | 'linked_at' | 'updated_at';
+    type Nullable = 'access_token_expires_at' | 'refresh_token' | 'refresh_token_expires_at';
+    expectTypeOf<RequiredKeys<LinkedIdentity>>().toEqualTypeOf<Camel<NotNull>>();
+    expectTypeOf<OptionalKeys<LinkedIdentity>>().toEqualTypeOf<Camel<Nullable>>();
+    expectTypeOf<keyof NewLinkedIdentity>().toEqualTypeOf<Exclude<Camel<NotNull | Nullable>, 'linkedAt' | 'updatedAt'>>();
+  });
+
   it('NewEvent is the event catalog type, re-exported', () => {
     expectTypeOf<NewEvent>().toEqualTypeOf<CatalogNewEvent>();
   });
@@ -86,13 +96,14 @@ describe('StatePort signatures (B 1)', () => {
     expectTypeOf<ReturnType<StatePort['append']>>().toEqualTypeOf<Promise<{ seq: number }>>();
   });
 
-  it('keeps the B 1 method set, plus the projector retry methods (#140) and dropOutbox (#143)', () => {
+  it('keeps the B 1 method set, plus the projector retry methods (#140), dropOutbox (#143), and linked identities (#153)', () => {
     expectTypeOf<keyof StatePort>().toEqualTypeOf<
       | 'append' | 'read' | 'readSince'
       | 'getIncident' | 'findIncidents' | 'getClaims' | 'getSubscriptions'
       | 'putArtifact' | 'getArtifact'
       | 'seenWebhook' | 'enqueueOutbox' | 'drainOutbox' | 'ackOutbox' | 'deferOutbox' | 'parkOutbox' | 'listParkedOutbox' | 'dropOutbox'
       | 'putConfigVersion' | 'getConfigVersion'
+      | 'linkIdentity' | 'getLinkedIdentity' | 'unlinkIdentity'
       | 'transaction'
     >();
     expectTypeOf<Parameters<StatePort['drainOutbox']>[0]>().toEqualTypeOf<'jira' | 'github' | 'slack' | 'teams'>();
