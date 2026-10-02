@@ -15,6 +15,11 @@ export const DEFAULT_KILL_GRACE_MS = 10_000;
 /** A stderr line that never ends cannot be a checkpoint; the buffer is dropped past this size. */
 const MAX_PARTIAL_LINE_CHARS = 128 * 1024;
 
+/** The `failed` reason recorded when the wall-clock budget ends a run (docs/harness-generic.md section 6). */
+export function budgetExceededReason(duration: string): string {
+  return `budget-exceeded: wall clock ${duration} exceeded`;
+}
+
 export interface SupervisorOptions {
   /** Wall-clock budget in milliseconds; when it elapses the process is terminated. */
   budgetMs: number;

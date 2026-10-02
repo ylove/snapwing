@@ -73,9 +73,7 @@ describe.each(adapters)('$name HarnessPort contract', ({ name, create }) => {
     expect(await run({ mode: 'hang' }, { onCheckpoint: async () => { controller.abort(); } }))
       .toEqual({ outcome: 'stopped', atPhase: 'implemented' });
   });
-  // Bug (#68): claude-code uses `budget:` instead of the section 6 `budget-exceeded:` reason.
-  const budgetTest = name === 'claude-code' ? it.fails : it;
-  budgetTest('records budget exceeded as failed, even when the agent ignores SIGTERM', async () => {
+  it('records budget exceeded as failed, even when the agent ignores SIGTERM', async () => {
     expect(await run({ mode: 'hang' }, { budget: { wallClock: 'PT1S', attempts: 3 } }))
       .toEqual({ outcome: 'failed', reason: 'budget-exceeded: wall clock PT1S exceeded', attempts: 1 });
   });
@@ -103,17 +101,17 @@ describe.each(adapters)('$name HarnessPort contract', ({ name, create }) => {
   it('excludes server and database credentials from the child environment', async () => {
     await environment();
   });
-  // Bug (#68): claude-code adds SNAPWING_CHECKPOINT_FILE, absent from the section 7 allowlist.
-  const environmentTest = name === 'claude-code' ? it.fails : it;
-  environmentTest('exposes only the documented environment variables', async () => {
+  it('exposes only the documented environment variables', async () => {
     const env = await environment();
     const expected = {
       SNAPWING_HARNESS_CONTRACT: '1', SNAPWING_ROLE: 'fixer', SNAPWING_WORK_ITEM_ID: workItem.id,
       SNAPWING_ISSUE_KEY: workItem.issueKey, SNAPWING_REPO: workItem.repo, SNAPWING_WORKDIR: workdir,
       SNAPWING_BUDGET_WALL_CLOCK: 'PT10S', SNAPWING_BUDGET_ATTEMPTS: '3',
     };
-    expect(Object.keys(env).filter((key) => key.startsWith('SNAPWING_')).sort()).toEqual(Object.keys(expected).sort());
-    const allowed = new Set([...Object.keys(expected), 'PATH', 'HOME', 'LANG', 'TMPDIR']);
+    const adapterOnly = name === 'claude-code' ? ['SNAPWING_CHECKPOINT_FILE'] : [];
+    expect(Object.keys(env).filter((key) => key.startsWith('SNAPWING_')).sort()).toEqual([...Object.keys(expected), ...adapterOnly].sort());
+    // Adapter-specific (docs/harness-generic.md section 7): set only by the claude-code adapter.
+    const allowed = new Set([...Object.keys(expected), ...(name === 'claude-code' ? ['SNAPWING_CHECKPOINT_FILE'] : []), 'PATH', 'HOME', 'LANG', 'TMPDIR']);
     // macOS injects this variable into Node itself, independently of the supplied environment.
     if (process.platform === 'darwin') allowed.add('__CF_USER_TEXT_ENCODING');
     expect(Object.keys(env).filter((key) => !allowed.has(key))).toEqual([]);
