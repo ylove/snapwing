@@ -99,6 +99,7 @@ The process does not inherit the server's environment. It gets exactly these var
 | `SNAPWING_WORKDIR` | absolute path of the checkout (also the working directory) |
 | `SNAPWING_BUDGET_WALL_CLOCK` | ISO 8601 duration, for example `PT30M` |
 | `SNAPWING_BUDGET_ATTEMPTS` | positive integer |
+| `SNAPWING_CHECKPOINT_FILE` | adapter-specific, set only by the `claude-code` adapter: absolute path of a file the agent appends checkpoint JSON lines to (Claude Code's own stderr cannot carry them); the adapter reads it and delivers each line like a stderr checkpoint. The `generic` adapter never sets it |
 | `PATH`, `HOME`, `LANG`, `TMPDIR` | from the runner image |
 | model and Git credentials | only those the harness needs, from the secrets port under their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, main 14.5) and a Git credential scoped to the one repository; never the fixer API token |
 

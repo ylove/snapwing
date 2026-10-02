@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import type { HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../ports/harness.ts';
 import { parseDuration } from '../../util/duration.ts';
 import { MAX_RESULT_LENGTH, parseHarnessResult } from '../contract.ts';
-import { DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
+import { budgetExceededReason, DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
 
 export interface ClaudeCodeHarnessConfig {
   /** The executable. Default `claude`. */
@@ -135,7 +135,7 @@ async function runProcess(input: RunInput): Promise<HarnessResult> {
     return { outcome: 'stopped', atPhase: lastPhase };
   }
   if (budgetExceeded) {
-    return { outcome: 'failed', reason: `budget: wall clock ${opts.budget.wallClock} exceeded`, attempts: 1 };
+    return { outcome: 'failed', reason: budgetExceededReason(opts.budget.wallClock), attempts: 1 };
   }
 
   if (code === 0) {

@@ -10,7 +10,7 @@ import type { ChildProcess } from 'node:child_process';
 import type { HarnessPhase, HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../ports/harness.ts';
 import { InvalidDurationError, parseDuration } from '../../util/duration.ts';
 import { MAX_RESULT_LENGTH, parseHarnessResult } from '../contract.ts';
-import { DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
+import { budgetExceededReason, DEFAULT_KILL_GRACE_MS, superviseProcess } from '../process.ts';
 
 export interface GenericHarnessConfig {
   /** Command template, split on whitespace with double quotes respected; never run through a shell. */
@@ -190,7 +190,7 @@ function decide(o: Outcome): HarnessResult {
     return { outcome: 'failed', reason: `harness failed to start: ${o.spawnError}`, attempts: 1 };
   }
   if (o.budgetExceeded && !o.stopRequested) {
-    return { outcome: 'failed', reason: `budget-exceeded: wall clock ${o.budgetLabel} exceeded`, attempts: 1 };
+    return { outcome: 'failed', reason: budgetExceededReason(o.budgetLabel), attempts: 1 };
   }
 
   const parsed = parseHarnessResult(o.stdout);

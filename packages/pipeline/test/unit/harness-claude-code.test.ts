@@ -173,6 +173,6 @@ describe('claude-code harness: Stop', () => {
 describe('claude-code harness: budget', () => {
   it('fails with a wall clock reason, not stopped, when the budget ends', async () => {
     const r = await run('hang', opts({ budget: { wallClock: 'PT0.5S', attempts: 3 } }));
-    expect(r).toEqual({ outcome: 'failed', reason: 'budget: wall clock PT0.5S exceeded', attempts: 1 });
+    expect(r).toEqual({ outcome: 'failed', reason: 'budget-exceeded: wall clock PT0.5S exceeded', attempts: 1 });
   });
 });
