@@ -1,0 +1,31 @@
+{
+  "name": "Snapwing",
+  "url": "https://github.com/ylove/snapwing",
+  "description": "Fix it from here: Slack and Teams to Jira to a reviewed pull request.",
+  "public": false,
+  "hook_attributes": {
+    "url": "${SNAPWING_PUBLIC_URL}/webhooks/github",
+    "active": true
+  },
+  "redirect_url": "${REDIRECT_URL}",
+  "callback_urls": ["${SNAPWING_PUBLIC_URL}/auth/github/callback"],
+  "request_oauth_on_install": false,
+  "setup_on_update": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "write",
+    "pull_requests": "write",
+    "checks": "write",
+    "statuses": "read",
+    "deployments": "read",
+    "administration": "read"
+  },
+  "default_events": [
+    "pull_request",
+    "pull_request_review",
+    "check_suite",
+    "check_run",
+    "status",
+    "deployment_status"
+  ]
+}
