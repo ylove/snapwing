@@ -1,0 +1,46 @@
+{
+  "text": "This looks like WEB-812: Nav dropdown not rendering on Safari.",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "This looks like *WEB-812* (open since Tuesday, assigned to Dana): \"Nav dropdown not rendering on Safari.\""
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "dedupe_actions",
+      "elements": [
+        {
+          "type": "button",
+          "style": "primary",
+          "text": {
+            "type": "plain_text",
+            "text": "Link this thread to WEB-812"
+          },
+          "action_id": "link",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Create new anyway"
+          },
+          "action_id": "create-anyway",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        },
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Not related"
+          },
+          "action_id": "not-related",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "text": "🔧 Filed as WEB-1042. Working on a fix now.",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "🔧 Filed as WEB-1042. Working on a fix now."
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "status_actions",
+      "elements": [
+        {
+          "type": "button",
+          "style": "danger",
+          "text": {
+            "type": "plain_text",
+            "text": "Stop"
+          },
+          "action_id": "stop",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        }
+      ]
+    }
+  ]
+}

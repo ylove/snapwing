@@ -1,0 +1,28 @@
+{
+  "text": "PR #418 is ready for WEB-1042",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "*PR #418 is ready* for WEB-1042 (review agent: approve, CI: green, 2 files, +41 -6). Review requested from <@U0WEBDEV1>."
+      }
+    },
+    {
+      "type": "actions",
+      "block_id": "pr_actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Open PR"
+          },
+          "action_id": "open_pr",
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+          "url": "https://github.com/example/web/pull/418"
+        }
+      ]
+    }
+  ]
+}

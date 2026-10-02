@@ -1,0 +1,12 @@
+{
+  "text": "✅ Fix is on staging. <@U0PAT>, can you check?",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "✅ Fix is on staging. <@U0PAT>, can you check?"
+      }
+    }
+  ]
+}

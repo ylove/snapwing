@@ -41,7 +41,18 @@ describe('contract types', () => {
     expectTypeOf<StatusAnswer['actions']>().toEqualTypeOf<ApprovalAction[]>();
     expectTypeOf<Extract<InteractiveCard, { kind: 'fix-preview' }>['plan']>().toEqualTypeOf<TriageResolutionPlan>();
     expectTypeOf<StatusUpdate['stage']>().toEqualTypeOf<
-      'filed' | 'pr-open' | 'review-passed' | 'merged' | 'staging' | 'production' | 'clarified'
+      | 'filed'
+      | 'clarified'
+      | 'fixing'
+      | 'pr-open'
+      | 'review-passed'
+      | 'held'
+      | 'merged'
+      | 'stopped'
+      | 'failed'
+      | 'staging'
+      | 'production'
+      | 'reverted'
     >();
   });
 });

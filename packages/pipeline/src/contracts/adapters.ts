@@ -23,13 +23,46 @@ export interface IngestionAdapter<TRaw, TAck> {
 
 export type InteractiveCard =
   | { kind: 'scope-preview'; summary: string }
-  | { kind: 'dedupe'; issueKey: string; summary: string; assignee?: string }
+  | { kind: 'dedupe'; issueKey: string; summary: string; assignee?: string; openSince?: string }
   | { kind: 'clarify'; question: ClarifyQuestion }
-  | { kind: 'fix-preview'; plan: TriageResolutionPlan };
+  | { kind: 'fix-preview'; plan: TriageResolutionPlan; surface?: string; ownerUserId?: string }
+  | PrReadyCard;
+
+/** main 11.2: the card posted when a pull request is ready for a human. */
+export interface PrReadyCard {
+  kind: 'pr-ready';
+  prNumber: number;
+  prUrl: string;
+  issueKey: string;
+  reviewVerdict: 'approve' | 'request-changes' | 'escalate';
+  ciState: 'green' | 'red' | 'pending';
+  filesChanged: number;
+  additions: number;
+  deletions: number;
+  /** Chat user ids of the requested reviewers. */
+  reviewerUserIds: string[];
+}
+
+/** main 12: the stages of the pinned status message. */
+export type StatusStage =
+  | 'filed'
+  | 'clarified'
+  | 'fixing'
+  | 'pr-open'
+  | 'review-passed'
+  | 'held'
+  | 'merged'
+  | 'stopped'
+  | 'failed'
+  | 'staging'
+  | 'production'
+  | 'reverted';
 
 export interface StatusUpdate {
   issueKey: string;
-  stage: 'filed' | 'pr-open' | 'review-passed' | 'merged' | 'staging' | 'production' | 'clarified';
+  stage: StatusStage;
   text: string;
   mentionUserId?: string;
+  /** Buttons on the status message: `stop` while a fix runs, `revert` after an autopilot merge. */
+  actions?: ('stop' | 'revert')[];
 }
