@@ -24,6 +24,9 @@
 //   `fixer-started` is the retry run after `review-failed` or `ci-red` (`fixing-retry`) or a restart after a
 //   crash (`fixing`).
 // - `escalated` is left by the next human or agent action (claim, fixer start, human PR, close).
+// - `review-failed` after the review passed (`ci`, `mergeable`, `held`) is a human's Request changes
+//   on the PR card (main 11.2, merge/actions.ts): it sends the PR back like a first review failure,
+//   and from `ci-retry` it escalates like a second one (a fixer start then leaves `escalated`).
 
 import type { EventType, IncidentEvent } from '../contracts/events.ts';
 
@@ -188,21 +191,25 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
   ci: {
     'ci-green': 'mergeable',
     'ci-red': 'fixing-retry',
+    'review-failed': 'fixing-retry',
     closed: 'closed',
   },
   'ci-retry': {
     'ci-green': 'mergeable',
     'ci-red': 'escalated',
+    'review-failed': 'escalated',
     closed: 'closed',
   },
   mergeable: {
     merged: 'merged',
     held: heldTarget,
+    'review-failed': 'fixing-retry',
     closed: 'closed',
   },
   held: {
     released: 'mergeable',
     merged: 'merged',
+    'review-failed': 'fixing-retry',
     closed: 'closed',
   },
   merged: {
