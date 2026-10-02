@@ -27,3 +27,16 @@ coverage/
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# keys and credentials (never committed; see build/CONTEXT.md 6b)
+*.pem
+*.key
+*.p12
+*.pfx
+*.private-key*
+secrets/
+.secrets/
+*.secret
+*.secrets.*
+credentials*.json
+service-account*.json
