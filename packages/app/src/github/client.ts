@@ -582,8 +582,9 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
       return { merged: body?.merged === true, sha: str(body?.sha), message: str(body?.message) };
     },
 
+    // Issue-comment and label endpoints accept pull_requests: write for a PR; asking for issues: write too is refused (422) by an App without it.
     async closePullRequest(number, comment) {
-      await call({ method: 'POST', path: `${repoPath}/issues/${number}/comments`, permissions: { pull_requests: 'write', issues: 'write' }, body: { body: comment } });
+      await call({ method: 'POST', path: `${repoPath}/issues/${number}/comments`, permissions: prWrite, body: { body: comment } });
       await call({ method: 'PATCH', path: `${repoPath}/pulls/${number}`, permissions: prWrite, body: { state: 'closed' } });
     },
 
@@ -594,7 +595,7 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
     },
 
     async addLabels(number, labels) {
-      const body = await json({ method: 'POST', path: `${repoPath}/issues/${number}/labels`, permissions: { issues: 'write', pull_requests: 'write' }, body: { labels: [...labels] } });
+      const body = await json({ method: 'POST', path: `${repoPath}/issues/${number}/labels`, permissions: prWrite, body: { labels: [...labels] } });
       return list(body)
         .map((l) => str(record(l)?.name))
         .filter((n) => n !== '');
