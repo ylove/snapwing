@@ -1,0 +1,15 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0PV52K21",
+  "event_time": 1700000200,
+  "event": {
+    "type": "reaction_added",
+    "user": "U0REPORTER",
+    "reaction": "bug",
+    "item_user": "U0AUTHOR",
+    "item": { "type": "message", "channel": "C0WEB", "ts": "1700000000.000200" },
+    "event_ts": "1700000200.000300"
+  }
+}

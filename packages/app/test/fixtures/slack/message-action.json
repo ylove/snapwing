@@ -1,0 +1,19 @@
+{
+  "type": "message_action",
+  "token": "xoxb-test",
+  "action_ts": "1700000100.000900",
+  "team": { "id": "T0001", "domain": "example" },
+  "user": { "id": "U0REPORTER", "name": "rae" },
+  "channel": { "id": "C0WEB", "name": "web-bugs" },
+  "callback_id": "fix_it_from_here",
+  "trigger_id": "13345224609.738474920.8088930838d88f008e0",
+  "response_url": "https://hooks.slack.com/app/T0001/21974584944/yrkmlzZ0oGLASyYV2BHbsPnW",
+  "message_ts": "1700000000.000200",
+  "message": {
+    "type": "message",
+    "user": "U0AUTHOR",
+    "ts": "1700000000.000200",
+    "thread_ts": "1699999900.000100",
+    "text": "Checkout total shows NaN after applying a coupon"
+  }
+}

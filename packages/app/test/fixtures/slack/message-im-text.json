@@ -1,0 +1,15 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0PV52K22",
+  "event_time": 1700000300,
+  "event": {
+    "type": "message",
+    "channel": "D0DM",
+    "user": "U0REPORTER",
+    "text": "The invoice page 500s when I click Download",
+    "ts": "1700000300.000400",
+    "channel_type": "im"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "type": "message",
+  "channel": "C0WEB",
+  "message": {
+    "type": "message",
+    "user": "U0AUTHOR",
+    "ts": "1700000000.000200",
+    "text": "Checkout total shows NaN after applying a coupon",
+    "reactions": [
+      { "name": "bug", "count": 2, "users": ["U0REPORTER", "U0SECOND"] },
+      { "name": "eyes", "count": 1, "users": ["U0THIRD"] }
+    ]
+  }
+}
