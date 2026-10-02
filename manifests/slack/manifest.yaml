@@ -1,0 +1,48 @@
+# Slack app manifest for Snapwing (main 15.1, 22.4). Created by `snapwing onboard` through
+# apps.manifest.create and checked by `pnpm slack:bootstrap`. Socket Mode is on for development;
+# a hosted install turns it off and sets request URLs.
+display_information:
+  name: Snapwing
+  description: Fix it from here. Turns a bug-shaped message into a Jira ticket, a fix, and a pull request.
+  background_color: "#1f2a44"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Snapwing
+    always_online: true
+  shortcuts:
+    - name: Fix it from here
+      type: message
+      callback_id: fix_it_from_here
+      description: Turn this message and its thread into a ticket and a fix
+oauth_config:
+  scopes:
+    bot:
+      - commands
+      - chat:write
+      - channels:history
+      - channels:join
+      - groups:history
+      - reactions:read
+      - reactions:write
+      - users:read
+      - users:read.email
+      - files:read
+      - im:history
+      - im:write
+      - pins:write
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.im
+      - reaction_added
+      - reaction_removed
+      - file_shared
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

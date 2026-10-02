@@ -20,7 +20,8 @@
     "demo": "tsx packages/pipeline/src/demo/run.ts",
     "demo:state": "tsx packages/pipeline/src/demo/state.ts",
     "state": "tsx packages/app/src/cli/main.ts state",
-    "serve": "tsx packages/app/src/cli/main.ts serve"
+    "serve": "tsx packages/app/src/cli/main.ts serve",
+    "slack:bootstrap": "tsx scripts/slack-bootstrap.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -29,6 +30,7 @@
     "tsx": "^4.23.15",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.0",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1"
   }
 }
