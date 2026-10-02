@@ -443,7 +443,7 @@ export interface RevertedPayload {
  * What a person picked on an interactive card: an approval button, a scope or dedupe choice, or the
  * option text of a clarify answer. `(string & {})` keeps the literals in editor completion.
  */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+ 
 export type TappedChoice = ApprovalAction | 'looks-right' | 'widen' | 'narrow' | 'link' | 'create-anyway' | 'not-related' | (string & {});
 
 /**
