@@ -2,14 +2,14 @@
 // the real `compose`, the example config, the demo workspace map, fake secrets in an env file, MSW
 // standing in for Slack, Jira, and GitHub, and a fake harness. Runs on the dialect `SNAPWING_DB`
 // selects (pg-boss on Postgres). The last test runs the level 0 demo recording through the composed
-// routes, jobs, and projectors and counts the status messages Slack receives.
+// routes, jobs, and projectors and counts the status messages Slack receives; the world it runs in
+// (fixtures/e2e/world.ts) is shared with the levels 1 and 2 end to end test (e2e-levels.test.ts).
 
-import { createHmac, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -22,56 +22,25 @@ import type { HarnessPort } from '@snapwing/pipeline/ports/harness.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkflowPort } from '@snapwing/pipeline/ports/workflow.ts';
 import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets.ts';
-import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { PgBossWorkflow } from '@snapwing/pipeline/workflow/pgboss/index.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import type { SocketLike } from '../../src/adapters/slack/transport.ts';
 import { repoFullName, sameRepo } from '../../src/github/repo.ts';
 import { compose, mergePrometheus, MissingSecretsError, type Composed, type ComposeFn, type ComposeOverrides } from '../../src/server/compose.ts';
-import { createApiServer } from '../../src/server/http.ts';
 import { createWorkflow, LOCAL_RUNNER_WARNING, runServe } from '../../src/server/serve.ts';
-import { createWorker } from '../../src/server/worker.ts';
-
-const EXAMPLE_CONFIG = fileURLToPath(new URL('../../../../examples/snapwing.config.example.xml', import.meta.url));
-const MAP = fileURLToPath(new URL('../../../../demo/levels/workspace-context.xml', import.meta.url));
-const SLACK = 'https://slack.com/api';
-const SIGNING_SECRET = 'test-signing-secret';
-const BOT_USER = 'U0SNAPWING';
-
-/** Fakes only: none of these looks like a real credential. */
-function fakeSecrets(): Record<string, string> {
-  return {
-    SLACK_BOT_TOKEN: 'xoxb-test',
-    SLACK_SIGNING_SECRET: SIGNING_SECRET,
-    JIRA_BASE_URL: 'https://fake-site.atlassian.net',
-    JIRA_EMAIL: 'snapwing-bot@example.com',
-    JIRA_API_TOKEN: 'test-jira-token',
-    JIRA_FIELD_IMPL_PROMPT: 'customfield_10050',
-    JIRA_FIELD_CONVERSATION: 'customfield_10051',
-    JIRA_FIELD_AUTONOMY: 'customfield_10052',
-    JIRA_FIELD_AGENT_STATUS: 'customfield_10053',
-    GITHUB_APP_ID: '1001',
-    GITHUB_APP_PRIVATE_KEY: 'test-private-key',
-    GITHUB_INSTALLATION_ID: '2002',
-    GITHUB_APP_SLUG: 'snapwing-test',
-    GITHUB_WEBHOOK_SECRET: 'test-webhook-secret',
-    GITHUB_APP_CLIENT_ID: 'test-client-id',
-    GITHUB_APP_CLIENT_SECRET: 'test-client-secret',
-    SNAPWING_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
-    SNAPWING_PUBLIC_URL: 'https://snapwing.example.com',
-    SNAPWING_FIXER_TOKEN_SECRET: 'test-fixer-token-secret-0123456789abcdef',
-    ANTHROPIC_API_KEY: 'test-anthropic-key',
-    OPENAI_API_KEY: 'test-openai-key',
-    GOOGLE_API_KEY: 'test-google-key',
-  };
-}
-
-function envFile(values: Record<string, string>): string {
-  return `${Object.entries(values)
-    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-    .join('\n')}\n`;
-}
+import {
+  blockIds,
+  bootComposed,
+  BOT_USER,
+  DEMO_MAP as MAP,
+  envFile,
+  EXAMPLE_CONFIG,
+  fakeSecrets,
+  SLACK_API as SLACK,
+  slackSigned,
+  slackWorld,
+} from '../fixtures/e2e/world.ts';
 
 /** A harness that must never run in these tests: boot only builds it. */
 const idleHarness: HarnessPort = { run: () => Promise.reject(new Error('the fake harness was not expected to run')) };
@@ -145,12 +114,6 @@ async function serve(args: string[], secrets: Record<string, string>, overrides:
   );
   void code.then(() => markReady({}));
   return { code, out, err, signals, ready };
-}
-
-function slackSigned(body: string, contentType = 'application/json'): Headers {
-  const timestamp = String(Math.floor(Date.now() / 1000));
-  const signature = `v0=${createHmac('sha256', SIGNING_SECRET).update(`v0:${timestamp}:${body}`).digest('hex')}`;
-  return new Headers({ 'content-type': contentType, 'x-slack-request-timestamp': timestamp, 'x-slack-signature': signature });
 }
 
 /** `compose` called directly, with the example config and the secrets written to an env file. */
@@ -355,64 +318,11 @@ describe('repository names', () => {
 
 // One incident end to end through the composed pieces --------------------------------------------
 
-interface SlackPostCall {
-  method: string;
-  body: Record<string, unknown>;
-  ts: string;
-}
-
-/** The Slack Web API methods the composed pieces call, over one channel's recorded messages. */
-function slackWorld(channel: string, messages: readonly Record<string, unknown>[]): { calls: SlackPostCall[]; unknown: string[] } {
-  const calls: SlackPostCall[] = [];
-  const unknown: string[] = [];
-  let seq = 0;
-  const authorized = (request: Request): boolean => request.headers.get('authorization') === 'Bearer xoxb-test';
-  const page = (list: readonly Record<string, unknown>[]) => HttpResponse.json({ ok: true, messages: list, has_more: false });
-  const inRange = (m: Record<string, unknown>, q: URLSearchParams): boolean => {
-    const ts = Number(m['ts']);
-    return ts >= Number(q.get('oldest') ?? '0') && ts <= Number(q.get('latest') ?? `${Number.MAX_SAFE_INTEGER}`);
-  };
-  server.use(
-    http.get(`${SLACK}/conversations.history`, ({ request }) => {
-      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
-      const q = new URL(request.url).searchParams;
-      if (q.get('channel') !== channel) return HttpResponse.json({ ok: false, error: 'channel_not_found' });
-      return page(messages.filter((m) => m['thread_ts'] === undefined && inRange(m, q)).sort((a, b) => Number(b['ts']) - Number(a['ts'])));
-    }),
-    http.get(`${SLACK}/conversations.replies`, ({ request }) => {
-      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
-      const q = new URL(request.url).searchParams;
-      const ts = q.get('ts') ?? '';
-      const thread = messages.filter((m) => (m['ts'] === ts || m['thread_ts'] === ts) && inRange(m, q));
-      return page(thread.sort((a, b) => Number(a['ts']) - Number(b['ts'])));
-    }),
-    http.post(`${SLACK}/:method`, async ({ request, params }) => {
-      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
-      const method = String(params['method']);
-      const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-      seq += 1;
-      const ts = method === 'chat.update' ? String(body['ts']) : `1790900000.${String(seq).padStart(6, '0')}`;
-      calls.push({ method, body, ts });
-      if (method === 'chat.postMessage' || method === 'chat.update') return HttpResponse.json({ ok: true, channel: body['channel'], ts });
-      if (method === 'chat.postEphemeral') return HttpResponse.json({ ok: true, message_ts: ts });
-      if (method === 'pins.add' || method === 'conversations.join' || method === 'reactions.add') return HttpResponse.json({ ok: true });
-      unknown.push(method);
-      return HttpResponse.json({ ok: false, error: 'unknown_method' });
-    }),
-  );
-  return { calls, unknown };
-}
-
-function blockIds(body: Record<string, unknown>): string[] {
-  const blocks = Array.isArray(body['blocks']) ? (body['blocks'] as Record<string, unknown>[]) : [];
-  return blocks.flatMap((b) => (typeof b['block_id'] === 'string' ? [b['block_id']] : []));
-}
-
 describe('one incident through the composed routes, jobs, and projectors', () => {
   it('runs the level 0 recording to filed and posts exactly one status message, then edits it', async () => {
     const recording = parseScenario('01-level-0-ticket-only.json', JSON.parse(await readFile(new URL('../../../../demo/levels/01-level-0-ticket-only.json', import.meta.url), 'utf8')));
     const channel = recording.channel.id;
-    const slack = slackWorld(channel, recording.messages.map((m) => ({ type: 'message', ...m })));
+    const slack = slackWorld(server, channel, recording.messages.map((m) => ({ type: 'message', ...m })));
     const jiraWorld = new JiraWorld(() => undefined);
     const githubWorld = new GitHubWorld(() => undefined);
     githubWorld.addRepos(recording.github);
@@ -427,34 +337,17 @@ describe('one incident through the composed routes, jobs, and projectors', () =>
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
     const secrets = { ...fakeSecrets(), JIRA_BASE_URL: JIRA_BASE, JIRA_EMAIL: DEMO_JIRA_EMAIL, JIRA_API_TOKEN: DEMO_JIRA_TOKEN, GITHUB_APP_PRIVATE_KEY: privateKey };
 
-    const state = await tdb.open();
-    if (!(state instanceof StateStore)) throw new Error('expected the StateStore');
-    const errors: unknown[] = [];
-    const workflow =
-      state.dialect === 'postgres'
-        ? new PgBossWorkflow(state, { schema: 'pgboss', pollingIntervalSeconds: 0.5, onError: (e) => errors.push(e) })
-        : new InProcessWorkflow(state, { pollIntervalMs: 20, onError: (e) => errors.push(e) });
     const model = new RecordedModel();
     model.use(recording.name, recording.model);
-    const logged: string[] = [];
-    const composed = await compose({
-      config: loadAppConfig(await readFile(EXAMPLE_CONFIG, 'utf8')),
-      secrets: await (async () => {
-        const file = join(dir, 'incident.env');
-        await writeFile(file, envFile(secrets));
-        return createEnvFileSecrets({ path: file, fallbackEnv: {} });
-      })(),
-      state,
-      workflow,
+    const booted = await bootComposed({
+      state: await tdb.open(),
+      configXml: await readFile(EXAMPLE_CONFIG, 'utf8'),
+      secrets,
+      dir,
       env: { SNAPWING_MAP: MAP, SNAPWING_WORKDIR_ROOT: join(dir, 'work') },
-      log: { info: () => undefined, error: (l) => logged.push(l) },
       overrides: { model: withValidation(model), resolveHarness: () => idleHarness, slackBotUserId: BOT_USER, projectorPollMs: 25 },
     });
-    const worker = await createWorker({ workflow, jobs: composed.jobs });
-    for (const s of composed.workerServices ?? []) await s.start();
-    const api = createApiServer({ routes: composed.routes, port: 0 });
-    const post = async (body: string): Promise<Response> =>
-      api.fetch(new Request('http://snapwing.test/slack/interactivity', { method: 'POST', headers: slackSigned(body, 'application/x-www-form-urlencoded'), body }));
+    const { state, logged, errors } = booted;
 
     try {
       // "Fix it from here" on the anchor message.
@@ -468,7 +361,7 @@ describe('one incident through the composed routes, jobs, and projectors', () =>
         message_ts: recording.anchor,
         message: anchor,
       };
-      expect((await post(new URLSearchParams({ payload: JSON.stringify(action) }).toString())).status).toBe(200);
+      expect((await booted.interact(action)).status).toBe(200);
 
       // The scope preview card; tap Looks right on it as the reporter.
       const card = await vi.waitFor(
@@ -488,7 +381,7 @@ describe('one incident through the composed routes, jobs, and projectors', () =>
         message: { ts: card.ts, thread_ts: recording.anchor, blocks: card.body['blocks'] },
         actions: [{ action_id: 'looks-right', block_id: 'scope_actions', value: incidentId, text: { type: 'plain_text', text: 'Looks right' } }],
       };
-      expect((await post(new URLSearchParams({ payload: JSON.stringify(tap) }).toString())).status).toBe(200);
+      expect((await booted.interact(tap)).status).toBe(200);
 
       // Filed by the Jira projector, then the status message by the Slack status projector, edited to the latest copy.
       await vi.waitFor(
@@ -518,8 +411,7 @@ describe('one incident through the composed routes, jobs, and projectors', () =>
       expect(errors).toEqual([]);
       expect(logged).toEqual([]);
     } finally {
-      for (const s of [...(composed.workerServices ?? [])].reverse()) await s.stop();
-      await worker.stop();
+      await booted.stop();
     }
   }, 60_000);
 });

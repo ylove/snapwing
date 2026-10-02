@@ -38,6 +38,7 @@ import type { FixerBudget, HarnessChoice, RunnerPort } from '../ports/runner.ts'
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseDuration } from '../util/duration.ts';
+import { repoFullName } from '../util/repo.ts';
 import { ulid } from '../util/ulid.ts';
 
 export const DEFAULT_FIXER_WALL_CLOCK = 'PT30M';
@@ -165,7 +166,8 @@ export async function runFixerJob(deps: FixerDeps, data: FixerRunData): Promise<
   try {
     await deps.runner.runFixer({
       runId,
-      workItem: { id: incidentId, issueKey: incident?.jiraKey ?? filed.payload.jiraKey, repo },
+      // The runner, its checkout, and the harness (`SNAPWING_REPO`) take `owner/name`, not the map's form.
+      workItem: { id: incidentId, issueKey: incident?.jiraKey ?? filed.payload.jiraKey, repo: repoFullName(repo) },
       implementationRequestArtifactId: artifact.id,
       implementationRequestVersion: artifact.version,
       harness: deps.config.harness,

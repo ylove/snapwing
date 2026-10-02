@@ -518,6 +518,26 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(w.github.closed).toHaveLength(1);
   });
 
+  it('stop mid-run after the fixer opened its PR but before done closes the PR its checkpoint names (#160)', async () => {
+    const w = await setup();
+    const runId = await started(w);
+    await append(ev('fixer-checkpoint', { phase: 'pushed', detail: '' }, 'fixer'), ev('fixer-checkpoint', { phase: 'pr-opened', detail: '#88' }, 'fixer'));
+
+    expect(await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER })).toEqual({ stopped: true, cancelledRun: runId, closedPr: 88 });
+    expect(w.github.closed).toHaveLength(1);
+    expect(w.github.closed[0]).toMatchObject({ pr: 88, ctx: { incidentId: INC, repo: REPO, issueKey: 'WEB-1042' } });
+    expect(w.runner.cancelled).toEqual([runId]);
+  });
+
+  it('stop mid-run ignores a pr-opened checkpoint whose detail names no PR number', async () => {
+    const w = await setup();
+    const runId = await started(w);
+    await append(ev('fixer-checkpoint', { phase: 'pr-opened', detail: 'https://example.com/pull/x' }, 'fixer'));
+
+    expect(await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER })).toEqual({ stopped: true, cancelledRun: runId });
+    expect(w.github.closed).toEqual([]);
+  });
+
   it('failure with a partial branch: draft PR through markIncomplete, level-changed, budget timer cancelled, idempotent', async () => {
     const w = await setup({ level: 3 });
     await started(w);
