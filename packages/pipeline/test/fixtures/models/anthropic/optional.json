@@ -1,0 +1,22 @@
+{
+  "id": "msg_test_0001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-haiku-4-5",
+  "content": [
+    {
+      "type": "tool_use",
+      "id": "toolu_test_0001",
+      "name": "contract_label",
+      "input": {
+        "label": "bug"
+      }
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 23,
+    "output_tokens": 11
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "id": "chatcmpl-test-0001",
+  "object": "chat.completion",
+  "created": 1700000000,
+  "model": "gpt-5-mini",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"readings\": [{\"plainDescription\": \"A white square.\", \"sensitive\": false, \"uiElements\": [], \"surfaceSignals\": {}}]}",
+        "refusal": null
+      },
+      "finish_reason": "stop",
+      "logprobs": null
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 23,
+    "completion_tokens": 11,
+    "total_tokens": 34
+  }
+}
