@@ -5,7 +5,7 @@ import { sql, type Kysely } from 'kysely';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { STATE_TABLES, type Database } from '../../src/state/db.ts';
-import { NotImplementedError, StateMigrationError } from '../../src/state/errors.ts';
+import { StateMigrationError } from '../../src/state/errors.ts';
 import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, MIGRATIONS, migrateState, type StateMigration } from '../../src/state/migrations/index.ts';
 import { createTable } from '../../src/state/migrations/schema.ts';
 import { StateStore } from '../../src/state/store.ts';
@@ -208,22 +208,5 @@ describe(`StateStore (${TEST_DIALECT})`, () => {
       }),
     ).rejects.toBe(boom);
     expect(await kvRows(state)).toEqual([]);
-  });
-
-  it('every port method not yet filled delegates to a stub that throws NotImplementedError until #18', async () => {
-    const state = await tdb.open();
-    const calls: [string, () => Promise<unknown>][] = [
-      ['getIncident', () => state.getIncident(INC)],
-      ['findIncidents', () => state.findIncidents({})],
-      ['getClaims', () => state.getClaims(INC)],
-      ['getSubscriptions', () => state.getSubscriptions(INC)],
-      // Artifacts, inbox, outbox, config, and kv landed in #19 (test/unit/state-stores.test.ts).
-    ];
-    for (const [method, call] of calls) {
-      const err: unknown = await call().catch((e: unknown) => e);
-      expect(err, method).toBeInstanceOf(NotImplementedError);
-      expect((err as NotImplementedError).method).toBe(method);
-    }
-    expect(calls).toHaveLength(4);
   });
 });
