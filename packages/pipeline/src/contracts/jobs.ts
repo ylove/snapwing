@@ -8,6 +8,7 @@ export type JobName =
   // Pipeline work
   | 'incident.process'
   | 'fixer.run'
+  | 'review.run'
   | 'merge.evaluate'
   | 'reconcile'
   // Durable timers, one per row of the B 5 table (see TIMER_JOBS)
@@ -24,6 +25,7 @@ export type JobName =
 export const JOB_NAMES: readonly JobName[] = [
   'incident.process',
   'fixer.run',
+  'review.run',
   'merge.evaluate',
   'reconcile',
   'timer.wait-timeout',
@@ -149,6 +151,25 @@ export interface FixerBudgetData {
 /** Singleton key of an incident's `fixer.run` job, so a second start while one is queued adds nothing. */
 export function fixerRunKey(incidentId: string): string {
   return `fixer:${keySegment(incidentId)}`;
+}
+
+// Review jobs (main 11.1) ------------------------------------------------------------------------
+
+/** `review.run` job data: the pull request and the head commit the review is of. */
+export interface ReviewRunData {
+  incidentId: string;
+  prNumber: number;
+  /** The PR head the review checks out and judges; a newer head gets its own job. */
+  headSha: string;
+}
+
+/** Singleton key of `review.run`: one review per incident and head commit (`review:{incident}:{sha}`). */
+export function reviewRunKey(incidentId: string, headSha: string): string {
+  return `review:${keySegment(incidentId)}:${keySegment(headSha)}`;
+}
+
+export function isReviewRunData(v: unknown): v is ReviewRunData {
+  return isRecord(v) && isNonEmptyString(v['incidentId']) && isPositiveInt(v['prNumber']) && isNonEmptyString(v['headSha']);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
