@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { FixerJob } from '@snapwing/pipeline/ports/runner.ts';
+import type { FixerJob, TestRunJob } from '@snapwing/pipeline/ports/runner.ts';
 import { issueFixerToken, verifyFixerToken } from '../../src/fixer-api/token.ts';
 import { containerName, createDockerRunner } from '../../src/providers/docker/runner.ts';
 
@@ -19,7 +19,12 @@ dir=$(dirname "$0")
 { echo "---"; for a in "$@"; do echo "arg:$a"; done; env | sort | sed 's/^/env:/'; } >> "$dir/calls.log"
 mode=$(cat "$dir/mode" 2>/dev/null)
 case "$1" in
-  run) [ "$mode" = run-fail ] && { echo "Unable to find image 'nope' locally" >&2; exit 125; } ;;
+  run) [ "$mode" = run-fail ] && { echo "Unable to find image 'nope' locally" >&2; exit 125; }
+       case " $* " in *" --entrypoint "*)
+         [ "$mode" = hang ] && exec sleep 30
+         echo "tests said hello"; echo "and warned on stderr" >&2
+         exit "$(cat "$dir/exit" 2>/dev/null || echo 0)" ;;
+       esac ;;
   stop) [ "$mode" = gone ] && { echo "Error response from daemon: No such container: $4" >&2; exit 1; }
         [ "$mode" = stop-fail ] && { echo "daemon exploded" >&2; exit 1; } ;;
 esac
@@ -209,6 +214,84 @@ describe('createDockerRunner cancel', () => {
 
   it('rejects an invalid run id without calling docker', async () => {
     await expect(runner().cancel('../x')).rejects.toThrow(/plain path segment/);
+    expect(calls()).toEqual([]);
+  });
+});
+
+describe('createDockerRunner runTests (#234, ADR 0017)', () => {
+  const TEST_RUN = '01J9ZTESTRUN00000000000001';
+  const testJob = (over: Partial<TestRunJob> = {}): TestRunJob => ({
+    runId: TEST_RUN,
+    checkout: join(dir, 'tree'),
+    command: 'pnpm test -- cart',
+    timeoutMs: 20_000,
+    ...over,
+  });
+
+  it('runs the command attached in the fixer image, the tree as its only mount, no token, as the server uid', async () => {
+    const r = await runner({ network: 'snapwing-net' }).runTests(testJob({ env: { CI: '1' } }));
+    expect(r).toMatchObject({ exitCode: 0, timedOut: false });
+    expect(r.output).toContain('tests said hello');
+    expect(r.output).toContain('and warned on stderr');
+
+    const [c] = calls();
+    if (c === undefined) throw new Error('docker was not called');
+    const a = c.args;
+    expect(a.slice(0, 2)).toEqual(['run', '--rm']);
+    expect(a).not.toContain('-d');
+    expect(a[a.indexOf('--name') + 1]).toBe(`snapwing-tests-${TEST_RUN}`);
+    expect(a[a.indexOf('--network') + 1]).toBe('snapwing-net');
+    expect(a[a.indexOf('--cap-drop') + 1]).toBe('ALL');
+    expect(a).not.toContain('--privileged');
+    const mounts = a.flatMap((x, i) => (x === '-v' || x === '--volume' || x === '--mount' ? [a[i + 1]] : []));
+    expect(mounts).toEqual([`${join(dir, 'tree')}:/work`]);
+    expect(a[a.indexOf('-w') + 1]).toBe('/work');
+    expect(a[a.indexOf('--user') + 1]).toBe(`${process.getuid?.()}:${process.getgid?.()}`);
+    // The image's own entrypoint is replaced by `sh -c <command>`.
+    expect(a[a.indexOf('--entrypoint') + 1]).toBe('sh');
+    expect(a.slice(-3)).toEqual(['snapwing-fixer:test', '-c', 'pnpm test -- cart']);
+
+    // The caller's env by name; HOME and TMPDIR inside the container are its /tmp.
+    const forwarded = a.flatMap((x, i) => (x === '-e' ? [a[i + 1]!] : []));
+    expect(forwarded).toEqual(['CI', 'HOME=/tmp', 'TMPDIR=/tmp']);
+    expect(c.env['CI']).toBe('1');
+    // No token of any kind, and nothing of the server's environment.
+    expect(Object.keys(c.env).filter((k) => k.startsWith('SNAPWING_'))).toEqual([]);
+    expect(JSON.stringify(c.env)).not.toContain('server-only-secret');
+  });
+
+  it('reports the exit code the container ended with', async () => {
+    writeFileSync(join(dir, 'exit'), '3');
+    await expect(runner().runTests(testJob())).resolves.toMatchObject({ exitCode: 3, timedOut: false });
+  });
+
+  it('rejects when docker itself fails (exit 125), so a broken runner never reads as a failing test', async () => {
+    writeFileSync(join(dir, 'mode'), 'run-fail');
+    await expect(runner().runTests(testJob())).rejects.toThrow(/docker run failed \(exit 125\): Unable to find image/);
+  });
+
+  it('kills the container at the timeout and reports timedOut', async () => {
+    writeFileSync(join(dir, 'mode'), 'hang');
+    const r = await runner().runTests(testJob({ timeoutMs: 300 }));
+    expect(r).toMatchObject({ exitCode: null, timedOut: true });
+    expect(calls().map((c) => c.args.slice(0, 2))).toEqual([
+      ['run', '--rm'],
+      ['kill', `snapwing-tests-${TEST_RUN}`],
+    ]);
+  });
+
+  it('honours a configured --user', async () => {
+    await runner({ testUser: '1000:1000' }).runTests(testJob());
+    const a = calls()[0]!.args;
+    expect(a[a.indexOf('--user') + 1]).toBe('1000:1000');
+  });
+
+  it('refuses env that would steer the docker CLI or the run, and bad ids, calling docker never', async () => {
+    for (const env of [{ PATH: '/elsewhere' }, { HOME: '/root' }, { DOCKER_HOST: 'tcp://elsewhere:2375' }, { TMPDIR: '/x' }, { 'A=B': 'c' }]) {
+      await expect(runner().runTests(testJob({ env }))).rejects.toThrow(/test env/);
+    }
+    await expect(runner().runTests(testJob({ runId: '../x' }))).rejects.toThrow(/plain path segment/);
+    await expect(runner().runTests(testJob({ timeoutMs: 0 }))).rejects.toThrow(/invalid test timeout/);
     expect(calls()).toEqual([]);
   });
 });

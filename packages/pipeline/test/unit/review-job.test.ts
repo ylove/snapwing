@@ -6,7 +6,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,7 +15,7 @@ import { isReviewRunData, reviewRunKey } from '../../src/contracts/jobs.ts';
 import { handleFixerDone, latest, registerFixerJobs, startFixer, type FixerDeps } from '../../src/fixer/job.ts';
 import { reviewVerdict, type MergeCombinedStatus } from '../../src/merge/job.ts';
 import type { HarnessPort, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../src/ports/harness.ts';
-import type { FixerJob, RunnerPort } from '../../src/ports/runner.ts';
+import type { FixerJob, RunnerPort, TestRunJob, TestRunner, TestRunResult } from '../../src/ports/runner.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
 import {
@@ -227,6 +227,41 @@ class FakeRunner implements RunnerPort {
   }
 }
 
+/** What a test run saw of its tree when the runner got it. */
+interface SeenTestRun {
+  job: TestRunJob;
+  /** `.git/objects/info/alternates` exists: the tree borrows objects from a host checkout. */
+  alternates: boolean;
+  /** The tree's `.git/config`. */
+  config: string;
+  total: string;
+  testFile: boolean;
+}
+
+/**
+ * A runner with an isolation boundary, as the docker provider is: `runTests` is the boundary. It runs
+ * nothing; it records each job and what its tree holds, and answers scripted exit codes (default: fail
+ * at the base, pass at the head).
+ */
+class FakeIsolatedRunner extends FakeRunner implements TestRunner {
+  readonly runs: SeenTestRun[] = [];
+  readonly results: (TestRunResult | Error)[] = [];
+
+  async runTests(job: TestRunJob): Promise<TestRunResult> {
+    const gitDir = join(job.checkout, '.git');
+    this.runs.push({
+      job,
+      alternates: existsSync(join(gitDir, 'objects', 'info', 'alternates')),
+      config: await readFile(join(gitDir, 'config'), 'utf8'),
+      total: await readFile(join(job.checkout, 'src', 'cart', 'total.txt'), 'utf8'),
+      testFile: existsSync(join(job.checkout, 'test', 'cart.test.sh')),
+    });
+    const next = this.results.shift() ?? { exitCode: this.runs.length === 1 ? 1 : 0, timedOut: false, output: `run ${this.runs.length}` };
+    if (next instanceof Error) throw next;
+    return next;
+  }
+}
+
 interface World {
   deps: ReviewDeps;
   fixer: FixerDeps;
@@ -237,10 +272,10 @@ interface World {
   workdirRoot: string;
 }
 
-async function setup(config: Partial<ReviewDeps['config']> = {}): Promise<World> {
+/** `runner` is the fixer's RunnerPort, which the review job also gets, as the composition root passes it. */
+async function setup(config: Partial<ReviewDeps['config']> = {}, runner: FakeRunner = new FakeRunner()): Promise<World> {
   const harness = new FakeReviewHarness();
   const github = new FakeGitHub();
-  const runner = new FakeRunner();
   const workdirRoot = join(scratch, 'reviews');
   const fixer: FixerDeps = {
     workspaceId: WS,
@@ -270,6 +305,7 @@ async function setup(config: Partial<ReviewDeps['config']> = {}): Promise<World>
     workdirRoot,
     config: { testCommand: TEST_COMMAND, regressionTimeout: 'PT1M', ...config },
     clock: () => new Date(now),
+    runner,
   };
   registerReviewJobs(deps);
 
@@ -708,6 +744,103 @@ describe(`review job (${TEST_DIALECT})`, () => {
     expect(await runReviewJob(w.deps, { incidentId: INC, prNumber: PR, headSha: w.github.pr.headSha })).toEqual({ outcome: 'skipped', reason: 'not-open' });
     expect(w.github.checks).toEqual([]);
     expect(w.harness.calls).toEqual([]);
+  });
+});
+
+describe(`review job on a runner with a boundary (${TEST_DIALECT}; ADR 0017, #234)`, () => {
+  /** Prepended to the test command: a host process running it leaves this file behind. */
+  const marker = (): string => join(scratch, 'host-ran-the-test-command');
+  const markedCommand = (): string => `touch '${marker()}'; ${TEST_COMMAND}`;
+
+  it('no host process runs the PR test command: both runs go to runTests, each in a self-contained tree', async () => {
+    const runner = new FakeIsolatedRunner();
+    const w = await setup({ testCommand: markedCommand() }, runner);
+    const head = await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect(existsSync(marker())).toBe(false);
+    expect(runner.runs).toHaveLength(2);
+    const [base, atHead] = runner.runs;
+    if (base === undefined || atHead === undefined) throw new Error('unreachable');
+    for (const run of runner.runs) {
+      expect(run.job.command).toBe(markedCommand());
+      expect(run.job.timeoutMs).toBe(60_000);
+      expect(run.job.env).toBeUndefined();
+      // Its own objects, no remote, no credential: nothing to reach back into the host checkout.
+      expect(run.alternates).toBe(false);
+      expect(run.config).not.toContain('[remote');
+      expect(run.config).not.toContain('test-installation-token');
+      expect(run.config).not.toContain('credential');
+      // Never the review's own checkout.
+      expect(run.job.checkout.startsWith(w.workdirRoot)).toBe(false);
+    }
+    expect(base.job.runId).not.toBe(atHead.job.runId);
+    // The base with the head's test applied, then the head.
+    expect([base.total, base.testFile]).toEqual(['buggy\n', true]);
+    expect([atHead.total, atHead.testFile]).toEqual(['fixed\n', true]);
+    // The scratch trees are gone afterwards.
+    expect(runner.runs.some((r) => existsSync(r.job.checkout))).toBe(false);
+
+    const passed = await lastOf('review-passed');
+    expect(await storedVerdict(passed?.payload.review)).toEqual(APPROVE);
+    expect(w.github.lastCheck()).toMatchObject({ headSha: head, conclusion: 'success' });
+  });
+
+  it('a runner without runTests (local) leaves the proof on the host', async () => {
+    const w = await setup({ testCommand: markedCommand() });
+    await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect(existsSync(marker())).toBe(true);
+    expect(await lastOf('review-passed')).toBeDefined();
+  });
+
+  it('the exit codes the runner observes decide: passing at the base is request-changes', async () => {
+    const runner = new FakeIsolatedRunner();
+    runner.results.push({ exitCode: 0, timedOut: false, output: 'ok' });
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect(runner.runs).toHaveLength(1);
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('request-changes');
+    expect(failed?.payload.reason).toContain('the tests pass without the fix');
+  });
+
+  it('a run the runner timed out is request-changes naming the phase', async () => {
+    const runner = new FakeIsolatedRunner();
+    runner.results.push({ exitCode: 1, timedOut: false, output: 'FAIL' }, { exitCode: null, timedOut: true, output: 'still going' });
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('request-changes');
+    expect(failed?.payload.reason).toContain('timed out at the head');
+  });
+
+  it('a runner that cannot run the tests escalates, and the host does not run them instead', async () => {
+    const runner = new FakeIsolatedRunner();
+    runner.results.push(new Error('Cannot connect to the Docker daemon'));
+    const w = await setup({ testCommand: markedCommand() }, runner);
+    await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect(existsSync(marker())).toBe(false);
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('escalate');
+    expect(failed?.payload.reason).toContain('runner: Cannot connect to the Docker daemon');
   });
 });
 
