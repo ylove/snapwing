@@ -17,6 +17,11 @@
 // - `clarified` is the optional ask-back; it leaves the status where it is.
 // - `stopped` behaves as `filed` (B 5: it "returns to filed"): same accepted events, same targets,
 //   so a fixer start after a stop shows `fixing`, and a human PR shows `in-review`.
+// - `fixer-done` and a repeated `fixer-started` are rows of `fixing` and `fixing-retry`, not
+//   `NON_STATE_CHANGING`: they only mean something while a fixer can be running, so anywhere else they are
+//   reported as not fitting. Both keep the status (the following `pr-opened` moves it). A second
+//   `fixer-started` is the retry run after `review-failed` or `ci-red` (`fixing-retry`) or a restart after a
+//   crash (`fixing`).
 // - `escalated` is left by the next human or agent action (claim, fixer start, human PR, close).
 
 import type { EventType, IncidentEvent } from '../contracts/events.ts';
@@ -154,11 +159,15 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     closed: 'closed',
   },
   fixing: {
+    'fixer-started': 'fixing',
+    'fixer-done': 'fixing',
     'pr-opened': 'in-review',
     'fixer-failed': 'escalated',
     closed: 'closed',
   },
   'fixing-retry': {
+    'fixer-started': 'fixing-retry',
+    'fixer-done': 'fixing-retry',
     'pr-opened': 'in-review-retry',
     'fixer-failed': 'escalated',
     closed: 'closed',
