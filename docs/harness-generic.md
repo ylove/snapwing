@@ -16,6 +16,8 @@ Everything the process prints is untrusted. Snapwing validates it with `parseHar
 
 The RunnerPort (main 14.3) starts the command inside the ephemeral fixer container, with the working directory set to the prepared checkout. The runner clones the repository before the command starts and records the `cloned` checkpoint itself, so a harness may begin at `branched`.
 
+The checkout (`packages/pipeline/src/fixer/workdir/`) is already on the work branch: `handoff/@branch`, else `fix/` plus the issue key, cut from `handoff/@base` (else the repository's default branch), or the existing remote branch on a retry. Commits carry the bot identity. Two hooks are installed: `commit-msg` rejects a message without the issue key, and `pre-push` rejects a push to any ref but the work branch and a branch whose diff against the base touches `.github/workflows/**`, `CODEOWNERS`, or `.github/settings.yml`. The hooks catch mistakes; the token's scope and branch protection are the boundary. Everything Snapwing adds lives under `.git/snapwing/`, outside the worktree.
+
 The command template is split into an argument vector (whitespace separated, double quotes respected) and executed without a shell. Snapwing never interpolates incident text into the command line; the incident reaches the process only through stdin.
 
 The harness process never talks to the Snapwing database or the fixer API. The wrapper in the container that starts it holds the short-lived fixer token (B 9), posts checkpoints and the result to the fixer endpoints, and polls for Stop.
@@ -100,6 +102,9 @@ The process does not inherit the server's environment. It gets exactly these var
 | `SNAPWING_BUDGET_WALL_CLOCK` | ISO 8601 duration, for example `PT30M` |
 | `SNAPWING_BUDGET_ATTEMPTS` | positive integer |
 | `SNAPWING_CHECKPOINT_FILE` | adapter-specific, set only by the `claude-code` adapter: absolute path of a file the agent appends checkpoint JSON lines to (Claude Code's own stderr cannot carry them); the adapter reads it and delivers each line like a stderr checkpoint. The `generic` adapter never sets it |
+| `SNAPWING_PRIOR_REVIEW_FILE` | fixer retry runs only: absolute path of the `review` artifact of the `request-changes` verdict that caused the retry (JSON, main 11.1), under `.git/snapwing/` so no commit can include it. Absent on a first run |
+| `GIT_ASKPASS`, `SNAPWING_GIT_TOKEN` | the Git credential for the one repository: `git push` and `git fetch` in the checkout authenticate through the askpass script, which answers with `SNAPWING_GIT_TOKEN` (a GitHub App installation token). The token is in no file, remote URL, or Git config |
+| `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, the null device, and `0`: Git reads only the checkout's own config and never prompts |
 | `PATH`, `HOME`, `LANG`, `TMPDIR` | from the runner image |
 | model and Git credentials | only those the harness needs, from the secrets port under their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, main 14.5) and a Git credential scoped to the one repository; never the fixer API token |
 

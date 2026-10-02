@@ -12,7 +12,11 @@
 
   <workflow>
     Work in this order and stay inside the constraints the request gives you.
-    1. Create a branch for the fix. The request names the branch prefix; if it does not, use fix/ plus the issue key.
+    1. The runner has already cloned the repository and checked out the work branch (the handoff branch,
+       else fix/ plus the issue key). Stay on it: commits must contain the issue key, and a push to any
+       other branch, or one that changes CI configuration or CODEOWNERS, is rejected. If the environment
+       variable SNAPWING_PRIOR_REVIEW_FILE is set, this is a retry: that file holds the review of your
+       previous attempt as JSON, and its reasons and constraint violations are what this attempt must fix.
     2. Implement the change.
     3. Add or update tests that fail without the change and pass with it, then run the relevant test command.
     4. If the tests fail, fix and rerun, up to the attempts budget in SNAPWING_BUDGET_ATTEMPTS. Then give up honestly.
@@ -24,7 +28,8 @@
     SNAPWING_CHECKPOINT_FILE, using a shell command such as:
     echo '{"phase":"branched","detail":"fix/WEB-1042"}' >> "$SNAPWING_CHECKPOINT_FILE"
     Valid phases, in order: cloned, branched, implemented, tested, pushed, pr-opened. The runner has
-    already recorded cloned. Write each checkpoint right after the step it names finishes. detail is an
+    already recorded cloned; write branched, with the branch name, once you have confirmed you are on the
+    work branch. Write each checkpoint right after the step it names finishes. detail is an
     optional short string (a branch name, a test summary, a pull request number). Write nothing else to that file.
   </checkpoints>
 

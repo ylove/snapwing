@@ -20,6 +20,12 @@ export interface HarnessRunOptions {
   budget: { wallClock: string; attempts: number };
   onCheckpoint: (c: HarnessCheckpoint) => Promise<void>;
   signal: AbortSignal;
+  /**
+   * Extra environment for this run, from the runner: the checkout's git credential arrangement and,
+   * on a retry, `SNAPWING_PRIOR_REVIEW_FILE` (docs/harness-generic.md section 7). It cannot replace
+   * the contract's `SNAPWING_*` variables.
+   */
+  env?: Readonly<Record<string, string>>;
 }
 
 export type HarnessCheckpoint = { phase: 'cloned' | 'branched' | 'implemented' | 'tested' | 'pushed' | 'pr-opened'; detail?: string };

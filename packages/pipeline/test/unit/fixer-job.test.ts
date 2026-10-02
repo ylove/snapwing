@@ -27,10 +27,12 @@ import {
 import { stopIncident } from '../../src/fixer/stop.ts';
 import type { HarnessPort } from '../../src/ports/harness.ts';
 import type { FixerJob, RunnerPort } from '../../src/ports/runner.ts';
+import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
 import { createLocalRunner } from '../../src/providers/local/runner.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { InProcessWorkflow } from '../../src/workflow/inprocess/index.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
+import { createBareRepo } from '../helpers/git.ts';
 
 const T0 = Date.parse('2026-10-02T09:00:00.000Z');
 const WS = '01K6WORKSPACE0000000000000';
@@ -368,11 +370,28 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
 
   it('with the local runner, a harness that reports its first checkpoint at once has it accepted', async () => {
     const w = await setup();
+    // The local runner parses the request for its handoff, so this test's request must be a real one.
+    await state.putArtifact({
+      id: w.request.artifactId,
+      workspaceId: WS,
+      incidentId: INC,
+      kind: 'implementation-request',
+      contentType: 'application/xml',
+      body: buildImplementationRequest({
+        issue: 'WEB-1042',
+        intent: 'Guard the null cart',
+        evidence: [{ kind: 'report', source: 'slack', text: 'checkout crashes' }],
+        constraints: { scope: 'checkout', tests: { required: true, text: 'add a test' }, forbidden: [] },
+        handoff: { mode: 'auto', autonomy: 3 },
+      }),
+      createdBy: 'orchestrator',
+    });
+    const origin = await createBareRepo();
     const workdirRoot = await mkdtemp(join(tmpdir(), 'snapwing-fixer-job-'));
     const outcomes: string[] = [];
+    // The runner reports `cloned` itself (#134); the harness begins at `branched`.
     const harness: HarnessPort = {
       async run(_workItem, _request, _workdir, opts) {
-        await opts.onCheckpoint?.({ phase: 'cloned', detail: '' });
         await opts.onCheckpoint?.({ phase: 'branched', detail: 'fix/WEB-1042' });
         return { outcome: 'done', branch: 'fix/WEB-1042', summary: 'Guard the null cart', testsAdded: [] };
       },
@@ -381,6 +400,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
       resolveHarness: () => harness,
       artifacts: state,
       workdirRoot,
+      git: { token: async () => 'test-git-token-not-real', remoteUrl: () => origin.url },
       onCheckpoint: async (_run, c) => {
         outcomes.push(await report(c.phase === 'branched' ? 'branched' : 'cloned', c.detail));
       },
@@ -394,6 +414,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
       expect((await types()).slice(-3)).toEqual(['fixer-started', 'fixer-checkpoint', 'fixer-checkpoint']);
     } finally {
       await rm(workdirRoot, { recursive: true, force: true });
+      await origin.remove();
     }
   });
 

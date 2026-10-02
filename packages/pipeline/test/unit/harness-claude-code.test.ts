@@ -35,7 +35,8 @@ describe('claude-code harness: invocation', () => {
     const record = join(scratch, 'record.json');
     process.env['SERVER_ONLY_VAR'] = 'leak-check';
     const h = createClaudeCodeHarness({ bin: FAKE, model: 'sonnet', allowedTools: ['Bash', 'Edit'] });
-    const result = await h.run(workItem, `FAKE_MODE=done FAKE_RECORD=${record}`, scratch, opts());
+    const runEnv = { SNAPWING_GIT_TOKEN: 'test-git-token-not-real', SNAPWING_ROLE: 'overridden' };
+    const result = await h.run(workItem, `FAKE_MODE=done FAKE_RECORD=${record}`, scratch, opts({ env: runEnv }));
     delete process.env['SERVER_ONLY_VAR'];
     expect(result).toEqual(DONE);
 
@@ -55,6 +56,7 @@ describe('claude-code harness: invocation', () => {
       SNAPWING_WORKDIR: scratch,
       SNAPWING_BUDGET_WALL_CLOCK: 'PT30S',
       SNAPWING_BUDGET_ATTEMPTS: '3',
+      SNAPWING_GIT_TOKEN: 'test-git-token-not-real',
     });
     expect(seen.env).not.toHaveProperty('SERVER_ONLY_VAR');
   });
