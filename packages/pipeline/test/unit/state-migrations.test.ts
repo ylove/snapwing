@@ -50,8 +50,8 @@ async function tableNames(db: Kysely<Database>): Promise<string[]> {
     const tables = await db.introspection.getTables();
     return tables.map((t) => t.name).sort();
   }
-  // Not `introspection.getTables()` on Postgres: it scans every schema, and other test files drop
-  // their schemas concurrently, which fails it with "schema ... does not exist".
+  // Not `introspection.getTables()` on Postgres: it scans every schema, and the lock and migration
+  // tables live beside the state tables.
   const raw = db as unknown as Kysely<unknown>;
   const { rows } = await sql<{ name: string }>`select tablename as name from pg_tables where schemaname = current_schema()`.execute(raw);
   return rows.map((r) => r.name).filter((n) => n !== MIGRATION_TABLE && n !== MIGRATION_LOCK_TABLE).sort();

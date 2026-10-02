@@ -72,29 +72,10 @@ export async function migrateState<DB>(
     migrationLockTableName: MIGRATION_LOCK_TABLE,
     ...(migrationTableSchema === undefined ? {} : { migrationTableSchema }),
   });
-  for (let attempt = 1; ; attempt++) {
-    const { error, results } = await migrator.migrateToLatest();
-    if (error === undefined) {
-      return (results ?? []).filter((r) => r.status === 'Success').map((r) => r.migrationName);
-    }
-    // Kysely checks for its own tables with an introspection query over every schema in the
-    // database, which calls pg_get_serial_sequence per column; a different schema dropped while it
-    // runs fails the query with 3F000 (parallel test files each drop their own schema). Nothing has
-    // been migrated at that point, so the run is retried.
-    if (attempt < OTHER_SCHEMA_DROPPED_RETRIES && otherSchemaDropped(error, migrationTableSchema)) {
-      continue;
-    }
-    const failed = results?.find((r) => r.status === 'Error');
-    throw new StateMigrationError(failed?.migrationName, error);
+  const { error, results } = await migrator.migrateToLatest();
+  if (error === undefined) {
+    return (results ?? []).filter((r) => r.status === 'Success').map((r) => r.migrationName);
   }
-}
-
-const OTHER_SCHEMA_DROPPED_RETRIES = 5;
-
-function otherSchemaDropped(error: unknown, ownSchema: string | undefined): boolean {
-  if (ownSchema === undefined || !(error instanceof Error) || (error as { code?: unknown }).code !== '3F000') {
-    return false;
-  }
-  const dropped = /schema "([^"]+)" does not exist/.exec(error.message)?.[1];
-  return dropped !== undefined && dropped !== ownSchema;
+  const failed = results?.find((r) => r.status === 'Error');
+  throw new StateMigrationError(failed?.migrationName, error);
 }

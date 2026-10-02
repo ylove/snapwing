@@ -2,13 +2,17 @@
 // Postgres) through `stateOptionsFromEnv`, the one switch (CONTEXT.md 3). Each call makes a fresh,
 // empty database so test files run in parallel without sharing state:
 // - SQLite: a new file in its own temp directory.
-// - Postgres: a new schema in the `DATABASE_URL` database, selected through the connection's
-//   `search_path`, so every pooled connection lands in it.
+// - Postgres: a new database `snapwing_test_<random>`, created through the admin connection
+//   (`DATABASE_URL` itself) and dropped with `WITH (FORCE)`. Test files run in parallel, and
+//   Kysely's migrator introspects every schema of the database it is connected to, so sharing one
+//   database (even with a schema each) races. Requirement: the `DATABASE_URL` role must be able to
+//   CREATE DATABASE (the CI service container's `snapwing` user is the superuser and owns it; a
+//   local container made with POSTGRES_USER=snapwing is the same).
 //
 //   const tdb = await createTestDatabase();
 //   const state = await tdb.open();
 //   ...
-//   await tdb.drop(); // closes every store it opened, then removes the file or schema
+//   await tdb.drop(); // closes every store it opened, then removes the file or database
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,7 +30,7 @@ export interface TestDatabase {
   readonly dialect: StateDialect;
   /** Options that open this database; pass them to `openState` for a second handle. */
   readonly options: StateOptions;
-  /** The Postgres schema, or the SQLite file path. */
+  /** The Postgres database name, or the SQLite file path. */
   readonly name: string;
   /** Opens a store on this database (runs migrations). `drop` closes it. */
   open(hooks?: OpenStateHooks): Promise<OpenedState>;
@@ -61,16 +65,16 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     };
   }
 
-  const baseUrl = base.url ?? '';
-  const schema = `test_${ulid().toLowerCase()}`;
-  await withClient(baseUrl, (c) => c.query(`create schema "${schema}"`));
-  const url = new URL(baseUrl);
-  url.searchParams.set('options', `-c search_path=${schema}`);
+  const adminUrl = base.url ?? '';
+  const database = `snapwing_test_${ulid().toLowerCase()}`;
+  await withClient(adminUrl, (c) => c.query(`create database "${database}"`));
+  const url = new URL(adminUrl);
+  url.pathname = `/${database}`;
   const options: StateOptions = { dialect: 'postgres', url: url.toString() };
   return {
     dialect: 'postgres',
     options,
-    name: schema,
+    name: database,
     async open(hooks) {
       const s = await openState(options, hooks);
       opened.push(s);
@@ -78,7 +82,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
     },
     async drop() {
       await closeAll();
-      await withClient(baseUrl, (c) => c.query(`drop schema if exists "${schema}" cascade`));
+      await withClient(adminUrl, (c) => c.query(`drop database if exists "${database}" with (force)`));
     },
   };
 }
