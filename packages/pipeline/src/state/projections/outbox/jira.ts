@@ -71,6 +71,11 @@ export function jiraFieldBatchKey(incidentId: string, field: JiraField): string 
   return `field:${incidentId}:${FIELD_SLUGS[field]}`;
 }
 
+/** `batch_key` of the engine's `create-issue` row, so a Stop before filing can drop it unsent (#206). */
+export function jiraCreateBatchKey(incidentId: string): string {
+  return `create-issue:${incidentId}`;
+}
+
 /** `batch_key` of a comment; rows sharing it within 60 s become one comment (B 7.1). */
 export function jiraCommentBatchKey(incidentId: string): string {
   return `comment:${incidentId}`;

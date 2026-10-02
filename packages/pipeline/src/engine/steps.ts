@@ -20,7 +20,7 @@ import type { WorkspaceMap } from '../map/types.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { findSurface } from '../resolve/lookup.ts';
-import { jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
+import { jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
@@ -99,6 +99,7 @@ function outboxRow(env: StepEnv, op: 'create-issue' | 'transition' | 'add-commen
   const now = env.deps.clock();
   const at = now.toISOString();
   return {
+    ...(op === 'create-issue' ? { batchKey: jiraCreateBatchKey(env.cursor.incidentId) } : {}),
     id: ulid(now.getTime()),
     workspaceId: env.deps.workspaceId,
     target: 'jira',
@@ -742,11 +743,14 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
   const planned = must(cursor.planned, 'planned');
   const resolution = must(cursor.resolved, 'resolved').resolution;
   const level = cursor.level ?? planned.payload.autonomyLevel;
-  const fixer = level >= 2 || (level === 1 && approvedFix(cursor));
+  // A Stop between `filed` and this step leaves the issue in Backlog: no In Progress transition (so
+  // no fixer) and no fix preview card (#206).
+  const stopped = cursor.stoppedAfterFiled !== undefined;
+  const fixer = !stopped && (level >= 2 || (level === 1 && approvedFix(cursor)));
   const timedOut = level === 1 && answerAfter(cursor, 'fix-preview', planned.seq) === undefined;
 
   await rememberIncident(env.deps.cache, resolution, { issueKey, summary: planned.payload.summary });
-  if (level >= 2) await adapterFor(env)?.postInteractive(env.payload, { kind: 'fix-preview', plan: await plannedPlan(env) });
+  if (level >= 2 && !stopped) await adapterFor(env)?.postInteractive(env.payload, { kind: 'fix-preview', plan: await plannedPlan(env) });
   const note =
     planned.payload.degraded === 'unresolved-surface'
       ? `I could not tell which product this is about, so it is in ${planned.payload.projectKey} for someone to route.`
