@@ -224,7 +224,9 @@ function actorLabel(actor: EventActor): string {
 /** `PR #n` followed by its GitHub URL when the repo is known (the events carry only the number). */
 function prLink(repo: string | undefined, prNumber: number): string {
   const ref = `PR #${String(prNumber)}`;
-  return repo === undefined ? ref : `${ref} (https://github.com/${repo}/pull/${String(prNumber)})`;
+  // The workspace map writes `github.com/owner/name`; the URL wants `owner/name` (#240).
+  const slug = repo?.replace(/^(?:https?:\/\/)?github\.com\//i, '').replace(/\/+$/, '');
+  return slug === undefined || slug === '' ? ref : `${ref} (https://github.com/${slug}/pull/${String(prNumber)})`;
 }
 
 /** `text` without surrounding space or a closing period, to sit inside a sentence. */

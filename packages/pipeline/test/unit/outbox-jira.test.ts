@@ -32,7 +32,7 @@ function draft<T extends EventType>(type: T, payload: EventPayloads[T], actor?: 
 }
 
 /** The captured-to-planned prefix at `level`; `filed` is left to the test. */
-function prefix(level: 0 | 1 | 2 | 3 = 2): Draft<EventType>[] {
+function prefix(level: 0 | 1 | 2 | 3 = 2, repo = 'fake-org/web'): Draft<EventType>[] {
   return [
     draft('captured', {
       kind: 'incident',
@@ -43,7 +43,7 @@ function prefix(level: 0 | 1 | 2 | 3 = 2): Draft<EventType>[] {
       channelId: 'C-FAKE',
     }),
     draft('context-assembled', { bundle: { artifactId: '01JZ00000000000000000000F1', version: 1 }, includedCount: 2, excludedCount: 0 }),
-    draft('resolved', { surfaceId: 'web', componentId: 'checkout', repo: 'fake-org/web', resolvedBy: 'channel-explicit', confidence: 0.9 }),
+    draft('resolved', { surfaceId: 'web', componentId: 'checkout', repo, resolvedBy: 'channel-explicit', confidence: 0.9 }),
     draft('dedupe-checked', { candidates: [], decision: 'none' }),
     draft('planned', {
       action: 'create_issue',
@@ -222,6 +222,17 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
       if (lvl === 3) merge.push(comment('Merged PR #418 (https://github.com/fake-org/web/pull/418) on autopilot. Ticket done.'));
       expect(s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: lvl })).map(shape)).toEqual(merge);
       expect(s.push(draft('closed', {})).map(shape)).toEqual([transition('Done'), status('closed · PR #418')]);
+    }
+  });
+
+  it('links the PR as owner/name whether the map wrote owner/name or github.com/owner/name', () => {
+    for (const repo of ['fake-org/web', 'github.com/fake-org/web', 'https://github.com/fake-org/web']) {
+      const s = new Script();
+      s.all([...prefix(3, repo), draft('filed', { jiraKey: KEY })]);
+      toCi(s);
+      s.push(draft('ci-green', { prNumber: 418, headSha: 'abc123' }));
+      const rows = s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: 3 })).map(shape);
+      expect(rows).toContainEqual(comment('Merged PR #418 (https://github.com/fake-org/web/pull/418) on autopilot. Ticket done.'));
     }
   });
 
