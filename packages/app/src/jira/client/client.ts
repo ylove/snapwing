@@ -31,6 +31,8 @@ export interface JiraClientOptions {
   apiToken: string;
   /** Defaults to the global `fetch`. */
   fetch?: typeof fetch;
+  /** Where the client notes a degraded write (a transition resolution Jira would not take). Defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 export interface SearchJqlOptions {
@@ -43,8 +45,13 @@ export interface JiraClient {
   createIssue(fields: Record<string, unknown>): Promise<JiraIssueRef>;
   getIssue(key: string, opts?: { fields?: string[] }): Promise<JiraIssue>;
   editIssue(key: string, fields: Record<string, unknown>): Promise<void>;
-  /** Resolves the transition id by the target status name (or the transition's own name). */
-  transitionIssue(key: string, toName: string): Promise<void>;
+  /**
+   * Resolves the transition id by the target status name (or the transition's own name). With a
+   * `resolution` (a resolution name such as "Won't Do") it is sent as `fields.resolution`. A site
+   * whose transition screen lacks the Resolution field answers 400; the transition is then sent
+   * plain, the fallback is logged, and a comment records the resolution that could not be set.
+   */
+  transitionIssue(key: string, toName: string, resolution?: string): Promise<void>;
   addComment(key: string, adf: Adf): Promise<{ id: string }>;
   addLabels(key: string, labels: string[]): Promise<void>;
   uploadAttachment(key: string, file: UploadAttachmentInput): Promise<JiraAttachment[]>;
@@ -94,10 +101,15 @@ async function readErrorBody(res: Response): Promise<{ errorMessages: string[]; 
   return { errorMessages: msgs, errors };
 }
 
+function plainAdf(text: string): Adf {
+  return { type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] };
+}
+
 export function createJiraClient(options: JiraClientOptions): JiraClient {
   const base = options.baseUrl.replace(/\/+$/, '');
   // Resolve the global lazily so interceptors installed after construction (MSW) still apply.
   const doFetch: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
+  const log = options.log ?? ((message: string): void => console.warn(message));
   const authorization = `Basic ${Buffer.from(`${options.email}:${options.apiToken}`).toString('base64')}`;
 
   async function request(
@@ -149,7 +161,7 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
       await request('PUT', issuePath(key), { json: { fields } });
     },
 
-    async transitionIssue(key, toName) {
+    async transitionIssue(key, toName, resolution) {
       const { transitions } = await json<{ transitions: JiraTransition[] }>('GET', `${issuePath(key)}/transitions`);
       const want = toName.trim().toLowerCase();
       const match = transitions.find((t) => t.to.name.toLowerCase() === want) ?? transitions.find((t) => t.name.toLowerCase() === want);
@@ -160,7 +172,22 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
           transitions.map((t) => t.to.name),
         );
       }
-      await request('POST', `${issuePath(key)}/transitions`, { json: { transition: { id: match.id } } });
+      const path = `${issuePath(key)}/transitions`;
+      if (resolution === undefined) {
+        await request('POST', path, { json: { transition: { id: match.id } } });
+        return;
+      }
+      try {
+        await request('POST', path, { json: { transition: { id: match.id }, fields: { resolution: { name: resolution } } } });
+      } catch (err) {
+        if (!(err instanceof JiraValidationError)) throw err;
+        // The transition screen has no Resolution field (or Jira will not take this value).
+        log(`jira transition of ${key} to ${match.to.name} refused resolution "${resolution}" (${err.status}); sent without it`);
+        await request('POST', path, { json: { transition: { id: match.id } } });
+        await request('POST', `${issuePath(key)}/comment`, {
+          json: { body: plainAdf(`Snapwing moved this issue to ${match.to.name} but could not set the resolution "${resolution}": the workflow's transition screen does not accept it. Set the resolution by hand if it matters.`) },
+        });
+      }
     },
 
     addComment: (key, adf) => json<{ id: string }>('POST', `${issuePath(key)}/comment`, { json: { body: adf } }),
