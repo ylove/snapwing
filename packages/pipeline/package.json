@@ -33,6 +33,7 @@
     "node-schematron": "^2.1.0",
     "openai": "^7.25.0",
     "pg": "^8.23.1",
+    "pg-boss": "^12.35.1",
     "slimdom": "4.3.5",
     "xmllint-wasm": "^5.3.0"
   }
