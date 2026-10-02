@@ -26,6 +26,7 @@ import { isExpectedSeqConflict } from '@snapwing/pipeline/contracts/state.ts';
 import type { CardKind } from '@snapwing/pipeline/engine/cursor.ts';
 import type { TapInput, TapOutcome } from '@snapwing/pipeline/engine/orchestrator.ts';
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
+import { PrActionRefusedError, type PrActionRefusal } from '@snapwing/pipeline/merge/actions.ts';
 import type { AutonomyLevelId, MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { authorize, type DenyReason } from '@snapwing/pipeline/policy/authorize.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
@@ -112,7 +113,8 @@ export type InteractivityOutcome =
   | { kind: 'tapped'; card: CardKind; choice: string; outcome: TapOutcome }
   | { kind: 'denied'; action: string; reason: DenyReason; askedOwner?: string }
   | { kind: 'stopped'; incidentId: string; outcome: StopOutcome; wontDo?: boolean }
-  | { kind: 'pr-action'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string };
+  | { kind: 'pr-action'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string }
+  | { kind: 'pr-refused'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string; reason: PrActionRefusal };
 
 export interface SlackInteractivity {
   /** One interactivity payload; resolves to what it did. */
@@ -377,9 +379,17 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
       ...(incident.prNumber === undefined ? {} : { prNumber: incident.prNumber }),
       ...(incident.repo === undefined ? {} : { repo: incident.repo }),
     };
-    if (action === 'merge') await options.prActions.merge(input);
-    else if (action === 'request_changes') await options.prActions.requestChanges(input);
-    else await options.prActions.revert(input);
+    try {
+      if (action === 'merge') await options.prActions.merge(input);
+      else if (action === 'request_changes') await options.prActions.requestChanges(input);
+      else await options.prActions.revert(input);
+    } catch (e) {
+      if (!(e instanceof PrActionRefusedError)) throw e;
+      // Nothing was done: tell the tapper why, leave the card's buttons, never mark it (main 11.2).
+      const { message, linkUrl, reason } = e.outcome;
+      await ephemeral(tap, linkUrl === undefined ? esc(message) : `${esc(message)}\n<${linkUrl}|Link your GitHub account>`);
+      return { kind: 'pr-refused', action, incidentId: tap.incidentId, reason };
+    }
     const verb = action === 'merge' ? 'merged this' : action === 'revert' ? 'reverted this' : 'requested changes';
     await markCard(tap, `${mention(tap.userId)} ${verb}.`);
     return { kind: 'pr-action', action, incidentId: tap.incidentId };
