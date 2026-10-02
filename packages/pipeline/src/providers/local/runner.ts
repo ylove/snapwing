@@ -1,12 +1,14 @@
 // The `local` RunnerPort (main 14.3): runs the fixer as a child process on this machine. The child
 // is the configured HarnessPort's (generic or claude-code, both process based over the shared
 // supervisor in harness/process.ts), so stop, budget, and checkpoint handling are the harness's;
-// this runner adds run ids, a work directory per run, and cancellation by id.
+// this runner adds a work directory per run and cancellation by id.
 //
-// `runFixer` loads the implementation request artifact, resolves the harness, makes
+// `runFixer` takes the run id from the job (the fixer job mints it and appends `fixer-started` first,
+// #173), loads the implementation request artifact, resolves the harness, makes
 // `<workdirRoot>/<runId>`, starts the run, and resolves with the run id without waiting for the run
-// to end. It rejects, starting nothing, when the artifact is missing or not an implementation
-// request, or when the harness cannot be resolved. Checkpoints and the result go to `onCheckpoint`
+// to end. It rejects, starting nothing, when the run id is not a plain path segment or is already
+// known, when the artifact is missing or not an implementation request, or when the harness cannot
+// be resolved. Checkpoints and the result go to `onCheckpoint`
 // and `onFinished`, which the app points at the fixer API (B 9); errors they throw are swallowed so
 // a reporting failure never kills a run.
 
@@ -18,7 +20,6 @@ import { createGenericHarness } from '../../harness/generic/index.ts';
 import type { HarnessCheckpoint, HarnessPort, HarnessResult } from '../../ports/harness.ts';
 import type { FixerJob, HarnessChoice, RunnerPort } from '../../ports/runner.ts';
 import type { StatePort } from '../../ports/state.ts';
-import { ulid } from '../../util/ulid.ts';
 
 export interface RunInfo {
   runId: string;
@@ -53,6 +54,9 @@ export class UnknownRunError extends Error {
   }
 }
 
+/** A run id names its work directory, so it must be one plain path segment (a ULID in practice). */
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
 interface Run {
   controller: AbortController;
   done: Promise<HarnessResult>;
@@ -72,14 +76,18 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
 
   return {
     async runFixer(job) {
+      const { runId } = job;
+      if (!RUN_ID.test(runId)) throw new Error(`run id ${JSON.stringify(runId)} is not a plain path segment`);
+      if (runs.has(runId)) throw new Error(`run ${runId} already exists`);
       const artifact = await options.artifacts.getArtifact(job.implementationRequestArtifactId, job.implementationRequestVersion);
       if (artifact.kind !== 'implementation-request') {
         throw new Error(`artifact ${artifact.id} is a ${artifact.kind}, not an implementation-request`);
       }
       const harness = options.resolveHarness(job.harness);
-      const runId = ulid();
       const workdir = join(options.workdirRoot, runId);
       await mkdir(workdir, { recursive: true });
+      // Checked again after the awaits: two starts of one id race no further than here.
+      if (runs.has(runId)) throw new Error(`run ${runId} already exists`);
 
       const info: RunInfo = { runId, job };
       const controller = new AbortController();
