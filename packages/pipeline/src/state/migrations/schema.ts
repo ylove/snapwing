@@ -6,7 +6,7 @@ import { sql, type ColumnDefinitionBuilder, type CreateTableBuilder, type Kysely
 import type { StateDialect } from '../../contracts/state.ts';
 
 /** B 3 column types. */
-export type ColumnType = 'text' | 'integer' | 'smallint' | 'numeric' | 'boolean' | 'jsonb' | 'timestamptz';
+export type ColumnType = 'text' | 'integer' | 'smallint' | 'bigint' | 'numeric' | 'boolean' | 'jsonb' | 'timestamptz';
 
 export interface ColumnSpec {
   type: ColumnType;
@@ -30,7 +30,7 @@ export interface TableSpec {
 /** SQLite's `now()`: ISO 8601 UTC with milliseconds and `Z`, the same form the codec writes. */
 const SQLITE_NOW = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
-function dataType(dialect: StateDialect, type: ColumnType): 'text' | 'integer' | 'smallint' | 'numeric' | 'real' | 'boolean' | 'jsonb' | 'timestamptz' {
+function dataType(dialect: StateDialect, type: ColumnType): 'text' | 'integer' | 'smallint' | 'bigint' | 'numeric' | 'real' | 'boolean' | 'jsonb' | 'timestamptz' {
   if (dialect === 'postgres') {
     return type;
   }
@@ -41,6 +41,7 @@ function dataType(dialect: StateDialect, type: ColumnType): 'text' | 'integer' |
       return 'text';
     case 'integer':
     case 'smallint':
+    case 'bigint':
     case 'boolean':
       return 'integer';
     case 'numeric':
@@ -96,6 +97,17 @@ export async function createTable(db: Kysely<unknown>, dialect: StateDialect, na
     t = t.addPrimaryKeyConstraint(`${name}_pkey`, [...spec.primaryKey]);
   }
   await t.execute();
+}
+
+/**
+ * Adds one column to an existing table. SQLite only adds a `notNull` column that has a `default`;
+ * a migration that wants another default for new rows changes it afterwards (Postgres only).
+ */
+export async function addColumn(db: Kysely<unknown>, dialect: StateDialect, table: string, name: string, spec: ColumnSpec): Promise<void> {
+  await db.schema
+    .alterTable(table)
+    .addColumn(name, dataType(dialect, spec.type), (c) => column(dialect, name, spec, c))
+    .execute();
 }
 
 /** The index name both dialects use: `{table}_{columns}_idx` (ADR 0011). */

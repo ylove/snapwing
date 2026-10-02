@@ -1,5 +1,6 @@
 import { expect, it } from 'vitest';
 import { ExpectedSeqConflictError, LOG_START } from '../../../src/contracts/state.ts';
+import type { StatePort } from '../../../src/ports/state.ts';
 import { event, fixture, id } from './helpers.ts';
 
 const f = fixture();
@@ -58,17 +59,26 @@ it('round trips event data and stamps the injected clock', async () => {
   await f.state().append(key, [input], 0);
   expect(await f.state().read(key)).toEqual([{ ...input, seq: 1, recordedAt: '2026-10-02T12:00:01.234Z' }]);
 });
-it('pages the global log in timestamp, incident and sequence order without gaps', async () => {
-  f.setTime(2000);
+it('pages the global log in append order without gaps (ADR 0013)', async () => {
+  f.setTime(3000);
   const a = id(), b = id();
   await f.state().append(b, [event(b)], 0);
   await f.state().append(a, [event(a), event(a)], 0);
-  f.setTime(3000);
+  f.setTime(2000); // readSince does not order by recordedAt
   await f.state().append(b, [event(b)], 1);
-  const all = (await f.state().readSince(LOG_START, 1000)).events;
-  const sorted = [...all].sort((x, y) => x.recordedAt.localeCompare(y.recordedAt) || x.incidentId.localeCompare(y.incidentId) || x.seq - y.seq);
-  expect(all).toEqual(sorted);
-  expect(all.filter((e) => e.incidentId === a || e.incidentId === b).map((e) => [e.incidentId, e.seq])).toEqual([[a, 1], [a, 2], [b, 1], [b, 2]]);
+  // On Postgres an event is withheld while an older transaction anywhere in the cluster is open.
+  let all: Awaited<ReturnType<StatePort['readSince']>>['events'] = [];
+  for (const deadline = Date.now() + 10_000; Date.now() < deadline; ) {
+    all = (await f.state().readSince(LOG_START, 1000)).events;
+    if (all.some((e) => e.incidentId === b && e.seq === 2)) break;
+  }
+  const keys = all.map((e) => `${e.incidentId}#${e.seq}`);
+  expect(new Set(keys).size).toBe(keys.length);
+  for (const incident of new Set(all.map((e) => e.incidentId))) {
+    const seqs = all.filter((e) => e.incidentId === incident).map((e) => e.seq);
+    expect(seqs).toEqual(seqs.map((_, i) => i + 1));
+  }
+  expect(all.filter((e) => e.incidentId === a || e.incidentId === b).map((e) => [e.incidentId, e.seq])).toEqual([[b, 1], [a, 1], [a, 2], [b, 2]]);
   const collected: typeof all = [];
   let cursor = LOG_START;
   for (let pageNumber = 0; pageNumber <= all.length; pageNumber++) {

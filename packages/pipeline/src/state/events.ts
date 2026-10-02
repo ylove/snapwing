@@ -18,8 +18,17 @@
 //   the event loop while it waits for the other handle's write lock).
 //
 // Every jsonb and timestamptz value goes through `ctx.codec`; `recorded_at` comes from `ctx.now()`
-// (ADR 0011), one value per append, so a batch shares one `recordedAt` and `readSince` orders it
-// by `incidentId` and `seq`.
+// (ADR 0011), one value per append. `readSince` does not page on it (ADR 0013): a clock is not
+// commit order, and an append that commits after a reader passed its `recorded_at` would be skipped.
+// It pages on `tx_order`, the writing transaction, which append sets per dialect:
+// - Postgres: the column default, `pg_current_xact_id()` (one value per transaction, assigned at its
+//   first write). `readSince` returns only rows whose `tx_order` is below the xmin of its own
+//   snapshot, the oldest transaction still in flight anywhere in the cluster: every transaction
+//   below it has committed or rolled back, and every row that commits later has a `tx_order` at or
+//   above it, so a cursor never passes a row that is not yet visible.
+// - SQLite: one writer at a time, so a reader only ever sees committed transactions in commit order.
+//   The first append in a transaction writes `max(tx_order) + 1` and later appends in the same
+//   transaction reuse it, matching Postgres's one value per transaction.
 
 import { sql, type Selectable } from 'kysely';
 import { isEventType, type EventActorRole, type EventSource } from '../contracts/events.ts';
@@ -73,6 +82,7 @@ async function appendInTransaction(tx: StateContext, incidentId: string, events:
   }
 
   const recordedAt = tx.codec.timestamp(tx.now());
+  const txOrder = tx.dialect === 'sqlite' ? { tx_order: await sqliteTxOrder(tx) } : {};
   const rows = events.map((e, i) => ({
     workspace_id: e.workspaceId,
     incident_id: incidentId,
@@ -86,8 +96,9 @@ async function appendInTransaction(tx: StateContext, incidentId: string, events:
     occurred_at: tx.codec.timestamp(e.occurredAt),
     recorded_at: recordedAt,
   }));
+  const insert = rows.map((r) => ({ ...r, ...txOrder }));
   try {
-    await tx.db.insertInto('incident_events').values(rows).execute();
+    await tx.db.insertInto('incident_events').values(insert).execute();
   } catch (e) {
     // Only the insert's key violation is a lost race; one raised by projections is their own bug.
     throw isUniqueViolation(e) ? new SeqTaken(e) : e;
@@ -117,9 +128,10 @@ export async function read(ctx: StateContext, incidentId: string, fromSeq = 1): 
 }
 
 /**
- * See `StatePort.readSince`. Keyset pagination on `(recorded_at, incident_id, seq)`, which is unique
- * (the primary key is `(incident_id, seq)`), so pages never overlap or skip a row that was committed
- * before the page was read. The cursor is the last row's key, base64url-encoded JSON.
+ * See `StatePort.readSince`. Keyset pagination on `(tx_order, incident_id, seq)`, which is unique (the
+ * primary key is `(incident_id, seq)`). On Postgres only rows below the snapshot's xmin are returned
+ * (header, ADR 0013), so a page may stop short of rows that are already committed; they come on a
+ * later call. The cursor is the last row's key, base64url-encoded JSON.
  */
 export async function readSince(ctx: StateContext, cursor: string, limit: number): Promise<{ events: IncidentEvent[]; cursor: string }> {
   if (!Number.isSafeInteger(limit) || limit < 1) {
@@ -128,25 +140,49 @@ export async function readSince(ctx: StateContext, cursor: string, limit: number
   const after = decodeCursor(cursor);
 
   let q = ctx.db.selectFrom('incident_events').selectAll();
+  if (ctx.dialect === 'postgres') {
+    // Evaluated in this statement, so against the same snapshot that decides which rows it sees.
+    q = q.where('tx_order', '<', sql<number>`pg_snapshot_xmin(pg_current_snapshot())::text::bigint`);
+  }
   if (after !== undefined) {
-    const recordedAt = ctx.codec.timestamp(after.recordedAt);
     q = q.where((eb) =>
       eb.or([
-        eb('recorded_at', '>', recordedAt),
+        eb('tx_order', '>', after.txOrder),
         eb.and([
-          eb('recorded_at', '=', recordedAt),
+          eb('tx_order', '=', after.txOrder),
           eb.or([eb('incident_id', '>', after.incidentId), eb.and([eb('incident_id', '=', after.incidentId), eb('seq', '>', after.seq)])]),
         ]),
       ]),
     );
   }
-  const rows = await q.orderBy('recorded_at').orderBy('incident_id').orderBy('seq').limit(limit).execute();
+  const rows = await q.orderBy('tx_order').orderBy('incident_id').orderBy('seq').limit(limit).execute();
   const events = rows.map((r) => toEvent(ctx, { ...r, payload: ctx.codec.fromJson(r.payload) }));
-  const last = events.at(-1);
-  return { events, cursor: last === undefined ? cursor : encodeCursor(last) };
+  const last = rows.at(-1);
+  return {
+    events,
+    cursor: last === undefined ? cursor : encodeCursor({ txOrder: ctx.codec.fromNumber(last.tx_order), incidentId: last.incident_id, seq: ctx.codec.fromNumber(last.seq) }),
+  };
 }
 
 // Helpers -----------------------------------------------------------------------------------------
+
+/** SQLite `tx_order` per transaction handle; a joined transaction reuses its handle (context.ts). */
+const sqliteTxOrders = new WeakMap<object, number>();
+
+async function sqliteTxOrder(tx: StateContext): Promise<number> {
+  const known = sqliteTxOrders.get(tx.db);
+  if (known !== undefined) {
+    return known;
+  }
+  const row = await tx.db
+    .selectFrom('incident_events')
+    .select((eb) => eb.fn.max('tx_order').as('last'))
+    .executeTakeFirst();
+  const raw: unknown = row?.last;
+  const next = (raw === null || raw === undefined ? 0 : tx.codec.fromNumber(raw)) + 1;
+  sqliteTxOrders.set(tx.db, next);
+  return next;
+}
 
 async function lastSeq(ctx: StateContext, incidentId: string): Promise<number> {
   const row = await ctx.db
@@ -158,8 +194,8 @@ async function lastSeq(ctx: StateContext, incidentId: string): Promise<number> {
   return raw === null || raw === undefined ? 0 : ctx.codec.fromNumber(raw);
 }
 
-/** A row with `payload` already decoded to its JSON value. */
-type DecodedRow = Omit<EventRow, 'payload'> & { payload: unknown };
+/** A row with `payload` already decoded to its JSON value. `tx_order` is not part of the event. */
+type DecodedRow = Omit<EventRow, 'payload' | 'tx_order'> & { payload: unknown };
 
 function toEvent(ctx: StateContext, r: DecodedRow): IncidentEvent {
   if (!isEventType(r.type)) {
@@ -183,13 +219,13 @@ function toEvent(ctx: StateContext, r: DecodedRow): IncidentEvent {
 }
 
 interface CursorKey {
-  recordedAt: string;
+  txOrder: number;
   incidentId: string;
   seq: number;
 }
 
-function encodeCursor(e: IncidentEvent): string {
-  return Buffer.from(JSON.stringify([e.recordedAt, e.incidentId, e.seq]), 'utf8').toString('base64url');
+function encodeCursor(k: CursorKey): string {
+  return Buffer.from(JSON.stringify([k.txOrder, k.incidentId, k.seq]), 'utf8').toString('base64url');
 }
 
 function decodeCursor(cursor: string): CursorKey | undefined {
@@ -203,11 +239,12 @@ function decodeCursor(cursor: string): CursorKey | undefined {
     parsed = undefined;
   }
   if (Array.isArray(parsed) && parsed.length === 3) {
-    const [recordedAt, incidentId, seq] = parsed as unknown[];
-    if (typeof recordedAt === 'string' && !Number.isNaN(Date.parse(recordedAt)) && typeof incidentId === 'string' && Number.isSafeInteger(seq)) {
-      return { recordedAt, incidentId, seq: seq as number };
+    const [txOrder, incidentId, seq] = parsed as unknown[];
+    if (Number.isSafeInteger(txOrder) && typeof incidentId === 'string' && Number.isSafeInteger(seq)) {
+      return { txOrder: txOrder as number, incidentId, seq: seq as number };
     }
   }
+  // Includes cursors from before migration 0002, which keyed on `recorded_at`.
   throw new TypeError(`readSince: not a cursor this store issued: ${JSON.stringify(cursor)}`);
 }
 

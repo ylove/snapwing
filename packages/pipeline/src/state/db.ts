@@ -68,6 +68,11 @@ export interface IncidentEventsTable {
   payload: Json;
   occurred_at: Ts;
   recorded_at: TsDefault;
+  /**
+   * The `readSince` key (ADR 0013): the writing transaction's id on Postgres (column default), a
+   * per-transaction counter that append writes on SQLite. bigint reads back as a string on Postgres.
+   */
+  tx_order: ColumnType<number | string, number | undefined, number>;
 }
 
 export interface IncidentsTable {

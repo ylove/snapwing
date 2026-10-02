@@ -12,13 +12,14 @@ import { Migrator, type Migration, type MigrationProvider } from 'kysely/migrati
 import type { StateDialect } from '../../contracts/state.ts';
 import { StateMigrationError } from '../errors.ts';
 import * as m0001 from './0001-initial.ts';
+import * as m0002 from './0002-event-tx-order.ts';
 
 export interface StateMigration {
   readonly name: string;
   up(db: Kysely<unknown>, dialect: StateDialect): Promise<void>;
 }
 
-export const MIGRATIONS: readonly StateMigration[] = Object.freeze([m0001]);
+export const MIGRATIONS: readonly StateMigration[] = Object.freeze([m0001, m0002]);
 
 /** Kysely's bookkeeping tables, in the same schema as the state tables. */
 export const MIGRATION_TABLE = 'kysely_migration';
