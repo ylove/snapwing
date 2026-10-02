@@ -1,0 +1,51 @@
+name: live
+
+# Runs only on demand, and only when the repository secrets it needs are present.
+# Secret names are listed in build/CONTEXT.md section 6b.
+on:
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    env:
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+      JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+      JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
+      SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+      GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
+      GITHUB_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
+      GITHUB_INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+    steps:
+      - id: guard
+        name: Check required secrets
+        run: |
+          missing=""
+          for name in JIRA_BASE_URL JIRA_EMAIL JIRA_API_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_SIGNING_SECRET GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_INSTALLATION_ID; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -z "$ANTHROPIC_API_KEY$OPENAI_API_KEY$GOOGLE_API_KEY" ]; then missing="$missing (one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY)"; fi
+          if [ -n "$missing" ]; then
+            echo "Skipping live tier; missing secrets:$missing"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.guard.outputs.ok == 'true'
+        uses: actions/checkout@v4
+      - if: steps.guard.outputs.ok == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.guard.outputs.ok == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - if: steps.guard.outputs.ok == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.guard.outputs.ok == 'true'
+        run: pnpm test:live

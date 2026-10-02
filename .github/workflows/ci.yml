@@ -1,0 +1,107 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: snapwing
+          POSTGRES_PASSWORD: snapwing
+          POSTGRES_DB: snapwing
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U snapwing"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SNAPWING_DB: ${{ matrix.db }}
+      DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgres://snapwing:snapwing@localhost:5432/snapwing' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm lint:prose
+      - run: pnpm test
+      - run: pnpm test:contract
+
+  state-verify:
+    name: state rebuild --verify (${{ matrix.db }})
+    runs-on: ubuntu-latest
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        db: [sqlite, postgres]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: snapwing
+          POSTGRES_PASSWORD: snapwing
+          POSTGRES_DB: snapwing
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U snapwing"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      SNAPWING_DB: ${{ matrix.db }}
+      DATABASE_URL: ${{ matrix.db == 'postgres' && 'postgres://snapwing:snapwing@localhost:5432/snapwing' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: recordings
+        name: Check for demo recordings
+        run: |
+          if find demo -type f ! -name '.gitkeep' | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "demo/ has no recordings yet; skipping state rebuild --verify."
+          fi
+      - if: steps.recordings.outputs.present == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.recordings.outputs.present == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - if: steps.recordings.outputs.present == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.recordings.outputs.present == 'true'
+        run: pnpm state rebuild --verify
+
+  ports-context:
+    # BUILDING.md section 7: a PR that changes a port must touch build/CONTEXT.md.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Ports changed without CONTEXT.md
+        run: |
+          changed=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          if echo "$changed" | grep -Eq '^packages/[^/]+/src/ports/' && ! echo "$changed" | grep -qx 'build/CONTEXT.md'; then
+            echo "::error::This PR changes packages/*/src/ports/** but not build/CONTEXT.md. Update CONTEXT.md (BUILDING.md section 7)."
+            exit 1
+          fi
+          echo "ok"

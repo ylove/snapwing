@@ -1,0 +1,33 @@
+{
+  "name": "snapwing",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Fix it from here: Slack and Teams to Jira to PR, with an autonomy dial",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "pnpm -r --parallel run test",
+    "test:contract": "pnpm -r --parallel run test:contract",
+    "test:live": "pnpm -r run test:live",
+    "test:e2e": "pnpm -r run test:e2e",
+    "typecheck": "pnpm -r --parallel run typecheck",
+    "lint": "eslint . && pnpm run typecheck",
+    "lint:prose": "node scripts/lint-prose.mjs",
+    "demo": "node scripts/not-yet.mjs demo 2",
+    "demo:state": "node scripts/not-yet.mjs demo:state 1",
+    "state": "node scripts/not-yet.mjs state 1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.3",
+    "eslint": "^10.11.0",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.0",
+    "vitest": "^5.0.3"
+  }
+}
