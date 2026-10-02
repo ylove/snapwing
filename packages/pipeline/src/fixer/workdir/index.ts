@@ -21,6 +21,7 @@ import { execFile } from 'node:child_process';
 import { chmod, mkdir, readdir, writeFile } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import { join, resolve } from 'node:path';
+import { repoFullName } from '../../util/repo.ts';
 import { askpassScript, commitMsgHook, prePushHook, TOKEN_ENV } from './hooks.ts';
 
 export { isProtectedPath, PROTECTED_PATH_PATTERNS } from './hooks.ts';
@@ -37,7 +38,7 @@ export const DEFAULT_BOT_IDENTITY: GitIdentity = Object.freeze({
 });
 
 export interface PrepareWorkdirInput {
-  /** `owner/name` of the target repository. */
+  /** `owner/name` of the target repository; the map's `github.com/owner/name` is reduced to it (#160). */
   repo: string;
   /** The branch the pull request targets (handoff/@base); the remote's default branch when omitted. */
   base?: string | undefined;
@@ -142,7 +143,9 @@ export function validateWorkdirNames(input: Pick<PrepareWorkdirInput, 'repo' | '
   }
 }
 
-export async function prepareWorkdir(input: PrepareWorkdirInput): Promise<PreparedWorkdir> {
+export async function prepareWorkdir(given: PrepareWorkdirInput): Promise<PreparedWorkdir> {
+  // Incidents carry the map's `github.com/owner/name`; the checkout and its default URL want `owner/name`.
+  const input: PrepareWorkdirInput = { ...given, repo: repoFullName(given.repo) };
   validateWorkdirNames(input);
   if (input.token === '') throw new WorkdirError('the git token is empty');
   const workdir = resolve(input.workdir);

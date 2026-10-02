@@ -94,6 +94,13 @@ describe('prepareWorkdir', () => {
     expect((await readFile(join(p.workdir, 'dev.txt'), 'utf8')).trim()).toBe('dev');
   });
 
+  it("takes the workspace map's github.com/owner/name form of the repo an incident records (#160)", async () => {
+    const p = await prepare({ repo: 'github.com/acme/web' });
+    expect(harnessGit(p, ['branch', '--show-current'])).toBe(BRANCH);
+    await rm(p.workdir, { recursive: true, force: true });
+    await expect(prepare({ repo: 'github.com/acme/web/extra' })).rejects.toThrow('is not owner/name');
+  });
+
   it('never writes the token to any file under the work directory', async () => {
     const p = await prepare();
     expect(await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} guard the null price`)).toEqual({ ok: true, stderr: '' });
