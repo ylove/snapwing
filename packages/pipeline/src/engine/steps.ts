@@ -24,7 +24,7 @@ import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
 import { approvedFix, answerAfter, pendingCard, type Cursor, type Phase, type Tap } from './cursor.ts';
-import { DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps } from './deps.ts';
+import { DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps, type StatusSubscription } from './deps.ts';
 
 /** The Jira transition that starts the fixer (main 14.1: "fires fixer webhook"). */
 export const IN_PROGRESS = 'In Progress';
@@ -698,13 +698,14 @@ function filedText(issueKey: string, owner: string | undefined, note?: string): 
   return note === undefined ? base : `${base} ${note}`;
 }
 
-/** Status loopback through `deps.status`, or a plain `filed` status through the adapter without one. */
-async function subscribeStatus(env: StepEnv, issueKey: string, text: string, note?: string): Promise<void> {
-  if (env.deps.status !== undefined) {
-    await env.deps.status.subscribe(env.payload, issueKey, note);
-    return;
-  }
+/**
+ * Status loopback through `deps.status`, whose events and rows the caller writes with its own; or a
+ * plain `filed` status through the adapter without one.
+ */
+async function subscribeStatus(env: StepEnv, issueKey: string, text: string, note?: string): Promise<StatusSubscription> {
+  if (env.deps.status !== undefined) return env.deps.status.subscribe(env.payload, issueKey, note);
   await adapterFor(env)?.postStatus(env.payload, { issueKey, stage: 'filed', text });
+  return { events: [], outbox: [] };
 }
 
 /**
@@ -731,10 +732,11 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
         ? `Nobody tapped Fix it within ${hours(tapTimeoutMs(env))}, so this is filed as ticket only.`
         : undefined;
   const owner = resolution.ownerId;
-  await subscribeStatus(env, issueKey, filedText(issueKey, owner, note), note);
+  const subscription = await subscribeStatus(env, issueKey, filedText(issueKey, owner, note), note);
 
   const waitingOn: WaitingOn | undefined = fixer ? undefined : { kind: 'human', ...(owner === undefined ? {} : { who: owner }) };
-  await commit(env, [newEvent(env, 'waiting-changed', waitingOn === undefined ? {} : { waitingOn })], async (tx) => {
+  await commit(env, [...subscription.events, newEvent(env, 'waiting-changed', waitingOn === undefined ? {} : { waitingOn })], async (tx) => {
+    for (const row of subscription.outbox) await tx.enqueueOutbox(row);
     if (fixer) await tx.enqueueOutbox(outboxRow(env, 'transition', { issueKey, to: IN_PROGRESS }));
     return [];
   });

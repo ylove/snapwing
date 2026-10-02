@@ -14,6 +14,7 @@
 import type { IncidentEvent } from '../../../contracts/events.ts';
 import type { IncidentView, OutboxItem } from '../../../contracts/state.ts';
 import { jiraRows } from './jira.ts';
+import { statusRows } from './status.ts';
 
 /** What folding one event did to the incident row. */
 export interface IncidentChange {
@@ -29,7 +30,7 @@ export interface IncidentChange {
 export type TargetRows = (event: IncidentEvent, change: IncidentChange) => OutboxItem[];
 
 /** Every target module, in the order their rows are enqueued. */
-const TARGETS: readonly TargetRows[] = [jiraRows];
+const TARGETS: readonly TargetRows[] = [jiraRows, statusRows];
 
 /** The outbox items `event` implies, given what it did to the incident row. */
 export function outboxFor(event: IncidentEvent, change: IncidentChange): OutboxItem[] {

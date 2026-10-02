@@ -63,7 +63,7 @@ class Script {
   seq = 0;
   readonly events: IncidentEvent[] = [];
 
-  /** Folds `d` as the next event and returns the outbox rows the hook gives for it. */
+  /** Folds `d` as the next event and returns the Jira rows the hook gives for it (chat rows are #142's). */
   push<T extends EventType>(d: Draft<T>): OutboxItem[] {
     this.seq += 1;
     const at = new Date(Date.parse('2026-10-01T09:00:00.000Z') + this.seq * 60_000).toISOString();
@@ -84,7 +84,7 @@ class Script {
     const fold = foldIncident(before, event);
     if (fold.view === undefined) throw new Error(`no row after ${d.type}`);
     this.view = fold.view;
-    return outboxFor(event, { before, after: fold.view, valid: fold.valid });
+    return outboxFor(event, { before, after: fold.view, valid: fold.valid }).filter((r) => r.target === 'jira');
   }
 
   all(drafts: readonly Draft<EventType>[]): OutboxItem[] {
