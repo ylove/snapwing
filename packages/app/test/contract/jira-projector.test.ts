@@ -173,7 +173,12 @@ function projector(overrides: Partial<JiraProjectorOptions> = {}): JiraProjector
       continued.push(id);
       return { jobId: `job-${id}` };
     },
-    customFieldIds: { 'Implementation Prompt': 'customfield_10040', 'Autonomy Level': 'customfield_10042' },
+    customFieldIds: {
+      'Implementation Prompt': 'customfield_10040',
+      'Conversation Link': 'customfield_10041',
+      'Autonomy Level': 'customfield_10042',
+      'Agent Status': 'customfield_10043',
+    },
     now: () => new Date(time),
     ...overrides,
   });
@@ -235,7 +240,7 @@ describe('create-issue', () => {
     expect(issue.labels).toEqual(['snapwing', 'slack', 'web', incidentLabel(incidentId)]);
     expect(issue.fields['customfield_10040']).toBe('<implementation-request/>');
     expect(issue.fields['customfield_10042']).toBe(2);
-    expect(Object.keys(issue.fields).some((k) => k.startsWith('Conversation'))).toBe(false); // unmapped until #113
+    expect(issue.fields['customfield_10041']).toBe('https://slack.example.com/archives/C1/p1');
     expect(issue.attachments).toEqual(['cart-blank.png']);
     const filed = await filedEvents(incidentId);
     expect(filed.map((e) => [e.seq, e.source, e.payload])).toEqual([[2, 'jira', { jiraKey: 'WEB-1' }]]);
@@ -432,13 +437,14 @@ describe('validation', () => {
 });
 
 describe('other ops', () => {
-  it('transitions, adds labels, updates mapped fields, and acks a write with only unmapped fields', async () => {
+  it('transitions, adds labels, updates mapped fields, and drops a name with no id', async () => {
     jira.issues.set('WEB-5', { key: 'WEB-5', fields: {}, labels: ['snapwing'], status: 'Backlog', comments: [], attachments: [] });
     const rows = [
       row('transition', { issueKey: 'WEB-5', to: 'in progress' }),
       row('add-labels', { issueKey: 'WEB-5', labels: ['human-claimed'] }),
       row('update-fields', { issueKey: 'WEB-5', customFields: { 'Autonomy Level': 1 } }),
       row('update-fields', { issueKey: 'WEB-5', customFields: { 'Agent Status': 'fixing · PR #418' } }),
+      row('update-fields', { issueKey: 'WEB-5', customFields: { 'Unmapped Field': 'x' } }),
       row('add-comment', { issueKey: 'WEB-5', text: 'Linked from a duplicate report.' }),
     ];
     await enqueue(...rows);
@@ -449,9 +455,9 @@ describe('other ops', () => {
     const issue = jira.issue('WEB-5');
     expect(issue.status).toBe('In Progress');
     expect(issue.labels).toEqual(['snapwing', 'human-claimed']);
-    expect(issue.fields).toEqual({ customfield_10042: 1 });
+    expect(issue.fields).toEqual({ customfield_10042: 1, customfield_10043: 'fixing · PR #418' });
     expect(commentTexts(issue)).toEqual([['Linked from a duplicate report.']]);
-    expect(jira.requests.filter((r) => r === 'PUT /rest/api/3/issue/WEB-5')).toHaveLength(2);
+    expect(jira.requests.filter((r) => r === 'PUT /rest/api/3/issue/WEB-5')).toHaveLength(3);
   });
 
   it('drains only its own workspace', async () => {

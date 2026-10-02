@@ -13,7 +13,7 @@
 //
 // Custom fields travel by name (`Implementation Prompt`, `Autonomy Level`, ...). The projector maps
 // a name to a Jira field id through `customFieldIds`; a name with no id is left out of the write
-// (the mapping and the placeholder key rewrite are #113). `suggestedAssigneeEmail` is not sent yet:
+// (fields.ts checks the map at startup; prompt.ts rewrites the placeholder key). `suggestedAssigneeEmail` is not sent yet:
 // Jira assigns by account id, and resolving one is a user search this client does not make.
 
 import type { OutboxItem } from '@snapwing/pipeline/contracts/state.ts';

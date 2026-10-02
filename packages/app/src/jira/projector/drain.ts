@@ -8,7 +8,9 @@
 //
 // create-issue (main 9.1). Search for the label `snapwing-<incidentId>`, create the issue with that
 // label only when none is found, append `filed { jiraKey }` with `expectedSeq` (a conflict is
-// retried from a fresh read; an incident already filed is left alone), call `continueIncident`,
+// retried from a fresh read; an incident already filed is left alone), rewrite the implementation
+// request's placeholder `@issue` to the real key and write the `Implementation Prompt` field
+// (prompt.ts, #113; `prompt-failed` when it no longer validates), call `continueIncident`,
 // upload the screenshots not yet attached, then ack. A crash anywhere in that sequence repeats it
 // without a second issue; `continueIncident` is a singleton job, so a second call is harmless.
 // Jira's search is eventually consistent, so a retry within seconds of a create can still miss the
@@ -40,6 +42,8 @@ import {
   type JiraOp,
   type LoadScreenshot,
 } from './ops.ts';
+import { requireCustomFieldIds } from './fields.ts';
+import { finalizePrompt } from './prompt.ts';
 
 export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -59,8 +63,12 @@ export interface JiraProjectorOptions {
   workspaceId: string;
   /** `IncidentOrchestrator.continueIncident`: runs the incident on after `filed`. */
   continueIncident: (incidentId: string) => Promise<unknown>;
-  /** Custom field name to Jira field id (#113 fills it). Names with no id are not written. */
-  customFieldIds?: Readonly<Record<string, string>>;
+  /**
+   * Custom field name to Jira `customfield_NNNNN` id, from `customFieldIdsFromEnv` (the ids
+   * `pnpm jira:bootstrap` writes). Required: `createJiraProjector` throws `JiraFieldConfigError` when
+   * any of `Implementation Prompt`, `Conversation Link`, `Autonomy Level`, `Agent Status` has none.
+   */
+  customFieldIds: Readonly<Record<string, string>>;
   /** Fetches a screenshot for upload; default a plain GET (`fetchScreenshot`). */
   loadScreenshot?: LoadScreenshot;
   /** Clock for holds, pauses, and backoff; use the store's clock. Default `() => new Date()`. */
@@ -108,7 +116,7 @@ type Outcome = 'sent' | 'held';
 export function createJiraProjector(options: JiraProjectorOptions): JiraProjector {
   const { state, client, workspaceId } = options;
   const now = options.now ?? (() => new Date());
-  const customFieldIds = options.customFieldIds ?? {};
+  const customFieldIds = requireCustomFieldIds(options.customFieldIds);
   const loadScreenshot = options.loadScreenshot ?? fetchScreenshot;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -150,6 +158,16 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   async function fileIssue(row: OutboxItem, op: CreateIssueOp): Promise<Outcome> {
     const found = await findOrCreateIssue(client, op, customFieldIds);
     await recordFiled(row, op.incidentId, found.key);
+    // Before the fixer can start: it reads the latest artifact version, which must name the real key.
+    await finalizePrompt({
+      state,
+      client,
+      incidentId: op.incidentId,
+      issueKey: found.key,
+      projectKey: (op.fields['project'] as { key: string }).key,
+      fieldId: customFieldIds['Implementation Prompt'] as string,
+      createdBy: 'jira-projector',
+    });
     await options.continueIncident(op.incidentId);
     await uploadScreenshots(client, found.key, op.screenshots, found.attached, loadScreenshot);
     await state.ackOutbox([row.id]);
