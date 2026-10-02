@@ -1,0 +1,118 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Application config, snapwing.config.xml (main 14.3 provider selection, main 14.5 models and harness).
+  Secrets never appear here; API keys come from the secrets port.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:snapwing:config:v1"
+           xmlns:c="urn:snapwing:config:v1"
+           targetNamespace="urn:snapwing:config:v1"
+           elementFormDefault="qualified">
+
+  <xs:simpleType name="RuntimeProvider">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="local"/>
+      <xs:enumeration value="aws"/>
+      <xs:enumeration value="gcp"/>
+      <xs:enumeration value="docker"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ModelProvider">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="anthropic"/>
+      <xs:enumeration value="openai"/>
+      <xs:enumeration value="google"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ModelTask">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="triage"/>
+      <xs:enumeration value="segmentation"/>
+      <xs:enumeration value="vision"/>
+      <xs:enumeration value="clarify"/>
+      <xs:enumeration value="scout"/>
+      <xs:enumeration value="review"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="HarnessAdapter">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="claude-code"/>
+      <xs:enumeration value="codex"/>
+      <xs:enumeration value="gemini"/>
+      <xs:enumeration value="generic"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- ISO 8601 duration limited to days and a time part, matching util/duration.ts: PT30M, PT1H30M, P1D, PT0.5S. -->
+  <xs:simpleType name="Duration">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="P([0-9]+D(T([0-9]+H([0-9]+M)?([0-9]+(\.[0-9]+)?S)?|[0-9]+M([0-9]+(\.[0-9]+)?S)?|[0-9]+(\.[0-9]+)?S))?|T([0-9]+H([0-9]+M)?([0-9]+(\.[0-9]+)?S)?|[0-9]+M([0-9]+(\.[0-9]+)?S)?|[0-9]+(\.[0-9]+)?S))"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="NonEmptyToken">
+    <xs:restriction base="xs:token">
+      <xs:minLength value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:element name="snapwing">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="runtime">
+          <xs:complexType>
+            <xs:attribute name="provider" type="RuntimeProvider" use="required"/>
+            <xs:attribute name="region" type="NonEmptyToken"/>
+          </xs:complexType>
+        </xs:element>
+        <xs:element name="models">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="model" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="task" type="ModelTask" use="required"/>
+                  <xs:attribute name="provider" type="ModelProvider" use="required"/>
+                  <xs:attribute name="name" type="NonEmptyToken" use="required"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+            <xs:attribute name="default-provider" type="ModelProvider" use="required"/>
+          </xs:complexType>
+          <xs:unique name="OneModelPerTask">
+            <xs:selector xpath="c:model"/>
+            <xs:field xpath="@task"/>
+          </xs:unique>
+        </xs:element>
+        <xs:element name="harness">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="generic" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="id" type="xs:NCName" use="required"/>
+                  <xs:attribute name="command" type="NonEmptyToken" use="required"/>
+                  <xs:attribute name="timeout" type="Duration" default="PT30M"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+            <xs:attribute name="fixer" type="HarnessAdapter" use="required"/>
+            <xs:attribute name="review" type="HarnessAdapter" use="required"/>
+          </xs:complexType>
+          <xs:unique name="UniqueGenericId">
+            <xs:selector xpath="c:generic"/>
+            <xs:field xpath="@id"/>
+          </xs:unique>
+        </xs:element>
+      </xs:sequence>
+      <xs:attribute name="version" use="required">
+        <xs:simpleType>
+          <xs:restriction base="xs:string">
+            <xs:enumeration value="1"/>
+          </xs:restriction>
+        </xs:simpleType>
+      </xs:attribute>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>

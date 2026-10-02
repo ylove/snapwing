@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<snapwing xmlns="urn:snapwing:config:v1" version="1">
+  <runtime provider="local"/>
+  <models default-provider="anthropic">
+    <model task="triage"       provider="anthropic" name="claude-sonnet-5-5"/>
+    <model task="segmentation" provider="anthropic" name="claude-haiku-4-5"/>
+    <model task="vision"       provider="openai"    name="gpt-5"/>
+    <model task="clarify"      provider="anthropic" name="claude-haiku-4-5"/>
+    <model task="scout"        provider="anthropic" name="claude-opus-5-5"/>
+    <model task="review"       provider="google"    name="gemini-2.5-pro"/>
+  </models>
+  <harness fixer="claude-code" review="generic">
+    <generic id="aider" command="aider --yes --message-file - --json-result" timeout="PT30M"/>
+  </harness>
+</snapwing>

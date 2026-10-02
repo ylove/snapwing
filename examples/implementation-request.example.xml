@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<implementation-request xmlns="urn:snapwing:impl:v1" issue="WEB-1042" surface="web" component="checkout">
+  <intent>
+    Applying a promo code after changing quantity leaves cart line items with a null price,
+    causing a blank total on the checkout page.
+  </intent>
+  <evidence>
+    <report source="slack" channel="market-bugs" reporter="pat@example.com" ts="1727540000.000100">
+      "cart total is blank after I put in the discount code, happened to two customers today"
+    </report>
+    <screenshot ref="attachment:WEB-1042/cart-blank.png" />
+    <alert none="true" />
+  </evidence>
+  <diagnosis confidence="medium" by="scout">
+    <file path="src/promo/apply.ts">applyPromo() recomputes line totals but reads price from the pre-quantity-change snapshot</file>
+    <file path="src/cart/lineItem.ts">LineItem.price becomes undefined when snapshot is stale</file>
+  </diagnosis>
+  <constraints>
+    <scope>Only files under src/cart and src/promo unless a test requires otherwise</scope>
+    <tests required="true">Add a regression test covering quantity change followed by promo apply</tests>
+    <forbidden>Do not modify pricing rules or promo eligibility logic</forbidden>
+  </constraints>
+  <handoff mode="review" branch="fix/WEB-1042-promo-null-price" base="dev" autonomy="2" />
+</implementation-request>

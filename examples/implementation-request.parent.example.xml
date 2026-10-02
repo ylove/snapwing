@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<implementation-request xmlns="urn:snapwing:impl:v1" issue="WEB-1042" kind="parent">
+  <intent>
+    Prices render as NaN in the cart because the shared formatter rejects the new currency payload;
+    fix the formatter in shared-ui first, then update the cart in web to consume it.
+  </intent>
+  <workItems>
+    <workItem id="wi-1" repo="github.com/acme/shared-ui" issue="WEB-1043">
+      <scope>src/price/format.ts</scope>
+      <produces contract="c-price-format-v2" />
+    </workItem>
+    <workItem id="wi-2" repo="github.com/acme/web" issue="WEB-1044" dependsOn="wi-1">
+      <scope>src/cart/**</scope>
+      <consumes contract="c-price-format-v2" />
+    </workItem>
+  </workItems>
+  <mergeOrder>wi-1 wi-2</mergeOrder>
+  <handoff mode="review" autonomy="2" allOrNothing="true" />
+</implementation-request>
