@@ -56,9 +56,14 @@ export interface StatePort {
   read(incidentId: string, fromSeq?: number): Promise<IncidentEvent[]>;
 
   /**
-   * Up to `limit` events across every incident after `cursor`, ordered by `recordedAt`, then
-   * `incidentId`, then `seq`. Start from `LOG_START`; pass the returned cursor back to continue.
-   * Cursors are opaque. An empty page returns the cursor it was given.
+   * Up to `limit` events across every incident after `cursor`, ordered by the transaction that
+   * appended them, then `incidentId`, then `seq` (ADR 0013). Start from `LOG_START`; pass the
+   * returned cursor back to continue. Cursors are opaque. An empty page returns the cursor it was
+   * given. A cursor never passes an event that commits later: an event is withheld until every
+   * transaction that could sort before it has finished, so a page may be empty, or short of `limit`,
+   * while a write is in flight (on Postgres, any write transaction in the cluster), and the events
+   * come on a later call. The order is not `recordedAt` order. On Postgres a transaction does not see
+   * its own appends here.
    */
   readSince(cursor: string, limit: number): Promise<{ events: IncidentEvent[]; cursor: string }>;
 

@@ -1,6 +1,7 @@
 // Event log: append, read, readSince (#17; B 1, B 4, B 11 row 1). Runs on the dialect `SNAPWING_DB`
 // selects; CI runs it once per dialect.
 
+import { sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NewEvent } from '../../src/contracts/events.ts';
@@ -79,6 +80,30 @@ async function settle<T>(promises: Promise<T>[]): Promise<{ won: T[]; lost: unkn
     won: results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])),
     lost: results.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : [])),
   };
+}
+
+/**
+ * Waits until `readSince` can return every committed event. On Postgres it withholds events at or
+ * above the cluster's oldest in-flight transaction (ADR 0013), and other test files' transactions
+ * count; on SQLite there is nothing to wait for.
+ */
+async function logSettled(): Promise<void> {
+  if (!(state1 instanceof StateStore) || state1.dialect !== 'postgres') {
+    return;
+  }
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const { rows } = await sql<{ settled: boolean }>`
+      select coalesce(max(tx_order) < pg_snapshot_xmin(pg_current_snapshot())::text::bigint, true) as settled from incident_events
+    `.execute(state1.ctx.db);
+    if (rows[0]?.settled === true) {
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error('timed out waiting for the readSince watermark to pass the log');
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
 }
 
 /** A clock that returns each of `times` once, then keeps returning the last. */
@@ -340,7 +365,7 @@ describe('readSince', () => {
   const T2 = '2026-10-01T10:00:00.001Z';
   const T3 = '2026-10-01T10:00:05.000Z';
 
-  /** Nine events over three incidents, with recordedAt ties across incidents and within appends. */
+  /** Nine events over three incidents, in five appends, with recordedAt ties across incidents. */
   async function seed(): Promise<OpenedState> {
     const state = await open({ now: steppedClock([T1, T1, T2, T3, T3]) });
     await state.append(INC_C, [closed(INC_C, 'c1'), closed(INC_C, 'c2')], 0); // T1
@@ -348,13 +373,14 @@ describe('readSince', () => {
     await state.append(INC_B, [closed(INC_B, 'b1'), closed(INC_B, 'b2'), closed(INC_B, 'b3')], 0); // T2
     await state.append(INC_A, [closed(INC_A, 'a2')], 1); // T3
     await state.append(INC_C, [closed(INC_C, 'c3'), closed(INC_C, 'c4')], 2); // T3
+    await logSettled();
     return state;
   }
 
-  // By recordedAt, then incidentId, then seq.
-  const ORDER = ['a1', 'c1', 'c2', 'b1', 'b2', 'b3', 'a2', 'c3', 'c4'];
+  // By the appending transaction (here, one per append), then incidentId, then seq.
+  const ORDER = ['c1', 'c2', 'a1', 'b1', 'b2', 'b3', 'a2', 'c3', 'c4'];
 
-  it('pages across incidents by recordedAt, incidentId, seq with no gaps or repeats (3 pages)', async () => {
+  it('pages across incidents in append order with no gaps or repeats (3 pages)', async () => {
     const state = await seed();
     const pages: IncidentEvent[][] = [];
     let cursor = LOG_START;
@@ -374,7 +400,7 @@ describe('readSince', () => {
     expect(pages.flat().map((e) => e.recordedAt)).toEqual([T1, T1, T1, T2, T2, T2, T3, T3, T3]);
   });
 
-  it('one large page equals the pages, and odd page sizes split ties cleanly', async () => {
+  it('one large page equals the pages, and odd page sizes split appends cleanly', async () => {
     const state = await seed();
     const all = await state.readSince(LOG_START, 100);
     expect(reasons(all.events)).toEqual(ORDER);
@@ -394,12 +420,82 @@ describe('readSince', () => {
   it('returns events appended after the last page on the next call', async () => {
     const state = await open({ now: steppedClock([T1, T2, T3]) });
     await state.append(INC_A, [closed(INC_A, 'a1')], 0);
+    await logSettled();
     const first = await state.readSince(LOG_START, 10);
     expect(reasons(first.events)).toEqual(['a1']);
     await state.append(INC_B, [closed(INC_B, 'b1')], 0);
     await state.append(INC_A, [closed(INC_A, 'a2')], 1);
+    await logSettled();
     const second = await state.readSince(first.cursor, 10);
     expect(reasons(second.events)).toEqual(['b1', 'a2']);
+  });
+
+  it('orders by append, not by recordedAt, so a clock that steps back skips nothing', async () => {
+    const state = await open({ now: steppedClock([T3, T1]) });
+    await state.append(INC_B, [closed(INC_B, 'b1')], 0); // T3
+    await logSettled();
+    const first = await state.readSince(LOG_START, 10);
+    expect(reasons(first.events)).toEqual(['b1']);
+    await state.append(INC_A, [closed(INC_A, 'a1')], 0); // T1, earlier than the cursor's event
+    await logSettled();
+    expect(reasons((await state.readSince(first.cursor, 10)).events)).toEqual(['a1']);
+  });
+
+  it('appends sharing one transaction come together, by incidentId then seq', async () => {
+    const state = await open();
+    await state.append(INC_B, [closed(INC_B, 'b1')], 0);
+    await state.transaction(async (tx) => {
+      await tx.append(INC_C, [closed(INC_C, 'c1')], 0);
+      await tx.append(INC_A, [closed(INC_A, 'a1'), closed(INC_A, 'a2')], 0);
+      await tx.append(INC_C, [closed(INC_C, 'c2')], 1);
+    });
+    await state.append(INC_B, [closed(INC_B, 'b2')], 1);
+    await logSettled();
+    expect(reasons((await state.readSince(LOG_START, 10)).events)).toEqual(['b1', 'a1', 'a2', 'c1', 'c2', 'b2']);
+  });
+
+  it('a reader racing concurrent appenders sees every event exactly once', { timeout: 30_000 }, async () => {
+    const [s1, s2] = [await open(), state2];
+    const incidents = [INC_A, INC_B, INC_C];
+    const seen: IncidentEvent[] = [];
+    let cursor = LOG_START;
+    let writing = true;
+
+    const reader = (async () => {
+      while (writing) {
+        const page = await s1.readSince(cursor, 3);
+        seen.push(...page.events);
+        cursor = page.cursor;
+        await new Promise((r) => setImmediate(r));
+      }
+    })();
+    /** Appends `n` single-event batches to one incident, retrying conflicts from a fresh read. */
+    const writer = async (s: OpenedState, id: string, tag: string, n: number): Promise<void> => {
+      for (let i = 0; i < n; ) {
+        const at = (await s.read(id)).length;
+        try {
+          await s.append(id, [closed(id, `${tag}${i}`)], at);
+          i += 1;
+        } catch (e) {
+          if (!(e instanceof ExpectedSeqConflictError)) throw e;
+        }
+      }
+    };
+    await Promise.all(incidents.flatMap((id, k) => [writer(s1, id, `w${k}x`, 15), writer(s2, id, `w${k}y`, 15)]));
+    writing = false;
+    await reader;
+
+    await logSettled();
+    for (let page = await s1.readSince(cursor, 50); page.events.length > 0; page = await s1.readSince(cursor, 50)) {
+      seen.push(...page.events);
+      cursor = page.cursor;
+    }
+    const keys = seen.map((e) => `${e.incidentId}#${e.seq}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(keys).toHaveLength(90);
+    for (const id of incidents) {
+      expect(seen.filter((e) => e.incidentId === id).map((e) => e.seq)).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+    }
   });
 
   it('returns the given cursor for an empty log and rejects cursors it did not issue', async () => {
@@ -407,7 +503,81 @@ describe('readSince', () => {
     expect(await state.readSince(LOG_START, 5)).toEqual({ events: [], cursor: LOG_START });
     await expect(state.readSince('not-a-cursor', 5)).rejects.toThrow('not a cursor');
     await expect(state.readSince(Buffer.from('[1,2,3]').toString('base64url'), 5)).rejects.toThrow('not a cursor');
+    // The form issued before migration 0002, keyed on recordedAt.
+    await expect(state.readSince(Buffer.from(JSON.stringify([T1, INC_A, 1])).toString('base64url'), 5)).rejects.toThrow('not a cursor');
     await expect(state.readSince(LOG_START, 0)).rejects.toThrow('limit');
+  });
+
+  // #84: a cursor must never pass an event whose transaction commits after the read.
+  describe.runIf(TEST_DIALECT === 'postgres')('on Postgres, with a transaction still open', { timeout: 30_000 }, () => {
+    /** A promise that resolves when `open()` is called, and `open()` itself. */
+    function latch(): { wait: Promise<void>; open: () => void } {
+      let open!: () => void;
+      const wait = new Promise<void>((r) => (open = r));
+      return { wait, open };
+    }
+
+    it('an append that commits after a later one is returned on the next page', async () => {
+      const state = await open();
+      await state.append(INC_C, [closed(INC_C, 'base')], 0);
+      await logSettled();
+
+      // The next append to reach projections waits there: inserted, not committed.
+      const reached = latch();
+      const gate = latch();
+      applySpy.mockImplementationOnce(() => {
+        reached.open();
+        return gate.wait;
+      });
+      const first = state.append(INC_A, [closed(INC_A, 'first')], 0);
+      try {
+        await reached.wait;
+        await state2.append(INC_B, [closed(INC_B, 'later')], 0); // committed
+        const during = await state.readSince(LOG_START, 10);
+        // The read passes `base` but stops before the open transaction, so `later` is withheld.
+        expect(reasons(during.events)).toEqual(['base']);
+        expect(reasons((await state.readSince(during.cursor, 10)).events)).toEqual([]);
+
+        gate.open();
+        expect(await first).toEqual({ seq: 1 });
+        await logSettled();
+        const next = await state.readSince(during.cursor, 10);
+        expect(reasons(next.events)).toEqual(['first', 'later']);
+      } finally {
+        gate.open();
+        await first.catch(() => undefined);
+      }
+    });
+
+    it('a transaction that wrote before a later append sorts first even though it appends after', async () => {
+      const state = await open();
+      if (!(state instanceof StateStore)) {
+        throw new Error('openState did not return a StateStore');
+      }
+      const reached = latch();
+      const gate = latch();
+      const caller = state.transaction(async (tx) => {
+        await (tx as StateStore).kvSet('84-early-write', 'x'); // the transaction's id is assigned here
+        reached.open();
+        await gate.wait;
+        await tx.append(INC_A, [closed(INC_A, 'early')], 0);
+      });
+      try {
+        await reached.wait;
+        await state2.append(INC_B, [closed(INC_B, 'later')], 0);
+        const during = await state.readSince(LOG_START, 10);
+        expect(during.events).toEqual([]);
+
+        gate.open();
+        await caller;
+        await logSettled();
+        expect(reasons((await state.readSince(during.cursor, 10)).events)).toEqual(['early', 'later']);
+      } finally {
+        gate.open();
+        await caller.catch(() => undefined);
+        await state.ctx.db.deleteFrom('kv').execute();
+      }
+    });
   });
 });
 
@@ -445,6 +615,7 @@ describe('stored values round-trip', () => {
     // No actor columns means no `actor` property, not an undefined one.
     expect(second).toEqual({ ...agentEvent, seq: 2, recordedAt: '2026-10-01T10:00:00.000Z' });
     expect(second && 'actor' in second).toBe(false);
+    await logSettled();
     expect((await state.readSince(LOG_START, 10)).events).toEqual([first, second]);
   });
 

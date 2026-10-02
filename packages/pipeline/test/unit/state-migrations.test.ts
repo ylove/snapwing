@@ -1,9 +1,12 @@
 // Migrations, the dialect factory, and transactions (#16; B 2, B 3, B 10; ADR 0011). Runs on the
 // dialect `SNAPWING_DB` selects; CI runs it once per dialect.
 
-import { sql, type Kysely } from 'kysely';
+import BetterSqlite3 from 'better-sqlite3';
+import { Kysely, PostgresDialect, SqliteDialect, sql } from 'kysely';
+import pg from 'pg';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { OpenedState } from '../../src/ports/state.ts';
+import { LOG_START, type IncidentEvent, type OpenedState } from '../../src/ports/state.ts';
+import { createCodec } from '../../src/state/codec.ts';
 import { STATE_TABLES, type Database } from '../../src/state/db.ts';
 import { StateMigrationError } from '../../src/state/errors.ts';
 import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, MIGRATIONS, migrateState, type StateMigration } from '../../src/state/migrations/index.ts';
@@ -18,6 +21,7 @@ const INC = '01JZ0000000000000000000002';
 const STATE_INDEXES = [
   'incident_events_workspace_id_recorded_at_idx',
   'incident_events_type_recorded_at_idx',
+  'incident_events_tx_order_incident_id_seq_idx',
   'incidents_workspace_id_status_idx',
   'incidents_workspace_id_surface_id_status_idx',
   'incidents_jira_key_idx',
@@ -129,6 +133,63 @@ describe(`state migrations (${TEST_DIALECT})`, () => {
     for (const s of opened) {
       expect(await appliedMigrations(dbOf(s))).toEqual(MIGRATIONS.map((m) => m.name));
     }
+  });
+});
+
+describe(`0002 event tx_order (${TEST_DIALECT})`, () => {
+  /** A bare handle on the test database, so a test can stop the schema at an older migration. */
+  function bareDb(): Kysely<Database> {
+    const url = tdb.options.url ?? '';
+    return tdb.dialect === 'sqlite'
+      ? new Kysely<Database>({ dialect: new SqliteDialect({ database: new BetterSqlite3(url) }) })
+      : new Kysely<Database>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url }) }) });
+  }
+
+  it('numbers existing events in their old readSince order, before every later append', async () => {
+    const codec = createCodec(tdb.dialect);
+    const db = bareDb();
+    try {
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 1))).toEqual(['0001-initial']);
+      const row = (incident: string, seq: number, recordedAt: string) => ({
+        workspace_id: WS,
+        incident_id: incident,
+        seq,
+        type: 'closed',
+        source: 'agent',
+        payload: codec.json({ reason: `${incident.slice(-2, -1)}${seq}` }),
+        occurred_at: recordedAt,
+        recorded_at: recordedAt,
+      });
+      const legacy = db as unknown as Kysely<Record<'incident_events', ReturnType<typeof row>>>;
+      await legacy
+        .insertInto('incident_events')
+        .values([
+          row('01JZ00000000000000000000B1', 1, '2026-10-01T10:00:01.000Z'),
+          row('01JZ00000000000000000000A1', 1, '2026-10-01T10:00:01.000Z'),
+          row('01JZ00000000000000000000A1', 2, '2026-10-01T10:00:02.000Z'),
+          row('01JZ00000000000000000000C1', 1, '2026-10-01T10:00:00.000Z'),
+        ])
+        .execute();
+      expect(await migrateState(db, TEST_DIALECT)).toEqual(['0002-event-tx-order']);
+      const rows = await db.selectFrom('incident_events').select(['incident_id', 'seq', 'tx_order']).orderBy('tx_order').execute();
+      expect(rows.map((r) => [r.incident_id.slice(-2), r.seq, codec.fromNumber(r.tx_order)])).toEqual([
+        ['C1', 1, -4],
+        ['A1', 1, -3],
+        ['B1', 1, -2],
+        ['A1', 2, -1],
+      ]);
+    } finally {
+      await db.destroy();
+    }
+
+    const state = await tdb.open();
+    await state.append('01JZ00000000000000000000A1', [{ workspaceId: WS, incidentId: '01JZ00000000000000000000A1', type: 'closed', v: 1, source: 'agent', occurredAt: '2026-10-01T09:00:00.000Z', payload: { reason: 'new' } }], 2);
+    // On Postgres the new event is withheld while any older transaction in the cluster is open.
+    let events: IncidentEvent[] = [];
+    for (const deadline = Date.now() + 10_000; events.length < 5 && Date.now() < deadline; ) {
+      events = (await state.readSince(LOG_START, 10)).events;
+    }
+    expect(events.map((e) => (e.type === 'closed' ? e.payload.reason : e.type))).toEqual(['C1', 'A1', 'B1', 'A2', 'new']);
   });
 });
 
