@@ -91,7 +91,7 @@ The cache port becomes optional: on small installs, idempotency keys and rate li
 | `gcp` | Cloud SQL Postgres | pg-boss | |
 | hosted (later) | Postgres | Temporal (or Inngest, Restate) behind `WorkflowPort` | The seam for durable execution at scale; nothing above the port changes |
 
-pg-boss is chosen because it gives delayed jobs, retries with backoff, singleton keys, and cron inside Postgres, so a job and the events it emits commit in one transaction. It is not required; the port is. Both providers share one schema through Drizzle (or Kysely) with a migration set that runs on both dialects; the CI matrix runs the unit and contract tiers against both.
+pg-boss is chosen because it gives delayed jobs, retries with backoff, singleton keys, and cron inside Postgres, so a job and the events it emits commit in one transaction. It is not required; the port is. Both providers share one schema through Kysely (ADR 0011) with a migration set that runs on both dialects; the CI matrix runs the unit and contract tiers against both.
 
 ---
 
@@ -437,7 +437,7 @@ Each call becomes an event. The checkpoint calls are what make "the fixer starte
 ## 10. Operations
 
 - **Backups.** Postgres: point-in-time recovery on the managed services; `pg_dump` nightly on Docker. SQLite: `litestream` to the object store if configured, otherwise a nightly copy.
-- **Migrations.** Drizzle migrations, run on startup with an advisory lock so two API instances do not race. Migrations are forward-only; a failed migration halts startup with the reason.
+- **Migrations.** Kysely migrations (ADR 0011), run on startup with an advisory lock so two API instances do not race. Migrations are forward-only; a failed migration halts startup with the reason.
 - **Observability of the store itself.** Outbox depth per target, oldest undrained row age, parked-job count, timer lag (scheduled vs fired), reconciler corrections per hour. Exposed at `/metrics` (Prometheus format) and summarized in the console.
 - **Size.** An incident is a few dozen events and a handful of artifacts; a busy workspace at 500 incidents a month is under 50 MB a year in Postgres. SQLite handles a single team indefinitely.
 

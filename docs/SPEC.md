@@ -623,7 +623,7 @@ export interface Resolution {
   ownerId?: string;
   repo?: string;
   jiraProject?: string;
-  resolvedBy: 'mention' | 'channel-explicit' | 'vocabulary' | 'channel-inferred' | 'alert' | 'llm' | 'unresolved';
+  resolvedBy: 'mention' | 'channel-explicit' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'unresolved';
   confidence: number;              // 0..1
 }
 
