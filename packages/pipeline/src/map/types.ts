@@ -106,6 +106,8 @@ export interface WorkspaceMap {
   /** ISO 8601 timestamp, as written in the document. */
   updated: string;
   surfaces: MapSurface[];
+  /** Surface id whose Jira project takes reports that route nowhere (ADR 0015). Checked by Schematron. */
+  fallbackSurface?: string;
   channels: MapChannel[];
   triggers: MapTriggers;
   vocabulary: MapTerm[];

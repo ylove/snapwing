@@ -180,6 +180,8 @@ interface Scene {
   /** The step 7 answer (task triage, schema resolution); only asked when steps 1 to 6 miss. */
   resolve?: unknown;
   options?: EngineOptions;
+  /** Overrides the map's `fallbackSurface` (the example map names `web`). */
+  fallbackSurface?: string;
 }
 
 interface Harness {
@@ -219,7 +221,7 @@ function setup(scene: Scene = {}): Harness {
     ]),
     jiraSearch: fakeJira(scene.jira ?? []),
     cache: createKvCache(state),
-    map: withLevel(baseMap, scene.level ?? 0),
+    map: { ...withLevel(baseMap, scene.level ?? 0), ...(scene.fallbackSurface === undefined ? {} : { fallbackSurface: scene.fallbackSurface }) },
     clock: () => new Date(now),
     ...(scene.options === undefined ? {} : { options: scene.options }),
   };
@@ -653,6 +655,24 @@ describe('unresolved surface (#115)', () => {
     await file(h, 'WEB-120');
     expect(await outbox()).toEqual([]); // ticket only: no transition, whatever the policy said
     expect(h.adapter.statuses.at(-1)?.text).toBe('Filed as WEB-120. I could not tell which product this is about, so it is in WEB for someone to route.');
+  });
+
+  it('takes the map fallback surface over the first-surface rule (#118)', async () => {
+    const h = setup(scene({ fallbackSurface: 'admin' }));
+    await toQuestion(h);
+    now += DAY + 1;
+    await wf.drain();
+    expect(eventOf(await events(h), 'planned')?.payload).toMatchObject({ projectKey: 'ADM', degraded: 'unresolved-surface' });
+    const [create] = await outbox();
+    expect((create?.payload as unknown as CreateRow).fields.project.key).toBe('ADM');
+  });
+
+  it('takes the install fallback project over the map fallback surface', async () => {
+    const h = setup(scene({ fallbackSurface: 'admin', options: { fallbackJiraProject: 'OPS' } }));
+    await toQuestion(h);
+    now += DAY + 1;
+    await wf.drain();
+    expect(eventOf(await events(h), 'planned')?.payload).toMatchObject({ projectKey: 'OPS' });
   });
 
   it('takes the install fallback project when one is set', async () => {

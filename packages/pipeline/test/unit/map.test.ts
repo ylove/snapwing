@@ -26,6 +26,7 @@ describe('workspace-context example', () => {
     expect(map.org).toBe('acme');
     expect(map.updated).toBe('2026-09-28T00:00:00Z');
     expect(map.surfaces.map((s) => s.id)).toEqual(['web', 'mobile', 'admin']);
+    expect(map.fallbackSurface).toBe('web');
     expect(map.surfaces[0]).toEqual({
       id: 'web',
       label: 'Website',
@@ -114,6 +115,16 @@ describe('parseWorkspaceMap rejects invalid input with InvalidMapError', () => {
   it('Schematron: channel names an undeclared surface', async () => {
     const err = await parseError(fixture('invalid-xref-channel-surface.xml'));
     expect(err.errors.map((e) => e.message)).toEqual(['Channel app-bugs names surface mobil, which is not declared.']);
+  });
+
+  it('Schematron: fallback surface is not a declared surface', async () => {
+    const err = await parseError(example.replace('fallbackSurface="web"', 'fallbackSurface="desktop"'));
+    expect(err.errors.map((e) => e.message)).toEqual(['The fallback surface desktop is not declared.']);
+  });
+
+  it('a map without fallbackSurface parses with the field absent', async () => {
+    const map = await parseWorkspaceMap(example.replace(' fallbackSurface="web"', ''));
+    expect('fallbackSurface' in map).toBe(false);
   });
 
   it('Schematron: person owns a component that does not exist under the surface', async () => {

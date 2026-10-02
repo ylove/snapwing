@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <workspace xmlns="urn:snapwing:workspace:v1" org="acme" updated="2026-09-28T00:00:00Z">
 
-  <surfaces>
+  <surfaces fallbackSurface="web">
     <surface id="web" label="Website">
       <repo>github.com/acme/web</repo>
       <jira project="WEB" defaultIssueType="Bug" />
