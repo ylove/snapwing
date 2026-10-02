@@ -560,6 +560,75 @@ describe('early exits and waits', () => {
   });
 });
 
+/** `stopIncident` (fixer/stop.ts), reduced to what the engine reads: the `stopped` event itself. */
+async function stop(h: Harness, reason = 'trigger reaction removed'): Promise<void> {
+  const log = await events(h);
+  await state.append(
+    h.payload.eventId,
+    [{ workspaceId: WS, incidentId: h.payload.eventId, type: 'stopped', v: 1, source: 'slack', actor: REPORTER, occurredAt: new Date(now).toISOString(), payload: { reason } }],
+    log.length,
+  );
+}
+
+describe('Stop before filing (#192, main 15.1)', () => {
+  it('ends the job at a parked scope card: the tap is refused, the timeout does nothing, nothing is filed', async () => {
+    const h = setup({ level: 0 });
+    await inbound(h);
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview']);
+
+    await stop(h);
+    expect(await status(h)).toBe('stopped');
+    expect((await state.getIncident(h.payload.eventId))?.waitingOn).toBeUndefined();
+
+    expect(await h.engine.handleTap({ eventId: h.payload.eventId, card: 'scope-preview', choice: 'looks-right', actor: REPORTER })).toEqual({
+      accepted: false,
+      reason: 'not-pending',
+    });
+    await wf.drain();
+    now += DAY + 1;
+    await wf.drain(); // the parked job's timeout is re-delivered and ends without appending
+
+    expect(await types(h)).toEqual(['captured', 'context-assembled', 'waiting-changed', 'stopped']);
+    expect(await outbox()).toEqual([]);
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview']);
+    expect(h.adapter.statuses).toEqual([]);
+    expect(await status(h)).toBe('stopped');
+  });
+
+  it('refuses Fix it on a level 1 fix preview after a stop and queues no create-issue on its timeout', async () => {
+    const h = setup({ level: 1 });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview', 'fix-preview']);
+
+    await stop(h, 'stop on the fix preview');
+    expect(await h.engine.handleTap({ eventId: h.payload.eventId, card: 'fix-preview', choice: 'approve_fix', actor: ENGINEER })).toEqual({
+      accepted: false,
+      reason: 'not-pending',
+    });
+    now += DAY + 1;
+    await wf.drain();
+
+    expect((await types(h)).slice(-3)).toEqual(['planned', 'waiting-changed', 'stopped']);
+    expect(await outbox()).toEqual([]);
+  });
+
+  it('runs no after-filed step when a create-issue row queued before the stop lands as filed', async () => {
+    const h = setup({ level: 2 });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(await types(h)).toEqual([...PREFIX, 'planned']);
+
+    await stop(h);
+    await file(h, 'APP-110');
+    expect((await types(h)).slice(-2)).toEqual(['stopped', 'filed']);
+    expect(await status(h)).toBe('filed');
+    expect(await outbox()).toEqual([]); // no In Progress transition, so no fixer
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview']);
+    expect(h.adapter.statuses).toEqual([]);
+  });
+});
+
 // #114: the full plan is an artifact, so a parked level 1 job files the ticket triage wrote.
 describe('stored triage plan (#114)', () => {
   const WRITE_UP = 'Opening Settings crashes the app on Android.\n\nIt started after the 4.2 release.';
