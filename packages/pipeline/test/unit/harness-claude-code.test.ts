@@ -61,9 +61,30 @@ describe('claude-code harness: invocation', () => {
     expect(seen.env).not.toHaveProperty('SERVER_ONLY_VAR');
   });
 
-  it('declines the review role without spawning anything', async () => {
-    const r = await run('done', opts({ role: 'review' }), createClaudeCodeHarness({ bin: '/nonexistent/claude' }));
-    expect(r).toMatchObject({ outcome: 'failed', attempts: 0 });
+  it('runs the review role with review.xml, read and run tools only, and the verdict file env', async () => {
+    const record = join(scratch, 'record-review.json');
+    const reviewFile = join(scratch, 'verdict.json');
+    const r = await harness.run(workItem, `FAKE_MODE=verdict FAKE_RECORD=${record}`, scratch, opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile } }));
+    expect(r.outcome).toBe('done');
+    const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[]; env: Record<string, string> };
+    expect(seen.argv[seen.argv.indexOf('--append-system-prompt') + 1]).toContain('<review-system-prompt');
+    const tools = seen.argv[seen.argv.indexOf('--allowedTools') + 1]?.split(',');
+    expect(tools).toEqual(['Bash', 'Read', 'Glob', 'Grep']);
+    expect(seen.env).toMatchObject({ SNAPWING_ROLE: 'review', SNAPWING_REVIEW_FILE: reviewFile });
+    expect(JSON.parse(readFileSync(reviewFile, 'utf8'))).toMatchObject({ verdict: 'approve' });
+  });
+
+  it('does not read stdout for a review: exit 0 is done even with no JSON result', async () => {
+    expect((await run('no-json', opts({ role: 'review' }))).outcome).toBe('done');
+  });
+
+  it('fails a review that exits non-zero, and honors a custom reviewTools list', async () => {
+    const r = await run('exit3', opts({ role: 'review' }));
+    expect(r).toMatchObject({ outcome: 'failed', attempts: 1 });
+    const record = join(scratch, 'record-review2.json');
+    await createClaudeCodeHarness({ bin: FAKE, reviewTools: ['Read'] }).run(workItem, `FAKE_MODE=done FAKE_RECORD=${record}`, scratch, opts({ role: 'review' }));
+    const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[] };
+    expect(seen.argv[seen.argv.indexOf('--allowedTools') + 1]).toBe('Read');
   });
 
   it('reports a missing binary as failed', async () => {

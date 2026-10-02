@@ -33,6 +33,13 @@ const emit = (message, extra = {}) => {
 const done = { outcome: 'done', branch: 'fix/WEB-1', prNumber: 7, summary: 'Guard null cart', testsAdded: ['test/cart.test.ts'] };
 
 switch (mode) {
+  case 'verdict': {
+    // The review role: the verdict goes to the file, stdout carries no HarnessResult.
+    const file = process.env.SNAPWING_REVIEW_FILE;
+    if (file) writeFileSync(file, JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] }));
+    emit('Reviewed. Verdict written.');
+    break;
+  }
   case 'done':
     emit(`All finished.\n${JSON.stringify(done)}`);
     break;

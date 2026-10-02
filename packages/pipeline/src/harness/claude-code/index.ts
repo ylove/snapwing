@@ -3,9 +3,9 @@
 // Flags used (checked against `claude --help`, Claude Code CLI, 2026-10):
 //   -p                           non-interactive print mode; the implementation request is piped on stdin
 //   --output-format json         one JSON object on stdout; the agent's final message is its `result` string
-//   --append-system-prompt <txt> text of src/prompts/fixer.xml (the *-file variant is not a listed option)
+//   --append-system-prompt <txt> text of src/prompts/fixer.xml, or review.xml for the review role (the *-file variant is not a listed option)
 //   --permission-mode dontAsk    never prompt; anything not in --allowedTools is denied
-//   --allowedTools <tools...>    default: Bash Edit Write Read Glob Grep
+//   --allowedTools <tools...>    fixer default: Bash Edit Write Read Glob Grep; review default: Bash Read Glob Grep
 //   --model <model>              only when configured
 //   --no-session-persistence     fixer runs are disposable
 //
@@ -16,7 +16,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HarnessPort, HarnessResult } from '../../ports/harness.ts';
-import { runCliAgent, resultFromMessage, type Extracted } from '../cli-agent.ts';
+import { REVIEW_PROMPT_URL, runCliAgent, resultFromMessage, type Extracted } from '../cli-agent.ts';
 import { DEFAULT_KILL_GRACE_MS } from '../process.ts';
 
 export interface ClaudeCodeHarnessConfig {
@@ -24,33 +24,36 @@ export interface ClaudeCodeHarnessConfig {
   bin?: string;
   /** Passed as `--model` when set. */
   model?: string;
-  /** Passed as `--allowedTools`. Default: Bash, Edit, Write, Read, Glob, Grep. */
+  /** Passed as `--allowedTools` for the fixer. Default: Bash, Edit, Write, Read, Glob, Grep. */
   allowedTools?: readonly string[];
+  /** Passed as `--allowedTools` for the review role. Default: Bash, Read, Glob, Grep (no Edit or Write). */
+  reviewTools?: readonly string[];
   /** SIGTERM to SIGKILL grace period in milliseconds. Default 10000 (PT10S). Tests shorten it. */
   killGraceMs?: number;
 }
 
 const DEFAULT_TOOLS: readonly string[] = ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep'];
+const DEFAULT_REVIEW_TOOLS: readonly string[] = ['Bash', 'Read', 'Glob', 'Grep'];
 const FIXER_PROMPT_URL = new URL('../../prompts/fixer.xml', import.meta.url);
 
 export function createClaudeCodeHarness(config: ClaudeCodeHarnessConfig = {}): HarnessPort {
   const bin = config.bin ?? 'claude';
-  const tools = config.allowedTools ?? DEFAULT_TOOLS;
+  const fixerTools = config.allowedTools ?? DEFAULT_TOOLS;
+  const reviewTools = config.reviewTools ?? DEFAULT_REVIEW_TOOLS;
   const graceMs = config.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
 
   return {
     async run(workItem, implementationRequest, workdir, opts): Promise<HarnessResult> {
-      if (opts.role !== 'fixer') {
-        return { outcome: 'failed', reason: `claude-code harness: role ${opts.role} is not supported yet`, attempts: 0 };
-      }
-      const systemPrompt = await readFile(FIXER_PROMPT_URL, 'utf8');
+      const review = opts.role === 'review';
+      const tools = review ? reviewTools : fixerTools;
+      const systemPrompt = await readFile(review ? REVIEW_PROMPT_URL : FIXER_PROMPT_URL, 'utf8');
       const args = ['-p', '--output-format', 'json', '--append-system-prompt', systemPrompt, '--permission-mode', 'dontAsk', '--no-session-persistence'];
       if (config.model !== undefined) args.push('--model', config.model);
       if (tools.length > 0) args.push('--allowedTools', tools.join(','));
 
       const scratch = await mkdtemp(join(tmpdir(), 'snapwing-claude-'));
       try {
-        return await runCliAgent({ bin, args, workItem, request: implementationRequest, workdir, opts, graceMs, checkpointFile: join(scratch, 'checkpoints.jsonl'), extract: (stdout) => extractResult(stdout), inheritEnv: ['ANTHROPIC_API_KEY'] });
+        return await runCliAgent({ bin, args, workItem, request: implementationRequest, workdir, opts, graceMs, checkpointFile: join(scratch, 'checkpoints.jsonl'), extract: (stdout) => extractResult(stdout), doneOnExit: review, inheritEnv: ['ANTHROPIC_API_KEY'] });
       } finally {
         await rm(scratch, { recursive: true, force: true });
       }
