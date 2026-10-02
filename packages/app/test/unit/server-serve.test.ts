@@ -17,6 +17,8 @@ import type { ComposeFn } from '../../src/server/compose.ts';
 import { LOCAL_RUNNER_REFUSED, LOCAL_RUNNER_WARNING, localRunnerCheck, runServe, type ServeDeps } from '../../src/server/serve.ts';
 
 const EXAMPLE_CONFIG = fileURLToPath(new URL('../../../../examples/snapwing.config.example.xml', import.meta.url));
+/** The real compose needs secrets and a map; the contract test (compose.test.ts) boots it. */
+const EMPTY_COMPOSE: ComposeFn = async () => ({ routes: [], jobs: [] });
 
 let tdb: TestDatabase;
 let dir: string;
@@ -132,7 +134,7 @@ describe('snapwing serve', () => {
   });
 
   it('runs the worker alone with --worker and still closes the store on SIGTERM', async () => {
-    const run = start(['--worker', '--config', EXAMPLE_CONFIG]);
+    const run = start(['--worker', '--config', EXAMPLE_CONFIG], EMPTY_COMPOSE);
     const info = await run.ready;
     expect(info.url).toBeUndefined();
     expect(run.out.join('\n')).toContain('worker polling');
@@ -164,7 +166,7 @@ describe('snapwing serve', () => {
   });
 
   it('starts the local runner in production with --allow-local-runner, and warns', async () => {
-    const run = start(['--worker', '--allow-local-runner', '--config', EXAMPLE_CONFIG], undefined, { NODE_ENV: 'production' });
+    const run = start(['--worker', '--allow-local-runner', '--config', EXAMPLE_CONFIG], EMPTY_COMPOSE, { NODE_ENV: 'production' });
     await run.ready;
     expect(run.out.join('\n')).toContain('worker polling');
     expect(run.err).toEqual([`snapwing serve: ${LOCAL_RUNNER_WARNING}`]);

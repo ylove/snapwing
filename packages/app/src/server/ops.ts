@@ -16,6 +16,8 @@ import type { Route } from './http.ts';
 export interface OpsRoutesOptions {
   /** The open, migrated store, or undefined while it is still opening (or after it closed). */
   readonly state: () => StatePort | undefined;
+  /** More Prometheus text for `/metrics` (the composed projectors' pauses and parked rows). */
+  readonly metrics?: () => Promise<string>;
 }
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
@@ -47,7 +49,8 @@ export function opsRoutes(options: OpsRoutesOptions): Route[] {
           return plain(503, 'state store not open');
         }
         const metrics = await readStoreMetrics(state);
-        return new Response(renderMetrics(metrics), { status: 200, headers: { 'content-type': PROMETHEUS_CONTENT_TYPE } });
+        const extra = (await options.metrics?.()) ?? '';
+        return new Response(`${renderMetrics(metrics)}${extra === '' || extra.endsWith('\n') ? extra : `${extra}\n`}`, { status: 200, headers: { 'content-type': PROMETHEUS_CONTENT_TYPE } });
       },
     },
   ];

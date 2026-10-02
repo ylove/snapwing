@@ -3,15 +3,18 @@
 //
 // Startup: load `snapwing.config.xml` (XSD, then typed parse), the local `.env` secrets provider,
 // open the state store (`stateOptionsFromEnv`; migrations run on open), build the workflow for the
-// dialect (in-process on SQLite, pg-boss on Postgres), call `compose`, then start the worker and
-// the API. Any startup failure closes what was opened and exits 1.
+// dialect (in-process on SQLite, pg-boss on Postgres; an `--api` only process opens pg-boss with
+// `recoverActive: false`), call `compose`, then start the worker and its composed services (the
+// projectors, the reconcile schedule), then the API and its services (Slack Socket Mode). Any
+// startup failure closes what was opened and exits 1.
 //
 // The `local` runtime provider runs the fixer and the repository's tests (untrusted code) on this
 // host as the server's own OS user (ADR 0017). With NODE_ENV=production serve refuses it unless
 // `--allow-local-runner` is passed; whenever it runs with it, it prints a warning to stderr.
 //
-// Shutdown on SIGTERM or SIGINT, in order: the API stops accepting and finishes requests in flight;
-// the worker stops polling and drains its running handlers; the state store closes. Exit 0.
+// Shutdown on SIGTERM or SIGINT, in order: the API's services stop, the API stops accepting and
+// finishes requests in flight; the worker's services stop, the worker stops polling and drains its
+// running handlers; the state store closes. Exit 0.
 
 import { readFile } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
@@ -24,7 +27,7 @@ import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { PgBossWorkflow } from '@snapwing/pipeline/workflow/pgboss/index.ts';
 import type { CliIo } from '../cli/state.ts';
-import { compose as defaultCompose, type ComposeFn } from './compose.ts';
+import { compose as defaultCompose, type ComposedService, type ComposeFn } from './compose.ts';
 import { createApiServer, type ApiServer } from './http.ts';
 import { opsRoutes } from './ops.ts';
 import { createWorker, type PollingWorkflow, type Worker } from './worker.ts';
@@ -150,6 +153,7 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
   let workflow: PollingWorkflow | undefined;
   let worker: Worker | undefined;
   let api: ApiServer | undefined;
+  const services: { api: ComposedService[]; worker: ComposedService[] } = { api: [], worker: [] };
   let code = 0;
   try {
     const config = await loadConfig(configPath);
@@ -168,18 +172,27 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
     state = opened;
     log(`state open (${opened.dialect}), config ${configPath} (runtime ${config.runtime.provider})`);
 
-    workflow = createWorkflow(opened, (e) => io.stderr(`snapwing serve: job error: ${errorMessage(e)}`));
-    const composed = await (deps.compose ?? defaultCompose)({ config, secrets, state: opened, workflow, env: io.env });
+    workflow = createWorkflow(opened, { worker: runWorker }, (e) => io.stderr(`snapwing serve: job error: ${errorMessage(e)}`));
+    const composed = await (deps.compose ?? defaultCompose)({
+      config,
+      secrets,
+      state: opened,
+      workflow,
+      env: io.env,
+      log: { info: log, error: (line) => io.stderr(`snapwing serve: ${line}`) },
+    });
 
     if (received === undefined && runWorker) {
       worker = await createWorker({ workflow, jobs: composed.jobs });
       log(`worker polling (${worker.names.length} job types)`);
+      await startServices(composed.workerServices ?? [], services.worker, log);
     }
     let url: string | undefined;
     let boundPort: number | undefined;
     if (received === undefined && runApi) {
+      const metrics = composed.metrics?.bind(composed);
       api = createApiServer({
-        routes: [...opsRoutes({ state: () => state }), ...composed.routes],
+        routes: [...opsRoutes({ state: () => state, ...(metrics === undefined ? {} : { metrics }) }), ...composed.routes],
         port,
         host,
         onError: (e, req) => io.stderr(`snapwing serve: ${req.method} ${req.path} failed: ${errorMessage(e)}`),
@@ -188,6 +201,7 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
       url = bound.url;
       boundPort = bound.port;
       log(`api listening on ${bound.url} (${composed.routes.length + 2} routes)`);
+      await startServices(composed.apiServices ?? [], services.api, log);
     }
     deps.onReady?.({ ...(url === undefined ? {} : { url }), ...(boundPort === undefined ? {} : { port: boundPort }) });
 
@@ -199,7 +213,7 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
   } finally {
     signals.off('SIGTERM', onTerm);
     signals.off('SIGINT', onInt);
-    code = (await shutdown({ api, worker, workflow, state, io })) ? code : 1;
+    code = (await shutdown({ api, worker, workflow, state, services, io })) ? code : 1;
     state = undefined;
   }
   if (code === 0) {
@@ -208,12 +222,25 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
   return code;
 }
 
-/** Stops the API, then the worker (or the idle workflow), then closes the store. False if a step failed. */
+/** Starts each service in order, recording it in `started` so shutdown stops exactly those. */
+async function startServices(services: readonly ComposedService[], started: ComposedService[], log: (line: string) => void): Promise<void> {
+  for (const service of services) {
+    await service.start();
+    started.push(service);
+    log(`${service.name} started`);
+  }
+}
+
+/**
+ * Stops the API's services and the API, then the worker's services and the worker (or the idle
+ * workflow), then closes the store. False if a step failed.
+ */
 async function shutdown(parts: {
   api: ApiServer | undefined;
   worker: Worker | undefined;
   workflow: PollingWorkflow | undefined;
   state: OpenedState | undefined;
+  services: { api: ComposedService[]; worker: ComposedService[] };
   io: CliIo;
 }): Promise<boolean> {
   let ok = true;
@@ -225,9 +252,15 @@ async function shutdown(parts: {
       parts.io.stderr(`snapwing serve: ${what}: ${errorMessage(e)}`);
     }
   };
-  const { api, worker, workflow, state } = parts;
+  const { api, worker, workflow, state, services } = parts;
+  for (const service of [...services.api].reverse()) {
+    await step(`stopping the ${service.name}`, () => service.stop());
+  }
   if (api !== undefined) {
     await step('stopping the api', () => api.stop());
+  }
+  for (const service of [...services.worker].reverse()) {
+    await step(`stopping the ${service.name}`, () => service.stop());
   }
   if (worker !== undefined) {
     await step('draining the worker', () => worker.stop());
@@ -241,11 +274,18 @@ async function shutdown(parts: {
   return ok;
 }
 
-function createWorkflow(state: OpenedState, onError: (e: unknown) => void): PollingWorkflow {
+/**
+ * The workflow for the dialect: in-process on SQLite, pg-boss on Postgres. A process that runs no
+ * worker (`--api`) shares the pg-boss schema with a separate worker process, so it opens pg-boss
+ * with `recoverActive: false` and never queues again the jobs that worker is running.
+ */
+export function createWorkflow(state: OpenedState, roles: { worker: boolean }, onError: (e: unknown) => void): PollingWorkflow {
   if (!(state instanceof StateStore)) {
     throw new Error('serve needs the store openState returned');
   }
-  return state.dialect === 'postgres' ? new PgBossWorkflow(state, { schema: 'pgboss', onError }) : new InProcessWorkflow(state, { onError });
+  return state.dialect === 'postgres'
+    ? new PgBossWorkflow(state, { schema: 'pgboss', recoverActive: roles.worker, onError })
+    : new InProcessWorkflow(state, { onError });
 }
 
 async function loadConfig(path: string): Promise<AppConfig> {
