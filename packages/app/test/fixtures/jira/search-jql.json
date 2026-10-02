@@ -1,0 +1,18 @@
+{
+  "issues": [
+    {
+      "id": "10002",
+      "key": "TEST-1",
+      "self": "https://example.atlassian.net/rest/api/3/issue/10002",
+      "fields": { "summary": "Cart total is blank after promo code", "assignee": { "accountId": "5b10a2844c20165700ede21g", "displayName": "Mia Krystof" } }
+    },
+    {
+      "id": "10003",
+      "key": "TEST-2",
+      "self": "https://example.atlassian.net/rest/api/3/issue/10003",
+      "fields": { "summary": "Checkout button unresponsive", "assignee": null }
+    }
+  ],
+  "nextPageToken": "CAEaAggD",
+  "isLast": false
+}
