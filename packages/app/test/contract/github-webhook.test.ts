@@ -50,6 +50,7 @@ let wf: InProcessWorkflow;
 let now: number;
 let errors: unknown[];
 let evaluated: unknown[];
+let fixerRuns: unknown[];
 let githubCalls: string[];
 
 beforeEach(async () => {
@@ -57,11 +58,16 @@ beforeEach(async () => {
   now = T0;
   errors = [];
   evaluated = [];
+  fixerRuns = [];
   githubCalls = [];
   state = await tdb.open({ now: () => new Date(now) });
   wf = new InProcessWorkflow(state, { onError: (e) => errors.push(e) });
   wf.work('merge.evaluate', (job) => {
     evaluated.push(job.data);
+    return Promise.resolve();
+  });
+  wf.work('fixer.run', (job) => {
+    fixerRuns.push(job.data);
     return Promise.resolve();
   });
   server.events.on('request:start', ({ request }) => {
@@ -441,7 +447,7 @@ describe('CI (main 11.3, main 14.1)', () => {
     expect(evaluated).toHaveLength(1);
   });
 
-  it('appends ci-red with the failing required check names', async () => {
+  it('appends ci-red with the failing required check names, then starts the fixer retry with them (main 10)', async () => {
     await awaitingCi();
     github({
       runs: [
@@ -454,7 +460,18 @@ describe('CI (main 11.3, main 14.1)', () => {
     const [red] = await ofType('ci-red');
     expect(red).toMatchObject({ source: 'github', payload: { prNumber: PR, headSha: HEAD, failingChecks: ['test'] } });
     expect(await ofType('ci-green')).toEqual([]);
-    expect(evaluated).toEqual([{ incidentId: INC }]);
+    expect(await status()).toBe('fixing-retry');
+    expect(evaluated).toEqual([]);
+    expect(fixerRuns).toEqual([{ incidentId: INC, attempt: 2, reviewArtifact: expect.objectContaining({ version: 1 }) as unknown }]);
+  });
+
+  it('a redelivered check delivery is a duplicate and records nothing more', async () => {
+    await awaitingCi();
+    github(green);
+    expect(await deliver(route(), 'check_suite', fixture('check-suite-completed'), { delivery: 'fake-delivery-check' })).toEqual({ status: 200, outcome: 'processed' });
+    expect(await deliver(route(), 'check_suite', fixture('check-suite-completed'), { delivery: 'fake-delivery-check' })).toEqual({ status: 200, outcome: 'duplicate' });
+    expect(await ofType('ci-green')).toHaveLength(1);
+    expect(evaluated).toHaveLength(1);
   });
 
   it('counts a commit status as a required check, and maps a status delivery by its branch', async () => {
@@ -498,9 +515,9 @@ describe('CI (main 11.3, main 14.1)', () => {
     expect(await ofType('ci-green')).toEqual([]);
   });
 
-  it('does not record a head merge.evaluate already recorded', async () => {
+  it('does not record a head merge.evaluate or the review step already recorded', async () => {
     await awaitingCi(3);
-    // merge.evaluate appends ci-green itself for an incident still in `ci` (merge/job.ts).
+    // Both record CI through recordCiResult (pipeline merge/ci.ts) for an incident still in `ci`.
     await append({ ...ev('ci-green', { prNumber: PR, headSha: HEAD }), source: 'github' } as NewEvent);
     github(green);
     expect(await deliver(route(), 'check_suite', fixture('check-suite-completed'))).toEqual({ status: 200, outcome: 'ignored' });

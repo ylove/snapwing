@@ -11,7 +11,8 @@
 //                        map, then calls `evaluateMergeGate` (gate.ts).
 //
 // Only an incident whose level in force (the last `level-changed`, else the plan's) is 3 is merged
-// here; at levels 0, 1, and 2 the job appends nothing and a human merges (main 11.2). At level 3:
+// here; at levels 0, 1, and 2 the job appends nothing but the CI result and a human merges (main
+// 11.2). At level 3:
 //
 // - `merge`: squash merge as the App, pinned to the head sha it evaluated, then `merged` with
 //   `levelAtMergeTime`, then the branch is deleted, then `timer.revert` is scheduled with the key
@@ -33,9 +34,13 @@
 // on the incidents row, which follows Jira edits). The risk limits are the stricter of
 // `AppConfig.merge` and the map's `policies/riskGate`, and the built-in forbidden paths always apply.
 //
-// When the incident is still in `ci` or `ci-retry` (no `ci-green` recorded for the head) and the
-// required checks are green, `ci-green` is appended first, in the same append, so the lifecycle
-// reaches `mergeable` before `merged` or `held` (B 5).
+// CI first, at every level (#214): while the lifecycle waits for CI (`ci`, `ci-retry`), the job calls
+// `recordCiResult` (ci.ts) before anything else, so CI that finished before the review passed is
+// recorded without waiting for another check delivery or the reconciler: `ci-green` moves the
+// incident to `mergeable` (where a human merge at levels 0 to 2 fits B 5), and `ci-red` starts the
+// fixer retry and ends the job (`skipped`, `ci-red`). When the checks turn green between that read
+// and the gate's, `ci-green` is appended in the same append as `merged` or `held`, by the same rule
+// (`ciResultEvents`), so the lifecycle reaches `mergeable` first (B 5).
 //
 // Every append passes `expectedSeq` through `appendDecided` and decides again on a conflict.
 
@@ -43,14 +48,16 @@ import type { AutonomyLevel, IncidentEvent, NewEvent } from '../contracts/events
 import { keySegment, timerKey } from '../contracts/jobs.ts';
 import { DEFAULT_MERGE_FORBIDDEN, type MergeConfig } from '../config/app-config.ts';
 import { appendDecided, currentLevel, latest, lastSeqOf, newEvent, stoppedSinceFiled } from '../fixer/job.ts';
-import { INITIAL_STATUS, nextStatus, type LifecycleStatus } from '../lifecycle/machine.ts';
 import type { JiraPriorityName, WorkspaceMap } from '../map/types.ts';
 import { resolveAutonomy } from '../policy/autonomy.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseReviewVerdict } from '../review/verdict.ts';
 import { parseDuration } from '../util/duration.ts';
+import { awaitingCi, ciResultEvents, recordCiResult } from './ci.ts';
 import { evaluateMergeGate, type ChangedFile, type MergeGateResult, type RequiredCheck, type ReviewVerdict } from './gate.ts';
+
+export { statusOf } from './ci.ts';
 
 /** Prefix of the `level-changed` reason that records a held autopilot merge. */
 export const MERGE_HELD_REASON_PREFIX = 'merge-held:';
@@ -166,7 +173,7 @@ export function startMergeEvaluate(deps: Pick<MergeDeps, 'workflow'>, incidentId
 
 // merge.evaluate ---------------------------------------------------------------------------------
 
-export type MergeSkip = 'no-pr' | 'no-repo' | 'not-autopilot' | 'already-merged' | 'already-held' | 'stopped' | 'not-open' | 'head-moved';
+export type MergeSkip = 'no-pr' | 'no-repo' | 'not-autopilot' | 'already-merged' | 'already-held' | 'stopped' | 'ci-red' | 'not-open' | 'head-moved';
 
 export type MergeOutcome =
   | { outcome: 'merged'; prNumber: number; mergeCommitSha: string; gate: MergeGateResult; branchDeleted: boolean }
@@ -187,7 +194,12 @@ export async function evaluateMerge(deps: MergeDeps, data: MergeEvaluateData): P
 const HEAD_MOVED = Symbol('head-moved');
 
 async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeOutcome | typeof HEAD_MOVED> {
-  const log = await deps.state.read(incidentId);
+  let log = await deps.state.read(incidentId);
+  if (awaitingCi(log)) {
+    // At every level: CI that finished before the review is recorded here (#214).
+    const ci = await recordCiResult(deps, incidentId);
+    if (ci.recorded !== false) log = await deps.state.read(incidentId);
+  }
   const opened = latest(log, 'pr-opened');
   if (opened === undefined) return { outcome: 'skipped', reason: 'no-pr' };
   const prNumber = opened.payload.prNumber;
@@ -285,6 +297,8 @@ function precheck(log: readonly IncidentEvent[]): { outcome: 'skipped'; reason: 
   if (opened === undefined) return { outcome: 'skipped', reason: 'no-pr' };
   if (mergedSince(log, opened.payload.prNumber)) return { outcome: 'skipped', reason: 'already-merged' };
   if (stoppedSinceFiled(log)) return { outcome: 'skipped', reason: 'stopped' };
+  // A red head belongs to the fixer retry or, on the retry, to a human (B 5), never to a hold.
+  if (lastSeqOf(log, 'ci-red') > opened.seq) return { outcome: 'skipped', reason: 'ci-red' };
   const level = currentLevel(log);
   if (level !== 3) {
     const held = latest(log, 'held');
@@ -300,15 +314,9 @@ function mergedSince(events: readonly IncidentEvent[], prNumber: number): boolea
   return events.some((e) => e.seq > since && e.type === 'merged' && e.payload.prNumber === prNumber);
 }
 
-/** `ci-green` for the head, when the lifecycle still waits for it (status `ci` or `ci-retry`). */
+/** `ci-green` for the head, when the lifecycle still waits for it (status `ci` or `ci-retry`) and it is not recorded. */
 function ciGreenFirst(deps: MergeDeps, incidentId: string, events: readonly IncidentEvent[], prNumber: number, headSha: string): NewEvent[] {
-  const status = statusOf(events);
-  return status === 'ci' || status === 'ci-retry' ? [newEvent(deps, incidentId, 'ci-green', { prNumber, headSha }, { source: 'github' })] : [];
-}
-
-/** The lifecycle status the log folds to (B 5), as the incidents projection computes it. */
-export function statusOf(events: readonly IncidentEvent[]): LifecycleStatus {
-  return events.reduce<LifecycleStatus>((s, e) => nextStatus(s, e), INITIAL_STATUS);
+  return ciResultEvents(deps, incidentId, events, { prNumber, headSha, checks: { state: 'green' } });
 }
 
 /**

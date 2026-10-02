@@ -121,6 +121,8 @@ class FakeGitHub implements MergeGitHub {
 interface World {
   deps: MergeDeps;
   github: FakeGitHub;
+  /** `fixer.run` jobs started (the ci-red retry). */
+  fixerRuns: unknown[];
   windowClosed: string[];
   map: { policies: WorkspaceMap['policies'] };
 }
@@ -148,12 +150,17 @@ async function setup(opts: { level?: 0 | 1 | 2 | 3; mapDefault?: 0 | 1 | 2 | 3; 
   };
   registerMergeJobs(deps);
   registerRevertTimer(deps);
+  const fixerRuns: unknown[] = [];
+  wf.work('fixer.run', (job) => {
+    fixerRuns.push(job.data);
+    return Promise.resolve();
+  });
   await append(...toFiled(opts.level ?? 3));
   if (opts.toCi !== false) {
     await append(...toPr());
     await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }, 'agent'));
   }
-  return { deps, github, windowClosed, map };
+  return { deps, github, fixerRuns, windowClosed, map };
 }
 
 function ev<T extends EventType>(type: T, payload: EventPayloads[T], source: 'agent' | 'fixer' | 'github' | 'slack' | 'jira' = 'agent', actor?: { id: string; role: 'engineer' }): NewEvent<T> {
@@ -255,7 +262,11 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     await wf.drain();
 
     expect(w.github.merges).toEqual([{ number: PR, expectedHeadSha: HEAD }]);
-    expect(w.github.statusFor).toEqual([{ sha: HEAD, base: 'main' }]);
+    // Once to record CI (merge/ci.ts), once for the gate.
+    expect(w.github.statusFor).toEqual([
+      { sha: HEAD, base: 'main' },
+      { sha: HEAD, base: 'main' },
+    ]);
     expect(w.github.deleted).toEqual(['fix/WEB-1042']);
     expect(await typesAfter(before)).toEqual(['ci-green', 'merged']);
     const merged = await lastOf('merged');
@@ -338,15 +349,23 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
       expect((await evaluateMerge(w.deps, { incidentId: INC })).outcome).toBe('merged');
     });
 
-    it('ci: a failing required check', async () => {
+    it('ci: a failing required check is ci-red and the fixer retry, never a hold (#214, main 10)', async () => {
       const w = await setup();
       w.github.required = [
         { name: 'ci', state: 'success', source: 'check-run' },
         { name: 'lint', state: 'failure', source: 'status' },
       ];
-      const out = await evaluateMerge(w.deps, { incidentId: INC });
-      expect(out).toMatchObject({ outcome: 'held', reason: 'ci gate: lint (failure)', gate: { ciGreen: false } });
-      expect(await types()).not.toContain('ci-green');
+      const before = (await log()).length;
+      expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'ci-red' });
+      expect(await typesAfter(before)).toEqual(['ci-red']);
+      expect((await lastOf('ci-red'))?.payload).toEqual({ prNumber: PR, headSha: HEAD, failingChecks: ['lint'] });
+      await wf.drain();
+      expect(w.fixerRuns).toEqual([{ incidentId: INC, attempt: 2, reviewArtifact: expect.objectContaining({ version: 1 }) as unknown }]);
+      expect(await status()).toBe('fixing-retry');
+      expect(w.github.merges).toEqual([]);
+      // A second run finds the red head and does nothing.
+      expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'ci-red' });
+      expect(await typesAfter(before)).toEqual(['ci-red']);
     });
 
     it('risk: too many files and too many lines, from the config or the stricter map', async () => {
@@ -415,19 +434,36 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     expect(out).toMatchObject({ outcome: 'held', reason: 'risk gate: forbidden paths touched: .github/workflows/ci.yml', gate: { ciGreen: false } });
   });
 
-  it.each([1, 2] as const)('level %i never merges here and calls no GitHub API', async (level) => {
+  it.each([0, 1, 2] as const)('level %i never merges here; it records CI that finished before the review, so a human merge fits (#214)', async (level) => {
     const w = await setup({ level });
     const before = (await log()).length;
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'not-autopilot', level });
-    expect(await typesAfter(before)).toEqual([]);
+    expect(await typesAfter(before)).toEqual(['ci-green']);
+    expect(await status()).toBe('mergeable');
+    expect(w.github.calls).toEqual([`getPullRequest ${String(PR)}`, 'combinedStatus']);
+
+    // Once mergeable, a later run calls nothing.
+    w.github.calls.length = 0;
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'not-autopilot', level });
+    expect(await typesAfter(before)).toEqual(['ci-green']);
     expect(w.github.calls).toEqual([]);
+  });
+
+  it('below level 3 with CI still running: records nothing and merges nothing', async () => {
+    const w = await setup({ level: 2 });
+    w.github.required = [{ name: 'ci', state: 'pending', source: 'check-run' }];
+    const before = (await log()).length;
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'not-autopilot', level: 2 });
+    expect(await typesAfter(before)).toEqual([]);
+    expect(w.github.merges).toEqual([]);
   });
 
   it('a level lowered after filing (a claim, a fixer failure) is not autopilot either', async () => {
     const w = await setup();
     await append(ev('level-changed', { from: 3, to: 2, reason: 'claimed by Dana' }));
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toMatchObject({ outcome: 'skipped', reason: 'not-autopilot' });
-    expect(w.github.calls).toEqual([]);
+    expect(w.github.merges).toEqual([]);
+    expect(w.github.calls).not.toContain('listPullRequestFiles 418');
   });
 
   it('head moved between evaluation and merge (409): re-evaluates once against the new head and merges', async () => {
@@ -440,17 +476,19 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     const out = await evaluateMerge(w.deps, { incidentId: INC });
     expect(out.outcome).toBe('merged');
     expect(w.github.merges.map((m) => m.expectedHeadSha)).toEqual([HEAD, HEAD2]);
-    expect(w.github.statusFor.map((s) => s.sha)).toEqual([HEAD, HEAD2]);
-    expect((await lastOf('ci-green'))?.payload.headSha).toBe(HEAD2);
+    expect(w.github.statusFor.map((s) => s.sha)).toEqual([HEAD, HEAD, HEAD2]);
+    // CI was recorded for the head it finished on; the merge re-checked the new head's checks.
+    expect((await lastOf('ci-green'))?.payload.headSha).toBe(HEAD);
+    expect(await types()).toEqual(expect.arrayContaining(['ci-green', 'merged']));
   });
 
-  it('head moved twice: gives up after one re-evaluation and appends nothing', async () => {
+  it('head moved twice: gives up after one re-evaluation and appends nothing but the CI result', async () => {
     const w = await setup();
     w.github.mergeAnswers = [new HttpError(409, 'Head branch was modified'), new HttpError(409, 'Head branch was modified')];
     const before = (await log()).length;
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'head-moved' });
     expect(w.github.merges).toHaveLength(2);
-    expect(await typesAfter(before)).toEqual([]);
+    expect(await typesAfter(before)).toEqual(['ci-green']);
   });
 
   it('the re-evaluation after a 409 sees a gate that now fails', async () => {
