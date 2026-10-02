@@ -93,9 +93,7 @@ for (const provider of providers) {
     });
 
     for (const [status, ErrorType] of [[429, ModelRateLimitError], [401, ModelAuthError], [503, ModelUnavailableError]] as const) {
-      // Google currently loses the HTTP Retry-After header at the SDK boundary.
-      const errorTest = provider === 'google' && status === 429 ? it.fails : it;
-      errorTest(`maps HTTP ${status} to ${ErrorType.name}`, async () => {
+      it(`maps HTTP ${status} to ${ErrorType.name}`, async () => {
         replay([`error-${status}`], status);
         const result = port(provider, 'sk-test-fake').complete(request);
         await expect(result).rejects.toBeInstanceOf(ErrorType);
@@ -104,9 +102,7 @@ for (const provider of providers) {
       }, 20000);
     }
 
-    // OpenAI currently forwards optional properties without strict-schema normalization.
-    const optionalTest = provider === 'openai' ? it.fails : it;
-    optionalTest('handles an optional field without sending an incompatible schema', async () => {
+    it('handles an optional field without sending an incompatible schema', async () => {
       replay(['optional']);
       const result = await port(provider, 'sk-test-fake').classify({ ...classification,
         schema: { type: 'object', properties: { label: { type: 'string', enum: ['bug'] }, note: { type: 'string' } }, required: ['label'] },
