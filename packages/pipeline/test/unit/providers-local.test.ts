@@ -3,11 +3,12 @@
 // the generic harness with the fake agent.
 
 import { mkdtemp, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { HarnessConfig } from '../../src/config/app-config.ts';
+import { ServerTreeError } from '../../src/harness/untrusted-host.ts';
 import { StateNotFoundError, type Artifact } from '../../src/contracts/state.ts';
 import type { HarnessCheckpoint, HarnessResult } from '../../src/ports/harness.ts';
 import { InvalidObjectKeyError, ObjectNotFoundError } from '../../src/ports/object-store.ts';
@@ -472,6 +473,31 @@ describe('local runner (child process over the generic harness)', () => {
       SNAPWING_GIT_TOKEN: 'test-git-token-not-real',
     });
     expect(seen.env).not.toHaveProperty('SNAPWING_PRIOR_REVIEW_FILE');
+  });
+
+  it('runs the fixer with a scratch HOME, never the server user\'s (ADR 0017)', async () => {
+    const { r } = runner('echo');
+    const { runId } = await r.runFixer(job());
+    const result = await r.wait(runId);
+    if (result.outcome !== 'done') throw new Error(`expected done, got ${JSON.stringify(result)}`);
+    const seen = JSON.parse(result.summary) as { home: string | null; homeEntries: string[] | null };
+    expect(seen.home).not.toBeNull();
+    expect(seen.home).not.toBe(homedir());
+    expect(seen.homeEntries).toEqual([]);
+  });
+
+  it('refuses a workdir root in or above the server\'s own tree (ADR 0017)', () => {
+    const make = (root: string) => () =>
+      createLocalRunner({
+        resolveHarness: harnessResolver(harnessConfig),
+        artifacts: artifactStore,
+        workdirRoot: root,
+        git: { token: async () => 'test-git-token-not-real', remoteUrl: () => origin.url },
+      });
+    expect(make(join(process.cwd(), 'runs'))).toThrow(ServerTreeError);
+    expect(make(fileURLToPath(new URL('../../../../.runs', import.meta.url)))).toThrow(ServerTreeError);
+    expect(make('/')).toThrow(ServerTreeError);
+    expect(make(workdirRoot)).not.toThrow();
   });
 
   it('reports a failed run', async () => {

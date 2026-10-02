@@ -1,4 +1,13 @@
-// The `local` RunnerPort (main 14.3): runs the fixer as a child process on this machine. The child
+// The `local` RunnerPort (main 14.3): runs the fixer as a child process on this machine.
+//
+// DEVELOPMENT ONLY (ADR 0017). The fixer and the repository's tests are untrusted code, and here they
+// run as the server's own OS user on the host: they can read any file that user can. The harnesses
+// give them a scratch HOME and TMPDIR and this runner refuses a `workdirRoot` in or above the server's
+// own tree, but neither is an isolation boundary. A deployment holding real secrets uses the docker
+// provider (or another container or VM provider); `snapwing serve` refuses this runner when
+// NODE_ENV=production unless `--allow-local-runner` is passed.
+//
+// The child
 // is the configured HarnessPort's (generic, claude-code, codex, or gemini, all process based over the shared
 // supervisor in harness/process.ts), so stop, budget, and checkpoint handling are the harness's;
 // this runner adds a prepared checkout per run and cancellation by id.
@@ -33,6 +42,7 @@ import { createClaudeCodeHarness, type ClaudeCodeHarnessConfig } from '../../har
 import { createCodexHarness, type CodexHarnessConfig } from '../../harness/codex/index.ts';
 import { createGenericHarness } from '../../harness/generic/index.ts';
 import { createGeminiHarness, type GeminiHarnessConfig } from '../../harness/gemini/index.ts';
+import { assertOutsideServerTree } from '../../harness/untrusted-host.ts';
 import type { HarnessCheckpoint, HarnessPort, HarnessResult, WorkItemRef } from '../../ports/harness.ts';
 import type { FixerJob, HarnessChoice, RunnerPort } from '../../ports/runner.ts';
 import type { StatePort } from '../../ports/state.ts';
@@ -58,7 +68,7 @@ export interface LocalRunnerOptions {
   resolveHarness: (choice: HarnessChoice) => HarnessPort;
   /** Where implementation request and review artifacts are read from. */
   artifacts: Pick<StatePort, 'getArtifact'>;
-  /** Parent of the per-run checkouts. */
+  /** Parent of the per-run checkouts. Must lie outside the server's own tree (`ServerTreeError` otherwise). */
   workdirRoot: string;
   git: LocalRunnerGit;
   /** Keep the checkout of a `failed` run for inspection. Default false: every checkout is removed. */
@@ -99,6 +109,7 @@ interface Run {
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
+  assertOutsideServerTree(options.workdirRoot);
   const runs = new Map<string, Run>();
 
   const report = async (fn: () => Promise<void>): Promise<void> => {

@@ -6,6 +6,10 @@
 // dialect (in-process on SQLite, pg-boss on Postgres), call `compose`, then start the worker and
 // the API. Any startup failure closes what was opened and exits 1.
 //
+// The `local` runtime provider runs the fixer and the repository's tests (untrusted code) on this
+// host as the server's own OS user (ADR 0017). With NODE_ENV=production serve refuses it unless
+// `--allow-local-runner` is passed; whenever it runs with it, it prints a warning to stderr.
+//
 // Shutdown on SIGTERM or SIGINT, in order: the API stops accepting and finishes requests in flight;
 // the worker stops polling and drains its running handlers; the state store closes. Exit 0.
 
@@ -25,7 +29,7 @@ import { createApiServer, type ApiServer } from './http.ts';
 import { opsRoutes } from './ops.ts';
 import { createWorker, type PollingWorkflow, type Worker } from './worker.ts';
 
-export const SERVE_USAGE = `Usage: snapwing serve [--api] [--worker] [--port <n>] [--host <addr>] [--config <file>] [--env-file <file>]
+export const SERVE_USAGE = `Usage: snapwing serve [--api] [--worker] [--port <n>] [--host <addr>] [--config <file>] [--env-file <file>] [--allow-local-runner]
 
   --api            run the API process (HTTP routes, /healthz, /metrics)
   --worker         run the worker process (job handlers on the workflow)
@@ -34,8 +38,12 @@ export const SERVE_USAGE = `Usage: snapwing serve [--api] [--worker] [--port <n>
   --host <addr>    API bind address; default $HOST, else 0.0.0.0
   --config <file>  app config; default $SNAPWING_CONFIG, else snapwing.config.xml
   --env-file <f>   secrets file for the local provider; default $SNAPWING_ENV_FILE, else .env
+  --allow-local-runner
+                   start with <runtime provider="local"> even when NODE_ENV=production; the
+                   local runner runs untrusted fixer code on this host (ADR 0017)
 
-Environment: SNAPWING_DB=sqlite|postgres, DATABASE_URL (postgres), SNAPWING_SQLITE_PATH (sqlite file).
+Environment: SNAPWING_DB=sqlite|postgres, DATABASE_URL (postgres), SNAPWING_SQLITE_PATH (sqlite file),
+NODE_ENV (production refuses the local runner without --allow-local-runner).
 Stops cleanly on SIGTERM or SIGINT.`;
 
 export const DEFAULT_PORT = 3000;
@@ -43,6 +51,31 @@ export const DEFAULT_CONFIG_PATH = 'snapwing.config.xml';
 export const DEFAULT_ENV_FILE = '.env';
 
 export type ShutdownSignal = 'SIGTERM' | 'SIGINT';
+
+/** Printed to stderr whenever serve starts with the `local` runtime provider. */
+export const LOCAL_RUNNER_WARNING =
+  'warning: runtime provider "local" runs the fixer and pull request tests (untrusted code) on this host as this ' +
+  'OS user, able to read any file this user can. It is for development only (ADR 0017); where real secrets are ' +
+  'held, use <runtime provider="docker"> or another container or VM provider.';
+
+/** The startup error for the `local` provider under NODE_ENV=production without --allow-local-runner. */
+export const LOCAL_RUNNER_REFUSED =
+  'refusing to start: runtime provider "local" runs untrusted fixer code on this host and NODE_ENV is production. ' +
+  'Use <runtime provider="docker"> (ADR 0017), or pass --allow-local-runner to accept the risk.';
+
+/**
+ * The `local` runner policy (ADR 0017): an error to refuse startup with, a warning to print, or nothing
+ * for another provider.
+ */
+export function localRunnerCheck(
+  provider: string,
+  env: Readonly<Record<string, string | undefined>>,
+  allowLocalRunner: boolean,
+): { refuse: string } | { warn: string } | undefined {
+  if (provider !== 'local') return undefined;
+  if (env['NODE_ENV']?.trim() === 'production' && !allowLocalRunner) return { refuse: LOCAL_RUNNER_REFUSED };
+  return { warn: LOCAL_RUNNER_WARNING };
+}
 
 /** The part of `process` serve listens on; tests pass an EventEmitter. */
 export interface SignalSource {
@@ -72,6 +105,7 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
         host: { type: 'string' },
         config: { type: 'string' },
         'env-file': { type: 'string' },
+        'allow-local-runner': { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
     });
@@ -119,6 +153,9 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
   let code = 0;
   try {
     const config = await loadConfig(configPath);
+    const runnerCheck = localRunnerCheck(config.runtime.provider, io.env, v['allow-local-runner']);
+    if (runnerCheck !== undefined && 'refuse' in runnerCheck) throw new Error(runnerCheck.refuse);
+    if (runnerCheck !== undefined) io.stderr(`snapwing serve: ${runnerCheck.warn}`);
     const secrets = createEnvFileSecrets({ path: envFile, fallbackEnv: io.env });
 
     const options = stateOptionsFromEnv(io.env);

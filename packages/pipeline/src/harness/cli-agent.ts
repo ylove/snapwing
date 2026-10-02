@@ -3,6 +3,10 @@
 // delivers checkpoints from SNAPWING_CHECKPOINT_FILE and stderr, and maps exit, Stop, and budget to a
 // HarnessResult per docs/harness-generic.md sections 5 and 6. Each adapter supplies its argument
 // vector, the exact stdin text, and how to pull the HarnessResult out of what the CLI printed.
+//
+// The agent runs untrusted code (the repository's tests, its own edits; ADR 0017): it gets a fresh
+// scratch HOME and TMPDIR per run, never the server user's, and refuses a workdir in or above the
+// server's own tree.
 
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
@@ -10,6 +14,7 @@ import type { HarnessResult, HarnessRunOptions, WorkItemRef } from '../ports/har
 import { parseDuration } from '../util/duration.ts';
 import { MAX_RESULT_LENGTH, parseHarnessResult } from './contract.ts';
 import { budgetExceededReason, superviseProcess } from './process.ts';
+import { createScratchHome, serverTreeConflict, type ScratchHome } from './untrusted-host.ts';
 
 export type Extracted = { kind: 'result'; result: HarnessResult } | { kind: 'error'; message: string };
 
@@ -45,9 +50,20 @@ export interface CliRunInput {
 export const REVIEW_PROMPT_URL = new URL('../prompts/review.xml', import.meta.url);
 
 export async function runCliAgent(input: CliRunInput): Promise<HarnessResult> {
+  const conflict = serverTreeConflict(input.workdir);
+  if (conflict !== undefined) return { outcome: 'failed', reason: `harness workdir: ${conflict}`, attempts: 0 };
+  const scratch = await createScratchHome('agent-home');
+  try {
+    return await runInScratch(input, scratch);
+  } finally {
+    await scratch.dispose();
+  }
+}
+
+async function runInScratch(input: CliRunInput, scratch: ScratchHome): Promise<HarnessResult> {
   const { opts } = input;
   const wallClockMs = parseDuration(opts.budget.wallClock);
-  const env = buildEnv(input);
+  const env = buildEnv(input, scratch);
 
   let stdout = '';
   let stdoutOverflow = false;
@@ -122,7 +138,7 @@ export async function runCliAgent(input: CliRunInput): Promise<HarnessResult> {
   return { outcome: 'failed', reason: `harness exited with code ${code ?? 'null'}`, attempts: 1 };
 }
 
-function buildEnv(input: CliRunInput): NodeJS.ProcessEnv {
+function buildEnv(input: CliRunInput, scratch: ScratchHome): NodeJS.ProcessEnv {
   const { workItem, opts, workdir } = input;
   const env: NodeJS.ProcessEnv = {
     ...opts.env,
@@ -137,10 +153,13 @@ function buildEnv(input: CliRunInput): NodeJS.ProcessEnv {
     SNAPWING_CHECKPOINT_FILE: input.checkpointFile,
   };
   // Not the server's environment: only what the process needs (docs/harness-generic.md section 7).
-  for (const key of ['PATH', 'HOME', 'LANG', 'TMPDIR', ...input.inheritEnv]) {
+  for (const key of ['PATH', 'LANG', ...input.inheritEnv]) {
     const v = process.env[key];
     if (v !== undefined) env[key] = v;
   }
+  // Last, so neither the run's env nor the server's can point the agent at the server user's home.
+  env['HOME'] = scratch.home;
+  env['TMPDIR'] = scratch.tmp;
   return env;
 }
 

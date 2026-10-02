@@ -16,6 +16,8 @@ Everything the process prints is untrusted. Snapwing validates it with `parseHar
 
 The RunnerPort (main 14.3) starts the command inside the ephemeral fixer container, with the working directory set to the prepared checkout. The runner clones the repository before the command starts and records the `cloned` checkpoint itself, so a harness may begin at `branched`.
 
+**The `local` runner is for development only (ADR 0017).** It starts the command as a child process on the server's host, as the server's own OS user, so the command can read any file that user can. Every adapter gives the process a fresh, empty scratch `HOME` and `TMPDIR` (section 7) and refuses a working directory in or above the server's own tree, but that is not a boundary. Any deployment that holds real secrets runs harnesses inside the `docker` provider or another container or VM provider; `snapwing serve` refuses `<runtime provider="local">` when `NODE_ENV=production` unless `--allow-local-runner` is passed, and warns whenever it starts with it.
+
 The checkout (`packages/pipeline/src/fixer/workdir/`) is already on the work branch: `handoff/@branch`, else `fix/` plus the issue key, cut from `handoff/@base` (else the repository's default branch), or the existing remote branch on a retry. Commits carry the bot identity. Two hooks are installed: `commit-msg` rejects a message without the issue key, and `pre-push` rejects a push to any ref but the work branch and a branch whose diff against the base touches `.github/workflows/**`, `CODEOWNERS`, or `.github/settings.yml`. The hooks catch mistakes; the token's scope and branch protection are the boundary. Everything Snapwing adds lives under `.git/snapwing/`, outside the worktree.
 
 The command template is split into an argument vector (whitespace separated, double quotes respected) and executed without a shell. Snapwing never interpolates incident text into the command line; the incident reaches the process only through stdin.
@@ -105,7 +107,8 @@ The process does not inherit the server's environment. It gets exactly these var
 | `SNAPWING_PRIOR_REVIEW_FILE` | fixer retry runs only: absolute path of the `review` artifact of the `request-changes` verdict that caused the retry (JSON, main 11.1), under `.git/snapwing/` so no commit can include it. Absent on a first run |
 | `GIT_ASKPASS`, `SNAPWING_GIT_TOKEN` | the Git credential for the one repository: `git push` and `git fetch` in the checkout authenticate through the askpass script, which answers with `SNAPWING_GIT_TOKEN` (a GitHub App installation token). The token is in no file, remote URL, or Git config |
 | `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, the null device, and `0`: Git reads only the checkout's own config and never prompts |
-| `PATH`, `HOME`, `LANG`, `TMPDIR` | from the runner image |
+| `PATH`, `LANG` | from the runner image |
+| `HOME`, `TMPDIR` | a fresh, empty, private (`0700`) scratch directory per run, removed when the run ends; never the server user's home, and neither the config nor the run's environment can override them (ADR 0017). A CLI agent authenticates with its API key variable, not a login stored in a home directory |
 | model and Git credentials | only those the harness needs, from the secrets port under their conventional names (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, main 14.5) and a Git credential scoped to the one repository; never the fixer API token |
 
 The variables exist so a wrapper script can route or log a run without parsing the implementation request.

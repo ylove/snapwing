@@ -4,17 +4,21 @@
 // Every outcome is a typed result; nothing here throws for a bad input, a failing command, or a timeout.
 //
 // The test command is the pull request's own code, written by the fixer: untrusted (main 16). It runs
-// without the server's environment (only PATH, HOME, LANG, TMPDIR, plus the caller's `env`), with the
-// host's system and global git config switched off and no askpass or credential helper. Each scratch
+// without the server's environment (only PATH and LANG, plus the caller's `env`), with HOME and TMPDIR
+// set to a fresh scratch directory (never the server user's home), with the host's system and global
+// git config switched off, and with no askpass or credential helper. Its working directory is a
+// scratch tree in the temp directory, refused if that lies in or above the server's own tree. This is
+// the host path, for development; ADR 0017 puts it inside the runner's isolation boundary wherever
+// real secrets are held. Each scratch
 // tree is a fresh `clone --shared` of `workdir`, not a linked worktree: a linked worktree shares the
 // repository's config, so a credential helper or an auth header there would reach the test command, and
 // anything the test command writes to its config would reach the next git call in `workdir`. Our own git
 // calls get the same bare environment and run no hooks.
 
 import { spawn, execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { devNull, tmpdir } from 'node:os';
+import { devNull } from 'node:os';
 import { join } from 'node:path';
+import { createScratchHome, serverTreeConflict, type ScratchHome } from '../harness/untrusted-host.ts';
 import { parseDuration } from '../util/duration.ts';
 import { isTestFile } from './verdict.ts';
 
@@ -40,7 +44,8 @@ export interface RegressionInput {
   timeout: number | string;
   /**
    * Extra environment for the test command, for what the repository's tests need. The command gets
-   * only PATH, HOME, LANG, and TMPDIR from the host plus these; nothing else of `process.env`. Never
+   * only PATH and LANG from the host plus these, and a scratch HOME and TMPDIR that these cannot
+   * override; nothing else of `process.env`. Never
    * pass a secret or a checkout's git environment (`PreparedWorkdir.env` carries the git token).
    */
   env?: Readonly<Record<string, string>> | undefined;
@@ -73,7 +78,7 @@ interface RunOutcome {
 }
 
 /** Host variables the test command inherits; mirrors the harness adapters (docs/harness-generic.md section 7). */
-const INHERITED_ENV = ['PATH', 'HOME', 'LANG', 'TMPDIR'] as const;
+const INHERITED_ENV = ['PATH', 'LANG'] as const;
 
 /** Git with no host config, no prompts, no askpass, and no credential helper. Applied last, so `env` cannot undo it. */
 const GIT_GUARD_ENV: Readonly<Record<string, string>> = {
@@ -88,14 +93,20 @@ const GIT_GUARD_ENV: Readonly<Record<string, string>> = {
   GIT_CONFIG_VALUE_0: '',
 };
 
-/** The test command's environment: the allowlisted host variables, the caller's `env`, then the git guards. */
-export function regressionEnv(extra: Readonly<Record<string, string>> = {}): Record<string, string> {
+/**
+ * The test command's environment: the allowlisted host variables, the caller's `env`, then the
+ * scratch HOME and TMPDIR, then the git guards. The last two win over `extra`.
+ */
+export function regressionEnv(
+  scratch: Pick<ScratchHome, 'home' | 'tmp'>,
+  extra: Readonly<Record<string, string>> = {},
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of INHERITED_ENV) {
     const v = process.env[name];
     if (v !== undefined) env[name] = v;
   }
-  return { ...env, ...extra, ...GIT_GUARD_ENV };
+  return { ...env, ...extra, HOME: scratch.home, TMPDIR: scratch.tmp, ...GIT_GUARD_ENV };
 }
 
 /** Our own git calls: the same bare environment without HOME. */
@@ -189,12 +200,14 @@ export async function proveRegression(input: RegressionInput): Promise<Regressio
     return result('missing-test-file', `not in ${headSha}: ${missing.join(', ')}`, { missingFiles: missing });
   }
 
-  const env = regressionEnv(input.env);
-  let scratchRoot: string | undefined;
+  let scratch: ScratchHome | undefined;
   try {
-    scratchRoot = await mkdtemp(join(tmpdir(), 'snapwing-regression-'));
-    const baseTree = join(scratchRoot, 'base');
-    const headTree = join(scratchRoot, 'head');
+    scratch = await createScratchHome('regression');
+    const conflict = serverTreeConflict(scratch.root);
+    if (conflict !== undefined) return result('git-error', `scratch tree: ${conflict}`);
+    const env = regressionEnv(scratch, input.env);
+    const baseTree = join(scratch.root, 'base');
+    const headTree = join(scratch.root, 'head');
 
     const addBase = await scratchTree(workdir, baseTree, baseSha);
     if (!addBase.ok) return result('git-error', `worktree at base failed: ${addBase.out}`);
@@ -217,7 +230,7 @@ export async function proveRegression(input: RegressionInput): Promise<Regressio
   } catch (e) {
     return result('git-error', e instanceof Error ? e.message : String(e));
   } finally {
-    if (scratchRoot) await rm(scratchRoot, { recursive: true, force: true }).catch(() => undefined);
+    await scratch?.dispose();
   }
 }
 

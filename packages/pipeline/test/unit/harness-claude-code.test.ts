@@ -1,5 +1,5 @@
-import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -59,6 +59,28 @@ describe('claude-code harness: invocation', () => {
       SNAPWING_GIT_TOKEN: 'test-git-token-not-real',
     });
     expect(seen.env).not.toHaveProperty('SERVER_ONLY_VAR');
+  });
+
+  it('runs the agent with a fresh scratch HOME and TMPDIR, never the server user\'s (ADR 0017)', async () => {
+    const record = join(scratch, 'record-home.json');
+    const runEnv = { HOME: homedir(), TMPDIR: tmpdir() };
+    for (const role of ['fixer', 'review'] as const) {
+      const r = await harness.run(workItem, `FAKE_MODE=done FAKE_RECORD=${record}`, scratch, opts({ role, env: runEnv }));
+      expect(r.outcome).toBe('done');
+      const seen = JSON.parse(readFileSync(record, 'utf8')) as { env: Record<string, string> };
+      const home = seen.env['HOME'];
+      expect(home).toBeDefined();
+      expect(home).not.toBe(homedir());
+      expect(seen.env['TMPDIR']).not.toBe(tmpdir());
+      // Removed when the run ends.
+      expect(existsSync(home ?? '')).toBe(false);
+    }
+  });
+
+  it('refuses a workdir in or above the server\'s own tree (ADR 0017)', async () => {
+    const r = await harness.run(workItem, 'FAKE_MODE=done', process.cwd(), opts());
+    expect(r).toMatchObject({ outcome: 'failed', attempts: 0 });
+    expect(r.outcome === 'failed' ? r.reason : '').toMatch(/^harness workdir: .*server's own tree/);
   });
 
   it('runs the review role with review.xml, read and run tools only, and the verdict file env', async () => {

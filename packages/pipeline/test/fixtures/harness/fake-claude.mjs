@@ -18,7 +18,7 @@ if (recordPath) {
       argv: process.argv.slice(2),
       stdin,
       cwd: process.cwd(),
-      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('SNAPWING_') || k === 'SERVER_ONLY_VAR')),
+      env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('SNAPWING_') || ['SERVER_ONLY_VAR', 'HOME', 'TMPDIR'].includes(k))),
     }),
   );
 }

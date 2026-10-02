@@ -1,11 +1,17 @@
+import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 import { createGenericHarness, splitCommand } from '../../src/harness/generic/index.ts';
 import type { HarnessCheckpoint, HarnessResult, HarnessRunOptions, WorkItemRef } from '../../src/ports/harness.ts';
 
 const AGENT = fileURLToPath(new URL('../fixtures/harness/fake-agent.mjs', import.meta.url));
 const WORK_ITEM: WorkItemRef = { id: '01HZXTESTWORKITEM0000000000', issueKey: 'WEB-1042', repo: 'acme/web' };
 const REQUEST = '<implementation-request>fix it; $(touch /tmp/pwned) `id`</implementation-request>';
+// Untrusted code may not run in the server's own tree (ADR 0017), so the runs use a scratch workdir.
+const WORKDIR = realpathSync(mkdtempSync(join(tmpdir(), 'snapwing-generic-test-')));
+afterAll(() => rmSync(WORKDIR, { recursive: true, force: true }));
 
 function harness(mode: string, extra: { timeout?: string; killGraceMs?: number; env?: Record<string, string> } = {}) {
   const { env, ...rest } = extra;
@@ -27,7 +33,7 @@ function setup(over: Partial<HarnessRunOptions> = {}) {
   return { checkpoints, controller, opts };
 }
 
-const run = (h: ReturnType<typeof harness>, opts: HarnessRunOptions, workdir = process.cwd()): Promise<HarnessResult> =>
+const run = (h: ReturnType<typeof harness>, opts: HarnessRunOptions, workdir = WORKDIR): Promise<HarnessResult> =>
   h.run(WORK_ITEM, REQUEST, workdir, opts);
 
 describe('splitCommand', () => {
@@ -57,9 +63,10 @@ describe('generic harness: success', () => {
     const { opts } = setup({ role: 'review' });
     process.env['FAKE_SERVER_SECRET'] = 'fake-not-a-secret';
     try {
-      const result = await run(harness('echo'), opts, process.cwd());
+      const result = await run(harness('echo'), opts);
       if (result.outcome !== 'done') throw new Error(`expected done, got ${JSON.stringify(result)}`);
       const seen = JSON.parse(result.summary) as { request: string; env: Record<string, string>; cwd: string; leaked: string | null };
+      expect(realpathSync(seen.cwd)).toBe(WORKDIR);
       expect(seen.request).toBe(REQUEST);
       expect(seen.leaked).toBeNull();
       expect(seen.env).toEqual({
@@ -68,12 +75,42 @@ describe('generic harness: success', () => {
         SNAPWING_WORK_ITEM_ID: WORK_ITEM.id,
         SNAPWING_ISSUE_KEY: 'WEB-1042',
         SNAPWING_REPO: 'acme/web',
-        SNAPWING_WORKDIR: process.cwd(),
+        SNAPWING_WORKDIR: WORKDIR,
         SNAPWING_BUDGET_WALL_CLOCK: 'PT1M',
         SNAPWING_BUDGET_ATTEMPTS: '3',
       });
     } finally {
       delete process.env['FAKE_SERVER_SECRET'];
+    }
+  });
+});
+
+describe('generic harness: untrusted code on the host (ADR 0017)', () => {
+  it('runs with a fresh empty HOME and TMPDIR, never the server user\'s, even when the config or run env names them', async () => {
+    const serverHome = homedir();
+    const serverTmp = tmpdir();
+    const h = harness('echo', { env: { HOME: serverHome, TMPDIR: serverTmp } });
+    const homes: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const result = await run(h, setup({ env: { HOME: serverHome, TMPDIR: serverTmp } }).opts);
+      if (result.outcome !== 'done') throw new Error(`expected done, got ${JSON.stringify(result)}`);
+      const seen = JSON.parse(result.summary) as { home: string | null; tmp: string | null; homeEntries: string[] | null };
+      expect(seen.home).not.toBeNull();
+      expect(seen.home).not.toBe(homedir());
+      expect(seen.tmp).not.toBe(serverTmp);
+      expect(seen.homeEntries).toEqual([]);
+      homes.push(seen.home ?? '');
+    }
+    // A fresh home per run, removed when the run ends.
+    expect(homes[0]).not.toBe(homes[1]);
+    for (const home of homes) expect(existsSync(home)).toBe(false);
+  });
+
+  it('refuses a workdir in or above the server\'s own tree without starting the process', async () => {
+    for (const workdir of [process.cwd(), fileURLToPath(new URL('../../../../', import.meta.url)), '/']) {
+      const result = await run(harness('success'), setup().opts, workdir);
+      expect(result).toMatchObject({ outcome: 'failed', attempts: 0 });
+      expect(result.outcome === 'failed' ? result.reason : '').toMatch(/^harness workdir: .*server's own tree/);
     }
   });
 });

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <snapwing xmlns="urn:snapwing:config:v1" version="1">
+  <!-- "local" runs the fixer and pull request tests on this host as the server's user: development only
+       (ADR 0017). Wherever real secrets are held, use provider="docker" or a cloud provider. -->
   <runtime provider="local"/>
   <models default-provider="anthropic">
     <model task="triage"       provider="anthropic" name="claude-sonnet-5-5"/>
