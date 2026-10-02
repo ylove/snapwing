@@ -6,7 +6,9 @@ import type { ChatReader } from '../context/chat-reader.ts';
 import type { Anchor, CollectPolicy } from '../context/collect.ts';
 import type { LoadImage } from '../context/vision/index.ts';
 import type { IngestionAdapter } from '../contracts/adapters.ts';
+import type { NewEvent } from '../contracts/events.ts';
 import type { CanonicalIncidentPayload, ChannelSource, Resolution } from '../contracts/incident.ts';
+import type { OutboxItem } from '../contracts/state.ts';
 import type { JiraSearch } from '../dedupe/index.ts';
 import type { WorkspaceMap } from '../map/types.ts';
 import type { CachePort } from '../ports/cache.ts';
@@ -29,9 +31,27 @@ export interface ContextSource {
   anchor(payload: CanonicalIncidentPayload): Promise<Anchor>;
 }
 
-/** Status loopback (main 12, phase 3). Without one the engine posts a `filed` status through the adapter. */
+/**
+ * Status loopback (main 12, phase 3): subscribes the reporter once the incident is filed, and posts
+ * nothing; the status message comes from the outbox (`state/projections/outbox/status.ts`). The
+ * implementation is `createStatusSubscriber` (`status/subscriber.ts`). Without one the engine posts a
+ * `filed` status through the adapter.
+ */
 export interface StatusSubscriber {
-  subscribe(payload: CanonicalIncidentPayload, issueKey: string, note?: string): Promise<void>;
+  /** `note` says why the incident was filed the way it was (an unresolved surface, a tap that timed out). */
+  subscribe(payload: CanonicalIncidentPayload, issueKey: string, note?: string): Promise<StatusSubscription>;
+}
+
+/**
+ * What subscribing writes. The engine appends `events` and enqueues `outbox` in the transaction that
+ * ends its after-filed step, so the subscription lands with the step's own events under one
+ * `expectedSeq`.
+ */
+export interface StatusSubscription {
+  /** Events the `subscriptions` projection folds into the subscription. */
+  events: NewEvent[];
+  /** Rows to enqueue with them (a status edit that carries the note). */
+  outbox: OutboxItem[];
 }
 
 export interface EngineOptions {
