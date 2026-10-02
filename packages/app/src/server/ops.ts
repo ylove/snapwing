@@ -2,7 +2,8 @@
 //
 //   GET /healthz   200 `ok` once the state store is open and migrated and answers a query; 503 before
 //   GET /metrics   Prometheus text format 0.0.4: outbox depth and oldest undrained row age per
-//                  target, and the parked job count; 503 until the store is open
+//                  target, the parked job count, and reconciler corrections in the last hour;
+//                  503 until the store is open
 //
 // `openState` runs the migrations before it resolves, so "open" here means "open and migrated".
 // The store is passed as a getter so `snapwing serve` can listen before the store has opened.
@@ -64,6 +65,9 @@ export function renderMetrics(metrics: StoreMetrics): string {
     '# HELP snapwing_jobs_parked Jobs parked on a wait (tap, children, CI, deploy, verification).',
     '# TYPE snapwing_jobs_parked gauge',
     `snapwing_jobs_parked ${metrics.parkedJobs}`,
+    '# HELP snapwing_reconciler_corrections_last_hour Events the reconciler emitted for missed webhooks, recorded in the last hour.',
+    '# TYPE snapwing_reconciler_corrections_last_hour gauge',
+    `snapwing_reconciler_corrections_last_hour ${metrics.reconcilerCorrectionsLastHour}`,
   ];
   return `${lines.join('\n')}\n`;
 }
