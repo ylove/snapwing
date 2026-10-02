@@ -1,0 +1,24 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0PV52K23",
+  "event_time": 1700000400,
+  "event": {
+    "type": "message",
+    "subtype": "file_share",
+    "channel": "D0DM",
+    "user": "U0REPORTER",
+    "text": "",
+    "ts": "1700000400.000500",
+    "channel_type": "im",
+    "files": [
+      {
+        "id": "F0SHOT",
+        "name": "screenshot.png",
+        "mimetype": "image/png",
+        "url_private_download": "https://files.slack.com/files-pri/T0001-F0SHOT/download/screenshot.png"
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0PV52K24",
+  "event_time": 1700000500,
+  "event": {
+    "type": "message",
+    "subtype": "file_share",
+    "channel": "D0DM",
+    "user": "U0REPORTER",
+    "text": "Blank total, see screenshot",
+    "ts": "1700000500.000600",
+    "channel_type": "im",
+    "files": [
+      {
+        "id": "F0SHOT2",
+        "name": "total.jpg",
+        "mimetype": "image/jpeg",
+        "url_private_download": "https://files.slack.com/files-pri/T0001-F0SHOT2/download/total.jpg"
+      },
+      {
+        "id": "F0DOC",
+        "name": "log.txt",
+        "mimetype": "text/plain",
+        "url_private_download": "https://files.slack.com/files-pri/T0001-F0DOC/download/log.txt"
+      }
+    ]
+  }
+}
