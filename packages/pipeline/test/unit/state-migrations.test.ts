@@ -203,7 +203,7 @@ describe(`StateStore (${TEST_DIALECT})`, () => {
     expect(await kvRows(state)).toEqual([]);
   });
 
-  it('every port method delegates to a stub that throws NotImplementedError until #17, #18, #19', async () => {
+  it('every port method not yet filled delegates to a stub that throws NotImplementedError until #17, #18', async () => {
     const state = await tdb.open();
     const calls: [string, () => Promise<unknown>][] = [
       ['append', () => state.append(INC, [], 0)],
@@ -213,23 +213,13 @@ describe(`StateStore (${TEST_DIALECT})`, () => {
       ['findIncidents', () => state.findIncidents({})],
       ['getClaims', () => state.getClaims(INC)],
       ['getSubscriptions', () => state.getSubscriptions(INC)],
-      ['putArtifact', () => state.putArtifact({ workspaceId: WS, incidentId: INC, kind: 'diagnosis', contentType: 'application/json', body: '{}', createdBy: 'test' })],
-      ['getArtifact', () => state.getArtifact('x')],
-      ['seenWebhook', () => state.seenWebhook('slack', 'd1', 60)],
-      ['enqueueOutbox', () => state.enqueueOutbox({ id: 'o1', workspaceId: WS, target: 'jira', op: 'add-comment', payload: {}, attempts: 0, nextAttempt: '2026-10-01T00:00:00.000Z', createdAt: '2026-10-01T00:00:00.000Z' })],
-      ['drainOutbox', () => state.drainOutbox('jira', 10)],
-      ['ackOutbox', () => state.ackOutbox([])],
-      ['putConfigVersion', () => state.putConfigVersion('map', 'h', '<map/>')],
-      ['getConfigVersion', () => state.getConfigVersion('map')],
+      // Artifacts, inbox, outbox, config, and kv landed in #19 (test/unit/state-stores.test.ts).
     ];
-    if (state instanceof StateStore) {
-      calls.push(['kvGet', () => state.kvGet('k')], ['kvSet', () => state.kvSet('k', 'v')], ['kvSetIfAbsent', () => state.kvSetIfAbsent('k', 'v', 5)]);
-    }
     for (const [method, call] of calls) {
       const err: unknown = await call().catch((e: unknown) => e);
       expect(err, method).toBeInstanceOf(NotImplementedError);
       expect((err as NotImplementedError).method).toBe(method);
     }
-    expect(calls).toHaveLength(18);
+    expect(calls).toHaveLength(7);
   });
 });
