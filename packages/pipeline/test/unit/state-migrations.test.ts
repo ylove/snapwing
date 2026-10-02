@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { STATE_TABLES, type Database } from '../../src/state/db.ts';
 import { NotImplementedError, StateMigrationError } from '../../src/state/errors.ts';
-import { MIGRATION_TABLE, MIGRATIONS, migrateState, type StateMigration } from '../../src/state/migrations/index.ts';
+import { MIGRATION_LOCK_TABLE, MIGRATION_TABLE, MIGRATIONS, migrateState, type StateMigration } from '../../src/state/migrations/index.ts';
 import { createTable } from '../../src/state/migrations/schema.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
@@ -46,8 +46,15 @@ function dbOf(state: OpenedState): Kysely<Database> {
 }
 
 async function tableNames(db: Kysely<Database>): Promise<string[]> {
-  const tables = await db.introspection.getTables();
-  return tables.filter((t) => tdb.dialect === 'sqlite' || t.schema === tdb.name).map((t) => t.name).sort();
+  if (tdb.dialect === 'sqlite') {
+    const tables = await db.introspection.getTables();
+    return tables.map((t) => t.name).sort();
+  }
+  // Not `introspection.getTables()` on Postgres: it scans every schema, and other test files drop
+  // their schemas concurrently, which fails it with "schema ... does not exist".
+  const raw = db as unknown as Kysely<unknown>;
+  const { rows } = await sql<{ name: string }>`select tablename as name from pg_tables where schemaname = current_schema()`.execute(raw);
+  return rows.map((r) => r.name).filter((n) => n !== MIGRATION_TABLE && n !== MIGRATION_LOCK_TABLE).sort();
 }
 
 async function indexNames(db: Kysely<Database>): Promise<string[]> {
@@ -203,12 +210,9 @@ describe(`StateStore (${TEST_DIALECT})`, () => {
     expect(await kvRows(state)).toEqual([]);
   });
 
-  it('every port method not yet filled delegates to a stub that throws NotImplementedError until #17, #18', async () => {
+  it('every port method not yet filled delegates to a stub that throws NotImplementedError until #18', async () => {
     const state = await tdb.open();
     const calls: [string, () => Promise<unknown>][] = [
-      ['append', () => state.append(INC, [], 0)],
-      ['read', () => state.read(INC)],
-      ['readSince', () => state.readSince('', 10)],
       ['getIncident', () => state.getIncident(INC)],
       ['findIncidents', () => state.findIncidents({})],
       ['getClaims', () => state.getClaims(INC)],
@@ -220,6 +224,6 @@ describe(`StateStore (${TEST_DIALECT})`, () => {
       expect(err, method).toBeInstanceOf(NotImplementedError);
       expect((err as NotImplementedError).method).toBe(method);
     }
-    expect(calls).toHaveLength(7);
+    expect(calls).toHaveLength(4);
   });
 });
