@@ -6,7 +6,8 @@
   "license": "MIT",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./*": "./src/*"
   },
   "scripts": {
     "test": "vitest run test/unit",
@@ -14,6 +15,9 @@
     "test:live": "vitest run test/live --passWithNoTests",
     "test:e2e": "vitest run test/e2e --passWithNoTests",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@snapwing/pipeline": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

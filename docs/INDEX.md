@@ -5,7 +5,8 @@ Maps spec sections to the package and directory that implements them, so an issu
 | Spec | Section | Package / path |
 |---|---|---|
 | main | 4 | pipeline/src/map, schemas/workspace-context.* |
-| main | 4.6 | pipeline/src/policy |
+| main | 4.4 | pipeline/src/resolve |
+| main | 4.6 | pipeline/src/policy/autonomy.ts |
 | main | 5 | pipeline/src/context |
 | main | 5.2a | pipeline/src/context/vision |
 | main | 6 | pipeline/src/dedupe |
@@ -15,10 +16,12 @@ Maps spec sections to the package and directory that implements them, so an issu
 | main | 9, 10 | pipeline/src/triage, pipeline/src/fixer |
 | main | 11 | pipeline/src/review, pipeline/src/merge |
 | main | 12 | app/src/status |
-| main | 13 | pipeline/src/contracts |
+| main | 13 | pipeline/src/contracts, pipeline/src/util/{ulid,duration}.ts |
+| (all) | XML | pipeline/src/schemas/validate.ts (XSD + Schematron runner), schemas/*, examples/* |
 | main | 14.1 | pipeline/src/engine |
 | main | 14.2 | pipeline/src/engine/idempotency.ts |
-| main | 14.3 | pipeline/src/ports/{queue,cache,secrets,object-store,runner}.ts, app/src/providers/{local,docker,aws,gcp} |
+| main | 14.3 | pipeline/src/ports/{queue,cache,secrets,object-store,runner}.ts, pipeline/src/providers/local (in-memory, demo), app/src/providers/{docker,aws,gcp} |
+| main | 14.3 (demo) | pipeline/src/demo, demo/ |
 | main | 14.3 (config) | pipeline/src/config/app-config.ts, schemas/app-config.xsd |
 | main | 14.4 | scripts/*-bootstrap.ts, packages/*/test/{live,e2e} |
 | main | 14.5 ModelPort | pipeline/src/ports/model.ts, pipeline/src/models/{anthropic,openai,google,mock} |
