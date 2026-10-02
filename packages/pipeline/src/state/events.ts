@@ -17,6 +17,8 @@
 //   database file; two handles on one file in one process are not supported (better-sqlite3 blocks
 //   the event loop while it waits for the other handle's write lock).
 //
+// `read` and `readSince` return events upcast to the current version (B 4); the stored row is untouched.
+//
 // Every jsonb and timestamptz value goes through `ctx.codec`; `recorded_at` comes from `ctx.now()`
 // (ADR 0011), one value per append. `readSince` does not page on it (ADR 0013): a clock is not
 // commit order, and an append that commits after a reader passed its `recorded_at` would be skipped.
@@ -37,6 +39,7 @@ import type { StateContext } from './context.ts';
 import { inTransaction } from './context.ts';
 import type { IncidentEventsTable } from './db.ts';
 import { applyProjections } from './projections/index.ts';
+import { upcast } from './upcast.ts';
 
 /** First key of the two-key advisory lock append takes on Postgres ("SNAP" in ASCII). */
 export const APPEND_LOCK_NAMESPACE = 0x534e4150;
@@ -104,7 +107,7 @@ async function appendInTransaction(tx: StateContext, incidentId: string, events:
     throw isUniqueViolation(e) ? new SeqTaken(e) : e;
   }
 
-  // Hand projections exactly what `read` will return for these rows.
+  // Hand projections exactly what `read` will return for these rows (upcast included).
   await applyProjections(
     tx,
     rows.map((r) => toEvent(tx, { ...r, payload: JSON.parse(r.payload) as unknown })),
@@ -214,8 +217,10 @@ function toEvent(ctx: StateContext, r: DecodedRow): IncidentEvent {
     recordedAt: ctx.codec.fromTimestamp(r.recorded_at),
   };
   // The row's `type` and `payload` are paired by the writer; the union cannot be checked statically
-  // here. Upcasting old `v` values lands in state/upcast.ts (B 4) when the first v2 event exists.
-  return event as IncidentEvent;
+  // here. Every reader gets the current version (B 4): `upcast` (state/upcast.ts, the registry
+  // rebuild uses) is the one place old versions change, and it is a no-op for an event that is
+  // already current, so a caller that upcasts again (rebuild, the correction refold) is harmless.
+  return upcast(event as IncidentEvent);
 }
 
 interface CursorKey {

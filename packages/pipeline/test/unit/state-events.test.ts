@@ -9,6 +9,7 @@ import { ExpectedSeqConflictError, LOG_START, type IncidentEvent, type OpenedSta
 import type { StateContext } from '../../src/state/context.ts';
 import type { OpenStateHooks } from '../../src/state/db.ts';
 import { APPEND_LOCK_NAMESPACE, read as readIn } from '../../src/state/events.ts';
+import { upcasters } from '../../src/state/upcast.ts';
 import { applyProjections } from '../../src/state/projections/index.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
@@ -627,5 +628,29 @@ describe('stored values round-trip', () => {
     }
     const row = await state.ctx.db.selectFrom('incident_events').select(['v', 'seq']).where('incident_id', '=', INC_A).executeTakeFirstOrThrow();
     expect(row).toEqual({ v: 2, seq: 1 });
+  });
+});
+
+describe('read and readSince upcast (B 4)', () => {
+  it('return the registered v1 to v2 upcast, and the stored row stays v1', async () => {
+    const state = await open();
+    // A v1 `closed` event from before `why` was renamed to `reason`.
+    const v1 = { ...closed(INC_A, 'unused'), payload: { why: 'old shape' } } as unknown as NewEvent;
+    await state.append(INC_A, [v1], 0);
+    await logSettled();
+
+    const unregister = upcasters.register('closed', 1, (payload) => ({ reason: (payload as { why: string }).why }));
+    try {
+      const viaRead = await state.read(INC_A);
+      expect(viaRead).toHaveLength(1);
+      expect(viaRead[0]).toMatchObject({ type: 'closed', v: 2, payload: { reason: 'old shape' } });
+      const viaSince = await state.readSince(LOG_START, 10);
+      expect(viaSince.events).toHaveLength(1);
+      expect(viaSince.events[0]).toMatchObject({ type: 'closed', v: 2, payload: { reason: 'old shape' } });
+    } finally {
+      unregister();
+    }
+    const stored = await state.read(INC_A);
+    expect(stored[0]).toMatchObject({ v: 1, payload: { why: 'old shape' } });
   });
 });
