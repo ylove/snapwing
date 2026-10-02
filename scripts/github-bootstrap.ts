@@ -2,7 +2,7 @@
 //   pnpm github:bootstrap fixture   create or reset the fixture repository and its branch protection (needs `gh` with repo and workflow scopes)
 //   pnpm github:bootstrap app       create the Snapwing GitHub App through GitHub's manifest flow; prints the install link for the fixture repo
 //   (open the printed install link and install the App on the fixture repo only)
-//   pnpm github:bootstrap verify    find the installation, record GITHUB_INSTALLATION_ID, check everything
+//   pnpm github:bootstrap verify    find the installation, record GITHUB_INSTALLATION_ID and GITHUB_APP_SLUG, check everything
 //   pnpm github:bootstrap secrets   copy the GitHub values from .env.live into repository secrets (GH_ names) on ylove/snapwing
 //   pnpm github:bootstrap webhook   later, once SNAPWING_PUBLIC_URL exists: point the App's webhook at it
 //   pnpm github:bootstrap destroy --yes   when the build is done: delete the fixture repository (needs the delete_repo scope; the App stays)
@@ -40,6 +40,7 @@ export const SECRET_MAP: Readonly<Record<string, string>> = {
   GITHUB_APP_PRIVATE_KEY: 'GH_APP_PRIVATE_KEY',
   GITHUB_INSTALLATION_ID: 'GH_INSTALLATION_ID',
   GITHUB_WEBHOOK_SECRET: 'GH_WEBHOOK_SECRET',
+  GITHUB_APP_SLUG: 'GH_APP_SLUG',
 };
 
 const FIXTURE_DIR = 'fixtures/snapwing-fixture-web';
@@ -325,6 +326,7 @@ export async function runApp(d: BootstrapDeps, options: AppOptions = {}): Promis
       GITHUB_WEBHOOK_SECRET: app.webhookSecret ?? randomBytes(32).toString('hex'),
       GITHUB_APP_PRIVATE_KEY: app.pem,
       GITHUB_APP_PRIVATE_KEY_PATH: PEM_FILE,
+      GITHUB_APP_SLUG: app.slug,
     });
     return { appId: app.id, slug: app.slug, installUrl: `${webBase(d)}/apps/${app.slug}/installations/new` };
   }
@@ -587,6 +589,12 @@ export async function runVerify(d: BootstrapDeps, options: VerifyOptions = {}): 
     checks.push({ name, ok, detail });
     d.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${detail}`);
   };
+
+  // The slug names the App's bot login (`<slug>[bot]`) for the GitHub webhook route; `app` writes it too, this picks it up on a re-run.
+  const appBody = (await must(d, jwt, 'GET', '/app')).body;
+  const slug = isRecord(appBody) ? str(appBody['slug'], 'slug') : str(undefined, 'slug');
+  await updateEnvFile(d, { GITHUB_APP_SLUG: slug });
+  record('app', true, `read App "${slug}"; wrote GITHUB_APP_SLUG to ${ENV_FILE}`);
 
   const listed = await must(d, jwt, 'GET', '/app/installations?per_page=100');
   const installs = Array.isArray(listed.body) ? listed.body.filter(isRecord) : [];
