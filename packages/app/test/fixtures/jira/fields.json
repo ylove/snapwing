@@ -1,0 +1,4 @@
+[
+  { "id": "summary", "name": "Summary", "custom": false, "schema": { "type": "string", "system": "summary" } },
+  { "id": "customfield_10000", "name": "Implementation Prompt", "custom": true, "schema": { "type": "string", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:textarea", "customId": 10000 } }
+]

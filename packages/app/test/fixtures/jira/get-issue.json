@@ -1,0 +1,10 @@
+{
+  "id": "10002",
+  "key": "TEST-1",
+  "self": "https://example.atlassian.net/rest/api/3/issue/10002",
+  "fields": {
+    "summary": "Cart total is blank after promo code",
+    "labels": ["snapwing"],
+    "status": { "name": "Backlog" }
+  }
+}

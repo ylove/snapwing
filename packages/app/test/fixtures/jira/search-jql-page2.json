@@ -1,0 +1,11 @@
+{
+  "issues": [
+    {
+      "id": "10004",
+      "key": "TEST-3",
+      "self": "https://example.atlassian.net/rest/api/3/issue/10004",
+      "fields": { "summary": "Promo code field rejects lowercase", "assignee": null }
+    }
+  ],
+  "isLast": true
+}

@@ -1,0 +1,1 @@
+{ "id": "customfield_10001", "name": "Conversation Link", "custom": true, "schema": { "type": "string", "custom": "com.atlassian.jira.plugin.system.customfieldtypes:url", "customId": 10001 } }
