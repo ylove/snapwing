@@ -7,14 +7,18 @@
 // replaying a log writes the same rows on both dialects. `applyProjections` loads an incident's
 // rows once, folds the events in seq order, and writes back only the tables that changed. Events
 // for an incident with no `captured` event yet fold to nothing. An event that does not fit the
-// incident's status (`isValidTransition`, #11) keeps the status and is logged as a warning.
+// incident's status (`isValidTransition`, #11) keeps the status and is logged as a warning, as is
+// a `corrected` event the incidents fold ignores (ADR 0014). Corrections refold the incidents row
+// only; claims, subscriptions, and escalation scores keep what the events as recorded gave them.
 
 import { sql } from 'kysely';
 import type { IncidentEvent } from '../../contracts/events.ts';
 import type { EscalationScore } from '../../contracts/signals.ts';
 import type { Claim, IncidentQuery, IncidentStatus, IncidentView, Subscription } from '../../contracts/state.ts';
 import { inTransaction, type StateContext } from '../context.ts';
+import { read } from '../events.ts';
 import { enqueueOutbox } from '../outbox.ts';
+import { upcast } from '../upcast.ts';
 import { foldClaims, loadClaims, writeClaims } from './claims.ts';
 import { foldScores, loadScores, writeScores, type ScoreRow } from './escalation.ts';
 import { foldIncident, loadIncident, rowToIncident, writeIncident } from './incidents.ts';
@@ -58,16 +62,22 @@ export async function applyProjections(tx: StateContext, events: readonly Incide
 
 async function projectIncident(tx: StateContext, incidentId: string, events: readonly IncidentEvent[]): Promise<void> {
   const before = await loadIncident(tx, incidentId);
+  // A correction refolds the log before it (ADR 0014). The batch is already in `incident_events`
+  // (append inserts before it projects; rebuild replays stored rows), so the log read here holds
+  // it. Upcast as rebuild does, with the default registry.
+  const log = events.some((e) => e.type === 'corrected') ? (await read(tx, incidentId)).map((e) => upcast(e)) : [];
   let view = before;
   const steps: { event: IncidentEvent; status: IncidentStatus }[] = [];
   for (const e of events) {
     const from = view?.status;
-    const fold = foldIncident(view, e);
+    const fold = foldIncident(view, e, log);
     view = fold.view;
     if (view === undefined) {
       continue;
     }
-    if (!fold.valid && from !== undefined) {
+    if (fold.problem !== undefined) {
+      console.warn(`projections: incident ${incidentId} seq ${e.seq}: correction ignored: ${fold.problem}`);
+    } else if (!fold.valid && from !== undefined) {
       console.warn(`projections: incident ${incidentId} seq ${e.seq}: event ${e.type} does not fit status ${from}; status kept`);
     }
     steps.push({ event: e, status: view.status });
