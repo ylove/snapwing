@@ -340,21 +340,13 @@ export interface DemoOptions {
   afterSeed?: (state: OpenedState) => Promise<void>;
 }
 
-/** ADR 0014 events that feed columns but never the status; the reducer's table does not list them. */
-const OBSERVABILITY_EVENTS: ReadonlySet<EventType> = new Set<EventType>([
-  'status-message-posted',
-  'waiting-changed',
-  'monitoring-started',
-  'monitoring-stopped',
-]);
-
 /** Status path of a replay, from the log alone: `captured > assembling > ... > filed`, repeats collapsed. */
 export function statusTrace(log: readonly IncidentEvent[]): { path: IncidentStatus[]; invalid: string[] } {
   const path: IncidentStatus[] = [INITIAL_STATUS];
   const invalid: string[] = [];
   let current: IncidentStatus = INITIAL_STATUS;
   for (const event of log) {
-    if (!OBSERVABILITY_EVENTS.has(event.type) && !isValidTransition(current, event)) {
+    if (!isValidTransition(current, event)) {
       invalid.push(`seq ${event.seq} ${event.type} in ${current}`);
     }
     current = nextStatus(current, event);
