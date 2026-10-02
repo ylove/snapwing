@@ -9,14 +9,60 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Minutes are scarce (3,000 a month on GitHub Pro; #244 ran out once), so the heavy jobs are selective:
+# - `changes` (a few seconds, no third-party action) decides whether the change touches code, meaning
+#   anything outside `**/*.md`, `docs/**`, `build/**`. `test` and `state-verify` run only when it does.
+# - `secret-scan` and `ports-context` always run (build/CONTEXT.md 6b, BUILDING.md 7); they are cheap.
+# - Pull requests run the full matrix (sqlite and postgres, plus state-verify): merges are gated there.
+#   A push to `main` (a squash merge) runs `secret-scan` and the sqlite `test` leg only.
+#   Trade-off (merge skew): two PRs green on their own can break each other once both land, and `main`
+#   then shows only the sqlite result; a Postgres-only break from skew surfaces on the next PR's run,
+#   not on the merge itself. Accepted to halve the cost of every merge.
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        name: Does the change touch code?
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
+          elif git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            changed=$(git diff --name-only "${BEFORE}...HEAD")
+          else
+            changed="unknown-base" # new branch or force push: no base to diff, so assume code
+          fi
+          if echo "$changed" | grep -Evq '(\.md$|^docs/|^build/|^$)'; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "$changed"
+      # D9 (no em dashes) matters most for docs-only changes, so the prose lint runs on every push and PR.
+      # It has no dependencies (node built-ins only), so no install is needed; it is not repeated in `test`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: node scripts/lint-prose.mjs
+
   test:
     name: test (${{ matrix.db }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        db: [sqlite, postgres]
+        db: ${{ fromJSON(github.event_name == 'pull_request' && '["sqlite","postgres"]' || '["sqlite"]') }}
     services:
       postgres:
         image: postgres:16
@@ -40,7 +86,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
-      - run: pnpm lint:prose
       - run: pnpm test
       - run: pnpm test:contract
 
@@ -59,7 +104,8 @@ jobs:
   state-verify:
     name: state rebuild --verify (${{ matrix.db }})
     runs-on: ubuntu-latest
-    needs: test
+    needs: [changes, test]
+    if: github.event_name == 'pull_request' && needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
