@@ -64,7 +64,11 @@ describe('pnpm demo', () => {
     expect(scenario('01-level-0-ticket-only')).toMatchObject({
       status: 'filed',
       level: 0,
-      outbox: [{ op: 'create-issue', issueKey: 'HELP-1', autonomyLevel: 0 }],
+      outbox: [
+        { op: 'create-issue', issueKey: 'HELP-1', autonomyLevel: 0 },
+        { op: 'update-fields', issueKey: 'HELP-1', field: 'Agent Status', value: 'filed' },
+        { op: 'update-fields', issueKey: 'HELP-1', field: 'Agent Status', value: 'filed · waiting on human' },
+      ],
       jira: [{ key: 'HELP-1', status: 'To Do' }],
       cards: ['scope-preview'],
     });
@@ -76,6 +80,7 @@ describe('pnpm demo', () => {
       level: 1,
       outbox: [
         { op: 'create-issue', issueKey: 'ADM-1', autonomyLevel: 1 },
+        { op: 'update-fields', issueKey: 'ADM-1', field: 'Agent Status', value: 'filed' },
         { op: 'transition', issueKey: 'ADM-1', to: 'In Progress' },
       ],
       jira: [{ key: 'ADM-1', status: 'In Progress' }],
@@ -89,6 +94,7 @@ describe('pnpm demo', () => {
       level: 2,
       outbox: [
         { op: 'create-issue', issueKey: 'WEB-1', autonomyLevel: 2 },
+        { op: 'update-fields', issueKey: 'WEB-1', field: 'Agent Status', value: 'filed' },
         { op: 'transition', issueKey: 'WEB-1', to: 'In Progress' },
       ],
       jira: [{ key: 'WEB-1', status: 'In Progress' }],
@@ -102,6 +108,7 @@ describe('pnpm demo', () => {
       level: 3,
       outbox: [
         { op: 'create-issue', issueKey: 'APP-1', autonomyLevel: 3 },
+        { op: 'update-fields', issueKey: 'APP-1', field: 'Agent Status', value: 'filed' },
         { op: 'transition', issueKey: 'APP-1', to: 'In Progress' },
       ],
       jira: [{ key: 'APP-1', status: 'In Progress' }],
@@ -132,6 +139,7 @@ describe('pnpm demo', () => {
     expect(out).toMatch(/slack {3}chat\.postMessage #admin-bugs card fix-preview: Fix preview, level 1: "CSV usage export/);
     expect(out).toMatch(/tap {5}@adminDev taps approve_fix on fix-preview/);
     expect(out).toMatch(/jira {4}POST \/issue\/APP-1\/transitions To Do -> In Progress/);
+    expect(out).toMatch(/jira {4}PUT \/issue\/HELP-1 Agent Status "filed · waiting on human"/);
     expect(out).toMatch(/github {2}GET \/search\/code "checkout" in acme\/web: 1 hit/);
     expect(out.match(/^ {2}result {2}.*; as expected \(/gm)).toHaveLength(6);
     expect(out).toContain('6 of 6 recordings as expected, 0 requests outside the mocks');

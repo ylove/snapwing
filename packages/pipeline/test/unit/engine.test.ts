@@ -262,8 +262,12 @@ async function status(h: Harness): Promise<string | undefined> {
   return (await state.getIncident(h.payload.eventId))?.status;
 }
 
+/**
+ * The Jira rows the engine enqueued itself. The field writes `outboxFor` derives from the lifecycle
+ * (Agent Status after `filed`, #141) are left out; test/unit/outbox-jira.test.ts covers them.
+ */
 async function outbox(): Promise<OutboxItem[]> {
-  return state.drainOutbox('jira', 50);
+  return (await state.drainOutbox('jira', 50)).filter((r) => r.batchKey?.startsWith('field:') !== true);
 }
 
 function eventOf<T extends EventType>(log: IncidentEvent[], type: T): IncidentEvent<T> | undefined {

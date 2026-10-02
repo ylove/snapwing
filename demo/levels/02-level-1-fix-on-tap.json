@@ -41,6 +41,7 @@
     "status": "filed",
     "outbox": [
       { "op": "create-issue", "issueKey": "ADM-1", "autonomyLevel": 1 },
+      { "op": "update-fields", "issueKey": "ADM-1", "field": "Agent Status", "value": "filed" },
       { "op": "transition", "issueKey": "ADM-1", "to": "In Progress" }
     ]
   }

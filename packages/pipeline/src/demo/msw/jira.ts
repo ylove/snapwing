@@ -3,11 +3,12 @@
 // sync are phase 3 (B 7); nothing outside src/demo/ may import this file.
 //
 // Mock side (`JiraWorld`, `jiraHandlers`): issues in memory, served on the REST v3 paths the
-// projector will call: `POST /search/jql`, `GET /field`, `POST /issue`, `GET|POST
+// projector will call: `POST /search/jql`, `GET /field`, `POST /issue`, `PUT /issue/{key}`, `GET|POST
 // /issue/{key}/transitions`, `POST /issue/{key}/comment`. Basic auth with a fake email and token.
 //
 // Client side: `DemoJiraSearch` (dedupe's JiraSearch) and `DemoOutboxDrainer`. The drainer stands in
-// for the projector: it sends each `create-issue`, `transition`, and `add-comment` row to the mock,
+// for the projector: it sends each `create-issue`, `update-fields`, `add-labels`, `transition`, and
+// `add-comment` row to the mock,
 // acks it, and for a created issue appends `filed { jiraKey }` in the same transaction as the ack
 // (with `expectedSeq`), then calls `continueIncident`. Rule 2 holds: no stage calls Jira; only this
 // drainer does, from the outbox. Not done here (projector work): rewriting the implementation
@@ -50,6 +51,7 @@ const CUSTOM_FIELDS: readonly { id: string; name: string }[] = [
   { id: 'customfield_10050', name: 'Implementation Prompt' },
   { id: 'customfield_10051', name: 'Conversation Link' },
   { id: 'customfield_10052', name: 'Autonomy Level' },
+  { id: 'customfield_10053', name: 'Agent Status' },
 ];
 
 const TRANSITIONS: readonly { id: string; name: string }[] = [
@@ -154,6 +156,29 @@ export function jiraHandlers(world: JiraWorld): HttpHandler[] {
       world.note(`POST /issue created ${key} "${summary}" (autonomy ${String(custom['Autonomy Level'])}, labels ${labels.join(', ')})`);
       return HttpResponse.json({ id: String(10000 + world.issues.size), key, self: `${API}/issue/${key}` }, { status: 201 });
     }),
+    http.put(`${API}/issue/:key`, async ({ request, params }) => {
+      const denied = unauthorized(request);
+      if (denied !== undefined) return denied;
+      const issue = world.issues.get(str(params['key']));
+      if (issue === undefined) return HttpResponse.json({ errorMessages: ['Issue does not exist'] }, { status: 404 });
+      const body = asRecord(await request.json());
+      const fields = asRecord(body['fields']);
+      const changes: string[] = [];
+      for (const f of CUSTOM_FIELDS) {
+        if (fields[f.id] === undefined) continue;
+        issue.custom[f.name] = fields[f.id];
+        changes.push(`${f.name} "${String(fields[f.id])}"`);
+      }
+      const ops = asRecord(body['update'])['labels'];
+      for (const op of Array.isArray(ops) ? ops.map(asRecord) : []) {
+        const label = str(op['add']);
+        if (label === '' || issue.labels.includes(label)) continue;
+        issue.labels.push(label);
+        changes.push(`label ${label}`);
+      }
+      world.note(`PUT /issue/${issue.key} ${changes.join(', ')}`);
+      return new HttpResponse(null, { status: 204 });
+    }),
     http.get(`${API}/issue/:key/transitions`, ({ request, params }) => {
       const denied = unauthorized(request);
       if (denied !== undefined) return denied;
@@ -187,7 +212,7 @@ export function jiraHandlers(world: JiraWorld): HttpHandler[] {
 
 // Client side -------------------------------------------------------------------------------------
 
-async function jira(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {
+async function jira(method: 'GET' | 'POST' | 'PUT', path: string, body?: unknown): Promise<unknown> {
   const res = await fetch(`${API}${path}`, {
     method,
     headers: { authorization: AUTH, accept: 'application/json', ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
@@ -219,6 +244,11 @@ export interface SentRow {
   to?: string;
   /** `create-issue` only: the Autonomy Level custom field sent. */
   autonomyLevel?: number;
+  /** `update-fields` only: the one custom field written, and its value. */
+  field?: string;
+  value?: string | number;
+  /** `add-labels` only. */
+  labels?: string[];
 }
 
 export interface DrainerDeps {
@@ -262,6 +292,27 @@ export class DemoOutboxDrainer {
         filed = str(created['key']);
         const level = custom['Autonomy Level'];
         sent = { op: row.op, issueKey: filed, ...(typeof level === 'number' ? { autonomyLevel: level } : {}) };
+        break;
+      }
+      case 'update-fields': {
+        const issueKey = str(p['issueKey']);
+        const ids = await this.fieldIds();
+        const entries = Object.entries(asRecord(p['customFields']));
+        const [entry] = entries;
+        if (entries.length !== 1 || entry === undefined) throw new Error(`demo drainer: update-fields for ${issueKey} must write exactly one field`);
+        const [field, value] = entry;
+        const id = ids.get(field);
+        if (id === undefined) throw new Error(`jira: no custom field named ${field}`);
+        if (typeof value !== 'string' && typeof value !== 'number') throw new Error(`demo drainer: ${field} must be a string or a number`);
+        await jira('PUT', `/issue/${issueKey}`, { fields: { [id]: value } });
+        sent = { op: row.op, issueKey, field, value };
+        break;
+      }
+      case 'add-labels': {
+        const issueKey = str(p['issueKey']);
+        const labels = Array.isArray(p['labels']) ? p['labels'].filter((l): l is string => typeof l === 'string') : [];
+        await jira('PUT', `/issue/${issueKey}`, { update: { labels: labels.map((l) => ({ add: l })) } });
+        sent = { op: row.op, issueKey, labels };
         break;
       }
       case 'transition': {

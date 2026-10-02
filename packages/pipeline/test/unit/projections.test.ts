@@ -507,15 +507,19 @@ describe(`determinism (${TEST_DIALECT})`, () => {
 
     clock = () => new Date('2031-01-01T00:00:00.000Z');
     await clearProjections();
-    await state.transaction(async (tx) => applyProjections((tx as StateStore).ctx, await tx.read(INC)));
+    // A replay, as rebuild runs it: the outbox already holds the rows these events implied (#89).
+    await state.transaction(async (tx) => applyProjections((tx as StateStore).ctx, await tx.read(INC), { outbox: false }));
     expect(await snapshot()).toEqual(live);
   });
 
-  it('the outbox hook implies no rows yet', async () => {
+  it('an append enqueues the rows the outbox hook implies, and only once the issue is filed (#141)', async () => {
     const [first] = toFiled();
-    expect(first && outboxFor({ ...first, seq: 1, recordedAt: '2026-10-01T10:00:00.000Z' } as IncidentEvent)).toEqual([]);
+    const captured = { ...first, seq: 1, recordedAt: '2026-10-01T10:00:00.000Z' } as IncidentEvent;
+    const opened = foldIncident(undefined, captured).view;
+    expect(opened && outboxFor(captured, { before: undefined, after: opened, valid: true })).toEqual([]);
     await state.append(INC, toFiled(), 0);
-    expect(await ctx.db.selectFrom('outbox').selectAll().execute()).toEqual([]);
+    const rows = await state.drainOutbox('jira', 10);
+    expect(rows).toMatchObject([{ op: 'update-fields', incidentId: INC, payload: { issueKey: 'WEB-1042', customFields: { 'Agent Status': 'filed' } } }]);
   });
 });
 

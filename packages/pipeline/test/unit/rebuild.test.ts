@@ -26,7 +26,7 @@ vi.mock('../../src/state/projections/outbox.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/state/projections/outbox.ts')>();
   return {
     ...actual,
-    outboxFor: (e: IncidentEvent): OutboxItem[] =>
+    outboxFor: (e: IncidentEvent, change: Parameters<typeof actual.outboxFor>[1]): OutboxItem[] =>
       outboxHook.rowPerEvent
         ? [
             {
@@ -41,7 +41,7 @@ vi.mock('../../src/state/projections/outbox.ts', async (importOriginal) => {
               createdAt: e.recordedAt,
             },
           ]
-        : actual.outboxFor(e),
+        : actual.outboxFor(e, change),
   };
 });
 
@@ -295,10 +295,10 @@ describe(`rebuild (${TEST_DIALECT})`, () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    mocked.mockImplementationOnce(async (tx, events) => {
+    mocked.mockImplementationOnce(async (tx, events, options) => {
       entered();
       await gate;
-      return actual(tx, events);
+      return actual(tx, events, options);
     });
 
     const rebuilding = rebuild(state, { all: true });
