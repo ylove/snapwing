@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workspace xmlns="urn:snapwing:test:mini:v1">
+  <surface id="web"/>
+  <!-- <channel name="commented-out" surface="nowhere"/> must not shift line numbers -->
+  <channel name="web-bugs" surface="web"/>
+  <channel name="app-bugs"
+           surface="mobile"/>
+</workspace>

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<workspace xmlns="urn:snapwing:test:mini:v1">
+  <surface id="web"/>
+  <channel name="web-bugs" surface="web"/>
+  <channel name="no-surface"/>
+</workspace>

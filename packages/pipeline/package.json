@@ -20,5 +20,9 @@
     "@types/node": "^26.6.3",
     "typescript": "~6.0.3",
     "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "node-schematron": "^2.1.0",
+    "xmllint-wasm": "^5.3.0"
   }
 }
