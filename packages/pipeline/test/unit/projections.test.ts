@@ -16,6 +16,7 @@ import {
   outboxFor,
   type ScoreRow,
 } from '../../src/state/projections/index.ts';
+import { rebuild } from '../../src/state/rebuild.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
 
@@ -27,6 +28,8 @@ const INC_C = '01JZ00000000000000000000C1';
 const REPORTER = { id: 'U-FAKE-REPORTER', name: 'Test Reporter', role: 'reporter' } as const;
 const DANA = 'U-FAKE-DANA';
 const LEE = 'U-FAKE-LEE';
+/** The map handle the confidence stack resolves as the owner (main 4.4). */
+const OWNER = 'webDev1';
 
 // One database and one handle per file, opened once (journal 2026-10-02-pg-introspection-race);
 // tests set the clock through `clock` and the tables are emptied between tests.
@@ -114,14 +117,14 @@ function captured(incidentId = INC, extra: { workspaceId?: string; parentId?: st
   );
 }
 
-/** captured through filed: six events that leave the incident `filed` as WEB-1042. */
+/** captured through filed: six events that leave the incident `filed` as WEB-1042, owned by `webDev1`. */
 function toFiled(incidentId = INC, opts: { summary?: string; surfaceId?: string; jiraKey?: string } = {}): NewEvent[] {
   return [
     captured(incidentId),
     ev('context-assembled', { bundle: { artifactId: '01JZ00000000000000000000F1', version: 1 }, includedCount: 4, excludedCount: 1 }, { incidentId }),
     ev(
       'resolved',
-      { surfaceId: opts.surfaceId ?? 'web', componentId: 'checkout', repo: 'fake-org/web', resolvedBy: 'channel-explicit', confidence: 0.9 },
+      { surfaceId: opts.surfaceId ?? 'web', componentId: 'checkout', repo: 'fake-org/web', ownerId: OWNER, resolvedBy: 'channel-explicit', confidence: 0.9 },
       { incidentId },
     ),
     ev('dedupe-checked', { candidates: [], decision: 'none' }, { incidentId }),
@@ -203,6 +206,7 @@ describe(`incidents projection (${TEST_DIALECT})`, () => {
       branch: 'fix/WEB-1042',
       priority: 'High',
       autonomyLevel: 2,
+      ownerRef: OWNER,
       reporterId: REPORTER.id,
       source: 'slack',
       channelId: 'C-FAKE',
@@ -290,6 +294,33 @@ describe(`incidents projection (${TEST_DIALECT})`, () => {
     await appendAll(INC, [ev('resolved', { surfaceId: 'web', repo: 'fake-org/web', jiraProject: 'WEB', resolvedBy: 'clarify', confidence: 0.9 })]);
     expect(await state.getIncident(INC)).toMatchObject({ status: 'deduped', lastSeq: 9, surfaceId: 'web', repo: 'fake-org/web' });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the resolved owner apart from the Jira assignee; a later resolution replaces it, absent included (#191)', async () => {
+    await state.append(INC, toFiled(), 0);
+    expect(await state.getIncident(INC)).toMatchObject({ ownerRef: OWNER });
+
+    await appendAll(INC, [ev('jira-assignee-changed', { jiraKey: 'WEB-1042', to: DANA })]);
+    expect(await state.getIncident(INC)).toMatchObject({ ownerRef: OWNER, assigneeId: DANA });
+
+    await appendAll(INC, [ev('resolved', { surfaceId: 'web', ownerId: 'lee', resolvedBy: 'clarify', confidence: 0.9 })]);
+    expect(await state.getIncident(INC)).toMatchObject({ ownerRef: 'lee', assigneeId: DANA });
+
+    await appendAll(INC, [ev('resolved', { surfaceId: 'web', resolvedBy: 'clarify', confidence: 0.9 })]);
+    const cleared = await state.getIncident(INC);
+    expect(cleared).toMatchObject({ surfaceId: 'web', assigneeId: DANA });
+    expect(cleared !== null && 'ownerRef' in cleared).toBe(false);
+  });
+
+  it('a correction to the resolved owner rewrites owner_ref, and a rebuild reproduces it (#191)', async () => {
+    await state.append(INC, toFiled(), 0);
+    await appendAll(INC, [ev('corrected', { correctsSeq: 3, fields: { ownerId: 'lee' }, reason: 'wrong owner' }, { actor: DANA })]);
+    const live = await state.getIncident(INC);
+    expect(live).toMatchObject({ ownerRef: 'lee', lastSeq: 7 });
+
+    clock = () => new Date('2031-01-01T00:00:00.000Z');
+    await rebuild(state, { all: true });
+    expect(await state.getIncident(INC)).toEqual(live);
   });
 
   it('rolls the projection back with the append on a seq conflict', async () => {

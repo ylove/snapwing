@@ -33,7 +33,7 @@ type OptionalKeys<T> = Exclude<keyof T, RequiredKeys<T>>;
 type IncidentsNotNull = 'id' | 'workspace_id' | 'kind' | 'last_seq' | 'status' | 'source' | 'monitored' | 'opened_at' | 'updated_at';
 type IncidentsNullable =
   | 'parent_id' | 'surface_id' | 'component_id' | 'repo' | 'jira_key' | 'pr_number' | 'branch' | 'priority'
-  | 'autonomy_level' | 'assignee_id' | 'reporter_id' | 'channel_id' | 'anchor_id' | 'status_msg_id' | 'summary'
+  | 'autonomy_level' | 'assignee_id' | 'owner_ref' | 'reporter_id' | 'channel_id' | 'anchor_id' | 'status_msg_id' | 'summary'
   | 'waiting_on' | 'closed_at';
 type ClaimsNotNull = 'incident_id' | 'claimer_id' | 'since' | 'last_activity' | 'expires_at';
 type ClaimsNullable = 'hold_env' | 'hold_expires_at';

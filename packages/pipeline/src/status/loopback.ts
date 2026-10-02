@@ -30,7 +30,11 @@
 // changes nothing. There is no message before the incident has its own Jira key, and none for an
 // incident linked to someone else's issue (the dedupe card said where it went).
 //
-// The owner is the Jira assignee the incidents row knows (`assigneeId`, B 7.3), when it knows one.
+// The owner is the Jira assignee the incidents row knows (`assigneeId`), else the resolved owner
+// (`ownerRef`, main 4.4: the map handle the latest `resolved` named), else nobody is named. The
+// assignee comes first because only a human sets it: `jira-assignee-changed` is appended by the
+// Jira inbound sync for a human's edit and never for the agent's own write (B 7.3, the human wins),
+// so the projection holds no engine-set assignee to rank below the resolved owner.
 // The person who merged or stopped is mentioned when the event came from a chat platform (their id
 // is a chat user id) and named otherwise (a GitHub login); an event without an actor names nobody.
 
@@ -56,7 +60,8 @@ function hasOwnIssue(incident: IncidentView | undefined): incident is IncidentVi
 export function statusFor(event: IncidentEvent, incident: IncidentView, before?: IncidentView): StatusUpdate | undefined {
   if (!hasOwnIssue(incident)) return undefined;
   const issueKey = incident.jiraKey;
-  const owner = incident.assigneeId === undefined ? {} : { ownerUserId: incident.assigneeId };
+  const ownerRef = incident.assigneeId ?? incident.ownerRef;
+  const owner = ownerRef === undefined ? {} : { ownerUserId: ownerRef };
   const moved = (...to: IncidentStatus[]): boolean => to.includes(incident.status) && (before === undefined || before.status !== incident.status);
   const level = incident.autonomyLevel ?? 0;
   const ctx = (extra: Omit<StatusCopyContext, 'issueKey'> = {}): StatusCopyContext => ({ issueKey, ...extra });

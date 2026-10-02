@@ -136,15 +136,15 @@ describe(`state migrations (${TEST_DIALECT})`, () => {
   });
 });
 
-describe(`0002 event tx_order (${TEST_DIALECT})`, () => {
-  /** A bare handle on the test database, so a test can stop the schema at an older migration. */
-  function bareDb(): Kysely<Database> {
-    const url = tdb.options.url ?? '';
-    return tdb.dialect === 'sqlite'
-      ? new Kysely<Database>({ dialect: new SqliteDialect({ database: new BetterSqlite3(url) }) })
-      : new Kysely<Database>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url }) }) });
-  }
+/** A bare handle on the test database, so a test can stop the schema at an older migration. */
+function bareDb(): Kysely<Database> {
+  const url = tdb.options.url ?? '';
+  return tdb.dialect === 'sqlite'
+    ? new Kysely<Database>({ dialect: new SqliteDialect({ database: new BetterSqlite3(url) }) })
+    : new Kysely<Database>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: url }) }) });
+}
 
+describe(`0002 event tx_order (${TEST_DIALECT})`, () => {
   it('numbers existing events in their old readSince order, before every later append', async () => {
     const codec = createCodec(tdb.dialect);
     const db = bareDb();
@@ -190,6 +190,48 @@ describe(`0002 event tx_order (${TEST_DIALECT})`, () => {
       events = (await state.readSince(LOG_START, 10)).events;
     }
     expect(events.map((e) => (e.type === 'closed' ? e.payload.reason : e.type))).toEqual(['C1', 'A1', 'B1', 'A2', 'new']);
+  });
+});
+
+describe(`0004 incident owner_ref (${TEST_DIALECT})`, () => {
+  it('backfills each projected row from its latest resolved event', async () => {
+    const codec = createCodec(tdb.dialect);
+    const db = bareDb();
+    try {
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 3))).toEqual(['0001-initial', '0002-event-tx-order', '0003-linked-identities']);
+      const at = '2026-10-01T10:00:00.000Z';
+      const incident = (id: string) => ({ id, workspace_id: WS, kind: 'incident', status: 'filed', source: 'slack', opened_at: at, updated_at: at });
+      const event = (incidentId: string, seq: number, type: string, payload: Record<string, unknown>) => ({
+        workspace_id: WS,
+        incident_id: incidentId,
+        seq,
+        type,
+        source: 'agent',
+        payload: codec.json(payload),
+        occurred_at: at,
+        recorded_at: at,
+      });
+      const legacy = db as unknown as Kysely<Record<'incidents', ReturnType<typeof incident>> & Record<'incident_events', ReturnType<typeof event>>>;
+      await legacy.insertInto('incidents').values([incident('01JZ00000000000000000000A1'), incident('01JZ00000000000000000000B1'), incident('01JZ00000000000000000000C1')]).execute();
+      await legacy
+        .insertInto('incident_events')
+        .values([
+          event('01JZ00000000000000000000A1', 3, 'resolved', { surfaceId: 'web', ownerId: 'first', resolvedBy: 'vocabulary', confidence: 0.9 }),
+          event('01JZ00000000000000000000A1', 7, 'resolved', { surfaceId: 'web', ownerId: 'webDev1', resolvedBy: 'clarify', confidence: 0.9 }),
+          event('01JZ00000000000000000000A1', 8, 'planned', { ownerId: 'not-a-resolution' }),
+          event('01JZ00000000000000000000B1', 3, 'resolved', { surfaceId: 'web', resolvedBy: 'channel-inferred', confidence: 0.6 }),
+        ])
+        .execute();
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 4))).toEqual(['0004-incident-owner-ref']);
+      const rows = await db.selectFrom('incidents').select(['id', 'owner_ref']).orderBy('id').execute();
+      expect(rows.map((r) => [r.id.slice(-2), r.owner_ref])).toEqual([
+        ['A1', 'webDev1'],
+        ['B1', null],
+        ['C1', null],
+      ]);
+    } finally {
+      await db.destroy();
+    }
   });
 });
 
