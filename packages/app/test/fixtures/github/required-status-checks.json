@@ -1,0 +1,7 @@
+{
+  "url": "https://api.github.com/repos/octo-org/fixture-repo/branches/main/protection/required_status_checks",
+  "strict": false,
+  "contexts": ["snapwing/review"],
+  "contexts_url": "https://api.github.com/repos/octo-org/fixture-repo/branches/main/protection/required_status_checks/contexts",
+  "checks": [{ "context": "snapwing/review", "app_id": null }]
+}

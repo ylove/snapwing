@@ -1,6 +1,7 @@
 // Contract tests for the GitHub pull request client and CODEOWNERS resolver. Payloads are shaped from GitHub's
 // REST and GraphQL documentation (trimmed to the fields the client reads, tokens replaced with obvious fakes).
 
+import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import type { JsonBodyType } from 'msw';
@@ -131,6 +132,8 @@ describe('pull requests', () => {
     server.use(http.post(`${R}/issues/418/labels`, async ({ request }) => (await record(request), HttpResponse.json([{ id: 1, name: 'fixer-incomplete' }, { id: 2, name: 'fixer' }]))));
     expect(await client.addLabels(418, ['fixer-incomplete'])).toEqual(['fixer-incomplete', 'fixer']);
     expect(seen[0]?.body).toEqual({ labels: ['fixer-incomplete'] });
+    // Recorded live (#156): an App without issues: write is refused (422) a token that asks for it.
+    expect(tokenRequests[0]?.permissions).toEqual({ pull_requests: 'write' });
   });
 
   it('closes with a comment, comment first', async () => {
@@ -141,6 +144,7 @@ describe('pull requests', () => {
     await client.closePullRequest(418, 'Stopped by a human.');
     expect(seen.map((s) => `${s.method} ${s.url.pathname}`)).toEqual([`POST /repos/${REPO}/issues/418/comments`, `PATCH /repos/${REPO}/pulls/418`]);
     expect(seen[0]?.body).toEqual({ body: 'Stopped by a human.' });
+    expect(tokenRequests.every((t) => Object.keys(t.permissions).join() === 'pull_requests')).toBe(true);
     expect(seen[1]?.body).toEqual({ state: 'closed' });
   });
 
@@ -240,6 +244,14 @@ describe('combinedStatus', () => {
     ]);
     expect(status.all).toHaveLength(4);
     expect(tokenRequests.some((t) => t.permissions.administration === 'read')).toBe(true);
+  });
+
+  it('reads the recorded required_status_checks shape, a name in both contexts and checks counted once', async () => {
+    const recorded = JSON.parse(readFileSync(new URL('../fixtures/github/required-status-checks.json', import.meta.url), 'utf8')) as unknown;
+    serve({ protection: recorded, runs: [{ id: 1, name: 'snapwing/review', status: 'completed', conclusion: 'success' }], statuses: [] });
+    const status = await client.combinedStatus(SHA, 'main');
+    expect(status.required).toEqual([{ name: 'snapwing/review', state: 'success', source: 'check-run' }]);
+    expect(status.state).toBe('success');
   });
 
   it('is pending while a required check is queued or has not reported', async () => {
