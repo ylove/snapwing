@@ -39,6 +39,11 @@ async function until<T>(probe: () => T | undefined | Promise<T | undefined>, tim
   }
 }
 
+// pg-boss backoff (retryDelay 0 -> 1 s base): the delay before retry n is 2^n/2 * (1 + random) s, so at
+// most 2 s then 4 s, and each retry is picked up on the next poll (0.5 s here). Three attempts therefore
+// finish within 6 s + 3 polls; the rest of the bound is slack for a loaded machine.
+const RETRY_BOUND_MS = 2_000 + 4_000 + 3 * 500 + 12_000;
+
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 describe.skipIf(TEST_DIALECT !== 'postgres')('PgBossWorkflow', () => {
@@ -435,12 +440,14 @@ describe.skipIf(TEST_DIALECT !== 'postgres')('PgBossWorkflow', () => {
       });
       await wf.startPolling();
       await wf.start('merge.evaluate', {}, { retryLimit: 2, retryBackoff: true });
-      await until(() => attempts.length === 3, 20_000);
+      await until(() => attempts.length === 3, RETRY_BOUND_MS);
       expect(attempts).toEqual([1, 2, 3]);
       const [t1 = 0, t2 = 0, t3 = 0] = at;
-      // Backoff floors: 1 s before the first retry, 2 s before the second.
+      // Backoff floors: 1 s before the first retry, 2 s before the second (jitter only adds to them).
       expect(t2 - t1).toBeGreaterThanOrEqual(900);
       expect(t3 - t2).toBeGreaterThanOrEqual(1_900);
+      // The handler returns before pg-boss settles the job, so the row is still 'active' for a moment.
+      await until(async () => (await rows({ name: 'merge.evaluate' }))[0]?.state === 'completed', 5_000);
       const [row] = await rows({ name: 'merge.evaluate' });
       expect(row).toMatchObject({ state: 'completed', retry_backoff: true, retry_limit: 2 });
     }, 30_000);
