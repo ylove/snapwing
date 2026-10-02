@@ -36,6 +36,10 @@
   "taps": [{ "card": "scope-preview", "choice": "looks-right", "by": "U0SUPPORT" }],
   "expect": {
     "status": "filed",
-    "outbox": [{ "op": "create-issue", "issueKey": "HELP-1", "autonomyLevel": 0 }]
+    "outbox": [
+      { "op": "create-issue", "issueKey": "HELP-1", "autonomyLevel": 0 },
+      { "op": "update-fields", "issueKey": "HELP-1", "field": "Agent Status", "value": "filed" },
+      { "op": "update-fields", "issueKey": "HELP-1", "field": "Agent Status", "value": "filed · waiting on human" }
+    ]
   }
 }

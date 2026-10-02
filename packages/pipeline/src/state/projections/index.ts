@@ -22,13 +22,13 @@ import { upcast } from '../upcast.ts';
 import { foldClaims, loadClaims, writeClaims } from './claims.ts';
 import { foldScores, loadScores, writeScores, type ScoreRow } from './escalation.ts';
 import { foldIncident, loadIncident, rowToIncident, writeIncident } from './incidents.ts';
-import { outboxFor } from './outbox.ts';
+import { outboxFor, type IncidentChange } from './outbox.ts';
 import { ALL_SCOPE_ID, bySubscription, foldIncidentSubscriptions, loadIncidentSubscriptions, rowToSubscription, writeIncidentSubscriptions } from './subscriptions.ts';
 
 export { foldClaims } from './claims.ts';
 export { foldScores, type ScoreRow } from './escalation.ts';
 export { foldIncident, type IncidentFold } from './incidents.ts';
-export { outboxFor } from './outbox.ts';
+export { outboxFor, type IncidentChange } from './outbox.ts';
 export { foldIncidentSubscriptions } from './subscriptions.ts';
 
 /** `findIncidents` page size when `limit` is absent, and the largest it accepts. */
@@ -77,10 +77,11 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   // it. Upcast as rebuild does, with the default registry.
   const log = events.some((e) => e.type === 'corrected') ? (await read(tx, incidentId)).map((e) => upcast(e)) : [];
   let view = before;
-  const steps: { event: IncidentEvent; status: IncidentStatus }[] = [];
+  const steps: { event: IncidentEvent; status: IncidentStatus; change: IncidentChange }[] = [];
   for (const e of events) {
-    const from = view?.status;
-    const fold = foldIncident(view, e, log);
+    const prev = view;
+    const from = prev?.status;
+    const fold = foldIncident(prev, e, log);
     view = fold.view;
     if (view === undefined) {
       continue;
@@ -90,7 +91,7 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
     } else if (!fold.valid && from !== undefined) {
       console.warn(`projections: incident ${incidentId} seq ${e.seq}: event ${e.type} does not fit status ${from}; status kept`);
     }
-    steps.push({ event: e, status: view.status });
+    steps.push({ event: e, status: view.status, change: { before: prev, after: view, valid: fold.valid } });
   }
   if (view === undefined) {
     return;
@@ -121,8 +122,8 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   if (!outbox) {
     return;
   }
-  for (const { event } of steps) {
-    for (const item of outboxFor(event)) {
+  for (const { event, change } of steps) {
+    for (const item of outboxFor(event, change)) {
       await enqueueOutbox(tx, item);
     }
   }

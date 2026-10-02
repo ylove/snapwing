@@ -152,11 +152,17 @@ export function parseScenario(file: string, value: unknown): Scenario {
     const r = obj(raw, `expect.outbox[${i}]`);
     const to = r['to'];
     const level = r['autonomyLevel'];
+    const field = r['field'];
+    const value = r['value'];
+    const labels = r['labels'];
     return sentRow({
       op: text(r['op'], `expect.outbox[${i}].op`),
       issueKey: text(r['issueKey'], `expect.outbox[${i}].issueKey`),
       ...(typeof to === 'string' ? { to } : {}),
       ...(typeof level === 'number' ? { autonomyLevel: level } : {}),
+      ...(typeof field === 'string' ? { field } : {}),
+      ...(typeof value === 'string' || typeof value === 'number' ? { value } : {}),
+      ...(Array.isArray(labels) ? { labels: labels.map((l, j) => text(l, `expect.outbox[${i}].labels[${j}]`)) } : {}),
     });
   });
 
@@ -199,6 +205,9 @@ function sentRow(r: SentRow): SentRow {
     issueKey: r.issueKey,
     ...(r.to === undefined ? {} : { to: r.to }),
     ...(r.autonomyLevel === undefined ? {} : { autonomyLevel: r.autonomyLevel }),
+    ...(r.field === undefined ? {} : { field: r.field }),
+    ...(r.value === undefined ? {} : { value: r.value }),
+    ...(r.labels === undefined ? {} : { labels: [...r.labels] }),
   };
 }
 
@@ -541,7 +550,9 @@ async function runScenario(rt: Runtime, s: Scenario): Promise<ScenarioResult> {
 
   const elapsedMs = Date.now() - started;
   const path = statusTrace(log).path.join(' > ');
-  const writes = outbox.length === 0 ? 'no Jira writes' : outbox.map((r) => `${r.op} ${r.issueKey}${r.to === undefined ? '' : ` to ${r.to}`}`).join(', ');
+  const detail = (r: SentRow): string =>
+    r.to !== undefined ? ` to ${r.to}` : r.field !== undefined ? ` ${r.field} "${String(r.value)}"` : r.labels !== undefined ? ` ${r.labels.join(' ')}` : '';
+  const writes = outbox.length === 0 ? 'no Jira writes' : outbox.map((r) => `${r.op} ${r.issueKey}${detail(r)}`).join(', ');
   io.stdout(`  path    ${path}`);
   io.stdout(
     `  result  ${view?.status ?? 'missing'}${planned === undefined ? '' : ` at level ${planned.payload.autonomyLevel}`}; ${writes}; ` +

@@ -49,6 +49,7 @@
     "status": "filed",
     "outbox": [
       { "op": "create-issue", "issueKey": "WEB-1", "autonomyLevel": 2 },
+      { "op": "update-fields", "issueKey": "WEB-1", "field": "Agent Status", "value": "filed" },
       { "op": "transition", "issueKey": "WEB-1", "to": "In Progress" }
     ]
   }
