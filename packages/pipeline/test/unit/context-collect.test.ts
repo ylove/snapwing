@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SourceMessage } from '../../src/contracts/incident.ts';
-import type { ChatReader } from '../../src/context/chat-reader.ts';
+import { nearestMidpoint, type ChatReader } from '../../src/context/chat-reader.ts';
 import { collectWindow, widenPolicy, type Anchor } from '../../src/context/collect.ts';
 import { narrow, scopePreview, widen } from '../../src/context/scope-preview.ts';
 
@@ -17,11 +17,10 @@ class FakeReader implements ChatReader {
   constructor(private readonly all: SourceMessage[]) {}
   async history(_c: string, oldest: string, latest: string, limit: number): Promise<SourceMessage[]> {
     this.historyCalls.push({ oldest, latest, limit });
-    return this.all
+    const inWindow = this.all
       .filter((m) => m.threadParentId === undefined)
-      .filter((m) => m.timestamp >= oldest && m.timestamp <= latest)
-      .sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-      .slice(0, limit);
+      .filter((m) => m.timestamp >= oldest && m.timestamp <= latest);
+    return nearestMidpoint(inWindow, oldest, latest, limit);
   }
   async replies(_c: string, parentId: string): Promise<SourceMessage[]> {
     this.replyCalls.push(parentId);
@@ -65,6 +64,21 @@ describe('collectWindow', () => {
     // Nearest-first: the anchor's neighbors survive, the far ends go.
     expect(ids(bundle.included)).toContain('m29');
     expect(bundle.excluded.map((e) => e.id)).not.toContain('m31');
+  });
+
+  it('a busy window keeps the messages just after the anchor, not only the oldest ones', async () => {
+    // 100 messages one per 30 seconds across the window, the anchor in the middle.
+    const all = Array.from({ length: 100 }, (_, i) => msg(`b${String(i).padStart(3, '0')}`, -25 + i * 0.5));
+    const a = msg('anchor', 0);
+    const reader = new FakeReader([...all, a]);
+    const bundle = await collectWindow(anchorOf(a), reader);
+    const got = ids(bundle.included);
+    expect(reader.historyCalls[0]?.limit).toBe(40);
+    expect(got).toContain('anchor');
+    // b051 is 30 seconds after the anchor, b060 is 5 minutes after it: both are in the bundle.
+    expect(got).toContain('b051');
+    expect(got).toContain('b060');
+    expect(got).not.toContain('b000');
   });
 
   it('trims a reader that ignores the limit', async () => {
