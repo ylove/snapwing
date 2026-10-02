@@ -23,6 +23,9 @@
 //      are advisory (a harness can push with `--no-verify`), so nothing the fixer reported is used.
 //   4. When the request requires tests, runs `proveRegression` on the PR's test files (plus the
 //      reviewer's `regressionTest`), from the merge base to the head, with the configured command.
+//      With a runner that has an isolation boundary (`runner.runTests`: docker), both test runs
+//      happen inside it and no host process runs the PR's test command (ADR 0017, #234); the
+//      `local` runner has none, and the proof runs on the host with #233's guards (development only).
 //   5. Combines them: a scope or forbidden violation, or a regression test that is missing, passes
 //      without the fix, fails with it, or times out, turns an `approve` into `request-changes`. A
 //      proof that cannot run (no test command for the repo, a git error, no checkout) turns an
@@ -56,6 +59,7 @@ import { prepareWorkdir, SNAPWING_GIT_DIR, type GitIdentity, type PreparedWorkdi
 import { recordCiResult } from '../merge/ci.ts';
 import { httpStatus, startMergeEvaluate, type MergeCombinedStatus } from '../merge/job.ts';
 import type { HarnessPort, WorkItemRef } from '../ports/harness.ts';
+import { testRunnerOf, type RunnerPort } from '../ports/runner.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseImplementationRequest, type ImplementationRequest } from '../prompts/implementation-request.ts';
@@ -170,6 +174,12 @@ export interface ReviewDeps {
   clock: () => Date;
   /** Keep the review checkout after the run, for inspection. Default false. */
   keepWorkdir?: boolean;
+  /**
+   * The RunnerPort the fixer runs on. When it can run tests inside its boundary (`runTests`, the
+   * docker provider), the regression proof's test command runs there, never on this host (ADR 0017).
+   * Without one (the `local` runner, development only), the proof runs on the host.
+   */
+  runner?: RunnerPort;
 }
 
 // Jobs -------------------------------------------------------------------------------------------
@@ -423,6 +433,7 @@ async function regressionCheck(
     testFiles,
     testCommand: command,
     timeout: deps.config.regressionTimeout ?? DEFAULT_REGRESSION_TIMEOUT,
+    runner: testRunnerOf(deps.runner),
   });
   return regressionOf(result, testFiles);
 }

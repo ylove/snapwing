@@ -14,12 +14,20 @@
 // repository's config, so a credential helper or an auth header there would reach the test command, and
 // anything the test command writes to its config would reach the next git call in `workdir`. Our own git
 // calls get the same bare environment and run no hooks.
+//
+// With a `runner` (the RunnerPort's `runTests`: docker, #234), the test command never runs on this host.
+// Each tree is then a self-contained copy (`clone --local --no-hardlinks`: its own objects, no
+// alternates pointing back at `workdir`, no remote), the runner exposes only that tree to the command,
+// and the command gets only the caller's `env`. Our git calls build each tree before its run and never
+// touch it afterwards, so nothing the command plants in a tree's `.git` ever runs here.
 
 import { spawn, execFile } from 'node:child_process';
 import { devNull } from 'node:os';
 import { join } from 'node:path';
 import { createScratchHome, serverTreeConflict, type ScratchHome } from '../harness/untrusted-host.ts';
+import type { TestRunner, TestRunResult } from '../ports/runner.ts';
 import { parseDuration } from '../util/duration.ts';
+import { ulid } from '../util/ulid.ts';
 import { isTestFile } from './verdict.ts';
 
 export type RegressionStatus =
@@ -29,7 +37,7 @@ export type RegressionStatus =
   | 'missing-test-file' // a named test file is not in the head commit
   | 'no-test-files' // testFiles was empty
   | 'timeout' // a run exceeded the timeout; `phase` says which
-  | 'git-error'; // a revision, worktree, or timeout-value problem; `output` carries the message
+  | 'git-error'; // a revision, worktree, or timeout-value problem, or a runner that could not run; `output` says which
 
 export interface RegressionInput {
   /** A git repository (or worktree) holding both commits. Never modified: scratch worktrees live in the temp dir. */
@@ -47,8 +55,14 @@ export interface RegressionInput {
    * only PATH and LANG from the host plus these, and a scratch HOME and TMPDIR that these cannot
    * override; nothing else of `process.env`. Never
    * pass a secret or a checkout's git environment (`PreparedWorkdir.env` carries the git token).
+   * With a `runner`, these are the command's whole extra environment inside the boundary.
    */
   env?: Readonly<Record<string, string>> | undefined;
+  /**
+   * Runs the test command inside the RunnerPort's isolation boundary instead of on this host (ADR
+   * 0017). Absent: the host path above, for the `local` runner in development.
+   */
+  runner?: TestRunner | undefined;
 }
 
 export interface RegressionResult {
@@ -209,20 +223,24 @@ export async function proveRegression(input: RegressionInput): Promise<Regressio
     const baseTree = join(scratch.root, 'base');
     const headTree = join(scratch.root, 'head');
 
-    const addBase = await scratchTree(workdir, baseTree, baseSha);
+    const isolated = input.runner;
+    const run = (tree: string): Promise<RunOutcome> =>
+      isolated === undefined ? runCommand(testCommand, tree, env, timeoutMs) : runIsolated(isolated, tree, testCommand, input.env, timeoutMs);
+
+    const addBase = await scratchTree(workdir, baseTree, baseSha, isolated !== undefined);
     if (!addBase.ok) return result('git-error', `worktree at base failed: ${addBase.out}`);
     const apply = await git(baseTree, ['checkout', headSha, '--', ...testFiles]);
     if (!apply.ok) return result('git-error', `applying test files failed: ${apply.out}`);
 
-    const base = await runCommand(testCommand, baseTree, env, timeoutMs);
+    const base = await run(baseTree);
     const baseLabel = `--- at base ${baseSha.slice(0, 12)} with head tests (exit ${base.exitCode ?? 'none'}) ---\n${base.output}`;
     if (base.timedOut) return result('timeout', baseLabel, { phase: 'base' });
     if (base.exitCode === 0) return result('passes-without-fix', baseLabel);
 
-    const addHead = await scratchTree(workdir, headTree, headSha);
+    const addHead = await scratchTree(workdir, headTree, headSha, isolated !== undefined);
     if (!addHead.ok) return result('git-error', `worktree at head failed: ${addHead.out}`, { failsWithoutFix: true });
 
-    const head = await runCommand(testCommand, headTree, env, timeoutMs);
+    const head = await run(headTree);
     const output = `${baseLabel}\n--- at head ${headSha.slice(0, 12)} (exit ${head.exitCode ?? 'none'}) ---\n${head.output}`;
     if (head.timedOut) return result('timeout', output, { failsWithoutFix: true, phase: 'head' });
     if (head.exitCode !== 0) return result('fails-with-fix', output, { failsWithoutFix: true });
@@ -234,13 +252,33 @@ export async function proveRegression(input: RegressionInput): Promise<Regressio
   }
 }
 
+/** One run inside the runner's boundary. A runner that cannot run at all throws; the caller reports `git-error`. */
+async function runIsolated(
+  runner: TestRunner,
+  checkout: string,
+  command: string,
+  env: Readonly<Record<string, string>> | undefined,
+  timeoutMs: number,
+): Promise<RunOutcome> {
+  let r: TestRunResult;
+  try {
+    r = await runner.runTests({ runId: ulid(), checkout, command, timeoutMs, ...(env === undefined ? {} : { env: { ...env } }) });
+  } catch (e) {
+    throw new Error(`runner: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
+  return { exitCode: r.timedOut ? null : r.exitCode, timedOut: r.timedOut, output: tail(r.output) };
+}
+
 /**
  * A checkout of `sha` at `dest` with its own fresh config: `clone --shared` borrows `workdir`'s objects
  * through an alternates file and copies none of its config, so nothing in `workdir`'s config (a
  * credential helper, an auth header, a remote URL with a token) is visible from the scratch tree.
+ * `selfContained` (a runner's tree) copies the objects instead, so the tree works where `workdir`'s
+ * path does not exist and the command cannot reach `workdir`'s object store through it.
  */
-async function scratchTree(workdir: string, dest: string, sha: string): Promise<{ ok: boolean; out: string }> {
-  const clone = await git(workdir, ['clone', '--quiet', '--shared', '--no-checkout', '--', '.', dest]);
+async function scratchTree(workdir: string, dest: string, sha: string, selfContained: boolean): Promise<{ ok: boolean; out: string }> {
+  const share = selfContained ? ['--local', '--no-hardlinks'] : ['--shared'];
+  const clone = await git(workdir, ['clone', '--quiet', ...share, '--no-checkout', '--', '.', dest]);
   if (!clone.ok) return clone;
   const removeRemote = await git(dest, ['remote', 'remove', 'origin']);
   if (!removeRemote.ok) return removeRemote;

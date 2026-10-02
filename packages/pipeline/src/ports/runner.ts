@@ -1,9 +1,11 @@
-// src/ports/runner.ts (main 14.3): the runner runtime port, which runs the one ephemeral job type,
-// the fixer (main 10). Local: a child process on this machine (providers/local/runner.ts); aws: an
-// ECS Fargate task; gcp: a Cloud Run Job; docker: `docker run`.
+// src/ports/runner.ts (main 14.3): the runner runtime port, which runs the ephemeral jobs: the fixer
+// (main 10) and, on a provider with an isolation boundary, the regression proof's test runs (main 11.1,
+// ADR 0017). Local: a child process on this machine (providers/local/runner.ts); aws: an ECS Fargate
+// task; gcp: a Cloud Run Job; docker: `docker run`.
 //
-// A runner only starts and stops runs. The fixer inside reports progress and its result through the
-// fixer API (B 9), never through the runner and never into the database.
+// A runner only starts and stops fixer runs. The fixer inside reports progress and its result through
+// the fixer API (B 9), never through the runner and never into the database. A test run is different:
+// it is short, the caller awaits it, and its only result is the exit code the runner observes.
 
 import type { HarnessAdapter } from '../config/app-config.ts';
 import type { ArtifactRef } from '../contracts/events.ts';
@@ -41,6 +43,40 @@ export interface FixerJob {
   review?: ArtifactRef;
 }
 
+/**
+ * One run of a pull request's test command inside the runner's isolation boundary (main 11.1, ADR
+ * 0017). The caller prepares the tree on the host; the runner never clones and gets no credential.
+ */
+export interface TestRunJob {
+  /** A plain path segment (a ULID), unique per run; names the run (the docker container). */
+  runId: string;
+  /**
+   * The host directory holding the tree to test: a self-contained repository (its own objects, no
+   * remote, no credential, no alternates into another checkout). The runner exposes this directory
+   * and nothing else of the host to the command, which may change anything in it; the caller runs
+   * nothing in it afterwards.
+   */
+  checkout: string;
+  /** Shell command; exit 0 means the tests pass. Runs with the checkout as its working directory. */
+  command: string;
+  /** Wall clock for the run in milliseconds; past it the run is killed and `timedOut` is set. */
+  timeoutMs: number;
+  /** Extra environment for the command, for what the repository's tests need. Never a secret. */
+  env?: Readonly<Record<string, string>>;
+}
+
+/** How a test run ended. A failing or killed command resolves; only a run that cannot start rejects. */
+export interface TestRunResult {
+  /** The command's exit code; null when it was killed at the timeout. */
+  exitCode: number | null;
+  timedOut: boolean;
+  /** Combined stdout and stderr, cut from the front to a bounded tail. */
+  output: string;
+}
+
+/** A runner that can run tests inside its boundary. */
+export type TestRunner = Required<Pick<RunnerPort, 'runTests'>>;
+
 export interface RunnerPort {
   /**
    * Starts the run under `job.runId` and resolves with that id once it has started, not when it ends.
@@ -53,4 +89,17 @@ export interface RunnerPort {
    * finished run is a no-op.
    */
   cancel(runId: string): Promise<void>;
+  /**
+   * Runs a test command inside the runner's isolation boundary and resolves when it ends (ADR 0017).
+   * Providers with a boundary implement it (docker); the `local` provider does not, and the review
+   * job then runs the regression proof on the host with #233's guards, for development only. Rejects
+   * when the run cannot happen at all (no daemon, no image); the caller treats that as unprovable.
+   */
+  runTests?(job: TestRunJob): Promise<TestRunResult>;
+}
+
+/** The runner as a `TestRunner` when it can run tests inside its boundary. */
+export function testRunnerOf(runner: Pick<RunnerPort, 'runTests'> | undefined): TestRunner | undefined {
+  const run = runner?.runTests;
+  return run === undefined ? undefined : { runTests: (job) => run.call(runner, job) };
 }
