@@ -28,6 +28,7 @@ interface FakeIssue {
   status: string;
   comments: unknown[];
   attachments: string[];
+  resolution?: string;
 }
 
 class FakeJira {
@@ -36,6 +37,10 @@ class FakeJira {
   /** Answers queued for the next matching calls, by `METHOD path-suffix`. */
   failures: { match: string; status: number; headers?: Record<string, string> }[] = [];
   next = 1;
+  /** Bodies posted to the transitions endpoint, in order. */
+  transitionBodies: { id: string; fields?: { resolution?: { name: string } } }[] = [];
+  /** A site whose transition screen has no Resolution field. */
+  noResolutionField = false;
 
   fail(match: string, status: number, headers?: Record<string, string>): void {
     this.failures.push({ match, status, ...(headers === undefined ? {} : { headers }) });
@@ -102,7 +107,12 @@ class FakeJira {
         if (injected) return injected;
         const issue = this.issues.get(String(params['key']));
         if (issue === undefined) return missing(String(params['key']));
-        const { transition } = (await request.json()) as { transition: { id: string } };
+        const { transition, fields } = (await request.json()) as { transition: { id: string }; fields?: { resolution?: { name: string } } };
+        this.transitionBodies.push({ id: transition.id, ...(fields === undefined ? {} : { fields }) });
+        if (fields?.resolution !== undefined && this.noResolutionField) {
+          return HttpResponse.json({ errorMessages: [], errors: { resolution: "Field 'resolution' cannot be set. It is not on the appropriate screen, or unknown." } }, { status: 400 });
+        }
+        if (fields?.resolution !== undefined) issue.resolution = fields.resolution.name;
         issue.status = ['Backlog', 'In Progress', 'In Review', 'Done'][Number(transition.id) - 11] ?? '?';
         return new HttpResponse(null, { status: 204 });
       }),
@@ -159,10 +169,12 @@ beforeEach(async () => {
   jira = new FakeJira();
   server.use(...jira.handlers());
   continued = [];
+  clientLog = [];
 });
 afterEach(() => server.resetHandlers());
 
-const client = createJiraClient({ baseUrl: BASE, email: 'bot@example.com', apiToken: 'jira-token-test' });
+let clientLog: string[] = [];
+const client = createJiraClient({ baseUrl: BASE, email: 'bot@example.com', apiToken: 'jira-token-test', log: (m) => clientLog.push(m) });
 
 function projector(overrides: Partial<JiraProjectorOptions> = {}): JiraProjector {
   return createJiraProjector({
@@ -433,6 +445,58 @@ describe('validation', () => {
     jira.fail('PUT /rest/api/3/issue/WEB-3', 400);
     expect((await projector().drainOnce()).parked).toEqual([bad.id]);
     expect((await state.listParkedOutbox('jira', 10)).find((r) => r.id === bad.id)?.attempts).toBe(1);
+  });
+});
+
+describe('transition resolution', () => {
+  const key = 'WEB-6';
+  const seed = (): void => {
+    jira.issues.set(key, { key, fields: {}, labels: [], status: 'In Progress', comments: [], attachments: [] });
+  };
+
+  it("posts the transition with the resolution (Not a bug: Done, Won't Do)", async () => {
+    seed();
+    const r = row('transition', { issueKey: key, to: 'Done', resolution: "Won't Do" });
+    await enqueue(r);
+
+    expect((await projector().drainOnce()).sent).toEqual([r.id]);
+
+    expect(jira.transitionBodies).toEqual([{ id: '14', fields: { resolution: { name: "Won't Do" } } }]);
+    expect(jira.issue(key).status).toBe('Done');
+    expect(jira.issue(key).resolution).toBe("Won't Do");
+    expect(jira.issue(key).comments).toEqual([]);
+  });
+
+  it('sends no fields when the row has no resolution', async () => {
+    seed();
+    await enqueue(row('transition', { issueKey: key, to: 'Done' }));
+    await projector().drainOnce();
+    expect(jira.transitionBodies).toEqual([{ id: '14' }]);
+  });
+
+  it('falls back to the plain transition, logs it, and comments when the screen lacks the field', async () => {
+    seed();
+    jira.noResolutionField = true;
+    const r = row('transition', { issueKey: key, to: 'Done', resolution: "Won't Do" });
+    await enqueue(r);
+
+    expect((await projector().drainOnce()).sent).toEqual([r.id]);
+
+    expect(jira.transitionBodies).toEqual([{ id: '14', fields: { resolution: { name: "Won't Do" } } }, { id: '14' }]);
+    expect(jira.issue(key).status).toBe('Done');
+    expect(jira.issue(key).resolution).toBeUndefined();
+    expect(clientLog).toHaveLength(1);
+    expect(clientLog[0]).toContain("Won't Do");
+    expect(commentTexts(jira.issue(key))[0]?.[0]).toContain('could not set the resolution "Won\'t Do"');
+  });
+
+  it('does not send a row whose resolution is not a non-empty string', async () => {
+    seed();
+    const r = row('transition', { issueKey: key, to: 'Done', resolution: '  ' });
+    await enqueue(r);
+    const report = await projector().drainOnce();
+    expect(report.sent).toEqual([]);
+    expect(jira.transitionBodies).toEqual([]);
   });
 });
 

@@ -6,7 +6,7 @@
 // (`pipeline/src/state/projections/outbox/jira.ts`, #141) write them:
 //
 //   create-issue   { fields, customFields, suggestedAssigneeEmail?, promptErrors?, screenshots? }
-//   transition     { issueKey, to }
+//   transition     { issueKey, to, resolution? }            resolution is a name, e.g. "Won't Do"
 //   add-comment    { issueKey, text }                       batched by `batch_key` (drain.ts)
 //   add-labels     { issueKey, labels }
 //   update-fields  { issueKey, fields?, customFields? }     at least one field
@@ -50,6 +50,8 @@ export interface TransitionOp {
   op: 'transition';
   issueKey: string;
   to: string;
+  /** A resolution name sent with the transition (`fields.resolution`); the client falls back to none if the screen lacks it. */
+  resolution?: string;
 }
 
 export interface AddCommentOp {
@@ -127,7 +129,9 @@ export function parseJiraRow(row: OutboxItem): JiraOp {
     case 'transition': {
       const key = issueKey();
       if (!nonEmpty(p['to'])) bad('to must name a status');
-      return { op: 'transition', issueKey: key, to: (p['to'] as string).trim() };
+      const resolution = p['resolution'];
+      if (resolution !== undefined && !nonEmpty(resolution)) bad('resolution must be a non-empty string naming a resolution');
+      return { op: 'transition', issueKey: key, to: (p['to'] as string).trim(), ...(resolution === undefined ? {} : { resolution: (resolution as string).trim() }) };
     }
     case 'add-comment': {
       const key = issueKey();
@@ -324,7 +328,7 @@ export async function uploadScreenshots(client: JiraClient, issueKey: string, re
 export async function sendOp(client: JiraClient, op: Exclude<JiraOp, CreateIssueOp>, customFieldIds: Readonly<Record<string, string>>): Promise<boolean> {
   switch (op.op) {
     case 'transition':
-      await client.transitionIssue(op.issueKey, op.to);
+      await client.transitionIssue(op.issueKey, op.to, op.resolution);
       return true;
     case 'add-comment':
       await client.addComment(op.issueKey, textToAdf(op.text));
