@@ -103,12 +103,23 @@ function fakeJira(hits: JiraSearchHit[]): JiraSearch & { queries: string[] } {
  * Answers classify by `task:schemaName`, then by task; anything else is a test bug. Wrapped in
  * withValidation like every port.
  */
-function scriptedModel(answers: Partial<Record<string, unknown>>): ModelBackend & { tasks: string[] } {
+function scriptedModel(
+  answers: Partial<Record<string, unknown>>,
+  /** Vision readings by image ref: true is a sensitive reading. An unlisted ref fails the call. */
+  vision: Record<string, boolean> = {},
+): ModelBackend & { tasks: string[] } {
   const tasks: string[] = [];
   return {
     tasks,
     complete: () => Promise.reject(new Error('complete is not scripted')),
-    vision: () => Promise.reject(new Error('vision is not scripted')),
+    vision: (request) => {
+      const ref = Object.keys(vision).find((r) => request.prompt.includes(r));
+      if (ref === undefined) return Promise.reject(new Error('vision is not scripted'));
+      return Promise.resolve({
+        model: 'scripted/test',
+        readings: [{ surfaceSignals: {}, uiElements: [], plainDescription: 'a screen', sensitive: vision[ref] === true }],
+      });
+    },
     classify(request: ClassifyRequest<unknown>) {
       tasks.push(request.task);
       const key = `${request.task}:${request.schemaName}`;
@@ -180,6 +191,8 @@ interface Scene {
   /** The step 7 answer (task triage, schema resolution); only asked when steps 1 to 6 miss. */
   resolve?: unknown;
   options?: EngineOptions;
+  /** Vision readings by image ref: true is a sensitive reading. */
+  readings?: Record<string, boolean>;
   /** Overrides the map's `fallbackSurface` (the example map names `web`). */
   fallbackSurface?: string;
 }
@@ -202,7 +215,7 @@ function setup(scene: Scene = {}): Harness {
     triage: { ...TRIAGE, ...scene.triage },
     ...(scene.resolve === undefined ? {} : { 'triage:resolution': scene.resolve }),
     ...(scene.clarify === undefined ? {} : { clarify: scene.clarify }),
-  });
+  }, scene.readings);
   if (!(state instanceof StateStore)) throw new Error('expected a StateStore');
   const deps: EngineDeps = {
     workspaceId: WS,
@@ -326,6 +339,27 @@ describe('handleInbound', () => {
 });
 
 describe('levels (main 14.1)', () => {
+  it('create-issue carries the non-sensitive screenshots to attach', async () => {
+    const image = (url: string) => ({ kind: 'image' as const, url, mimeType: 'image/png' });
+    const anchor: SourceMessage = {
+      ...ANCHOR,
+      attachments: [image('https://files.example.test/T1/crash.png?t=fake'), image('https://files.example.test/T1/secrets.png')],
+    };
+    const h = setup({
+      level: 0,
+      anchor,
+      messages: [anchor, SECOND],
+      readings: { 'crash.png': false, 'secrets.png': true },
+      options: { loadImage: (a) => Promise.resolve({ mimeType: 'image/png', data: 'AAAA', ref: a.url }) },
+    });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    const [row] = await outbox();
+    expect((row?.payload as { screenshots?: unknown }).screenshots).toEqual([
+      { url: 'https://files.example.test/T1/crash.png?t=fake', filename: 'crash.png', contentType: 'image/png' },
+    ]);
+  });
+
   it('level 0: files ticket only through the outbox and waits on the owner', async () => {
     const h = setup({ level: 0 });
     await inbound(h);

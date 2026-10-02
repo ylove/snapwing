@@ -54,6 +54,8 @@ export interface CreateIssueRow {
   customFields: SynthesizedIssue['customFields'];
   suggestedAssigneeEmail?: string;
   promptErrors?: string[];
+  /** Image attachments to upload once the issue exists (the shape of the Jira projector's `ScreenshotRef`). */
+  screenshots?: { url: string; filename?: string; contentType?: string }[];
 }
 
 /** `transition`: move an existing issue. */
@@ -504,12 +506,30 @@ function synthesisContext(env: StepEnv, resolution: Resolution, needsClarificati
   return { payload: env.payload, resolution, ...(surface === undefined ? {} : { surface }), needsClarification };
 }
 
-function createIssueRow(issue: SynthesizedIssue): CreateIssueRow {
+/**
+ * The bundle's image attachments the issue carries, minus any whose vision reading is sensitive
+ * (the filter `synthesizeIssue` applies to evidence). `filename` is the name the implementation
+ * request's `attachment:<KEY>/<name>` ref uses.
+ */
+function screenshotsOf(bundle: ContextBundle): NonNullable<CreateIssueRow['screenshots']> {
+  return bundle.included
+    .flatMap((m) => m.attachments)
+    .filter((a) => a.kind === 'image' && a.reading?.sensitive !== true)
+    .map((a) => ({
+      url: a.url,
+      filename: a.url.split('/').pop()?.split('?')[0] ?? 'screenshot',
+      ...(a.mimeType === undefined ? {} : { contentType: a.mimeType }),
+    }));
+}
+
+function createIssueRow(issue: SynthesizedIssue, bundle: ContextBundle): CreateIssueRow {
+  const screenshots = screenshotsOf(bundle);
   return {
     fields: issue.fields,
     customFields: issue.customFields,
     ...(issue.suggestedAssigneeEmail === undefined ? {} : { suggestedAssigneeEmail: issue.suggestedAssigneeEmail }),
     ...(issue.promptErrors.length === 0 ? {} : { promptErrors: issue.promptErrors }),
+    ...(screenshots.length === 0 ? {} : { screenshots }),
   };
 }
 
@@ -585,7 +605,7 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
         .then(({ id, version }): ArtifactRef => ({ artifactId: id, version }));
     const planRef = await artifact('plan', JSON.stringify(triaged));
     const ref = prompt === '' ? undefined : await artifact('implementation-request', prompt);
-    if (level !== 1) await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue)));
+    if (level !== 1) await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue, bundle)));
     return [
       newEvent(env, 'planned', {
         action: triaged.action,
@@ -687,8 +707,9 @@ export async function fixPreviewStep(env: StepEnv, phase: Extract<Phase, { kind:
     return 'continue';
   }
   const issue = await plannedIssue(env);
+  const bundle = await loadBundle(env);
   await commit(env, [newEvent(env, 'waiting-changed', {})], async (tx) => {
-    await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue)));
+    await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue, bundle)));
     return [];
   });
   return 'continue';
