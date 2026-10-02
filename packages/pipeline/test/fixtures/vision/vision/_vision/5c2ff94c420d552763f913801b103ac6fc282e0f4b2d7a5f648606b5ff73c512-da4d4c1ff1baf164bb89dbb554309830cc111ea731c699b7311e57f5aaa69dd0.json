@@ -1,0 +1,27 @@
+{
+  "task": "vision",
+  "schemaName": "_vision",
+  "promptSha256": "5c2ff94c420d552763f913801b103ac6fc282e0f4b2d7a5f648606b5ff73c512",
+  "imagesSha256": "da4d4c1ff1baf164bb89dbb554309830cc111ea731c699b7311e57f5aaa69dd0",
+  "response": {
+    "readings": [
+      {
+        "errorText": "unknown",
+        "surfaceSignals": {
+          "urlBar": "https://admin.staging.example.test/orders",
+          "pageTitle": "Orders",
+          "chrome": "admin"
+        },
+        "uiElements": [
+          "Orders",
+          "Customers",
+          "Refund"
+        ],
+        "environmentHint": "unknown",
+        "plainDescription": "the orders table is empty although filters are cleared",
+        "sensitive": false
+      }
+    ]
+  },
+  "model": "mock/recorded"
+}

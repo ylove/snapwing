@@ -1,0 +1,23 @@
+{
+  "task": "vision",
+  "schemaName": "_vision",
+  "promptSha256": "1afcd65d3f2f2633d6ec3765c2e577fdf9481a23d3cbfaa053471fb91309d73f",
+  "imagesSha256": "135176c7c8237e4a72112631aa2a64d86804bc3695344b30914c20efe492bf72",
+  "response": {
+    "readings": [
+      {
+        "errorText": "unknown",
+        "surfaceSignals": {
+          "urlBar": "unknown",
+          "pageTitle": "unknown",
+          "chrome": "unknown"
+        },
+        "uiElements": [],
+        "environmentHint": "unknown",
+        "plainDescription": "unknown",
+        "sensitive": false
+      }
+    ]
+  },
+  "model": "mock/recorded"
+}
