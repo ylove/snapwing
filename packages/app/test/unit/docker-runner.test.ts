@@ -1,26 +1,43 @@
-// Docker RunnerPort (#135, #234, #239; main 14.3, main 10.2, ADR 0017). A fake `docker` script on PATH
-// records its argv and the SNAPWING_ and other environment it was given; no real docker ever runs.
+// Docker RunnerPort (#135, #234, #239, #256; main 14.3, main 10.2, ADR 0017). A fake `docker` script
+// records its argv and the SNAPWING_ and other environment it was given, and copies a fixer's mount
+// as it was at `docker run`; no real docker ever runs. Fixer checkouts clone a local bare repository.
 
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { Artifact } from '@snapwing/pipeline/contracts/state.ts';
 import type { FixerJob, ReviewRunJob, TestRunJob } from '@snapwing/pipeline/ports/runner.ts';
+import { buildImplementationRequest } from '@snapwing/pipeline/prompts/implementation-request.ts';
+import { createBareRepo, git, type BareRepo } from '../../../pipeline/test/helpers/git.ts';
+import { FIXER_HOOKS_PATH, FIXER_REQUEST_PATH } from '../../../../infra/docker/fixer/wrapper.ts';
 import { issueFixerToken, verifyFixerToken } from '../../src/fixer-api/token.ts';
 import { issueModelToken, verifyModelToken } from '../../src/model-proxy/token.ts';
-import { containerName, createDockerRunner, type DockerModelProxy } from '../../src/providers/docker/runner.ts';
+import { containerName, createDockerRunner, FIXER_REQUEST_FILE, type DockerModelProxy, type DockerRunner } from '../../src/providers/docker/runner.ts';
 
 const SECRET = 'fake-hmac-key-for-tests-0123456789abcdef';
 const clock = () => new Date('2026-10-02T12:00:00Z');
 const keys = { secret: SECRET, clock };
 const RUN_ID = '01J9ZRUNID0000000000000001';
+const GIT_TOKEN = 'test-git-token-not-real';
 
 const FAKE_DOCKER = `#!/bin/sh
 dir=$(dirname "$0")
+# A kill comes from the runner's timer while the attached run may still be starting (slow under load):
+# wait, bounded, until the run has logged itself, so the two log blocks never interleave or swap.
+if [ "$1" = kill ]; then n=0; while [ ! -f "$dir/run-logged" ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n+1)); done; fi
 { echo "---"; for a in "$@"; do echo "arg:$a"; done; env | sort | sed 's/^/env:/'; } >> "$dir/calls.log"
+[ "$1" = run ] && : > "$dir/run-logged"
 mode=$(cat "$dir/mode" 2>/dev/null)
 case "$1" in
+  wait) n=0
+        while [ "$(cat "$dir/waitmode" 2>/dev/null)" = running ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done
+        [ "$(cat "$dir/waitmode" 2>/dev/null)" = gone ] && { echo "Error response from daemon: No such container: $2" >&2; exit 1; }
+        echo 0; exit 0 ;;
   run) [ "$mode" = run-fail ] && { echo "Unable to find image 'nope' locally" >&2; exit 125; }
+       case " $* " in *" --name snapwing-fixer-"*)
+         for a in "$@"; do case "$a" in *:/work) cp -R "\${a%:/work}" "$dir/snapshot" ;; esac; done ;;
+       esac
        case " $* " in *" --name snapwing-review-"*)
          [ "$mode" = hang ] && exec sleep 30
          echo "review agent ran"
@@ -59,7 +76,10 @@ beforeEach(() => {
   process.env['ANTHROPIC_API_KEY'] = 'server-provider-key-must-not-leak';
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Let every fixer container "end" so no background `docker wait` outlives the fake.
+  writeFileSync(join(dir, 'waitmode'), '');
+  await Promise.all(started.splice(0).map(({ r, runId }) => r.wait(runId)));
   if (savedPath === undefined) delete process.env['PATH'];
   else process.env['PATH'] = savedPath;
   if (savedLeak === undefined) delete process.env['SNAPWING_FIXER_TOKEN_SECRET'];
@@ -99,16 +119,74 @@ function job(over: Partial<FixerJob> = {}): FixerJob {
   };
 }
 
-function runner(over: Partial<Parameters<typeof createDockerRunner>[0]> = {}) {
-  return createDockerRunner({
+const REQUEST_BODY = buildImplementationRequest({
+  issue: 'WEB-1042',
+  intent: 'fix the cart total',
+  evidence: [{ kind: 'report', source: 'slack', text: 'the cart total is wrong' }],
+  constraints: { scope: 'cart only', tests: { required: true, text: 'add a test' }, forbidden: [] },
+  handoff: { mode: 'review', autonomy: 2, branch: 'fix/WEB-1042-cart', base: 'main' },
+});
+const REVIEW_BODY = '{"verdict":"request-changes","reasons":["the test does not fail without the fix"]}';
+
+function artifact(id: string, kind: Artifact['kind'], body: string): Artifact {
+  return {
+    id,
+    version: 1,
+    workspaceId: 'WS01',
+    incidentId: 'INC01',
+    kind,
+    contentType: kind === 'implementation-request' ? 'application/xml' : 'application/json',
+    sha256: '0'.repeat(64),
+    body,
+    createdBy: 'test',
+    createdAt: '2026-10-02T09:00:00.000Z',
+  };
+}
+
+const ARTIFACTS: Record<string, Artifact> = {
+  ART01: artifact('ART01', 'implementation-request', REQUEST_BODY),
+  REV01: artifact('REV01', 'review', REVIEW_BODY),
+  DIAG01: artifact('DIAG01', 'diagnosis', '{}'),
+};
+const artifactStore = {
+  async getArtifact(id: string): Promise<Artifact> {
+    const a = ARTIFACTS[id];
+    if (a === undefined) throw new Error(`no artifact ${id}`);
+    return a;
+  },
+};
+
+let origin: BareRepo;
+beforeAll(async () => {
+  origin = await createBareRepo({ files: { 'cart.ts': 'export const total = 1;\n' } });
+});
+afterAll(async () => {
+  await origin.remove();
+});
+
+/** Fixer runs a test started, so `afterEach` can wait for their background cleanup. */
+const started: { r: DockerRunner; runId: string }[] = [];
+
+function runner(over: Partial<Parameters<typeof createDockerRunner>[0]> = {}): DockerRunner {
+  const r = createDockerRunner({
     image: 'snapwing-fixer:test',
+    docker: join(dir, 'docker'),
     workdirRoot: join(dir, 'scratch'),
     env: {
       apiUrl: 'http://snapwing-api:8080',
       token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: 'INC01', ttl: 'PT45M' }, keys),
     },
+    artifacts: artifactStore,
+    git: { token: async () => GIT_TOKEN, remoteUrl: () => origin.url },
     ...over,
   });
+  const runFixer = r.runFixer.bind(r);
+  r.runFixer = async (j) => {
+    const out = await runFixer(j);
+    started.push({ r, runId: out.runId });
+    return out;
+  };
+  return r;
 }
 
 describe('createDockerRunner runFixer', () => {
@@ -127,8 +205,93 @@ describe('createDockerRunner runFixer', () => {
     expect(a.at(-1)).toBe('snapwing-fixer:test');
     const mounts = a.flatMap((x, i) => (x === '-v' || x === '--volume' || x === '--mount' ? [a[i + 1]] : []));
     expect(mounts).toEqual([`${join(dir, 'scratch', RUN_ID)}:/work`]);
-    expect(statSync(join(dir, 'scratch', RUN_ID)).isDirectory()).toBe(true);
     expect(a).not.toContain('--privileged');
+    // As the server's uid:gid, so it can write the host-prepared checkout and the server can remove it.
+    expect(a[a.indexOf('--user') + 1]).toBe(`${process.getuid?.()}:${process.getgid?.()}`);
+    const forwarded = a.flatMap((x, i) => (x === '-e' ? [a[i + 1]!] : []));
+    expect(forwarded.slice(-2)).toEqual(['HOME=/tmp', 'TMPDIR=/tmp']);
+  });
+
+  it('prepares the work item in the mount before docker run: a checkout on the work branch, the request, the hooks', async () => {
+    await runner().runFixer(job());
+    const snap = join(dir, 'snapshot');
+    expect(statSync(join(snap, '.git')).isDirectory()).toBe(true);
+    expect(git(snap, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('fix/WEB-1042-cart');
+    expect(readFileSync(join(snap, 'cart.ts'), 'utf8')).toBe('export const total = 1;\n');
+    // Where the image's wrapper looks for them.
+    expect(FIXER_REQUEST_FILE).toBe(FIXER_REQUEST_PATH);
+    expect(readFileSync(join(snap, FIXER_REQUEST_PATH), 'utf8')).toBe(REQUEST_BODY);
+    for (const hook of ['commit-msg', 'pre-push']) expect(statSync(join(snap, FIXER_HOOKS_PATH, hook)).mode & 0o111).not.toBe(0);
+    expect(git(snap, ['config', 'user.name'])).toBe('snapwing[bot]');
+    expect(existsSync(join(snap, '.git/snapwing/review.json'))).toBe(false);
+    expect(calls()[0]!.env['SNAPWING_PRIOR_REVIEW_FILE']).toBeUndefined();
+  });
+
+  it('passes the git credential only as SNAPWING_GIT_TOKEN by name: never in argv, a file, or the remote URL', async () => {
+    await runner().runFixer(job());
+    const c = calls()[0]!;
+    expect(c.env['SNAPWING_GIT_TOKEN']).toBe(GIT_TOKEN);
+    const forwarded = c.args.flatMap((x, i) => (x === '-e' ? [c.args[i + 1]!] : []));
+    expect(forwarded).toContain('SNAPWING_GIT_TOKEN');
+    expect(c.args.join(' ')).not.toContain(GIT_TOKEN);
+    const snap = join(dir, 'snapshot');
+    expect(git(snap, ['config', 'remote.origin.url'])).toBe(origin.url);
+    const files = (root: string): string[] =>
+      readdirSync(root, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(root, e.name)) : e.isFile() ? [join(root, e.name)] : []));
+    const holding = files(snap).filter((f) => readFileSync(f).includes(GIT_TOKEN));
+    expect(holding).toEqual([]);
+  });
+
+  it('on a retry writes the review into the mount and names it under /work', async () => {
+    await runner().runFixer(job({ review: { artifactId: 'REV01', version: 1 } }));
+    const env = calls()[0]!.env;
+    expect(env['SNAPWING_PRIOR_REVIEW_FILE']).toBe('/work/.git/snapwing/review.json');
+    expect(readFileSync(join(dir, 'snapshot', '.git/snapwing/review.json'), 'utf8')).toBe(REVIEW_BODY);
+  });
+
+  it('removes the scratch directory once the container has ended, not before', async () => {
+    writeFileSync(join(dir, 'waitmode'), 'running');
+    const r = runner();
+    await r.runFixer(job());
+    const scratch = join(dir, 'scratch', RUN_ID);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(statSync(scratch).isDirectory()).toBe(true);
+    writeFileSync(join(dir, 'waitmode'), '');
+    await r.wait(RUN_ID);
+    expect(existsSync(scratch)).toBe(false);
+    expect(calls().map((c) => c.args.slice(0, 2))).toEqual([
+      ['run', '--rm'],
+      ['wait', `snapwing-fixer-${RUN_ID}`],
+    ]);
+  });
+
+  it('removes it too when --rm took the container before docker wait saw it', async () => {
+    writeFileSync(join(dir, 'waitmode'), 'gone');
+    const r = runner();
+    await r.runFixer(job());
+    await r.wait(RUN_ID);
+    expect(existsSync(join(dir, 'scratch', RUN_ID))).toBe(false);
+  });
+
+  it('rejects, calling docker never and leaving no directory, when the work item cannot be prepared', async () => {
+    const scratch = join(dir, 'scratch', RUN_ID);
+    await expect(runner().runFixer(job({ implementationRequestArtifactId: 'DIAG01' }))).rejects.toThrow(/not an implementation-request/);
+    await expect(runner().runFixer(job({ implementationRequestArtifactId: 'NOPE' }))).rejects.toThrow(/no artifact NOPE/);
+    await expect(runner().runFixer(job({ review: { artifactId: 'ART01', version: 1 } }))).rejects.toThrow(/not a review/);
+    await expect(runner({ git: { token: async () => GIT_TOKEN, remoteUrl: () => join(dir, 'no-such-repo.git') } }).runFixer(job())).rejects.toThrow(/^workdir: /);
+    await expect(runner({ git: { token: () => Promise.reject(new Error('installation token refused')) } }).runFixer(job())).rejects.toThrow(/installation token refused/);
+    await expect(runner({ artifacts: undefined as never }).runFixer(job())).rejects.toThrow(/needs `artifacts` and `git`/);
+    expect(existsSync(scratch)).toBe(false);
+    expect(calls()).toEqual([]);
+  });
+
+  it('never reuses or removes a directory an earlier run of the id left', async () => {
+    const scratch = join(dir, 'scratch', RUN_ID);
+    mkdirSync(scratch, { recursive: true });
+    writeFileSync(join(scratch, 'left.txt'), 'x');
+    await expect(runner().runFixer(job())).rejects.toThrow(/EEXIST/);
+    expect(readFileSync(join(scratch, 'left.txt'), 'utf8')).toBe('x');
+    expect(calls()).toEqual([]);
   });
 
   it('omits --network when none is configured', async () => {
@@ -153,7 +316,7 @@ describe('createDockerRunner runFixer', () => {
     expect(c.env['SNAPWING_IMPLEMENTATION_REQUEST_VERSION']).toBe('3');
 
     // Each SNAPWING_ variable the CLI got is forwarded by name only.
-    const forwarded = c.args.flatMap((x, i) => (x === '-e' ? [c.args[i + 1]!] : []));
+    const forwarded = c.args.flatMap((x, i) => (x === '-e' ? [c.args[i + 1]!] : [])).filter((n) => n !== 'HOME=/tmp' && n !== 'TMPDIR=/tmp');
     expect(forwarded.every((n) => /^[A-Z_]+$/.test(n))).toBe(true);
     expect(forwarded).toContain('SNAPWING_FIXER_TOKEN');
     expect(c.args.join(' ')).not.toContain(token!);
@@ -218,7 +381,7 @@ describe('createDockerRunner cancel', () => {
     const r = runner();
     const { runId } = await r.runFixer(job());
     await r.cancel(runId);
-    const all = calls();
+    const all = calls().filter((c) => c.args[0] !== 'wait');
     expect(all.map((c) => c.args[0])).toEqual(['run', 'stop']);
     expect(all[1]!.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
   });

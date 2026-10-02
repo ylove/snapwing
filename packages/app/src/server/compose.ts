@@ -489,6 +489,9 @@ export const compose: ComposeFn = async (deps) => {
             token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, ttl: DEFAULT_FIXER_TOKEN_TTL }, fixerTokenKeys),
             modelProxy,
           },
+          // The work item is prepared on the host before the container starts (#256).
+          artifacts: store,
+          git: { token: gitToken(FIXER_GIT_PERMISSIONS), remoteUrl },
           workdirRoot: join(workRoot, 'fixer'),
         })
       : createLocalRunner({
