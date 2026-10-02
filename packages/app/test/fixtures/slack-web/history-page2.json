@@ -1,0 +1,10 @@
+{
+  "ok": true,
+  "messages": [
+    { "type": "message", "user": "U0AAA", "text": "see https://example.com/cart", "ts": "1790000050.000100",
+      "attachments": [{ "from_url": "https://example.com/cart", "title": "Cart", "text": "Your cart" }] },
+    { "type": "message", "user": "U0DDD", "text": "broadcast reply", "ts": "1790000200.000100", "thread_ts": "1790000100.000100", "subtype": "thread_broadcast" }
+  ],
+  "has_more": false,
+  "response_metadata": { "next_cursor": "" }
+}

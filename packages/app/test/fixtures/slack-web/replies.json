@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "messages": [
+    { "type": "message", "user": "U0AAA", "text": "Cart total is blank after promo", "ts": "1790000100.000100", "thread_ts": "1790000100.000100", "reply_count": 2 },
+    { "type": "message", "user": "U0BBB", "text": "Seeing it on staging too", "ts": "1790000150.000100", "thread_ts": "1790000100.000100" },
+    { "type": "message", "user": "U0CCC", "text": "Looking now", "ts": "1790000200.000100", "thread_ts": "1790000100.000100" }
+  ],
+  "has_more": false
+}
