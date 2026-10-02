@@ -136,6 +136,16 @@ describe('lifecycle machine', () => {
     },
   );
 
+  it.each(['status-message-posted', 'waiting-changed', 'monitoring-started', 'monitoring-stopped'] as const)(
+    '%s is valid and status-preserving in every status',
+    (type) => {
+      for (const status of LIFECYCLE_STATUSES) {
+        expect(isValidTransition(status, ev(type))).toBe(true);
+        expect(nextStatus(status, ev(type))).toBe(status);
+      }
+    },
+  );
+
   it('a new incident starts at captured and its captured event is valid there', () => {
     expect(INITIAL_STATUS).toBe('captured');
     expect(nextStatus('captured', ev('captured'))).toBe('captured');
