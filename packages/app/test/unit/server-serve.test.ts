@@ -1,0 +1,165 @@
+// `snapwing serve` (#125) in-process on the dialect the run selects: boots on an ephemeral port with
+// the example config, mounts a composed test route and job, answers /healthz, and on SIGTERM stops
+// the API, drains the worker, and closes the state store.
+
+import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { StateOptions } from '@snapwing/pipeline/contracts/state.ts';
+import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
+import { openState, type OpenStateHooks } from '@snapwing/pipeline/state/db.ts';
+import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import { main } from '../../src/cli/main.ts';
+import type { ComposeFn } from '../../src/server/compose.ts';
+import { runServe, type ServeDeps } from '../../src/server/serve.ts';
+
+const EXAMPLE_CONFIG = fileURLToPath(new URL('../../../../examples/snapwing.config.example.xml', import.meta.url));
+
+let tdb: TestDatabase;
+let dir: string;
+
+beforeEach(async () => {
+  tdb = await createTestDatabase();
+  dir = await mkdtemp(join(tmpdir(), 'snapwing-serve-'));
+});
+
+afterEach(async () => {
+  await tdb.drop();
+  await rm(dir, { recursive: true, force: true });
+});
+
+function envFor(db: TestDatabase): Record<string, string> {
+  return db.dialect === 'postgres'
+    ? { SNAPWING_DB: 'postgres', DATABASE_URL: db.options.url ?? '' }
+    : { SNAPWING_DB: 'sqlite', SNAPWING_SQLITE_PATH: db.options.url ?? '' };
+}
+
+interface Run {
+  code: Promise<number>;
+  out: string[];
+  err: string[];
+  signals: EventEmitter;
+  ready: Promise<{ url?: string; port?: number }>;
+  closed: () => boolean;
+}
+
+function start(args: string[], compose?: ComposeFn): Run {
+  const out: string[] = [];
+  const err: string[] = [];
+  const signals = new EventEmitter();
+  let closed = false;
+  let markReady!: (info: { url?: string; port?: number }) => void;
+  const ready = new Promise<{ url?: string; port?: number }>((r) => (markReady = r));
+  const deps: ServeDeps = {
+    signals,
+    onReady: markReady,
+    // The real openState, with close() observed.
+    openState: async (options: StateOptions, hooks?: OpenStateHooks): Promise<OpenedState> => {
+      const opened = await openState(options, hooks);
+      const close = opened.close.bind(opened);
+      opened.close = async () => {
+        closed = true;
+        await close();
+      };
+      return opened;
+    },
+    ...(compose === undefined ? {} : { compose }),
+  };
+  const code = runServe(
+    args,
+    { env: { ...envFor(tdb), SNAPWING_ENV_FILE: join(dir, 'absent.env') }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
+    deps,
+  );
+  // Surface a startup failure instead of waiting on `ready` forever.
+  void code.then((c) => markReady({ ...(c === 0 ? {} : { url: `failed:${err.join('\n')}` }) }));
+  return { code, out, err, signals, ready, closed: () => closed };
+}
+
+describe('snapwing serve', () => {
+  it('boots API and worker, serves /healthz and a composed route, runs a composed job, and stops on SIGTERM', async () => {
+    let received: Uint8Array | undefined;
+    const ran: unknown[] = [];
+    const compose: ComposeFn = async ({ workflow }) => ({
+      routes: [
+        {
+          method: 'POST',
+          path: '/test/echo',
+          handler: async (req) => {
+            received = new Uint8Array(await req.arrayBuffer());
+            await workflow.start('reconcile', { from: 'route' }, {});
+            return new Response(null, { status: 202 });
+          },
+        },
+      ],
+      jobs: [
+        {
+          name: 'reconcile',
+          handler: async (job) => {
+            ran.push(job.data);
+          },
+        },
+      ],
+    });
+    const run = start(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], compose);
+    const { url } = await run.ready;
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+
+    const health = await fetch(`${url}/healthz`);
+    expect(health.status).toBe(200);
+    expect(await health.text()).toBe('ok');
+    const metrics = await fetch(`${url}/metrics`);
+    expect(metrics.status).toBe(200);
+    expect(await metrics.text()).toContain('snapwing_jobs_parked 0');
+
+    const body = Uint8Array.from([0x00, 0xff, 0x0d, 0x0a, 0x41]);
+    const posted = await fetch(`${url}/test/echo`, { method: 'POST', body });
+    expect(posted.status).toBe(202);
+    expect(received).toEqual(body);
+    const deadline = Date.now() + 15_000;
+    while (ran.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    expect(ran).toEqual([{ from: 'route' }]);
+
+    expect(run.closed()).toBe(false);
+    run.signals.emit('SIGTERM');
+    expect(await run.code).toBe(0);
+    expect(run.closed()).toBe(true);
+    expect(run.err).toEqual([]);
+    expect(run.out.join('\n')).toContain('SIGTERM: shutting down');
+    await expect(fetch(`${url}/healthz`)).rejects.toThrow();
+  });
+
+  it('runs the worker alone with --worker and still closes the store on SIGTERM', async () => {
+    const run = start(['--worker', '--config', EXAMPLE_CONFIG]);
+    const info = await run.ready;
+    expect(info.url).toBeUndefined();
+    expect(run.out.join('\n')).toContain('worker polling');
+    run.signals.emit('SIGTERM');
+    expect(await run.code).toBe(0);
+    expect(run.closed()).toBe(true);
+  });
+
+  it('exits 1 without opening the store when the config is missing or invalid', async () => {
+    const missing = start(['--config', join(dir, 'nope.xml')]);
+    expect(await missing.code).toBe(1);
+    expect(missing.err.join('\n')).toContain('cannot read config');
+    expect(missing.closed()).toBe(false);
+
+    const bad = join(dir, 'bad.xml');
+    await writeFile(bad, '<snapwing xmlns="urn:snapwing:config:v1" version="1"><runtime provider="mars"/></snapwing>');
+    const invalid = start(['--config', bad]);
+    expect(await invalid.code).toBe(1);
+    expect(invalid.err.join('\n')).toContain('is not valid');
+  });
+
+  it('is reachable from the CLI and prints its usage', async () => {
+    const out: string[] = [];
+    const code = await main(['serve', '--help'], { env: {}, stdout: (l) => out.push(l), stderr: () => undefined });
+    expect(code).toBe(0);
+    expect(out.join('\n')).toContain('snapwing serve [--api] [--worker]');
+  });
+});

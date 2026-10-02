@@ -1,20 +1,24 @@
 #!/usr/bin/env -S npx tsx
 // The `snapwing` CLI. Minimal on purpose: `node:util` parseArgs, one module per command group.
-// Later phases add `map`, `jira reproject`, and `onboard`.
+// `serve` is the server composition root (server/serve.ts). Later phases add `map`, `jira reproject`, and `onboard`.
 
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { runServe } from '../server/serve.ts';
 import { runState, type CliIo } from './state.ts';
 
 export const USAGE = `Usage: snapwing <command> [args]
 
 Commands:
+  serve           run the API and worker processes (see: snapwing serve --help)
   state rebuild   rebuild projections from the event log (see: snapwing state --help)`;
 
 /** Runs the CLI and returns the exit code. */
 export async function main(argv: readonly string[], io: CliIo): Promise<number> {
   const [command, ...rest] = argv;
   switch (command) {
+    case 'serve':
+      return runServe(rest, io);
     case 'state':
       return runState(rest, io);
     case undefined:
