@@ -23,8 +23,7 @@ const advance = (ms: number): void => {
   nowMs += ms;
 };
 
-// One database for the file, emptied before each test: fewer Postgres schemas created and dropped
-// while other state test files migrate in parallel (see otherSchemaDropped in migrations/index.ts).
+// One database for the file, emptied before each test.
 beforeAll(async () => {
   tdb = await createTestDatabase();
   state = await tdb.open({ now: () => new Date(nowMs) });
