@@ -377,12 +377,16 @@ export interface ReviewFailedPayload {
 export interface CiGreenPayload {
   prNumber: number;
   headSha: string;
+  /** True when the reconciler emitted this event because its webhook never arrived (B 8, reconcile/index.ts). */
+  reconciled?: true;
 }
 
 export interface CiRedPayload {
   prNumber: number;
   headSha: string;
   failingChecks: string[];
+  /** True when the reconciler emitted this event because its webhook never arrived (B 8, reconcile/index.ts). */
+  reconciled?: true;
 }
 
 /** Spec silent. Records the level in force at merge time for the "who approved this" audit (A 4.2). */
@@ -390,6 +394,8 @@ export interface MergedPayload {
   prNumber: number;
   mergeCommitSha: string;
   levelAtMergeTime: AutonomyLevel;
+  /** True when the reconciler emitted this event because its webhook never arrived (B 8, reconcile/index.ts). */
+  reconciled?: true;
 }
 
 /** Spec silent. Shared by `deployed:staging` and `deployed:production`. */
@@ -604,6 +610,8 @@ export interface JiraTransitionedPayload {
   jiraKey: string;
   from: string;
   to: string;
+  /** True when the reconciler emitted this event because its webhook never arrived (B 8, reconcile/index.ts). */
+  reconciled?: true;
 }
 
 /** The payload interface for each event type. */

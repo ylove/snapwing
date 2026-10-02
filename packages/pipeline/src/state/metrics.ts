@@ -1,12 +1,17 @@
-// Observability of the store itself (B 10): what `/metrics` reports about the outbox and parked
-// jobs. Read only; `app/src/server/ops.ts` renders it as Prometheus text.
+// Observability of the store itself (B 10): what `/metrics` reports about the outbox, parked jobs, and
+// the reconciler. Read only; `app/src/server/ops.ts` renders it as Prometheus text.
 //
 // Parked jobs are counted from `job_waits`, which both WorkflowPort implementations write when a
 // job parks (ADR 0012), so the count is the same on the in-process scheduler and on pg-boss.
+//
+// Reconciler corrections are counted from the log: events of the reconciled types recorded in the
+// last hour whose payload carries `reconciled: true` (reconcile/marker.ts), so every process reports
+// the same number and a restart loses nothing.
 
 import { sql } from 'kysely';
 import { OUTBOX_TARGETS, type OutboxTarget } from '../contracts/state.ts';
 import type { OpenedState, StatePort } from '../ports/state.ts';
+import { isReconciledPayload, RECONCILED_EVENT_TYPES } from '../reconcile/marker.ts';
 import type { StateContext } from './context.ts';
 import { StateStore } from './store.ts';
 
@@ -22,7 +27,11 @@ export interface StoreMetrics {
   readonly outbox: Readonly<Record<OutboxTarget, OutboxTargetMetrics>>;
   /** Jobs parked on a wait (`job_waits` rows). */
   readonly parkedJobs: number;
+  /** Events the reconciler emitted (B 8) recorded in the hour before now. */
+  readonly reconcilerCorrectionsLastHour: number;
 }
+
+const HOUR_MS = 3_600_000;
 
 /** Reads the B 10 store metrics at the store's clock. */
 export async function readStoreMetrics(state: StatePort | OpenedState): Promise<StoreMetrics> {
@@ -44,7 +53,15 @@ export async function readStoreMetrics(state: StatePort | OpenedState): Promise<
     outbox[row.target as OutboxTarget] = { depth: Number(row.depth), oldestAgeSeconds: age };
   }
   const parked = await ctx.db.selectFrom('job_waits').select(sql<number | string>`count(*)`.as('n')).executeTakeFirst();
-  return { outbox, parkedJobs: Number(parked?.n ?? 0) };
+  const recent = await ctx.db
+    .selectFrom('incident_events')
+    .select('payload')
+    .where('type', 'in', [...RECONCILED_EVENT_TYPES])
+    .where('source', '=', 'agent')
+    .where('recorded_at', '>', ctx.codec.timestamp(new Date(now - HOUR_MS)))
+    .execute();
+  const corrections = recent.filter((r) => isReconciledPayload(ctx.codec.fromJson(r.payload))).length;
+  return { outbox, parkedJobs: Number(parked?.n ?? 0), reconcilerCorrectionsLastHour: corrections };
 }
 
 /** Resolves when the store answers a trivial query; rejects with the driver's error otherwise. */
