@@ -241,6 +241,11 @@ export const DEFAULT_SQLITE_PATH = 'snapwing.sqlite';
 export interface OpenStateHooks {
   /** Application clock; default `() => new Date()`. */
   now?: () => Date;
+  /**
+   * Called with a Postgres idle-client error (admin shutdown, network drop). The pool drops that
+   * client and the next query reconnects; the error is never rethrown. Default: ignore.
+   */
+  onPoolError?: (error: Error) => void;
 }
 
 function sqlitePath(url: string | undefined): string {
@@ -250,7 +255,7 @@ function sqlitePath(url: string | undefined): string {
   return url.startsWith('file:') ? decodeURIComponent(new URL(url).pathname) : url;
 }
 
-function createDb(options: StateOptions): Kysely<Database> {
+function createDb(options: StateOptions, hooks: OpenStateHooks): Kysely<Database> {
   if (options.dialect === 'sqlite') {
     const database = new BetterSqlite3(sqlitePath(options.url));
     try {
@@ -268,7 +273,14 @@ function createDb(options: StateOptions): Kysely<Database> {
   if (options.url === undefined || options.url === '') {
     throw new Error('openState: postgres needs a url (DATABASE_URL)');
   }
-  return new Kysely<Database>({ dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString: options.url }) }) });
+  const pool = new pg.Pool({ connectionString: options.url });
+  // pg requires an `error` listener on every Pool: an idle client's backend error (57P01 after
+  // pg_terminate_backend or a drop with FORCE, a network drop) is emitted here, and with no listener
+  // it becomes an uncaught exception. Record it and carry on; the pool already discarded the client.
+  pool.on('error', (error: Error) => {
+    hooks.onPoolError?.(error);
+  });
+  return new Kysely<Database>({ dialect: new PostgresDialect({ pool }) });
 }
 
 class RootStateStore extends StateStore implements OpenedState {
@@ -289,7 +301,7 @@ class RootStateStore extends StateStore implements OpenedState {
  * migration; the handle is closed then.
  */
 export const openState = async (options: StateOptions, hooks: OpenStateHooks = {}): Promise<OpenedState> => {
-  const db = createDb(options);
+  const db = createDb(options, hooks);
   try {
     await migrateState(db, options.dialect);
   } catch (e) {
