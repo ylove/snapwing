@@ -44,6 +44,16 @@ jobs:
       - run: pnpm test
       - run: pnpm test:contract
 
+  secret-scan:
+    # No secret is ever committed (build/CONTEXT.md 6b). Scans the full history on every push and PR.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest detect --source /repo --redact --verbose
+
   state-verify:
     name: state rebuild --verify (${{ matrix.db }})
     runs-on: ubuntu-latest
