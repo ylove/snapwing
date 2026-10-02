@@ -1,0 +1,8 @@
+#!/bin/sh
+# Snapwing GIT_ASKPASS for the fixer image (docs/harness-generic.md section 7): the token comes from
+# the environment, never from a file. Same answers as the checkout's own script
+# (packages/pipeline/src/fixer/workdir/hooks.ts).
+case "$1" in
+  Username*) printf '%s\n' 'x-access-token' ;;
+  *) printf '%s\n' "$SNAPWING_GIT_TOKEN" ;;
+esac
