@@ -1,0 +1,23 @@
+{
+  "total_count": 2,
+  "incomplete_results": false,
+  "items": [
+    {
+      "name": "CheckoutButton.tsx",
+      "path": "src/components/CheckoutButton.tsx",
+      "sha": "d7212f9d9d3a2ba0d9e5b8f9f1a2c3d4e5f60718",
+      "repository": { "id": 1296269, "full_name": "octo-org/fixture-repo" },
+      "score": 1.0,
+      "text_matches": [
+        { "object_type": "FileContent", "property": "content", "fragment": "export function CheckoutButton() {\n  return null;", "matches": [{ "text": "CheckoutButton", "indices": [16, 30] }] }
+      ]
+    },
+    {
+      "name": "index.ts",
+      "path": "src/index.ts",
+      "sha": "a1b2c3d4e5f60718d7212f9d9d3a2ba0d9e5b8f9",
+      "repository": { "id": 1296269, "full_name": "octo-org/fixture-repo" },
+      "score": 0.5
+    }
+  ]
+}

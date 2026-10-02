@@ -1,0 +1,7 @@
+{
+  "token": "ghs_test_fake_installation_token",
+  "expires_at": "2026-10-02T13:00:00Z",
+  "permissions": { "contents": "read", "metadata": "read" },
+  "repository_selection": "selected",
+  "repositories": [{ "id": 1296269, "name": "fixture-repo", "full_name": "octo-org/fixture-repo", "private": true }]
+}
