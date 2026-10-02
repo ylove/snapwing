@@ -78,6 +78,9 @@ const SAMPLES = {
   'not-a-bug': { reason: 'expected behaviour' },
   'let-agent-take': { claimerId: 'U0FAKEENG' },
   tapped: { eventId: 'card-1', card: 'dedupe', choice: 'link' },
+  'scope-changed': { choice: 'widen', bundle: { artifactId: ART.artifactId, version: 2 }, includedCount: 6, excludedCount: 1 },
+  'dedupe-decided': { decision: 'link', issueKey: 'WEB-1000' },
+  'clarify-answered': { questionSeq: 5, answer: 'Website', appliesTo: { field: 'surface', id: 'web' } },
   corrected: { correctsSeq: 3, fields: { surfaceId: 'cart' }, reason: 'wrong surface' },
   'status-message-posted': { messageId: '1730000000.000300' },
   'waiting-changed': { waitingOn: { kind: 'human', who: 'U0FAKEENG' } },
@@ -224,5 +227,19 @@ describe('catalog follow-ups', () => {
 
   it('lists file paths in fixer-done testsAdded, as HarnessResult does', () => {
     expectTypeOf<EventPayloads['fixer-done']['testsAdded']>().toEqualTypeOf<string[]>();
+  });
+});
+
+describe('decision events (ADR 0015)', () => {
+  it('records card decisions as their own events, not corrections', () => {
+    for (const t of ['scope-changed', 'dedupe-decided', 'clarify-answered'] as const) expect(EVENT_TYPES).toContain(t);
+    expectTypeOf<EventPayloads['scope-changed']['choice']>().toEqualTypeOf<'widen' | 'narrow'>();
+    expectTypeOf<EventPayloads['dedupe-decided']['decision']>().toEqualTypeOf<'link' | 'create-anyway' | 'not-related'>();
+    expectTypeOf<EventPayloads['clarify-answered']['appliesTo']>().toEqualTypeOf<{ field: 'surface' | 'component'; id: string } | undefined>();
+  });
+
+  it('references the full triage plan from planned (#114)', () => {
+    const planned: EventPayloads['planned'] = { ...SAMPLES.planned, labels: [...SAMPLES.planned.labels], plan: ART, degraded: 'unresolved-surface' };
+    expect(planned.plan).toEqual(ART);
   });
 });

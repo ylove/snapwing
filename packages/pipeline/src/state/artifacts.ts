@@ -9,7 +9,7 @@ import { ulid } from '../util/ulid.ts';
 import { inTransaction, type StateContext } from './context.ts';
 import type { ArtifactsTable } from './db.ts';
 
-const ARTIFACT_KINDS: readonly ArtifactKind[] = ['implementation-request', 'diagnosis', 'contract', 'review', 'bundle'];
+const ARTIFACT_KINDS: readonly ArtifactKind[] = ['implementation-request', 'diagnosis', 'contract', 'review', 'bundle', 'plan'];
 const CONTENT_TYPES: readonly ArtifactContentType[] = ['application/xml', 'application/json'];
 
 /** How often a put retries when a concurrent put took the same version first. */

@@ -16,15 +16,16 @@
 //
 //   every level:  captured, context-assembled (bundle artifact)
 //                 scope card (chat channels only): Looks right goes on; Widen or Narrow appends
-//                   `corrected` (context-assembled, new bundle version) and shows the card again;
-//                   timeout = Looks right
+//                   scope-changed (new bundle version) and shows the card again; timeout = Looks right
 //                 resolved, dedupe-checked
-//                 dedupe card (only with candidates): Link appends corrected (decision link),
-//                   linked-to-existing [add-comment on that issue] and stops; Create anyway or
-//                   timeout appends corrected (decision create-anyway), waiting-changed {}
+//                 dedupe card (only with candidates): Link appends dedupe-decided (link),
+//                   linked-to-existing [add-comment on that issue] and stops; Create anyway, Not
+//                   related, or timeout appends dedupe-decided, waiting-changed {}
 //                 clarify card (only when the ask-back gate passes): clarified (asked), then
-//                   corrected (answer) or corrected (timedOut), waiting-changed {}
-//   level 0, 2, 3: planned (implementation-request artifact) [create-issue]; the job ends
+//                   clarify-answered, plus resolved (resolvedBy clarify) when the answer names the
+//                   surface or component, waiting-changed {}; or, on timeout, waiting-changed {} alone
+//   level 0, 2, 3: planned (plan and implementation-request artifacts) [create-issue]; the job ends
+//                 (no surface at all: the fallback project, level 0, needs-clarification)
 //   level 1:      planned, fix-preview card: Dismiss appends not-a-bug and stops; Fix it, Ticket
 //                   only, or timeout appends waiting-changed {} [create-issue]; the job ends
 //   after filed:  level 0, and level 1 without Fix it: waiting-changed { human: owner }, status note
@@ -38,9 +39,8 @@
 // Deviations from the main 14.1 shape, each deliberate: the scope preview comes before `resolve`, so a
 // widened bundle is resolved once (main 5.5: "before any downstream action"); a level 2 or 3
 // transition waits for `filed`, since it needs the Jira key; a `noop` plan appends `not-a-bug`, and a
-// `link_existing` plan is filed as a new issue because the dedupe card already decided. Known gaps:
-// a resumed level 1 plan loses the model's description paragraphs (#114); a clarify answer does not
-// change the resolution, and an unresolved surface fails the job at triage (#115).
+// `link_existing` plan is filed as a new issue because the dedupe card already decided. Card answers
+// are decision events, never `corrected` (ADR 0015).
 
 import type { ApprovalAction, CanonicalIncidentPayload, ChannelSource } from '../contracts/incident.ts';
 import type { EventActorRole, TappedChoice, TappedPayload } from '../contracts/events.ts';

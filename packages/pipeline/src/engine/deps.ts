@@ -47,6 +47,12 @@ export interface EngineOptions {
   idempotencyTtlSec?: Partial<Record<ChannelSource, number>>;
   /** `createdBy` on artifacts the engine writes. Default `orchestrator`. */
   agentName?: string;
+  /**
+   * The Jira project an incident with no resolved surface files to, at level 0 with
+   * `needs-clarification` (ADR 0015). Default: the project every map surface shares, else the first
+   * surface's project.
+   */
+  fallbackJiraProject?: string;
 }
 
 export interface EngineDeps {

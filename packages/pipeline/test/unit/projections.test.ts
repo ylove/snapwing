@@ -262,6 +262,36 @@ describe(`incidents projection (${TEST_DIALECT})`, () => {
     expect(await state.getIncident(INC)).toMatchObject({ status: 'not-filed', closedAt: '2026-10-01T09:05:00.000Z' });
   });
 
+  it('folds decision events as bookkeeping only, and a later resolved re-routes the row (ADR 0015)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    clock = () => new Date('2026-10-01T10:00:00.000Z');
+    await state.append(
+      INC,
+      [
+        captured(),
+        ev('context-assembled', { bundle: { artifactId: '01JZ00000000000000000000F1', version: 1 }, includedCount: 2, excludedCount: 0 }),
+        ev('scope-changed', { choice: 'widen', bundle: { artifactId: '01JZ00000000000000000000F1', version: 2 }, includedCount: 4, excludedCount: 1 }, { actor: DANA }),
+        ev('resolved', { resolvedBy: 'unresolved', confidence: 0 }),
+        ev('dedupe-checked', { candidates: [{ issueKey: 'WEB-7', summary: 'Checkout 500', score: 0.9 }], decision: 'pending-user' }),
+        ev('dedupe-decided', { decision: 'create-anyway' }, { actor: DANA }),
+        ev('clarified', { audience: 'reporter', question: 'Which part of the site?', asks: 'surface', options: ['Website', 'Mobile App'], timedOut: false }),
+      ],
+      0,
+    );
+    const before = await state.getIncident(INC);
+    expect(before).toMatchObject({ status: 'deduped', lastSeq: 7 });
+    expect(before !== null && 'surfaceId' in before).toBe(false);
+
+    clock = () => new Date('2026-10-01T11:00:00.000Z');
+    await appendAll(INC, [ev('clarify-answered', { questionSeq: 7, answer: 'Website', appliesTo: { field: 'surface', id: 'web' } }, { actor: DANA })]);
+    const answered = await state.getIncident(INC);
+    expect(answered).toEqual({ ...before, lastSeq: 8, updatedAt: '2026-10-01T11:00:00.000Z' });
+
+    await appendAll(INC, [ev('resolved', { surfaceId: 'web', repo: 'fake-org/web', jiraProject: 'WEB', resolvedBy: 'clarify', confidence: 0.9 })]);
+    expect(await state.getIncident(INC)).toMatchObject({ status: 'deduped', lastSeq: 9, surfaceId: 'web', repo: 'fake-org/web' });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('rolls the projection back with the append on a seq conflict', async () => {
     await state.append(INC, [captured()], 0);
     await expect(state.append(INC, [ev('context-assembled', { bundle: { artifactId: 'a', version: 1 }, includedCount: 0, excludedCount: 0 })], 0)).rejects.toThrow(

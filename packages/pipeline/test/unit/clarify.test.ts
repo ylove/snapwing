@@ -199,7 +199,7 @@ describe('maybeAsk: layers 1 to 3', () => {
     const s = scene();
     const model = await recorded(surfaceQuestion(), 'surface', s);
     const q = await maybeAsk(s.payload, s.bundle, unresolved, map, model);
-    expect(q).toEqual({ audience: 'reporter', text: 'Which login page were you on?', options: surfaceLabels, gatePassed: true, gateFailures: [] });
+    expect(q).toEqual({ audience: 'reporter', text: 'Which login page were you on?', options: surfaceLabels, asks: 'surface', gatePassed: true, gateFailures: [] });
   });
 
   it('layer 3: component buttons come from the resolved surface', async () => {

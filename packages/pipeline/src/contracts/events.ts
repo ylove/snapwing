@@ -20,6 +20,7 @@ import type {
   ApprovalAction,
   ChannelSource,
   ActorRole,
+  ClarifyQuestion,
   DedupeResult,
   IncidentActor,
   MergeGateResult,
@@ -67,6 +68,10 @@ export type EventType =
   | 'let-agent-take'
   // B 5 awaitInteractive: the button handler records the tap
   | 'tapped'
+  // What a person (or a timeout default) decided on a card (ADR 0015); never `corrected`
+  | 'scope-changed'
+  | 'dedupe-decided'
+  | 'clarify-answered'
   // B 4 corrections
   | 'corrected'
   // A 4.3 to 4.5 observability: the pinned status message, what the incident waits on, monitoring
@@ -117,6 +122,9 @@ export const EVENT_TYPES = Object.freeze([
   'not-a-bug',
   'let-agent-take',
   'tapped',
+  'scope-changed',
+  'dedupe-decided',
+  'clarify-answered',
   'corrected',
   'status-message-posted',
   'waiting-changed',
@@ -245,18 +253,28 @@ export interface LinkedToExistingPayload {
   issueKey: string;
 }
 
-/** Spec silent. One ask-back round (main 7); the projection needs only the transition. */
+/**
+ * Spec silent. One ask-back round (main 7), recorded when the question is asked; the projection needs
+ * only the transition. The answer is a later `clarify-answered`; a round that times out ends with
+ * `waiting-changed {}` and no answer (ADR 0015).
+ */
 export interface ClarifiedPayload {
   audience: 'reporter' | 'engineer';
   question: string;
-  /** Absent when the question timed out and the pipeline went on without an answer. */
+  /** What the question is about (`ClarifyQuestion.asks`); a surface or component answer can re-resolve. */
+  asks?: ClarifyQuestion['asks'];
+  /** The buttons offered, so a reposted card keeps them. */
+  options?: string[];
+  /** Legacy (#47 set it with a correction). New rounds record the answer as `clarify-answered`. */
   answer?: string;
+  /** Legacy (#47 set it with a correction). New rounds record `false` and never correct it. */
   timedOut: boolean;
 }
 
 /**
- * Spec silent. The triage plan without its large bodies: the ADF description and the implementation
- * request XML live in `artifacts`. Feeds `incidents.summary`, `priority`, `autonomy_level`.
+ * Spec silent. The triage plan without its large bodies: the full plan (ADF description, suggested
+ * assignee, diagnosis) and the implementation request XML live in `artifacts` (ADR 0015). Feeds
+ * `incidents.summary`, `priority`, `autonomy_level`.
  */
 export interface PlannedPayload
   extends Pick<
@@ -264,6 +282,10 @@ export interface PlannedPayload
     'action' | 'linkTo' | 'projectKey' | 'issueType' | 'summary' | 'priority' | 'labels' | 'componentId' | 'autonomyLevel'
   > {
   implementationRequest?: ArtifactRef;
+  /** The whole `TriageResolutionPlan` as JSON (artifact kind `plan`). Absent in logs written before #114. */
+  plan?: ArtifactRef;
+  /** Set when triage could not route the incident and filed it to the fallback project at level 0 (#115). */
+  degraded?: 'unresolved-surface';
 }
 
 /**
@@ -457,10 +479,46 @@ export interface TappedPayload {
   choice: TappedChoice;
 }
 
+// Decisions on cards (ADR 0015). Each carries the tapper as `actor` (a timeout default has none) and
+// never changes the status. The engine reads the latest of each; `tapped` keeps the raw tap.
+
+/**
+ * main 5.5, B 7.2: the reporter widened or narrowed the scope, and the bundle was rebuilt as a new
+ * version of the same artifact. Replaces `context-assembled`'s bundle for everything after it.
+ */
+export interface ScopeChangedPayload {
+  choice: 'widen' | 'narrow';
+  bundle: ArtifactRef;
+  includedCount: number;
+  excludedCount: number;
+}
+
+/**
+ * main 6.2: the answer to the dedupe card. `link` names the issue and is followed by
+ * `linked-to-existing`; `timedOut` marks the B 5 default, which is `create-anyway`.
+ */
+export interface DedupeDecidedPayload {
+  decision: 'link' | 'create-anyway' | 'not-related';
+  issueKey?: string;
+  timedOut?: boolean;
+}
+
+/**
+ * main 7: the answer to the `clarified` question at `questionSeq`. `appliesTo` names the map entry
+ * the answer picked, when it picked one; the engine then appends a `resolved` with `resolvedBy: 'clarify'`.
+ */
+export interface ClarifyAnsweredPayload {
+  questionSeq: number;
+  answer: string;
+  appliesTo?: { field: 'surface' | 'component'; id: string };
+}
+
 /**
  * B 4: events are never edited; a correction references the seq it corrects (ADR 0014). The
  * corrected event's payload becomes `{ ...payload, ...fields }`, where a `null` field removes that
- * key. Only the payload is corrected: the type, actor, source, and times stay as recorded.
+ * key. Only the payload is corrected: the type, actor, source, and times stay as recorded. A
+ * correction fixes a fact that was recorded wrongly; a person's choice is a decision event, never a
+ * correction (ADR 0015).
  *
  * Rules the projections apply (a correction that breaks one is ignored and logged):
  * - `correctsSeq` is an earlier event of the same incident, and not itself a `corrected` event.
@@ -581,6 +639,9 @@ export interface EventPayloads {
   'not-a-bug': NotABugPayload;
   'let-agent-take': LetAgentTakePayload;
   tapped: TappedPayload;
+  'scope-changed': ScopeChangedPayload;
+  'dedupe-decided': DedupeDecidedPayload;
+  'clarify-answered': ClarifyAnsweredPayload;
   corrected: CorrectedPayload;
   'status-message-posted': StatusMessagePostedPayload;
   'waiting-changed': WaitingChangedPayload;

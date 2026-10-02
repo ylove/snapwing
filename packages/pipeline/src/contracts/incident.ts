@@ -55,7 +55,7 @@ export interface Resolution {
   ownerId?: string;
   repo?: string;
   jiraProject?: string;
-  resolvedBy: 'mention' | 'channel-explicit' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'unresolved';
+  resolvedBy: 'mention' | 'channel-explicit' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'clarify' | 'unresolved';
   confidence: number;              // 0..1
 }
 
@@ -83,6 +83,7 @@ export interface ClarifyQuestion {
   audience: 'reporter' | 'engineer';
   text: string;
   options?: string[];              // 2..4, or omitted for screenshot request
+  asks?: 'surface' | 'component' | 'environment' | 'symptom' | 'other'; // what it is about; a surface or component answer re-resolves
   gatePassed: boolean;
   gateFailures: string[];
 }

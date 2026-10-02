@@ -199,7 +199,8 @@ export interface Subscription {
 
 // Artifacts ---------------------------------------------------------------------------------------
 
-export type ArtifactKind = 'implementation-request' | 'diagnosis' | 'contract' | 'review' | 'bundle';
+/** B 3 kinds, plus `plan`: the whole `TriageResolutionPlan` as JSON, referenced from `planned` (ADR 0015). */
+export type ArtifactKind = 'implementation-request' | 'diagnosis' | 'contract' | 'review' | 'bundle' | 'plan';
 
 export type ArtifactContentType = 'application/xml' | 'application/json';
 
