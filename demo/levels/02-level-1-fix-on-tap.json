@@ -1,0 +1,47 @@
+{
+  "title": "Level 1, fix on tap: the owner taps Fix it on an empty CSV export",
+  "channel": { "id": "C0ADMBUGS", "name": "admin-bugs" },
+  "reporter": { "id": "U0SALESLEAD", "name": "Pat" },
+  "anchor": "1790848800.000100",
+  "messages": [
+    { "ts": "1790848800.000100", "user": "U0SALESLEAD", "text": "CSV export in the portal downloads an empty file for the usage report" },
+    { "ts": "1790848860.000100", "user": "U0ADMDEV", "text": "Reproduced: the header row is there, no data rows" },
+    { "ts": "1790848980.000100", "user": "U0SALESLEAD", "text": "Thanks, the customer needs it by Friday" }
+  ],
+  "github": {
+    "acme/admin": {
+      "src/reports/csv-export.ts": "export function usageCsv(rows: UsageRow[]): string {\n  const header = 'account,seats,usage';\n  return [header].join('\\n'); // rows are never appended\n}\n",
+      "src/reports/pdf-export.ts": "export function usagePdf(rows: UsageRow[]): Uint8Array {\n  return render(rows);\n}\n"
+    }
+  },
+  "model": {
+    "segmentation": {
+      "included": ["1790848800.000100", "1790848860.000100", "1790848980.000100"],
+      "excluded": [],
+      "resolutionMessageId": ""
+    },
+    "scout": {
+      "confidence": "high",
+      "files": [{ "path": "src/reports/csv-export.ts", "note": "usageCsv returns the header and never appends the rows." }]
+    },
+    "triage": {
+      "action": "create_issue",
+      "issueType": "Bug",
+      "summary": "CSV usage export has a header row but no data",
+      "description": "Exporting the usage report as CSV from the admin portal downloads a file with only the header row. The owner reproduced it; a customer needs the report by Friday.",
+      "priority": "High",
+      "labels": ["export"]
+    }
+  },
+  "taps": [
+    { "card": "scope-preview", "choice": "looks-right", "by": "U0SALESLEAD" },
+    { "card": "fix-preview", "choice": "approve_fix", "by": "U0ADMDEV" }
+  ],
+  "expect": {
+    "status": "filed",
+    "outbox": [
+      { "op": "create-issue", "issueKey": "ADM-1", "autonomyLevel": 1 },
+      { "op": "transition", "issueKey": "ADM-1", "to": "In Progress" }
+    ]
+  }
+}

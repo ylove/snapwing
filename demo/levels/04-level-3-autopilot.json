@@ -1,0 +1,42 @@
+{
+  "title": "Level 3, autopilot: filed and handed to the fixer with an auto-merge request",
+  "channel": { "id": "C0APPBUGS", "name": "app-bugs" },
+  "reporter": { "id": "U0SUPPORT", "name": "Sam" },
+  "anchor": "1790856000.000100",
+  "messages": [
+    { "ts": "1790856000.000100", "user": "U0SUPPORT", "text": "Notification settings in the app reset to off after every restart" },
+    { "ts": "1790856090.000100", "user": "U0SALESLEAD", "text": "Same on my phone since the last update" }
+  ],
+  "github": {
+    "acme/mobile": {
+      "src/settings/notifications.ts": "export function loadNotificationSettings(store: Store): Settings {\n  return { enabled: false }; // never reads the saved value\n}\n"
+    }
+  },
+  "model": {
+    "segmentation": {
+      "included": ["1790856000.000100", "1790856090.000100"],
+      "excluded": [],
+      "resolutionMessageId": ""
+    },
+    "scout": {
+      "confidence": "high",
+      "files": [{ "path": "src/settings/notifications.ts", "note": "loadNotificationSettings ignores the stored value." }]
+    },
+    "triage": {
+      "action": "create_issue",
+      "issueType": "Bug",
+      "summary": "Notification settings reset to off after an app restart",
+      "description": "Notification settings in the mobile app go back to off after every restart. Two people see it since the last update.",
+      "priority": "Medium",
+      "labels": ["settings"]
+    }
+  },
+  "taps": [{ "card": "scope-preview", "choice": "looks-right", "by": "U0SUPPORT" }],
+  "expect": {
+    "status": "filed",
+    "outbox": [
+      { "op": "create-issue", "issueKey": "APP-1", "autonomyLevel": 3 },
+      { "op": "transition", "issueKey": "APP-1", "to": "In Progress" }
+    ]
+  }
+}
