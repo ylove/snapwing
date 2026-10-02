@@ -204,6 +204,17 @@ export interface RevertPullRequest {
   nodeId: string;
 }
 
+/** GitHub's relation of `head` to `base` (`GET /compare/{base}...{head}`). */
+export type CommitComparisonStatus = 'ahead' | 'behind' | 'identical' | 'diverged';
+
+export interface CommitComparison {
+  status: CommitComparisonStatus;
+  aheadBy: number;
+  behindBy: number;
+  /** `head` contains `base`: `ahead` or `identical`. */
+  contains: boolean;
+}
+
 export interface GitHubClient {
   getPullRequest(number: number): Promise<PullRequest>;
   listPullRequestFiles(number: number): Promise<PullRequestFile[]>;
@@ -212,6 +223,8 @@ export interface GitHubClient {
   createCheckRun(input: CreateCheckRunInput): Promise<CheckRun>;
   updateCheckRun(checkRunId: number, input: UpdateCheckRunInput): Promise<CheckRun>;
   combinedStatus(sha: string, baseBranch: string): Promise<CombinedStatus>;
+  /** Whether `head` contains `base`. A sha GitHub does not know (404) is not contained. */
+  compareCommits(base: string, head: string): Promise<CommitComparison>;
   /** Squash merge pinned to `expectedHeadSha`. */
   mergePullRequest(number: number, input: MergeInput): Promise<MergeResult>;
   /** Comment, then close. */
@@ -530,6 +543,25 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
       });
       const state = required.reduce<CheckState>((s, r) => (WORST[r.state] > WORST[s] ? r.state : s), 'success');
       return { sha, baseBranch, state, required, all };
+    },
+
+    async compareCommits(base, head) {
+      let body: Record<string, unknown> | undefined;
+      try {
+        body = record(
+          await json({
+            method: 'GET',
+            path: `${repoPath}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+            permissions: { contents: 'read' },
+            query: { per_page: 1 },
+          }),
+        );
+      } catch (err) {
+        if (err instanceof GitHubNotFoundError) return { status: 'diverged', aheadBy: 0, behindBy: 0, contains: false };
+        throw err;
+      }
+      const status: CommitComparisonStatus = body?.status === 'ahead' || body?.status === 'behind' || body?.status === 'identical' ? body.status : 'diverged';
+      return { status, aheadBy: num(body?.ahead_by), behindBy: num(body?.behind_by), contains: status === 'ahead' || status === 'identical' };
     },
 
     async mergePullRequest(number, input) {

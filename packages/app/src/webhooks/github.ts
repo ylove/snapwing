@@ -39,8 +39,10 @@
 //     nothing.
 //   deployment_status success: `deployed:staging` or `deployed:production`, by the environment name
 //     (`environments`, case-insensitive; else GitHub's `production_environment` flag), for every merged
-//     incident of the repository whose merge commit is the deployed sha, once per incident and
-//     environment.
+//     incident of the repository whose merge commit is the deployed sha or is contained in it (a later
+//     commit on the base branch: `compareCommits`, #215, one call per distinct merge commit, none for
+//     an incident that already took the event), once per incident and environment. A commit GitHub
+//     does not know, or one that does not contain the merge, appends nothing.
 //
 // Responses: 200 `{ outcome }` (`processed`, `duplicate`, `ignored`), 400, 401; a failure is the
 // server's 500. The response never echoes the body or the secret.
@@ -75,7 +77,7 @@ const MAX_APPEND_ATTEMPTS = 8;
 export type DeployStage = 'staging' | 'production';
 
 /** The GitHub calls this handler makes, for one repository. The app's `GitHubClient` satisfies it. */
-export type GitHubWebhookClient = Pick<GitHubClient, 'getPullRequest' | 'combinedStatus'>;
+export type GitHubWebhookClient = Pick<GitHubClient, 'getPullRequest' | 'combinedStatus' | 'compareCommits'>;
 
 export interface GitHubWebhookDeps {
   /** The install's workspace (single tenant), stamped on every event. */
@@ -300,16 +302,28 @@ async function deploymentSteps(deps: GitHubWebhookDeps, repo: string, body: Reco
   const later: readonly string[] = stage === 'staging' ? ['deployed:staging', 'deployed:production'] : ['deployed:production'];
 
   const candidates = await incidentsOf(deps, repo, ['merged', 'deployed:staging']);
-  return candidates.map((incident) => ({
-    incidentId: incident.id,
-    decide: (log) => {
-      const merged = latest(log, 'merged');
-      if (merged?.payload.mergeCommitSha !== sha || isTerminalStatus(statusOf(log))) return [];
-      if (log.some((e) => e.seq > merged.seq && (later.includes(e.type) || e.type === 'reverted'))) return [];
-      const payload = { commitSha: sha, ...(deploymentId === undefined ? {} : { deploymentId: String(deploymentId) }) };
-      return [at(newEvent(deps, incident.id, type, payload, { source: 'deploy' }), occurredAt)];
-    },
-  }));
+  // Decided on the log read here (the transaction re-reads it): which merge commits could the deploy contain.
+  const contained = new Map<string, boolean>();
+  const steps: Step[] = [];
+  for (const incident of candidates) {
+    if (stage === 'staging' && incident.status === 'deployed:staging') continue;
+    const merged = latest(await deps.state.read(incident.id), 'merged');
+    const mergeSha = merged?.payload.mergeCommitSha;
+    if (mergeSha === undefined || isTerminalStatus(incident.status)) continue;
+    if (mergeSha !== sha && !contained.has(mergeSha)) contained.set(mergeSha, (await deps.github(repo).compareCommits(mergeSha, sha)).contains);
+    if (mergeSha !== sha && contained.get(mergeSha) !== true) continue;
+    steps.push({
+      incidentId: incident.id,
+      decide: (log) => {
+        const m = latest(log, 'merged');
+        if (m?.payload.mergeCommitSha !== mergeSha || isTerminalStatus(statusOf(log))) return [];
+        if (log.some((e) => e.seq > m.seq && (later.includes(e.type) || e.type === 'reverted'))) return [];
+        const payload = { commitSha: sha, ...(deploymentId === undefined ? {} : { deploymentId: String(deploymentId) }) };
+        return [at(newEvent(deps, incident.id, type, payload, { source: 'deploy' }), occurredAt)];
+      },
+    });
+  }
+  return steps;
 }
 
 function deployStage(deps: GitHubWebhookDeps, environment: string | undefined, productionFlag: boolean): DeployStage | undefined {
