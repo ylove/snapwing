@@ -92,8 +92,14 @@ export interface Resolution {
   ownerId?: string;
   repo?: string;
   jiraProject?: string;
-  resolvedBy: 'mention' | 'channel-explicit' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'clarify' | 'unresolved';
+  resolvedBy: 'mention' | 'channel-explicit' | 'file-path' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'clarify' | 'unresolved';
   confidence: number;              // 0..1
+  /**
+   * Spec silent (#375). What the step matched, when it can say: for `file-path`, the repo-relative
+   * path found in the surface's repo tree, so a lookup response can say "from src/cart/... in the trace"
+   * (main 15.3). Absent for every other step.
+   */
+  evidence?: { path: string };
 }
 
 export interface CanonicalIncidentPayload {
