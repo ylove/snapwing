@@ -233,6 +233,20 @@ export interface LinkedIdentitiesTable {
   updated_at: TsDefault;
 }
 
+/** A per-user capture token (#374): its SHA-256, never the token. Not a projection. */
+export interface CaptureTokensTable {
+  id: string;
+  workspace_id: string;
+  /** The map handle of the person the token identifies. */
+  person: string;
+  label: Opt<string>;
+  /** Lowercase hex SHA-256 of the whole token, prefix included. */
+  token_hash: string;
+  issued_at: TsDefault;
+  last_used_at: TsOpt;
+  revoked_at: TsOpt;
+}
+
 export interface Database {
   workspaces: WorkspacesTable;
   config_versions: ConfigVersionsTable;
@@ -249,6 +263,7 @@ export interface Database {
   job_waits: JobWaitsTable;
   linked_identities: LinkedIdentitiesTable;
   bot_messages: BotMessagesTable;
+  capture_tokens: CaptureTokensTable;
 }
 
 /** Every table the migration set creates, in creation order. */
@@ -268,6 +283,7 @@ export const STATE_TABLES: readonly (keyof Database)[] = Object.freeze([
   'job_waits',
   'linked_identities',
   'bot_messages',
+  'capture_tokens',
 ] as const);
 
 // Factory ------------------------------------------------------------------------------------------

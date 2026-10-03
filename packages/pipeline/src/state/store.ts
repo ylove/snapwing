@@ -1,6 +1,7 @@
 // StateStore: the StatePort (B 1) over Kysely. Every method delegates one-to-one to a function in
-// events.ts, projections/index.ts, artifacts.ts, inbox.ts, outbox.ts, config.ts, identities.ts, or kv.ts, passing
-// the store's context, so each of those files is filled in without touching this one.
+// events.ts, projections/index.ts, artifacts.ts, inbox.ts, outbox.ts, config.ts, identities.ts,
+// capture-tokens.ts, or kv.ts, passing the store's context, so each of those files is filled in
+// without touching this one.
 // Construct through `openState` (db.ts); `transaction` hands `fn` a store bound to the transaction.
 
 import type {
@@ -18,8 +19,18 @@ import type {
   StateDialect,
   Subscription,
 } from '../contracts/state.ts';
-import type { LinkedIdentity, LinkedIdentityKey, NewLinkedIdentity, StatePort } from '../ports/state.ts';
+import type {
+  CaptureTokenInfo,
+  IssuedCaptureToken,
+  LinkedIdentity,
+  LinkedIdentityKey,
+  NewCaptureToken,
+  NewLinkedIdentity,
+  StatePort,
+  VerifiedCaptureToken,
+} from '../ports/state.ts';
 import * as artifacts from './artifacts.ts';
+import * as captureTokens from './capture-tokens.ts';
 import * as config from './config.ts';
 import { inTransaction, type StateContext } from './context.ts';
 import * as events from './events.ts';
@@ -147,6 +158,24 @@ export class StateStore implements StatePort {
 
   unlinkIdentity(key: LinkedIdentityKey): Promise<boolean> {
     return identities.unlinkIdentity(this.ctx, key);
+  }
+
+  // Capture tokens
+
+  issueCaptureToken(token: NewCaptureToken): Promise<IssuedCaptureToken> {
+    return captureTokens.issueCaptureToken(this.ctx, token);
+  }
+
+  verifyCaptureToken(token: string): Promise<VerifiedCaptureToken | null> {
+    return captureTokens.verifyCaptureToken(this.ctx, token);
+  }
+
+  revokeCaptureToken(id: string): Promise<boolean> {
+    return captureTokens.revokeCaptureToken(this.ctx, id);
+  }
+
+  listCaptureTokens(workspaceId: string): Promise<CaptureTokenInfo[]> {
+    return captureTokens.listCaptureTokens(this.ctx, workspaceId);
   }
 
   // kv (cache-port fallback; not part of StatePort)
