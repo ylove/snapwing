@@ -66,7 +66,7 @@ const PAYLOAD_SHAPES = {
   clarified: { audience: 'string', question: 'string', asks: 'string?', options: 'array?', userSide: 'object?', answer: 'string?', timedOut: 'boolean' },
   planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?', plan: 'object?', degraded: 'string?' },
   filed: { jiraKey: 'string' },
-  claimed: { claimerId: 'string', expiresAt: 'string' },
+  claimed: { claimerId: 'string', expiresAt: 'string', claimerEmail: 'string?' },
   'fixer-started': { runId: 'string', harness: 'string', attempt: 'number' },
   'pr-opened': { prNumber: 'number', branch: 'string' },
   'review-passed': { prNumber: 'number', review: 'object?' },

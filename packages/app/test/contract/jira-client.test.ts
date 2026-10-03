@@ -184,6 +184,30 @@ describe('operations', () => {
     expect(body).toEqual(input);
   });
 
+  it('findUserByEmail queries /user/search and picks the active person with that email', async () => {
+    let query: string | null = null;
+    server.use(
+      http.get(`${BASE}/rest/api/3/user/search`, ({ request }) => {
+        query = new URL(request.url).searchParams.get('query');
+        return HttpResponse.json([
+          { accountId: 'a-app', emailAddress: 'dana@example.com', accountType: 'app', active: true },
+          { accountId: 'a-old', emailAddress: 'dana@example.com', accountType: 'atlassian', active: false },
+          { accountId: 'a-other', emailAddress: 'dana.k@example.com', accountType: 'atlassian', active: true },
+          { accountId: 'a-dana', emailAddress: 'Dana@Example.com', displayName: 'Dana', accountType: 'atlassian', active: true },
+        ]);
+      }),
+    );
+    expect(await client.findUserByEmail('dana@example.com')).toEqual({ accountId: 'a-dana', displayName: 'Dana', emailAddress: 'Dana@Example.com' });
+    expect(query).toBe('dana@example.com');
+  });
+
+  it('findUserByEmail answers undefined for no match, and does not guess among results that show other emails', async () => {
+    server.use(http.get(`${BASE}/rest/api/3/user/search`, () => HttpResponse.json([{ accountId: 'a-other', emailAddress: 'dana.k@example.com', accountType: 'atlassian', active: true }])));
+    expect(await client.findUserByEmail('dana@example.com')).toBeUndefined();
+    server.use(http.get(`${BASE}/rest/api/3/user/search`, () => HttpResponse.json([])));
+    expect(await client.findUserByEmail('dana@example.com')).toBeUndefined();
+  });
+
   it('myself returns the account id', async () => {
     server.use(http.get(`${BASE}/rest/api/3/myself`, () => HttpResponse.json(fixture('myself'))));
     expect((await client.myself()).accountId).toBe('5b10a2844c20165700ede201');

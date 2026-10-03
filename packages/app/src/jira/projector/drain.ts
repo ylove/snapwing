@@ -38,6 +38,7 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { JiraNotFoundError, JiraRateLimitError, JiraTransitionNotFoundError, JiraValidationError, type JiraClient } from '../client/index.ts';
 import {
   OutboxValidationError,
+  createAssigneeResolver,
   fetchScreenshot,
   findOrCreateIssue,
   parseJiraRow,
@@ -130,6 +131,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   const now = options.now ?? (() => new Date());
   const customFieldIds = requireCustomFieldIds(options.customFieldIds);
   const statuses = createStatusResolver(client, options.statusOverrides ?? {});
+  const assignees = createAssigneeResolver(client, now);
   const loadScreenshot = options.loadScreenshot ?? fetchScreenshot;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -169,7 +171,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   }
 
   async function fileIssue(row: OutboxItem, op: CreateIssueOp): Promise<Outcome> {
-    const found = await findOrCreateIssue(client, op, customFieldIds);
+    const found = await findOrCreateIssue(client, op, customFieldIds, assignees);
     await recordFiled(row, op.incidentId, found.key);
     // Before the fixer can start: it reads the latest artifact version, which must name the real key.
     await finalizePrompt({
@@ -191,7 +193,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   async function sendComment(row: OutboxItem, op: AddCommentOp, rows: readonly OutboxItem[], consumed: Set<string>, report: DrainReport): Promise<Outcome> {
     const key = row.batchKey;
     if (key === undefined) {
-      await sendOp(client, op, customFieldIds, statuses);
+      await sendOp(client, op, customFieldIds, statuses, assignees);
       await state.ackOutbox([row.id]);
       return 'sent';
     }
@@ -214,7 +216,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
       if (parsed.op !== 'add-comment' || parsed.issueKey !== op.issueKey) continue;
       group.push({ row: other, text: parsed.text });
     }
-    await sendOp(client, { op: 'add-comment', issueKey: op.issueKey, text: group.map((g) => g.text).join('\n\n') }, customFieldIds, statuses);
+    await sendOp(client, { op: 'add-comment', issueKey: op.issueKey, text: group.map((g) => g.text).join('\n\n') }, customFieldIds, statuses, assignees);
     const ids = group.map((g) => g.row.id);
     await state.ackOutbox(ids);
     for (const id of ids) consumed.add(id);
@@ -277,7 +279,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
         } else if (op.op === 'add-comment') {
           outcome = await sendComment(row, op, rows, consumed, report);
         } else {
-          await sendOp(client, op, customFieldIds, statuses);
+          await sendOp(client, op, customFieldIds, statuses, assignees);
           await state.ackOutbox([row.id]);
           outcome = 'sent';
         }

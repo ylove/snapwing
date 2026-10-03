@@ -320,6 +320,8 @@ export interface FiledPayload {
 export interface ClaimedPayload {
   claimerId: string;
   expiresAt: string;
+  /** The claimer's email from the workspace map, when it has one; the Jira assignee write resolves it (#323). */
+  claimerEmail?: string;
 }
 
 /** Claim released or expired (B 5 timer rows), or an environment hold released. Deletes the matching `claims` row or clears its hold. */

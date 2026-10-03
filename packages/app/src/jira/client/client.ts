@@ -21,6 +21,7 @@ import type {
   JiraMyself,
   JiraProject,
   JiraSearchPage,
+  JiraUser,
   JiraTransition,
   UploadAttachmentInput,
 } from './types.ts';
@@ -61,6 +62,13 @@ export interface JiraClient {
   /** The account the credentials act as; inbound sync ignores changes made by it. */
   myself(): Promise<JiraMyself>;
   getProject(key: string): Promise<JiraProject>;
+  /**
+   * The active person whose email is `email` (`GET /user/search?query=`), or undefined. A match needs
+   * the same `emailAddress` (case-insensitive); when privacy settings hide every result's email, a
+   * single active person is taken, since the query was the email itself. Apps and inactive accounts
+   * never match. Jira assigns by `accountId`, so this is how an email becomes an assignee.
+   */
+  findUserByEmail(email: string): Promise<JiraUser | undefined>;
   /**
    * The project's workflow statuses with their categories (`GET /project/{key}/statuses`), across
    * its issue types, each name once, in Jira's order. Logical targets resolve against these (#268).
@@ -229,6 +237,29 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
     myself: () => json<JiraMyself>('GET', '/rest/api/3/myself'),
 
     getProject: (key) => json<JiraProject>('GET', `/rest/api/3/project/${encodeURIComponent(key)}`),
+
+    async findUserByEmail(email) {
+      const wanted = email.trim().toLowerCase();
+      if (wanted === '') return undefined;
+      const found = await json<unknown>('GET', `/rest/api/3/user/search?query=${encodeURIComponent(email.trim())}`);
+      const people = (Array.isArray(found) ? found.map(asRecord) : []).flatMap((u): JiraUser[] => {
+        const accountId = u['accountId'];
+        if (typeof accountId !== 'string' || accountId === '') return [];
+        if (u['active'] === false) return [];
+        if (u['accountType'] !== undefined && u['accountType'] !== 'atlassian') return [];
+        return [
+          {
+            accountId,
+            ...(typeof u['displayName'] === 'string' ? { displayName: u['displayName'] } : {}),
+            ...(typeof u['emailAddress'] === 'string' && u['emailAddress'] !== '' ? { emailAddress: u['emailAddress'] } : {}),
+          },
+        ];
+      });
+      const exact = people.find((u) => u.emailAddress?.toLowerCase() === wanted);
+      if (exact !== undefined) return exact;
+      const hidden = people.filter((u) => u.emailAddress === undefined);
+      return people.length === 1 && hidden.length === 1 ? hidden[0] : undefined;
+    },
 
     async projectStatuses(key) {
       const types = await json<unknown>('GET', `/rest/api/3/project/${encodeURIComponent(key)}/statuses`);

@@ -8,11 +8,12 @@ import { setupServer } from 'msw/node';
 import type { NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
 import type { OpenedState, StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createJiraClient } from '../../src/jira/client/index.ts';
 import { COMMENT_WINDOW_MS, createJiraProjector, type JiraProjector, type JiraProjectorOptions } from '../../src/jira/projector/drain.ts';
-import { incidentLabel, promptToAdf } from '../../src/jira/projector/ops.ts';
+import { incidentLabel, OutboxValidationError, parseJiraRow, promptToAdf } from '../../src/jira/projector/ops.ts';
 
 const BASE = 'https://example.atlassian.net';
 const SHOTS = 'https://files.example.com';
@@ -52,6 +53,10 @@ class FakeJira {
   transitionBodies: { id: string; fields?: { resolution?: { name: string } } }[] = [];
   /** A site whose transition screen has no Resolution field. */
   noResolutionField = false;
+  /** The site's people for `GET /user/search`; `emailAddress` absent means a hidden email. */
+  users: { accountId: string; emailAddress?: string; displayName: string; active?: boolean; accountType?: string }[] = [];
+  /** The `query` of each user search, in order. */
+  searches: string[] = [];
 
   fail(match: string, status: number, headers?: Record<string, string>): void {
     this.failures.push({ match, status, ...(headers === undefined ? {} : { headers }) });
@@ -110,6 +115,14 @@ class FakeJira {
         Object.assign(issue.fields, body.fields ?? {});
         for (const { add } of body.update?.labels ?? []) if (!issue.labels.includes(add)) issue.labels.push(add);
         return new HttpResponse(null, { status: 204 });
+      }),
+      http.get(`${BASE}/rest/api/3/user/search`, ({ request }) => {
+        const injected = seen(request);
+        if (injected) return injected;
+        const query = new URL(request.url).searchParams.get('query') ?? '';
+        this.searches.push(query);
+        const q = query.toLowerCase();
+        return HttpResponse.json(this.users.filter((u) => u.displayName.toLowerCase().includes(q) || (u.emailAddress ?? '').toLowerCase().includes(q) || (u.emailAddress === undefined && q.includes('@'))));
       }),
       http.get(`${BASE}/rest/api/3/project/:key/statuses`, ({ request, params }) => {
         const injected = seen(request);
@@ -357,6 +370,133 @@ describe('create-issue', () => {
     expect(await filedEvents(incidentId)).toHaveLength(1);
     expect(continued).toEqual([incidentId, incidentId]);
     expect(await state.drainOutbox('jira', 10, WS)).toEqual([]);
+  });
+});
+
+const DANA = { accountId: '5b10ac8d82e05b22cc7d4ef5', emailAddress: 'dana@example.com', displayName: 'Dana Dev', accountType: 'atlassian' };
+const SAM = { accountId: '5b10a2844c20165700ede201', emailAddress: 'sam@example.com', displayName: 'Sam Eng', accountType: 'atlassian' };
+
+function assigneeRow(issueKey: string, email: string, incidentId: string): OutboxItem {
+  return row('update-fields', { issueKey, fields: { assignee: { email } } }, { incidentId, batchKey: `field:${incidentId}:assignee` });
+}
+
+function plainIssue(key: string): FakeIssue {
+  return { key, fields: {}, labels: [], status: 'Backlog', comments: [], attachments: [] };
+}
+
+describe('assignee (#323; main 9.1, B 7.2, B 7.3)', () => {
+  it('create-issue sets the assignee by account id when the suggested email resolves', async () => {
+    jira.users = [DANA, SAM];
+    const incidentId = ulid(time);
+    await state.append(incidentId, [waitingChanged(incidentId)], 0);
+    await enqueue(row('create-issue', { ...createIssuePayload(), suggestedAssigneeEmail: 'Dana@Example.com' }, { incidentId }));
+
+    const report = await projector().drainOnce();
+
+    expect(report.sent).toHaveLength(1);
+    expect(jira.issue('WEB-1').fields['assignee']).toEqual({ accountId: DANA.accountId });
+    expect(jira.issue('WEB-1').comments).toEqual([]);
+    expect(jira.searches).toEqual(['Dana@Example.com']);
+    expect(jira.requests).toContain('GET /rest/api/3/user/search');
+  });
+
+  it('create-issue with an email that resolves to nobody leaves the issue unassigned and names the suggested owner in a comment', async () => {
+    jira.users = [SAM];
+    const incidentId = ulid(time);
+    await state.append(incidentId, [waitingChanged(incidentId)], 0);
+    const create = row('create-issue', { ...createIssuePayload(), suggestedAssigneeEmail: 'ghost@example.com' }, { incidentId });
+    await enqueue(create);
+
+    const report = await projector().drainOnce();
+
+    expect(report.sent).toEqual([create.id]);
+    expect(report.parked).toEqual([]);
+    expect('assignee' in jira.issue('WEB-1').fields).toBe(false);
+    expect(commentTexts(jira.issue('WEB-1'))).toEqual([['Snapwing could not assign this issue: no Jira user matches ghost@example.com. Suggested owner: ghost@example.com.']]);
+    expect(await filedEvents(incidentId)).toHaveLength(1);
+  });
+
+  it('does not search again for an email it already resolved, and treats an app or inactive account as no match', async () => {
+    jira.users = [DANA, { accountId: 'app-1', emailAddress: 'bot@example.com', displayName: 'Bot', accountType: 'app' }, { accountId: 'gone-1', emailAddress: 'gone@example.com', displayName: 'Gone', active: false, accountType: 'atlassian' }];
+    jira.issues.set('WEB-5', plainIssue('WEB-5'));
+    const p = projector();
+    await enqueue(assigneeRow('WEB-5', 'dana@example.com', ulid(time)), assigneeRow('WEB-5', 'dana@example.com', ulid(time)), assigneeRow('WEB-5', 'bot@example.com', ulid(time)), assigneeRow('WEB-5', 'gone@example.com', ulid(time)));
+
+    await p.drainOnce();
+
+    expect(jira.searches.filter((q) => q === 'dana@example.com')).toHaveLength(1);
+    expect(jira.issue('WEB-5').fields['assignee']).toEqual({ accountId: DANA.accountId });
+    expect(commentTexts(jira.issue('WEB-5')).flat()).toEqual([
+      'Snapwing could not assign this issue: no Jira user matches bot@example.com. Suggested owner: bot@example.com.',
+      'Snapwing could not assign this issue: no Jira user matches gone@example.com. Suggested owner: gone@example.com.',
+    ]);
+  });
+
+  it('takes the one active person when the site hides emails, and nobody when the search is ambiguous', async () => {
+    jira.users = [{ accountId: 'hidden-1', displayName: 'Hidden Hana', accountType: 'atlassian' }];
+    jira.issues.set('WEB-6', plainIssue('WEB-6'));
+    await enqueue(assigneeRow('WEB-6', 'hana@example.com', ulid(time)));
+    await projector().drainOnce();
+    expect(jira.issue('WEB-6').fields['assignee']).toEqual({ accountId: 'hidden-1' });
+
+    jira.users = [{ accountId: 'hidden-1', displayName: 'Hidden Hana', accountType: 'atlassian' }, { accountId: 'hidden-2', displayName: 'Hidden Hal', accountType: 'atlassian' }];
+    jira.issues.set('WEB-8', plainIssue('WEB-8'));
+    await enqueue(assigneeRow('WEB-8', 'hana@example.com', ulid(time)));
+    await projector().drainOnce();
+    expect('assignee' in jira.issue('WEB-8').fields).toBe(false);
+    expect(commentTexts(jira.issue('WEB-8')).flat()).toHaveLength(1);
+  });
+
+  it('a user search the credentials may not make reads as unresolved, not as a failed row', async () => {
+    jira.users = [DANA];
+    jira.issues.set('WEB-5', plainIssue('WEB-5'));
+    jira.fail('GET /rest/api/3/user/search', 403);
+    const row1 = assigneeRow('WEB-5', 'dana@example.com', ulid(time));
+    await enqueue(row1);
+
+    const report = await projector().drainOnce();
+
+    expect(report.sent).toEqual([row1.id]);
+    expect('assignee' in jira.issue('WEB-5').fields).toBe(false);
+    expect(jira.issue('WEB-5').comments).toHaveLength(1);
+  });
+
+  it('a claim reassigns: an update-fields assignee row replaces the suggested owner', async () => {
+    jira.users = [DANA, SAM];
+    const incidentId = ulid(time);
+    await state.append(incidentId, [waitingChanged(incidentId)], 0);
+    await enqueue(row('create-issue', { ...createIssuePayload(), suggestedAssigneeEmail: 'dana@example.com' }, { incidentId }));
+    const p = projector();
+    await p.drainOnce();
+    expect(jira.issue('WEB-1').fields['assignee']).toEqual({ accountId: DANA.accountId });
+
+    await enqueue(assigneeRow('WEB-1', 'sam@example.com', incidentId));
+    await p.drainOnce();
+
+    expect(jira.issue('WEB-1').fields['assignee']).toEqual({ accountId: SAM.accountId });
+    expect(jira.requests.filter((r) => r === 'PUT /rest/api/3/issue/WEB-1')).toHaveLength(1);
+  });
+
+  it('a human assignee edit wins: dropping the batch key (the Jira webhook, B 7.3) leaves the pending write unsent', async () => {
+    jira.users = [DANA, SAM];
+    jira.issues.set('WEB-9', { ...plainIssue('WEB-9'), fields: { assignee: { accountId: DANA.accountId } } });
+    const incidentId = ulid(time);
+    const pending = assigneeRow('WEB-9', 'sam@example.com', incidentId);
+    await enqueue(pending);
+
+    const dropped = await state.dropOutbox('jira', jiraFieldBatchKey(incidentId, 'assignee'));
+    const report = await projector().drainOnce();
+
+    expect(dropped).toEqual([pending.id]);
+    expect(report.sent).toEqual([]);
+    expect(jira.issue('WEB-9').fields['assignee']).toEqual({ accountId: DANA.accountId });
+    expect(jira.searches).toEqual([]);
+  });
+
+  it('rejects an assignee row whose email is not an email, before anything is sent', () => {
+    const bad = row('update-fields', { issueKey: 'WEB-5', fields: { assignee: { email: 'not an email' } } }, { incidentId: ulid(time) });
+    expect(() => parseJiraRow(bad)).toThrow(OutboxValidationError);
+    expect(() => parseJiraRow(bad)).toThrow(/fields\.assignee\.email must be an email address/);
   });
 });
 

@@ -32,7 +32,7 @@ import {
 } from '../../src/signals/handler.ts';
 import { recordBotMessage } from '../../src/signals/messages.ts';
 import { getEscalationScores } from '../../src/state/projections/index.ts';
-import { attributionText, jiraCommentBatchKey, jiraCreateBatchKey } from '../../src/state/projections/outbox/jira.ts';
+import { attributionText, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../../src/state/projections/outbox/jira.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { InProcessWorkflow } from '../../src/workflow/inprocess/index.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
@@ -89,6 +89,7 @@ const MAP: WorkspaceMap = {
   people: [
     { slackId: OWNER.id, handle: 'olu', role: 'engineer', owns: [{ surface: 'web', primary: true }] },
     { slackId: DANA.id, handle: 'dana', role: 'engineer', owns: [] },
+    { slackId: LEE.id, handle: 'lee', email: 'lee@example.com', role: 'engineer', owns: [] },
   ],
 } as unknown as WorkspaceMap;
 
@@ -313,6 +314,16 @@ describe(`handleSignal: claim and release (${TEST_DIALECT})`, () => {
     expect(w.claims).toEqual([{ incidentId: INC, seq: claimed?.seq }]);
     // Before filing there is no issue to comment on.
     expect(await pending('jira')).toEqual([]);
+  });
+
+  it("a claim carries the claimer's map email, and after filing it writes the assignee row keyed field:{incident}:assignee (#323)", async () => {
+    await filed();
+    const w = world();
+    await handleSignal(w.deps, signal('claim', LEE, FIX_PREVIEW));
+    expect((await log()).at(-1)).toMatchObject({ type: 'claimed', payload: { claimerId: LEE.id, claimerEmail: 'lee@example.com' } });
+    const assignee = (await pending('jira')).find((r) => r.op === 'update-fields' && 'fields' in r.payload);
+    expect(assignee?.payload).toEqual({ issueKey: 'WEB-1042', fields: { assignee: { email: 'lee@example.com' } } });
+    expect(assignee?.batchKey).toBe(jiraFieldBatchKey(INC, 'assignee'));
   });
 
   it("a reporter's claim is a comment with intent claim, holds nothing, and leaves the ticket comment to the engine", async () => {
