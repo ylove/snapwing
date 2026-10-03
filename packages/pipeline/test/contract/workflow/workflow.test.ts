@@ -13,10 +13,22 @@ const later = (ms: number): Date => new Date(h.now().getTime() + ms);
 beforeEach(async () => { h = await createHarness(); });
 afterEach(async () => { if (h) await h.close(); });
 
+// Wall-clock (or fake-clock) time of each delivery. Under load a job scheduled a few seconds out can
+// legitimately be due before an assertion runs, so "not delivered before due" is checked per delivery
+// against its due time instead of assuming nothing has arrived yet.
+const deliveredAt = new WeakMap<Job, number>();
+
 function record(): Job[] {
   const jobs: Job[] = [];
-  h.port.work('timer.stall', async (job) => { jobs.push(job); });
+  h.port.work('timer.stall', async (job) => {
+    deliveredAt.set(job, h.now().getTime());
+    jobs.push(job);
+  });
   return jobs;
+}
+
+function deliveredEarly(jobs: Job[], due: Date): Job[] {
+  return jobs.filter((job) => (deliveredAt.get(job) ?? Number.NEGATIVE_INFINITY) < due.getTime());
 }
 
 async function parked(timeout = false): Promise<Job[]> {
@@ -55,7 +67,7 @@ describe('WorkflowPort durable scheduling', () => {
     const first = await h.port.schedule('timer.stall', 'original', due, { singletonKey: key });
     expect(await h.port.start('timer.stall', 'ignored', { singletonKey: key })).toEqual(first);
     await h.quiet();
-    expect(jobs).toEqual([]);
+    expect(deliveredEarly(jobs, due)).toEqual([]);
     await h.advanceTo(due);
     await h.until(() => jobs.length > 0);
     expect(jobs.map((job) => job.data)).toEqual(['original']);
@@ -67,7 +79,7 @@ describe('WorkflowPort durable scheduling', () => {
     const due = later(3_000);
     await h.port.schedule('timer.stall', 'replacement', due, { singletonKey: key });
     await h.quiet();
-    expect(jobs).toEqual([]);
+    expect(deliveredEarly(jobs, due)).toEqual([]);
     await h.advanceTo(due);
     await h.until(() => jobs.length > 0);
     await h.quiet();
@@ -79,7 +91,7 @@ describe('WorkflowPort durable scheduling', () => {
     const due = later(3_000);
     await h.port.schedule('timer.stall', 'new', due, { singletonKey: key });
     await h.quiet();
-    expect(jobs).toEqual([]);
+    expect(deliveredEarly(jobs, due)).toEqual([]);
     await h.advanceTo(due);
     await h.until(() => jobs.length > 0);
     expect(jobs.map((job) => job.data)).toEqual(['new']);
