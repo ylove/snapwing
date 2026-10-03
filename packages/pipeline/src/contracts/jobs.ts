@@ -11,6 +11,8 @@ export type JobName =
   | 'review.run'
   | 'merge.evaluate'
   | 'reconcile'
+  // A 4.5: one active-monitoring poll per monitored incident, every `monitor.interval` (monitor/active.ts)
+  | 'monitor.poll'
   // A 4.6: one cron job per playbook digest, in order (see notify/digest.ts)
   | 'digest.0'
   | 'digest.1'
@@ -35,6 +37,7 @@ export const JOB_NAMES: readonly JobName[] = [
   'review.run',
   'merge.evaluate',
   'reconcile',
+  'monitor.poll',
   'digest.0',
   'digest.1',
   'digest.2',

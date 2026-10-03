@@ -164,7 +164,7 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
 // Private ------------------------------------------------------------------------------------------
 
 /** What the sources said about one incident; undefined where a source was not asked. */
-interface Answers {
+export interface ReconcileAnswers {
   checks?: PrChecks;
   pr?: PrState;
   issue?: IssueStatus | null;
@@ -176,7 +176,7 @@ async function reconcileIncident(deps: ReconcileDeps, incidentId: string, waitin
   const incident = await deps.state.getIncident(incidentId);
   if (incident === null) return;
 
-  let answers: Answers;
+  let answers: ReconcileAnswers;
   try {
     answers = await ask(deps.sources, incident, waitingOn);
   } catch (error) {
@@ -186,7 +186,7 @@ async function reconcileIncident(deps: ReconcileDeps, incidentId: string, waitin
 
   let appended: IncidentEvent<ReconciledEventType>[];
   try {
-    const result = await appendDecided(deps.state, incidentId, (log) => decide(deps, incident, answers, log));
+    const result = await appendDecided(deps.state, incidentId, (log) => missingEvents(deps.clock, incident, answers, log));
     if (!result.appended) return;
     const after = await deps.state.read(incidentId, (result.before.at(-1)?.seq ?? 0) + 1);
     appended = after.filter((e) => e.seq <= result.seq && isReconciled(e)) as IncidentEvent<ReconciledEventType>[];
@@ -206,8 +206,8 @@ async function reconcileIncident(deps: ReconcileDeps, incidentId: string, waitin
   }
 }
 
-async function ask(sources: ReconcileSources, incident: IncidentView, waitingOn: IncidentWaitingOn): Promise<Answers> {
-  const answers: Answers = {};
+async function ask(sources: ReconcileSources, incident: IncidentView, waitingOn: IncidentWaitingOn): Promise<ReconcileAnswers> {
+  const answers: ReconcileAnswers = {};
   if (incident.prNumber !== undefined) {
     const pr: PrRef = { incidentId: incident.id, prNumber: incident.prNumber, ...(incident.repo === undefined ? {} : { repo: incident.repo }) };
     if (waitingOn.kind === 'ci' || incident.status === 'ci' || incident.status === 'ci-retry') {
@@ -223,10 +223,13 @@ async function ask(sources: ReconcileSources, incident: IncidentView, waitingOn:
   return answers;
 }
 
-/** The events the log is missing, given the answers; undefined when it is missing none. */
-function decide(deps: ReconcileDeps, incident: IncidentView, answers: Answers, log: readonly IncidentEvent[]): NewEvent[] | undefined {
+/**
+ * The events the log is missing, given the answers; undefined when it is missing none. Shared with
+ * active monitoring (monitor/active.ts, A 4.5), which asks the same sources on its own schedule.
+ */
+export function missingEvents(clock: () => Date, incident: IncidentView, answers: ReconcileAnswers, log: readonly IncidentEvent[]): NewEvent[] | undefined {
   const out: NewEvent[] = [];
-  const at = (worldTime: string | undefined): string => (worldTime !== undefined && !Number.isNaN(Date.parse(worldTime)) ? new Date(worldTime).toISOString() : deps.clock().toISOString());
+  const at = (worldTime: string | undefined): string => (worldTime !== undefined && !Number.isNaN(Date.parse(worldTime)) ? new Date(worldTime).toISOString() : clock().toISOString());
   const prNumber = incident.prNumber;
 
   const checks = answers.checks;
