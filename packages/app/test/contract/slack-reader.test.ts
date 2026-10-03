@@ -283,3 +283,33 @@ describe('image download', () => {
     expect(await source.loadImage({ kind: 'link', url: URL_ })).toBeUndefined();
   });
 });
+
+describe('recording download', () => {
+  const URL_ = 'https://files.slack.com/files-pri/T0-F0002/download/repro.mp4';
+  const attachment = { kind: 'file' as const, url: URL_, mimeType: 'video/mp4' };
+
+  it('sends the bot token in the Authorization header and returns the bytes', async () => {
+    const mp4 = Uint8Array.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 9, 8, 7]);
+    let seen: { auth: string | null; url: string } | undefined;
+    server.use(
+      http.get(URL_, ({ request }) => {
+        seen = { auth: request.headers.get('authorization'), url: request.url };
+        return new HttpResponse(mp4, { headers: { 'content-type': 'video/mp4' } });
+      }),
+    );
+    const bytes = await source.loadRecording(attachment);
+    expect(seen?.auth).toBe(AUTH);
+    expect(seen?.url).toBe(URL_);
+    expect(Buffer.from(bytes ?? []).equals(Buffer.from(mp4))).toBe(true);
+  });
+
+  it('returns undefined for a login page, a non-Slack host, a failure, or a non-video', async () => {
+    server.use(http.get(URL_, () => new HttpResponse('<html>sign in</html>', { headers: { 'content-type': 'text/html' } })));
+    expect(await source.loadRecording(attachment)).toBeUndefined();
+    expect(await source.loadRecording({ ...attachment, url: 'https://evil.example.com/x.mp4' })).toBeUndefined();
+    server.use(http.get(URL_, () => new HttpResponse(null, { status: 403 })));
+    expect(await source.loadRecording(attachment)).toBeUndefined();
+    expect(await source.loadRecording({ kind: 'file', url: URL_, mimeType: 'application/pdf' })).toBeUndefined();
+    expect(await source.loadRecording({ kind: 'image', url: URL_, mimeType: 'image/png' })).toBeUndefined();
+  });
+});

@@ -28,7 +28,32 @@ export interface Attachment {
   mimeType?: string;
   extractedText?: string;          // unfurl output for links and files
   reading?: ImageReading;          // vision pass output for images (5.2a)
+  recording?: RecordingReading;    // screen recording reading, or the note why it was not read (A 5.1)
 }
+
+export interface RecordingFrame {
+  /** Seconds from the start of the recording. */
+  seconds: number;
+  reading: ImageReading;
+}
+
+export interface SequenceEntry {
+  seconds: number;
+  /** "0:04". */
+  time: string;
+  text: string;
+}
+
+export type RecordingReading =
+  | {
+      status: 'read';
+      durationSeconds: number;
+      frames: RecordingFrame[];
+      sequence: SequenceEntry[];
+      summary: string;
+      note?: string;
+    }
+  | { status: 'skipped'; note: string };
 
 /** A sign in a screenshot that the cause may be on the reporter's side (spec A 5.1). */
 export type UserSideKind =

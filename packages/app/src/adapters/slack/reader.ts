@@ -4,7 +4,7 @@
 
 import { nearestMidpoint, type ChatReader } from '@snapwing/pipeline/context/chat-reader.ts';
 import type { Anchor } from '@snapwing/pipeline/context/collect.ts';
-import type { LoadImage } from '@snapwing/pipeline/context/vision/index.ts';
+import type { LoadImage, LoadRecording } from '@snapwing/pipeline/context/vision/index.ts';
 import type { Attachment, CanonicalIncidentPayload, SourceMessage } from '@snapwing/pipeline/contracts/incident.ts';
 import type { ContextSource } from '@snapwing/pipeline/engine/deps.ts';
 import type { ImageMimeType } from '@snapwing/pipeline/ports/model.ts';
@@ -27,6 +27,8 @@ const SLACK_TS = /\d{9,11}\.\d{6}/;
 export interface SlackContextSource extends ContextSource {
   reader: ChatReader;
   loadImage: LoadImage;
+  /** Pass as `EngineOptions.loadRecording`. */
+  loadRecording: LoadRecording;
 }
 
 export function isoToSlackTs(iso: string): string {
@@ -198,11 +200,30 @@ export function createSlackImageLoader(web: SlackWeb): LoadImage {
   };
 }
 
+/**
+ * Downloads a video attachment from `url_private_download` with the bot token in the `Authorization`
+ * header (main 15.1, A 5.1). Returns undefined for anything that is not a video or comes back empty.
+ */
+export function createSlackRecordingLoader(web: SlackWeb): LoadRecording {
+  return async (attachment) => {
+    if (attachment.kind !== 'file' || attachment.mimeType?.toLowerCase().startsWith('video/') !== true) return undefined;
+    try {
+      const file = await web.downloadFile(attachment.url);
+      // Slack answers an expired or unauthorized download with an HTML page; that is not a recording.
+      if (file.contentType.startsWith('text/') || file.bytes.length === 0) return undefined;
+      return file.bytes;
+    } catch {
+      return undefined;
+    }
+  };
+}
+
 export function createSlackContextSource(web: SlackWeb): SlackContextSource {
   const reader = createSlackChatReader(web);
   return {
     reader,
     loadImage: createSlackImageLoader(web),
+    loadRecording: createSlackRecordingLoader(web),
     async anchor(payload): Promise<Anchor> {
       const channelId = payload.context.channelId;
       const ts = anchorTsOf(payload);

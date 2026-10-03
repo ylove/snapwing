@@ -246,6 +246,15 @@ function anchorFor(env: Pick<StepEnv, 'deps'>, payload: CanonicalIncidentPayload
   return source === undefined ? Promise.resolve(directAnchor(payload)) : source.anchor(payload);
 }
 
+/** The playbook's `recordings` as `readRecording` options: ISO duration to seconds; an unparseable one keeps the default. */
+function recordingSettings(r: { maxDuration: string; sampleFps: number }): { maxDuration?: number; sampleFps: number } {
+  try {
+    return { maxDuration: parseDuration(r.maxDuration) / 1000, sampleFps: r.sampleFps };
+  } catch {
+    return { sampleFps: r.sampleFps };
+  }
+}
+
 /** Collection (5.1, 5.2), the vision pass (5.2a), and segmentation with resolution signals (5.3, 5.4). */
 async function gather(env: StepEnv, anchor: Anchor, mode: { policy: CollectPolicy } | 'narrow'): Promise<ContextBundle> {
   const { deps } = env;
@@ -262,8 +271,13 @@ async function gather(env: StepEnv, anchor: Anchor, mode: { policy: CollectPolic
       : mode === 'narrow'
         ? await narrow(anchor, reader, policy)
         : await collectWindow(anchor, reader, policy);
-  const loadImage = deps.options?.loadImage;
-  const read = await readImages(raw, deps.model, loadImage === undefined ? {} : { loadImage });
+  const { loadImage, loadRecording, recordingTools } = deps.options ?? {};
+  const recordings = (await currentPlaybook(deps)).recordings;
+  const read = await readImages(raw, deps.model, {
+    ...(loadImage === undefined ? {} : { loadImage }),
+    ...(loadRecording === undefined ? {} : { loadRecording }),
+    recordings: { ...recordingTools, ...recordingSettings(recordings) },
+  });
   // A pile of one is the anchor alone: nothing to sort, and no later message can retract it.
   return read.included.length > 1 ? segment(read, anchor, deps.model) : read;
 }

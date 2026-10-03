@@ -5,7 +5,7 @@ import type { ClarifyEvidence } from '../clarify/index.ts';
 import { defaultPlaybook, type Playbook } from '../config/playbook.ts';
 import type { ChatReader } from '../context/chat-reader.ts';
 import type { Anchor, CollectPolicy } from '../context/collect.ts';
-import type { LoadImage } from '../context/vision/index.ts';
+import type { LoadImage, LoadRecording } from '../context/vision/index.ts';
 import type { IngestionAdapter } from '../contracts/adapters.ts';
 import type { NewEvent } from '../contracts/events.ts';
 import type { CanonicalIncidentPayload, ChannelSource, Resolution } from '../contracts/incident.ts';
@@ -65,6 +65,10 @@ export interface EngineOptions {
   maxScopeRounds?: number;
   /** Fetches image bytes for the vision pass. Default: inline `data:` URLs only. */
   loadImage?: LoadImage;
+  /** Downloads a video attachment through the adapter's authenticated loader (A 5.1). Absent: recordings are skipped with a note. */
+  loadRecording?: LoadRecording;
+  /** ffmpeg binary and temp dir for recordings (tests). Limits come from the playbook. */
+  recordingTools?: { ffmpeg?: string; env?: NodeJS.ProcessEnv; tmpDir?: string };
   /** Idempotency window per channel in seconds (main 14.2). Default 24 h for Raycast, 7 days otherwise. */
   idempotencyTtlSec?: Partial<Record<ChannelSource, number>>;
   /** `createdBy` on artifacts the engine writes. Default `orchestrator`. */
