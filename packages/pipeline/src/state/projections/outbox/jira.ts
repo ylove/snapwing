@@ -24,6 +24,15 @@
 //   when the incident has no repo. A person is named by `actor.name` when the event carries one, else
 //   by the platform user id (the log stores only the id, so a replayed event names the id).
 //
+// - Attribution comments (`add-comment`, batched per 7.1, A 1.5): a `comment` event the signal handler
+//   recorded (signals/handler.ts, `effect` set) for a state-changing intent (an engineer's claim, a
+//   release, a stop, not a bug, a verification, a reopen) or any `accept` or `reject`, worded by
+//   `attributionText`: who, when (UTC), what, the message text for a message signal, and the deep
+//   link. Several within 60 s become one Jira comment (the projector merges rows sharing
+//   `comment:{incident}`). A reporter's claim is the engine's own comment (A 2.1), and counted,
+//   watch, and removed signals write none. A reject that reopened a staging check (`effect`
+//   `reopen`) also transitions the issue back to in-progress (A 1.3).
+//
 // Rows go only to an issue the incident filed itself: none before `filed` (there is no key; the create
 // payload carries the state at plan time) and none for an incident linked to someone else's issue.
 // A `claimed`, `fixer-failed`, or status event that did not fit its status (the status was kept) adds
@@ -35,6 +44,7 @@
 // (`customFields` by name); the projector maps names to ids (#113).
 
 import type { EventActor, IncidentEvent } from '../../../contracts/events.ts';
+import type { TargetRole } from '../../../contracts/signals.ts';
 import type { IncidentView, OutboxItem } from '../../../contracts/state.ts';
 import { BUDGET_EXCEEDED, FIXER_FAILED_REASON_PREFIX } from '../../../fixer/job.ts';
 import type { JiraLogicalStatus } from '../../../jira/statuses.ts';
@@ -168,6 +178,7 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
   if (moved('closed')) transition(JIRA_DONE);
   if (moved('stopped')) transition(JIRA_BACKLOG);
   if (moved('reverted') && event.type === 'reverted') transition(after.autonomyLevel === 0 ? JIRA_BACKLOG : JIRA_IN_PROGRESS);
+  if (event.type === 'comment' && event.payload.effect === 'reopen' && after.status === 'deployed:staging') transition(JIRA_IN_PROGRESS);
 
   const line = agentStatusLine(after);
   if (!known || agentStatusLine(before) !== line) field(CUSTOM_FIELD_AGENT_STATUS, line);
@@ -201,6 +212,11 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
         comment(`Autonomy level lowered${by} from ${String(event.payload.from)} to ${String(event.payload.to)}: ${clause(event.payload.reason)}.`);
       }
       break;
+    case 'comment': {
+      const text = attributionText(event);
+      if (text !== undefined) comment(text);
+      break;
+    }
     default:
       break;
   }
@@ -220,6 +236,116 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
     comment(`${by}${why}. Ticket back in the backlog.`);
   }
   return rowsFor(event, 'jira', specs);
+}
+
+// Attribution (A 1.5) ------------------------------------------------------------------------------
+
+/** What each target role is called in an attribution comment. */
+const TARGET_NAMES: Readonly<Record<TargetRole, string>> = {
+  anchor: 'report',
+  'scope-preview': 'scope preview',
+  dedupe: 'duplicate check',
+  'fix-preview': 'fix preview',
+  pr: 'pull request',
+  'staging-check': 'staging check',
+  status: 'status update',
+  other: 'thread',
+};
+
+/**
+ * The attribution line for a signal the handler recorded (see the file header), or undefined when it
+ * writes none. Shared with the PR comment (`outbox/github.ts`). For example
+ * `@pat verified on staging at 15:22 UTC (https://...)`.
+ */
+export function attributionText(event: IncidentEvent): string | undefined {
+  if (event.type !== 'comment' || event.actor === undefined) return undefined;
+  const p = event.payload;
+  if (p.effect === undefined || p.signalSource === 'reaction-removed') return undefined;
+  const name = p.actorName?.trim();
+  const who = `@${name === undefined || name === '' ? actorLabel(event.actor) : name}`;
+  const at = clockTime(event.occurredAt);
+  const when = `at ${at}`;
+  const where = p.platform === 'slack' ? 'Slack' : p.platform === 'teams' ? 'Teams' : 'Jira';
+  const env = p.environment ?? 'staging';
+  const target = TARGET_NAMES[p.target?.role ?? 'other'];
+  let what: string | undefined;
+  let after = '';
+  switch (p.effect) {
+    case 'hold':
+      what = `${who} is looking at this as of ${at}`;
+      break;
+    case 'release':
+      what = `${who} stepped back from this ${when}`;
+      break;
+    case 'stop':
+      what = `${who} stopped the fix in ${where} ${when}`;
+      break;
+    case 'not-a-bug':
+      what = `${who} marked this not a bug in ${where} ${when}`;
+      break;
+    case 'verify':
+      what = `${who} verified on ${env} ${when}`;
+      break;
+    case 'reopen':
+      what = `${who} says the fix does not work on ${env} ${when}`;
+      after = ' Reopened: the ticket is back in progress.';
+      break;
+    case 'agree':
+      what = `${who} agreed this is a bug ${when}`;
+      break;
+    case 'confirm':
+      what = `${who} confirmed this is a bug ${when}`;
+      break;
+    case 'dispute':
+      what = `${who} disputed that this is a bug ${when}`;
+      break;
+    case 'looks-right':
+      what = `${who} said the scope looks right ${when}`;
+      break;
+    case 'rescope':
+      what = `${who} asked to change the scope ${when}`;
+      break;
+    case 'link':
+      what = `${who} said to link this to the existing issue ${when}`;
+      break;
+    case 'create-new':
+      what = `${who} said this is a new issue, not a duplicate, ${when}`;
+      break;
+    case 'fix-tap':
+      what = `${who} approved the fix in ${where} ${when}`;
+      break;
+    case 'review-note':
+    case 'approve':
+      what = `Approved in ${where} by ${who} ${when}`;
+      break;
+    case 'changes-requested':
+      what = `Changes requested in ${where} by ${who} ${when}`;
+      break;
+    case 'ack':
+      what = `${who} acknowledged the status update ${when}`;
+      break;
+    case 'reject-stage':
+      what = `${who} says the latest step did not work ${when}`;
+      break;
+    case 'comment':
+      // Every accept and reject is attributed, whatever it did (A 1.5); other recorded signals are not.
+      if (p.intent === 'accept') what = `${who} agreed with the ${target} ${when}`;
+      else if (p.intent === 'reject') what = `${who} disagreed with the ${target} ${when}`;
+      break;
+    default:
+      break;
+  }
+  if (what === undefined) return undefined;
+  const raw = clause(p.raw);
+  const quote = p.signalSource === 'message' && raw !== '' ? `: "${raw}"` : '';
+  const link = p.deepLink === undefined || p.deepLink.trim() === '' ? '' : ` (${p.deepLink.trim()})`;
+  return `${what}${quote}${link}${after === '' ? '' : `.${after}`}`;
+}
+
+/** `HH:MM UTC` of an ISO 8601 time, or the text as given when it does not parse. */
+function clockTime(iso: string): string {
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? `${new Date(ms).toISOString().slice(11, 16)} UTC` : iso;
 }
 
 /** A person by display name when the event carries one, else by platform user id. */

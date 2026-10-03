@@ -219,6 +219,8 @@ export class IncidentOrchestrator {
       try {
         if (phase.kind === 'capture') {
           await captureStep({ deps: this.deps, map, job, cursor, delivery }, initial);
+          // A 1.4: reactions on the anchor before the incident existed count from now (#288).
+          await this.deps.onCaptured?.(incidentId).catch(() => undefined);
           continue;
         }
         const env: StepEnv = { deps: this.deps, map, job, cursor, payload: payloadOf(cursor), delivery };

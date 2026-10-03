@@ -471,6 +471,20 @@ export interface CommentPayload {
    * when the event is recorded so that rebuilding `escalation_scores` never depends on the current playbook.
    */
   count?: { weight: number; windowEndsAt: string };
+  /** A permalink to the signal's message, for the attribution comment (A 1.5). */
+  deepLink?: string;
+  /**
+   * The actor's display name when recorded, for the attribution comment: the log keeps only the
+   * actor's id (B 3), so without it a rebuilt row names the platform user id.
+   */
+  actorName?: string;
+  /**
+   * What the signal handler did with it (`SignalAction` in signals/handler.ts: an A 1.3 effect such as
+   * `verify` or `reopen`, or `hold`, `release`, `stop`, `not-a-bug`, `watch`, `count`, `removed`,
+   * `comment`). Absent on comments recorded elsewhere. The Jira and GitHub outbox modules word the
+   * attribution comment from it.
+   */
+  effect?: string;
 }
 
 /** Spec silent. Feeds `incidents.autonomy_level`. */
