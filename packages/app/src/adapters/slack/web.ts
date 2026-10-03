@@ -171,6 +171,8 @@ export interface SlackWeb {
   conversationsHistory(args: HistoryArgs): Promise<MessagesPage>;
   conversationsReplies(args: RepliesArgs): Promise<MessagesPage>;
   conversationsJoin(channel: string): Promise<void>;
+  /** One page of a channel's member user ids (`conversations.members`; needs `channels:read` or `groups:read`). */
+  conversationsMembers(args: { channel: string; cursor?: string; limit?: number }): Promise<SlackPage & { members: string[] }>;
   usersInfo(user: string): Promise<SlackUser>;
   usersList(args?: { cursor?: string; limit?: number }): Promise<SlackPage & { members: SlackUser[] }>;
   /** GET a `url_private_download` with the bot token in the `Authorization` header. */
@@ -304,6 +306,12 @@ export function createSlackWeb(options: SlackWebOptions): SlackWeb {
     },
     async conversationsJoin(channel) {
       await post('conversations.join', { channel });
+    },
+    async conversationsMembers(args) {
+      const r = await get('conversations.members', { ...args });
+      const members = Array.isArray(r['members']) ? r['members'].filter((m): m is string => typeof m === 'string') : [];
+      const cursor = nextCursor(r);
+      return cursor === undefined ? { members } : { members, nextCursor: cursor };
     },
     async usersInfo(user) {
       const r = await get('users.info', { user });

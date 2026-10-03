@@ -82,6 +82,8 @@ beforeEach(async () => {
     http.post(`${SLACK}/auth.test`, ({ request }) =>
       HttpResponse.json(request.headers.get('authorization') === 'Bearer xoxb-test' ? { ok: true, user_id: BOT_USER, url: 'https://acme-test.slack.com/' } : { ok: false, error: 'invalid_auth' }),
     ),
+    // The channel members refresh (#337) on an install from before `channels:read`: skipped, not an error.
+    http.get(`${SLACK}/conversations.members`, () => HttpResponse.json({ ok: false, error: 'missing_scope' })),
   );
 });
 
@@ -157,8 +159,11 @@ describe('compose under snapwing serve', () => {
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     const log = run.out.join('\n');
     expect(log).toContain('composed: slack http, runner local');
-    expect(log).toContain('worker polling (7 job types)');
-    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport']) expect(log).toContain(`${service} started`);
+    // Seven phase 3 job types plus the phase 4 timers (#337): mid-flight, hold, claim nudge, claim expiry.
+    expect(log).toContain('worker polling (11 job types)');
+    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport', 'phase 4 schedules', 'ux friction scan', 'channel members refresh']) {
+      expect(log).toContain(`${service} started`);
+    }
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
@@ -187,7 +192,9 @@ describe('compose under snapwing serve', () => {
     expect(await run.code).toBe(0);
     expect(run.err).toEqual([`snapwing serve: ${LOCAL_RUNNER_WARNING}`]);
     expect(run.out.join('\n')).toContain('stopped');
-    expect(calls).toEqual([`POST slack.com/api/auth.test`]);
+    // auth.test, then the worker's channel members refresh, one read per map channel.
+    expect(calls[0]).toBe(`POST slack.com/api/auth.test`);
+    expect([...new Set(calls.slice(1))]).toEqual([`GET slack.com/api/conversations.members`]);
     expect(unhandled).toEqual([]);
   });
 

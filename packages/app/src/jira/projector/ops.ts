@@ -14,6 +14,10 @@
 //   add-labels     { issueKey, labels }
 //   update-fields  { issueKey, fields?, customFields? }     at least one field; `fields.assignee` is
 //                                                           { email }, resolved to an accountId (below)
+//   create-task    { fields }                               an issue no incident owns (the A 5.3 ux-friction
+//                                                           Task, #337): the create-issue fields, no assignee,
+//                                                           no custom fields; a retry finds the issue by the
+//                                                           label `snapwing-task-<row id>` (`taskLabel`)
 //
 // Custom fields travel by name (`Implementation Prompt`, `Autonomy Level`, ...). The projector maps
 // a name to a Jira field id through `customFieldIds`; a name with no id is left out of the write
@@ -43,6 +47,11 @@ import type { StatusResolver } from './statuses.ts';
 /** The label `create-issue` adds so a retry finds the issue an earlier attempt created (#140). */
 export function incidentLabel(incidentId: string): string {
   return `snapwing-${incidentId}`;
+}
+
+/** The label `create-task` adds, so a retry finds the issue an earlier attempt created. */
+export function taskLabel(rowId: string): string {
+  return `snapwing-task-${rowId}`;
 }
 
 /** A screenshot a `create-issue` row asks to attach after the issue exists. */
@@ -99,9 +108,17 @@ export interface UpdateFieldsOp {
   assigneeEmail?: string;
 }
 
-export type JiraOp = CreateIssueOp | TransitionOp | AddCommentOp | AddLabelsOp | UpdateFieldsOp;
+/** An issue no incident owns: created once, nothing appended, no assignee. */
+export interface CreateTaskOp {
+  op: 'create-task';
+  /** `taskLabel(row.id)`, searched before creating. */
+  label: string;
+  fields: Record<string, unknown>;
+}
 
-export const JIRA_OPS: readonly JiraOp['op'][] = Object.freeze(['create-issue', 'transition', 'add-comment', 'add-labels', 'update-fields'] as const);
+export type JiraOp = CreateIssueOp | TransitionOp | AddCommentOp | AddLabelsOp | UpdateFieldsOp | CreateTaskOp;
+
+export const JIRA_OPS: readonly JiraOp['op'][] = Object.freeze(['create-issue', 'transition', 'add-comment', 'add-labels', 'update-fields', 'create-task'] as const);
 
 /** A row whose payload cannot be sent as it is. Retrying never helps, so the drain parks it. */
 export class OutboxValidationError extends Error {
@@ -181,6 +198,12 @@ export function parseJiraRow(row: OutboxItem): JiraOp {
       if (Object.keys(plain).length + Object.keys(customFields).length + (assigneeEmail === undefined ? 0 : 1) === 0) bad('names no field to update');
       return { op: 'update-fields', issueKey: key, fields: plain, customFields, ...(assigneeEmail === undefined ? {} : { assigneeEmail }) };
     }
+    case 'create-task': {
+      const f = p['fields'];
+      if (!isRecord(f)) return bad('fields must be an object');
+      if (f['assignee'] !== undefined) bad('a create-task row assigns nobody');
+      return { op: 'create-task', label: taskLabel(row.id), fields: parseIssueFields(f, bad) };
+    }
     default:
       return bad(`unknown op; expected one of ${JIRA_OPS.join(', ')}`);
   }
@@ -230,6 +253,21 @@ function parseCreateIssue(row: OutboxItem, bad: (problem: string) => never): Cre
   if (row.incidentId === undefined) bad('create-issue needs the row to carry its incidentId');
   const f = p['fields'];
   if (!isRecord(f)) return bad('fields must be an object');
+  const fields = parseIssueFields(f, bad);
+  const suggested = p['suggestedAssigneeEmail'];
+  return {
+    op: 'create-issue',
+    incidentId: row.incidentId as string,
+    fields,
+    customFields: parseCustomFields(p['customFields'], bad),
+    screenshots: parseScreenshots(p['screenshots'], bad),
+    // A suggestion is a hint: one that is not an email is left out rather than parking the issue.
+    ...(typeof suggested === 'string' && EMAIL.test(suggested.trim()) ? { assigneeEmail: suggested.trim() } : {}),
+  };
+}
+
+/** The standard create fields both create ops carry: project, type, summary, ADF description, labels, priority, components. */
+function parseIssueFields(f: Record<string, unknown>, bad: (problem: string) => never): Record<string, unknown> {
   const project = f['project'];
   if (!isRecord(project) || typeof project['key'] !== 'string' || !PROJECT_KEY.test(project['key'])) bad('fields.project.key must be a Jira project key');
   const issuetype = f['issuetype'];
@@ -254,16 +292,7 @@ function parseCreateIssue(row: OutboxItem, bad: (problem: string) => never): Cre
   };
   if (priority !== undefined) fields['priority'] = { name: (priority as Record<string, unknown>)['name'] };
   if (components !== undefined) fields['components'] = (components as Record<string, unknown>[]).map((c) => ({ name: c['name'] }));
-  const suggested = p['suggestedAssigneeEmail'];
-  return {
-    op: 'create-issue',
-    incidentId: row.incidentId as string,
-    fields,
-    customFields: parseCustomFields(p['customFields'], bad),
-    screenshots: parseScreenshots(p['screenshots'], bad),
-    // A suggestion is a hint: one that is not an email is left out rather than parking the issue.
-    ...(typeof suggested === 'string' && EMAIL.test(suggested.trim()) ? { assigneeEmail: suggested.trim() } : {}),
-  };
+  return fields;
 }
 
 function parseScreenshots(v: unknown, bad: (problem: string) => never): ScreenshotRef[] {
@@ -471,6 +500,12 @@ export async function sendOp(
     case 'add-labels':
       await client.addLabels(op.issueKey, op.labels);
       return true;
+    case 'create-task': {
+      const page = await client.searchJql(`labels = "${op.label}" ORDER BY created ASC`, { maxResults: 1, fields: ['summary'] });
+      if (page.issues[0] !== undefined) return false;
+      await client.createIssue({ ...op.fields, labels: [...new Set([...(op.fields['labels'] as string[]), op.label])] });
+      return true;
+    }
     case 'update-fields': {
       const fields: Record<string, unknown> = { ...op.fields, ...mapCustomFields(op.customFields, customFieldIds) };
       const accountId = op.assigneeEmail === undefined ? undefined : await assignees.resolve(op.assigneeEmail);
