@@ -4,6 +4,10 @@
 //
 // - `Agent Status` (`update-fields`): whenever its one line changes, which is every status change
 //   (the status leads the line) plus a new PR number or a new wait. `filed` writes the first line.
+// - Assignee (`update-fields`, #323): on a `claimed` event whose payload carries the claimer's email
+//   (the map's), to an issue that already exists; before `filed` the engine's create payload names the
+//   claimer as `suggestedAssigneeEmail`. The row carries `fields.assignee.email`; the projector resolves
+//   the Jira account id. Its batch key is `field:{incident}:assignee`, so a human's assignee edit drops it.
 // - Labels (`add-labels`): `human-claimed` on `claimed`, `needs-clarification` on `clarified`,
 //   `fixer-failed` on `fixer-failed`, `prompt-failed` on a `planned` with no implementation request.
 //   Before filing, `needs-clarification` and `prompt-failed` are in the create payload already, so
@@ -104,6 +108,12 @@ export interface UpdateFieldsRow {
   customFields: Partial<Record<typeof CUSTOM_FIELD_AGENT_STATUS | typeof CUSTOM_FIELD_AUTONOMY_LEVEL, string | number>>;
 }
 
+/** `update-fields` on the assignee: the person by email; the projector resolves the Jira account id (#323). */
+export interface AssigneeRow {
+  issueKey: string;
+  fields: { assignee: { email: string } };
+}
+
 /** `add-labels`: appended to the issue's labels. */
 export interface AddLabelsRow {
   issueKey: string;
@@ -162,6 +172,10 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
     const payload: TransitionRow = { issueKey, to };
     specs.push({ op: 'transition', payload: { ...payload }, batchKey: jiraFieldBatchKey(incidentId, 'status') });
   };
+  const assign = (email: string): void => {
+    const payload: AssigneeRow = { issueKey, fields: { assignee: { email } } };
+    specs.push({ op: 'update-fields', payload: { ...payload }, batchKey: jiraFieldBatchKey(incidentId, 'assignee') });
+  };
   const label = (name: string): void => {
     const payload: AddLabelsRow = { issueKey, labels: [name] };
     specs.push({ op: 'add-labels', payload: { ...payload } });
@@ -187,6 +201,8 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
   switch (event.type) {
     case 'claimed':
       if (valid) label(LABEL_HUMAN_CLAIMED);
+      // B 7.2: the claimer is the assignee. Before filing, the create payload carries them already.
+      if (valid && known && event.payload.claimerEmail !== undefined) assign(event.payload.claimerEmail);
       break;
     case 'clarified':
       if (known) label(LABEL_NEEDS_CLARIFICATION);

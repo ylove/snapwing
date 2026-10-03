@@ -30,7 +30,7 @@ import {
   JiraValidationError,
   type JiraClient,
 } from '../../src/jira/client/index.ts';
-import { findOrCreateIssue, mapCustomFields, sendOp, textToAdf, type CreateIssueOp } from '../../src/jira/projector/ops.ts';
+import { createAssigneeResolver, findOrCreateIssue, mapCustomFields, sendOp, textToAdf, type CreateIssueOp } from '../../src/jira/projector/ops.ts';
 import { customFieldIdsFromEnv } from '../../src/jira/projector/fields.ts';
 import { createStatusResolver } from '../../src/jira/projector/statuses.ts';
 import { findEnvFile, readLiveEnv } from './helpers/env.ts';
@@ -120,6 +120,7 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
   }
 
   const fieldIds = (): Record<string, string> => customFieldIdsFromEnv(env);
+  const assignees = createAssigneeResolver(client);
   const createOp = (): CreateIssueOp => ({
     op: 'create-issue',
     incidentId: runId,
@@ -202,7 +203,7 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
 
   it('creates an issue with all four custom fields, found again by its incident label', async () => {
     const op = createOp();
-    const first = await label('create-issue', () => findOrCreateIssue(client, op, fieldIds()), 'POST /rest/api/3/issue');
+    const first = await label('create-issue', () => findOrCreateIssue(client, op, fieldIds(), assignees), 'POST /rest/api/3/issue');
     key = first.key;
     created.push(key);
     expect(first.created).toBe(true);
@@ -219,7 +220,7 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
     let again = { created: true, key: '' };
     for (let i = 0; i < 20 && again.created; i++) {
       await sleep(1500);
-      again = await findOrCreateIssue(client, op, ids);
+      again = await findOrCreateIssue(client, op, ids, assignees);
     }
     expect(again).toMatchObject({ created: false, key });
   });
@@ -232,9 +233,9 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
     };
     expect(await statusOf()).toBe(await resolver.resolve(key, 'backlog'));
     await label('transitions', () => recordingFetch(`${baseUrl}/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, { headers: { Authorization: authorization, Accept: 'application/json' } }));
-    await sendOp(client, { op: 'transition', issueKey: key, to: 'in-progress' }, fieldIds(), resolver);
+    await sendOp(client, { op: 'transition', issueKey: key, to: 'in-progress' }, fieldIds(), resolver, assignees);
     expect(await statusOf()).toBe('In Progress');
-    await sendOp(client, { op: 'transition', issueKey: key, to: 'done', resolution: 'Done' }, fieldIds(), resolver);
+    await sendOp(client, { op: 'transition', issueKey: key, to: 'done', resolution: 'Done' }, fieldIds(), resolver, assignees);
     expect(await statusOf()).toBe('Done');
   });
 
@@ -242,8 +243,8 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
     const resolver = createStatusResolver(client);
     const comment = await label('add-comment', () => client.addComment(key, textToAdf(`${PREFIX} a comment ${runId}`)));
     expect(comment.id).not.toBe('');
-    await sendOp(client, { op: 'add-labels', issueKey: key, labels: ['snapwing-extra'] }, fieldIds(), resolver);
-    await sendOp(client, { op: 'update-fields', issueKey: key, fields: {}, customFields: { 'Agent Status': 'done' } }, fieldIds(), resolver);
+    await sendOp(client, { op: 'add-labels', issueKey: key, labels: ['snapwing-extra'] }, fieldIds(), resolver, assignees);
+    await sendOp(client, { op: 'update-fields', issueKey: key, fields: {}, customFields: { 'Agent Status': 'done' } }, fieldIds(), resolver, assignees);
     const attachments = await label('attachments', () => client.uploadAttachment(key, { filename: 'snapwing-test.png', content: PNG, contentType: 'image/png' }));
     expect(attachments[0]?.filename).toBe('snapwing-test.png');
     const issue = await client.getIssue(key, { fields: ['labels', 'attachment', 'comment', fieldIds()['Agent Status'] ?? ''] });
@@ -251,6 +252,29 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
     expect(issue.fields[fieldIds()['Agent Status'] ?? '']).toBe('done');
     expect(JSON.stringify(issue.fields['attachment'])).toContain('snapwing-test.png');
     expect(JSON.stringify(issue.fields['comment'])).toContain(runId);
+  });
+
+  it("assigns by account id: the owner's own account, resolved from JIRA_EMAIL, on create and on an update", async () => {
+    const me = await client.myself();
+    const found = await label('user-search', () => client.findUserByEmail(env.JIRA_EMAIL));
+    expect(found?.accountId).toBe(me.accountId);
+
+    const op: CreateIssueOp = { ...createOp(), incidentId: `${runId}-assign`, assigneeEmail: env.JIRA_EMAIL };
+    const made = await findOrCreateIssue(client, op, fieldIds(), assignees);
+    created.push(made.key);
+    const assigned = await client.getIssue(made.key, { fields: ['assignee', 'comment'] });
+    expect((assigned.fields['assignee'] as { accountId: string } | null)?.accountId).toBe(me.accountId);
+
+    // An update-fields row writes it too, and an unknown email leaves the assignee and comments instead of failing.
+    const resolver = createStatusResolver(client);
+    await sendOp(client, { op: 'update-fields', issueKey: key, fields: {}, customFields: {}, assigneeEmail: env.JIRA_EMAIL }, fieldIds(), resolver, assignees);
+    const updated = await client.getIssue(key, { fields: ['assignee'] });
+    expect((updated.fields['assignee'] as { accountId: string } | null)?.accountId).toBe(me.accountId);
+    const nobody = `snapwing-nobody-${runId}@example.invalid`;
+    await sendOp(client, { op: 'update-fields', issueKey: key, fields: {}, customFields: {}, assigneeEmail: nobody }, fieldIds(), resolver, assignees);
+    const after = await client.getIssue(key, { fields: ['assignee', 'comment'] });
+    expect((after.fields['assignee'] as { accountId: string } | null)?.accountId).toBe(me.accountId);
+    expect(JSON.stringify(after.fields['comment'])).toContain(nobody);
   });
 
   it('finds the issue by JQL', async () => {

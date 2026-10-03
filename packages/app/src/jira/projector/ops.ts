@@ -12,17 +12,32 @@
 //                                                           name, e.g. "Won't Do"
 //   add-comment    { issueKey, text }                       batched by `batch_key` (drain.ts)
 //   add-labels     { issueKey, labels }
-//   update-fields  { issueKey, fields?, customFields? }     at least one field
+//   update-fields  { issueKey, fields?, customFields? }     at least one field; `fields.assignee` is
+//                                                           { email }, resolved to an accountId (below)
 //
 // Custom fields travel by name (`Implementation Prompt`, `Autonomy Level`, ...). The projector maps
 // a name to a Jira field id through `customFieldIds`; a name with no id is left out of the write
-// (fields.ts checks the map at startup; prompt.ts rewrites the placeholder key). `suggestedAssigneeEmail` is not sent yet:
-// Jira assigns by account id, and resolving one is a user search this client does not make.
+// (fields.ts checks the map at startup; prompt.ts rewrites the placeholder key).
+//
+// Assignee (#323, main 9.1, B 7.2). Jira Cloud assigns by `accountId`, so an email is looked up first
+// (`client.findUserByEmail`, cached per projector by `createAssigneeResolver`). `create-issue` sets the
+// assignee from `suggestedAssigneeEmail`; an `update-fields` row writes `fields.assignee` (a claim by an
+// engineer, batch key `field:{incident}:assignee`, so a human's later edit drops it, B 7.3). An email
+// that resolves to no user (or one the credentials may not search for) leaves the assignee as it was
+// and adds a comment naming the suggested owner; it never fails the row.
 
 import type { OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
 import { CUSTOM_FIELD_IMPLEMENTATION_PROMPT } from '@snapwing/pipeline/jira/synthesis.ts';
 import { JIRA_LOGICAL_STATUSES, toJiraLogicalStatus, type JiraLogicalStatus } from '@snapwing/pipeline/jira/statuses.ts';
-import { JiraTransitionNotFoundError, type Adf, type JiraClient, type UploadAttachmentInput } from '../client/index.ts';
+import {
+  JiraAuthError,
+  JiraNotFoundError,
+  JiraTransitionNotFoundError,
+  JiraValidationError,
+  type Adf,
+  type JiraClient,
+  type UploadAttachmentInput,
+} from '../client/index.ts';
 import type { StatusResolver } from './statuses.ts';
 
 /** The label `create-issue` adds so a retry finds the issue an earlier attempt created (#140). */
@@ -50,6 +65,8 @@ export interface CreateIssueOp {
   fields: Record<string, unknown>;
   customFields: Record<string, CustomFieldValue>;
   screenshots: ScreenshotRef[];
+  /** The suggested owner's email; resolved to an account id at send time. */
+  assigneeEmail?: string;
 }
 
 export interface TransitionOp {
@@ -78,6 +95,8 @@ export interface UpdateFieldsOp {
   issueKey: string;
   fields: Record<string, unknown>;
   customFields: Record<string, CustomFieldValue>;
+  /** From `fields.assignee.email`; resolved to an account id at send time. */
+  assigneeEmail?: string;
 }
 
 export type JiraOp = CreateIssueOp | TransitionOp | AddCommentOp | AddLabelsOp | UpdateFieldsOp;
@@ -157,12 +176,26 @@ export function parseJiraRow(row: OutboxItem): JiraOp {
       const fields = p['fields'] === undefined ? {} : p['fields'];
       if (!isRecord(fields)) bad('fields must be an object');
       const customFields = parseCustomFields(p['customFields'], bad);
-      if (Object.keys(fields as Record<string, unknown>).length + Object.keys(customFields).length === 0) bad('names no field to update');
-      return { op: 'update-fields', issueKey: key, fields: { ...(fields as Record<string, unknown>) }, customFields };
+      const { assignee, ...plain } = fields as Record<string, unknown>;
+      const assigneeEmail = assignee === undefined ? undefined : parseAssignee(assignee, bad);
+      if (Object.keys(plain).length + Object.keys(customFields).length + (assigneeEmail === undefined ? 0 : 1) === 0) bad('names no field to update');
+      return { op: 'update-fields', issueKey: key, fields: plain, customFields, ...(assigneeEmail === undefined ? {} : { assigneeEmail }) };
     }
     default:
       return bad(`unknown op; expected one of ${JIRA_OPS.join(', ')}`);
   }
+}
+
+const EMAIL = /^[^\s@]+@[^\s@]+$/;
+
+function parseEmail(v: unknown, where: string, bad: (problem: string) => never): string {
+  if (typeof v !== 'string' || !EMAIL.test(v.trim())) return bad(`${where} must be an email address`);
+  return v.trim();
+}
+
+function parseAssignee(v: unknown, bad: (problem: string) => never): string {
+  if (!isRecord(v)) return bad('fields.assignee must be { email }');
+  return parseEmail(v['email'], 'fields.assignee.email', bad);
 }
 
 function parseLabels(v: unknown, bad: (problem: string) => never, required: boolean): string[] {
@@ -221,12 +254,15 @@ function parseCreateIssue(row: OutboxItem, bad: (problem: string) => never): Cre
   };
   if (priority !== undefined) fields['priority'] = { name: (priority as Record<string, unknown>)['name'] };
   if (components !== undefined) fields['components'] = (components as Record<string, unknown>[]).map((c) => ({ name: c['name'] }));
+  const suggested = p['suggestedAssigneeEmail'];
   return {
     op: 'create-issue',
     incidentId: row.incidentId as string,
     fields,
     customFields: parseCustomFields(p['customFields'], bad),
     screenshots: parseScreenshots(p['screenshots'], bad),
+    // A suggestion is a hint: one that is not an email is left out rather than parking the issue.
+    ...(typeof suggested === 'string' && EMAIL.test(suggested.trim()) ? { assigneeEmail: suggested.trim() } : {}),
   };
 }
 
@@ -282,6 +318,52 @@ export function mapCustomFields(byName: Record<string, CustomFieldValue>, ids: R
   return out;
 }
 
+/** Email to Jira account id, cached per projector. */
+export interface AssigneeResolver {
+  /** The account id for `email`, or undefined when no user matches. Rate limits and network errors throw. */
+  resolve(email: string): Promise<string | undefined>;
+}
+
+/** How long a lookup that found nobody is remembered; a person found is kept for the projector's life. */
+export const ASSIGNEE_MISS_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Resolves emails with `client.findUserByEmail`, once per email (case-insensitive). A 401, 403, 404, or 400
+ * from the search (no permission to browse users, say) reads as no match, so the issue is left unassigned
+ * and commented rather than parked. A miss expires after `ASSIGNEE_MISS_TTL_MS`, so a person added to the
+ * site later is found without a restart.
+ */
+export function createAssigneeResolver(client: JiraClient, now: () => Date = () => new Date()): AssigneeResolver {
+  const found = new Map<string, string>();
+  const missed = new Map<string, number>();
+  return {
+    async resolve(email) {
+      const key = email.trim().toLowerCase();
+      const hit = found.get(key);
+      if (hit !== undefined) return hit;
+      const until = missed.get(key);
+      if (until !== undefined && now().getTime() < until) return undefined;
+      let accountId: string | undefined;
+      try {
+        accountId = (await client.findUserByEmail(email))?.accountId;
+      } catch (err) {
+        if (!(err instanceof JiraAuthError || err instanceof JiraNotFoundError || err instanceof JiraValidationError)) throw err;
+      }
+      if (accountId === undefined) {
+        missed.set(key, now().getTime() + ASSIGNEE_MISS_TTL_MS);
+        return undefined;
+      }
+      found.set(key, accountId);
+      return accountId;
+    },
+  };
+}
+
+/** The comment left when the suggested owner has no Jira user. */
+export function unassignedText(email: string): string {
+  return `Snapwing could not assign this issue: no Jira user matches ${email}. Suggested owner: ${email}.`;
+}
+
 export interface FoundIssue {
   key: string;
   /** False when the label search found an issue an earlier attempt created. */
@@ -294,7 +376,12 @@ export interface FoundIssue {
  * Finds the issue carrying `incidentLabel(incidentId)`, or creates it with that label added. This
  * is what makes `create-issue` idempotent across a crash between Jira's answer and the ack.
  */
-export async function findOrCreateIssue(client: JiraClient, op: CreateIssueOp, customFieldIds: Readonly<Record<string, string>>): Promise<FoundIssue> {
+export async function findOrCreateIssue(
+  client: JiraClient,
+  op: CreateIssueOp,
+  customFieldIds: Readonly<Record<string, string>>,
+  assignees: AssigneeResolver,
+): Promise<FoundIssue> {
   const label = incidentLabel(op.incidentId);
   const page = await client.searchJql(`labels = "${label}" ORDER BY created ASC`, { maxResults: 1, fields: ['attachment'] });
   const hit = page.issues[0];
@@ -306,7 +393,14 @@ export async function findOrCreateIssue(client: JiraClient, op: CreateIssueOp, c
     return { key: hit.key, created: false, attached };
   }
   const labels = [...new Set([...(op.fields['labels'] as string[]), label])];
-  const ref = await client.createIssue({ ...op.fields, labels, ...mapCustomFields(op.customFields, customFieldIds) });
+  const accountId = op.assigneeEmail === undefined ? undefined : await assignees.resolve(op.assigneeEmail);
+  const ref = await client.createIssue({
+    ...op.fields,
+    labels,
+    ...(accountId === undefined ? {} : { assignee: { accountId } }),
+    ...mapCustomFields(op.customFields, customFieldIds),
+  });
+  if (op.assigneeEmail !== undefined && accountId === undefined) await client.addComment(ref.key, textToAdf(unassignedText(op.assigneeEmail)));
   return { key: ref.key, created: true, attached: [] };
 }
 
@@ -366,6 +460,7 @@ export async function sendOp(
   op: Exclude<JiraOp, CreateIssueOp>,
   customFieldIds: Readonly<Record<string, string>>,
   statuses: StatusResolver,
+  assignees: AssigneeResolver,
 ): Promise<boolean> {
   switch (op.op) {
     case 'transition':
@@ -377,9 +472,13 @@ export async function sendOp(
       await client.addLabels(op.issueKey, op.labels);
       return true;
     case 'update-fields': {
-      const fields = { ...op.fields, ...mapCustomFields(op.customFields, customFieldIds) };
-      if (Object.keys(fields).length === 0) return false;
-      await client.editIssue(op.issueKey, fields);
+      const fields: Record<string, unknown> = { ...op.fields, ...mapCustomFields(op.customFields, customFieldIds) };
+      const accountId = op.assigneeEmail === undefined ? undefined : await assignees.resolve(op.assigneeEmail);
+      if (accountId !== undefined) fields['assignee'] = { accountId };
+      const unresolved = op.assigneeEmail !== undefined && accountId === undefined ? op.assigneeEmail : undefined;
+      if (Object.keys(fields).length === 0 && unresolved === undefined) return false;
+      if (Object.keys(fields).length > 0) await client.editIssue(op.issueKey, fields);
+      if (unresolved !== undefined) await client.addComment(op.issueKey, textToAdf(unassignedText(unresolved)));
       return true;
     }
   }

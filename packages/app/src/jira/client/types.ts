@@ -49,6 +49,16 @@ export interface JiraMyself {
   emailAddress?: string;
 }
 
+/** A Jira Cloud user from `GET /user/search`. Assignment is by `accountId`, never by email. */
+export interface JiraUser {
+  accountId: string;
+  displayName?: string;
+  /** Absent when the user's privacy settings hide it. */
+  emailAddress?: string;
+  active?: boolean;
+  accountType?: string;
+}
+
 export interface UploadAttachmentInput {
   filename: string;
   content: Uint8Array;

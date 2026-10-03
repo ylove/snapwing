@@ -172,6 +172,28 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
     expect(s.push(draft('claimed', { claimerId: DANA.id, expiresAt: '2026-10-01T18:00:00Z' }, DANA))).toEqual([]);
   });
 
+  it('writes an assignee row keyed field:{incident}:assignee on a claim that carries the map email (B 7.2, B 7.3)', () => {
+    const { s } = filed();
+    const rows = s.push(draft('claimed', { claimerId: DANA.id, expiresAt: '2026-10-01T14:00:00Z', claimerEmail: 'dana@example.com' }, DANA)).map(shape);
+    expect(rows).toEqual([
+      status('claimed'),
+      label('human-claimed'),
+      { op: 'update-fields', payload: { issueKey: KEY, fields: { assignee: { email: 'dana@example.com' } } }, batchKey: `field:${INC}:assignee` },
+    ]);
+    expect(rows[2]?.batchKey).toBe(jiraFieldBatchKey(INC, 'assignee'));
+  });
+
+  it('writes no assignee row for a claim before filing (the create payload carries it), without an email, or that did not fit', () => {
+    const early = new Script();
+    const before = early.all([...prefix(), draft('claimed', { claimerId: DANA.id, expiresAt: '2026-10-01T14:00:00Z', claimerEmail: 'dana@example.com' }, DANA)]);
+    expect(before).toEqual([]);
+
+    const { s } = filed();
+    expect(s.push(draft('claimed', { claimerId: DANA.id, expiresAt: '2026-10-01T14:00:00Z' }, DANA)).map((r) => r.payload['fields'])).toEqual([undefined, undefined]);
+    s.push(draft('closed', {}));
+    expect(s.push(draft('claimed', { claimerId: DANA.id, expiresAt: '2026-10-01T18:00:00Z', claimerEmail: 'dana@example.com' }, DANA))).toEqual([]);
+  });
+
   it('labels needs-clarification on an ask-back after filing; before filing the create payload carries it', () => {
     const s = new Script();
     const ask = draft('clarified', { audience: 'reporter', question: 'Which page?', timedOut: false });

@@ -304,7 +304,8 @@ async function decide(deps: SignalDeps, playbook: Playbook, signal: SignalInput,
       const effect = resolveSignal('claim', role, signal.actor.role);
       if (effect !== 'hold') return { effect: 'comment' };
       const expiresAt = new Date(Date.parse(at) + parseDuration(playbook.claims.expiry)).toISOString();
-      return { effect: 'hold', events: [ev('claimed', { claimerId: signal.actor.id, expiresAt })] };
+      const claimerEmail = await emailOf(deps, signal);
+      return { effect: 'hold', events: [ev('claimed', { claimerId: signal.actor.id, expiresAt, ...(claimerEmail === undefined ? {} : { claimerEmail }) })] };
     }
     case 'release': {
       const claims = await deps.state.getClaims(incident.id);
@@ -437,6 +438,15 @@ async function countFor(deps: SignalDeps, playbook: Playbook, signal: SignalInpu
   const { weights } = playbook;
   const weight = (await isSurfaceOwner(deps, signal, incident)) ? weights.owner : signal.actor.role === 'engineer' ? weights.engineer : weights.reporter;
   return { weight, windowEndsAt };
+}
+
+/** The actor's email in the workspace map (the Jira assignee of a claim), or undefined when there is none. */
+async function emailOf(deps: SignalDeps, signal: SignalInput): Promise<string | undefined> {
+  if (deps.map === undefined) return undefined;
+  const map = typeof deps.map === 'function' ? await deps.map() : deps.map;
+  const person = map.people.find((p) => (signal.platform === 'slack' ? p.slackId : p.teamsId) === signal.actor.id);
+  const email = person?.email?.trim();
+  return email === undefined || email === '' ? undefined : email;
 }
 
 /** The reactor owns the incident's surface in the map, or is its resolved owner. */
