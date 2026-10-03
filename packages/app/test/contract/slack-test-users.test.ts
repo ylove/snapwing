@@ -12,6 +12,7 @@ import {
   USER_SCOPES,
   parseArgs,
   runCheck,
+  runCreateApp,
   runSecrets,
   runStore,
   type Deps,
@@ -135,6 +136,96 @@ describe('manifests/slack/test-driver.manifest.yaml', () => {
     expect(m.settings.interactivity?.is_enabled).toBe(false);
     expect(m.settings.socket_mode_enabled).toBe(false);
     expect(m.oauth_config.redirect_urls).toEqual([`http://localhost:${DEFAULT_PORT}/callback`]);
+  });
+});
+
+describe('slack:test-users create-app', () => {
+  const CONFIG = 'SLACK_CONFIG_TOKEN=xoxe-test-config\n';
+  const stubCreate = (reply: Record<string, unknown>): { forms: Record<string, string>[]; auth: string[] } => {
+    const seen = { forms: [] as Record<string, string>[], auth: [] as string[] };
+    server.use(
+      http.post(`${API}/apps.manifest.create`, async ({ request }) => {
+        seen.forms.push(Object.fromEntries(new URLSearchParams(await request.text())));
+        seen.auth.push(request.headers.get('authorization') ?? '');
+        return HttpResponse.json(reply);
+      }),
+    );
+    return seen;
+  };
+  const created = { ok: true, app_id: 'A0DRIVER', credentials: { client_id: '9876.5432', client_secret: 'created-secret-test', signing_secret: 'sign-test' } };
+
+  it('creates the app from the manifest, writes the credentials, and never prints them', async () => {
+    await writeEnv(`# keep me\n${CONFIG}SLACK_TEST_CHANNEL=${CHANNEL}\n`);
+    const seen = stubCreate(created);
+    const { deps, log } = makeDeps(allow);
+    expect(await runCreateApp(deps)).toEqual({ appId: 'A0DRIVER', clientId: '9876.5432' });
+
+    expect(seen.auth).toEqual(['Bearer xoxe-test-config']);
+    const sent = JSON.parse(seen.forms[0]?.['manifest'] ?? '{}') as Manifest;
+    expect(sent.display_information.name).toBe('Snapwing Test Driver');
+    expect(sent.oauth_config.scopes.user).toEqual([...USER_SCOPES]);
+
+    const env = await readEnv();
+    expect(env).toContain('SLACK_TEST_DRIVER_CLIENT_ID=9876.5432\n');
+    expect(env).toContain('SLACK_TEST_DRIVER_CLIENT_SECRET=created-secret-test\n');
+    expect(env).toContain('SLACK_TEST_DRIVER_APP_ID=A0DRIVER\n');
+    expect(env).toContain('# keep me');
+    expect(env).toContain(CONFIG.trim());
+    const out = log.join('\n');
+    expect(out).not.toContain('created-secret-test');
+    expect(out).not.toContain('9876.5432');
+    expect(out).not.toContain('xoxe-test-config');
+    expect(log[0]).toMatch(/^Needs .*SLACK_CONFIG_TOKEN/);
+    expect(log.at(-1)).toMatch(/^Next: .*`pnpm slack:test-users reporter`\.$/);
+  });
+
+  it('refuses with the existing app id when credentials are set, unless --force', async () => {
+    const stored = `${BASE_ENV}${CONFIG}SLACK_TEST_DRIVER_APP_ID=A0OLD\n`;
+    await writeEnv(stored);
+    const seen = stubCreate(created);
+    const { deps } = makeDeps(allow);
+    await expect(runCreateApp(deps)).rejects.toThrow(/already exists \(app id A0OLD\).*--force.*nothing was changed/);
+    expect(seen.forms).toHaveLength(0);
+    expect(await readEnv()).toBe(stored);
+
+    await runCreateApp(deps, { force: true });
+    const env = await readEnv();
+    expect(env).toContain('SLACK_TEST_DRIVER_CLIENT_ID=9876.5432\n');
+    expect(env.match(/^SLACK_TEST_DRIVER_CLIENT_SECRET=/gm)).toHaveLength(1);
+    expect(env).toContain('SLACK_TEST_DRIVER_APP_ID=A0DRIVER\n');
+  });
+
+  it('prints Slack error and errors[] verbatim, and explains how to regenerate an expired token', async () => {
+    await writeEnv(CONFIG);
+    stubCreate({ ok: false, error: 'invalid_manifest', errors: [{ message: 'bad scope', pointer: '/oauth_config/scopes/user/0' }, 'second problem xoxe-test-config'] });
+    const { deps } = makeDeps(allow);
+    const err: unknown = await runCreateApp(deps).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+    const message = err instanceof Error ? err.message : '';
+    expect(message).toContain('apps.manifest.create failed: invalid_manifest');
+    expect(message).toContain('bad scope');
+    expect(message).toContain('/oauth_config/scopes/user/0');
+    expect(message).toContain('second problem');
+    expect(message).not.toContain('xoxe-test-config');
+    expect(message).not.toContain('Regenerate');
+    expect(await readEnv()).toBe(CONFIG);
+
+    for (const code of ['invalid_auth', 'token_expired']) {
+      stubCreate({ ok: false, error: code });
+      await expect(runCreateApp(deps)).rejects.toThrow(new RegExp(`failed: ${code}.*Regenerate the configuration token.*api\\.slack\\.com/apps.*SLACK_CONFIG_TOKEN`));
+    }
+  });
+
+  it('names the missing configuration token, and fails when Slack returns no credentials', async () => {
+    await writeEnv('');
+    const { deps } = makeDeps(allow);
+    await expect(runCreateApp(deps)).rejects.toThrow('SLACK_CONFIG_TOKEN is not set in .env.live');
+    await writeEnv(CONFIG);
+    stubCreate({ ok: true, app_id: 'A0DRIVER' });
+    await expect(runCreateApp(deps)).rejects.toThrow(/no client credentials.*A0DRIVER/);
+    expect(await readEnv()).toBe(CONFIG);
   });
 });
 
@@ -341,6 +432,8 @@ describe('argument parsing', () => {
   it('accepts a role, --check, secrets, and flags; rejects the rest', () => {
     expect(parseArgs(['reporter'])).toEqual({ command: 'store', role: 'reporter', open: true });
     expect(parseArgs(['engineer', '--port', '4000', '--no-open'])).toEqual({ command: 'store', role: 'engineer' satisfies Role, port: 4000, open: false });
+    expect(parseArgs(['create-app'])).toEqual({ command: 'create-app', open: true });
+    expect(parseArgs(['create-app', '--force'])).toMatchObject({ command: 'create-app', force: true });
     expect(parseArgs(['--check']).command).toBe('check');
     expect(parseArgs(['secrets', '--repo', 'a/b'])).toMatchObject({ command: 'secrets', repo: 'a/b' });
     expect(() => parseArgs([])).toThrow(/usage/);
