@@ -1,0 +1,8 @@
+{
+  "id": "sub-1",
+  "resource": "/teams/T1/channels/C1/messages",
+  "changeType": "created,updated",
+  "notificationUrl": "https://snapwing.example.test/teams/graph",
+  "expirationDateTime": "2026-10-03T11:00:00.0000000Z",
+  "clientState": "secret-state"
+}

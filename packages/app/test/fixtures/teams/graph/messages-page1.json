@@ -1,0 +1,29 @@
+{
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/teams/T1/channels/C1/messages?$top=2&$skiptoken=page2",
+  "value": [
+    {
+      "id": "1700000000002",
+      "replyToId": null,
+      "messageType": "message",
+      "createdDateTime": "2026-10-03T10:00:02.000Z",
+      "lastModifiedDateTime": "2026-10-03T10:05:00.000Z",
+      "from": { "user": { "id": "aad-user-1", "displayName": "Dana Reporter", "userIdentityType": "aadUser" } },
+      "body": { "contentType": "html", "content": "<p>Checkout is broken</p>" },
+      "attachments": [
+        { "id": "att1", "contentType": "reference", "contentUrl": "https://contoso.sharepoint.com/sites/team/Shared Documents/General/screen.png", "name": "screen.png" }
+      ],
+      "reactions": []
+    },
+    {
+      "id": "1700000000001",
+      "replyToId": null,
+      "messageType": "message",
+      "createdDateTime": "2026-10-03T10:00:01.000Z",
+      "lastModifiedDateTime": "2026-10-03T10:00:01.000Z",
+      "from": { "user": { "id": "aad-user-2", "displayName": "Sam Engineer" } },
+      "body": { "contentType": "text", "content": "Looking" },
+      "attachments": [],
+      "reactions": []
+    }
+  ]
+}
