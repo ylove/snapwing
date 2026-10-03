@@ -15,6 +15,8 @@ export interface ValidationError {
   /** 1-based line in the validated document, when the validator can locate the error. */
   line?: number;
   message: string;
+  /** Id of the Schematron assert or report that fired, when the error comes from a rule. */
+  rule?: string;
 }
 
 export interface ValidationResult {
@@ -84,7 +86,11 @@ export async function validateSchematron(xml: string, schPath: string): Promise<
       results.map((r): ValidationError => {
         const message = collapse(r.message ?? '') || `Schematron ${r.isReport ? 'report' : 'assert'} ${r.assertId ?? '(unnamed)'} fired`;
         const line = lineOf(r.context, lines);
-        return line === undefined ? { message } : { line, message };
+        return {
+          ...(line === undefined ? {} : { line }),
+          message,
+          ...(r.assertId ? { rule: r.assertId } : {}),
+        };
       }),
     );
   } catch (err) {

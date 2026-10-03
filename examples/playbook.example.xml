@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Every element is optional; an empty <playbook/> is valid. Validates against examples/workspace-context.example.xml. -->
+<playbook xmlns="urn:snapwing:playbook:v1" version="1">
+
+  <!-- 1. Signal vocabulary overrides (defaults in Companion A, 1.1) -->
+  <signals>
+    <intent name="trigger">
+      <emoji slack="bug" teams="bug" />
+      <emoji slack="ladybug" teams="ladybug" channel="app-bugs" />
+    </intent>
+    <intent name="claim">
+      <emoji slack="eyes" teams="eyes" />
+      <phrase>on it</phrase>
+      <phrase>peeking</phrase>              <!-- learned from a correction -->
+    </intent>
+    <intent name="accept">
+      <emoji slack="+1" teams="like" />
+      <emoji slack="pray" teams="pray" />
+      <emoji slack="heart" teams="heart" />
+    </intent>
+    <intent name="stop">
+      <emoji slack="octagonal_sign" teams="stop" />
+    </intent>
+    <intent name="watch">
+      <emoji slack="bell" teams="bell" />
+    </intent>
+    <lexicon maxWords="12" confidenceFloor="0.7" />
+    <reactionsAsButtons enabled="false" />      <!-- engineer thumbs-up on Fix Preview = Fix it -->
+    <reactionsAsApproval enabled="false" />     <!-- engineer thumbs-up on PR card = GitHub approval -->
+  </signals>
+
+  <!-- 2. Counting and escalation by reactions -->
+  <weights reporter="1.0" engineer="1.5" owner="2.0" window="PT2H" />
+  <ladder intent="trigger escalate">
+    <step score="3" priority="+1" note="true" />
+    <step score="5" priority="Highest" mentionOwner="true" suppressAskBack="true" />
+    <step score="8" outage="true" />
+  </ladder>
+
+  <!-- 3. Claims -->
+  <claims expiry="PT4H" holdExpiry="PT2H" midFlightGrace="PT10M" businessHoursOnly="true" />
+
+  <!-- 4. Notifications -->
+  <notifications>
+    <quietHours tz="America/New_York" from="20:00" to="08:00" exceptPriority="Highest" />
+    <rateLimit perIncident="PT5M" />
+    <forcePush priority="Highest" />
+    <forcePush surface="web" />
+    <digest to="#eng-leads" cron="0 9 * * 1-5" />
+  </notifications>
+
+  <!-- 5. Active monitoring -->
+  <monitor interval="PT60S" heartbeat="PT10M" stallAfter="PT15M">
+    <critical surface="web" />
+    <critical surface="admin" />
+  </monitor>
+
+  <!-- 6. Escalation ladders: what to do when a critical incident stalls -->
+  <escalation name="outage">
+    <after duration="PT0M"  mention="owner" />
+    <after duration="PT30M" mention="@U0WEBDEV1" />
+    <after duration="PT60M" pagerduty="P123ABC" />
+    <after duration="PT2H"  mention="@U0MOBDEV" channel="#incidents" />
+    <applyWhen priority="Highest" />
+    <applyWhen outage="true" />
+  </escalation>
+  <escalation name="stalled-fix">
+    <after duration="PT15M" mention="owner" />
+    <after duration="PT45M" mention="@U0WEBDEV1" />
+    <applyWhen monitored="true" stalled="true" />
+  </escalation>
+
+  <!-- 7. Human-error handling -->
+  <userSide check="true" uxFrictionThreshold="3" uxFrictionWindow="P30D" />
+
+  <!-- 8. Recordings -->
+  <recordings maxDuration="PT3M" sampleFps="1" />
+
+</playbook>
