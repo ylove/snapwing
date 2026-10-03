@@ -10,6 +10,7 @@
 // Moved here from the Slack cards (#129, #142).
 
 import type { StatusStage, StatusUpdate } from '../contracts/adapters.ts';
+import { isInstructionsHoldSentence } from '../merge/instructions.ts';
 
 /** The fixed visual vocabulary (20.1): filed, fixing, in review, live, stopped, reverted. */
 export const STATUS_EMOJI = {
@@ -105,6 +106,11 @@ export interface StatusCopyContext {
   automatic?: boolean;
   /** `held`: a plain-language reason. Anything with a path or "PR" is replaced by a generic one. */
   reason?: string;
+  /**
+   * `filed`: the workspace instructions held the fixer start (A 6.4); the status sentence. The owner,
+   * when set, is the person the instruction names, and the copy hands the ticket to them.
+   */
+  instructionsHold?: string;
   /** `failed`: whether a draft with what the fixer tried was kept. Default true. */
   draft?: boolean;
   /** Appended as a further sentence (the engine's notes on how an incident was filed). */
@@ -123,6 +129,11 @@ function body(stage: StatusStage, ctx: StatusCopyContext): string {
   const by = actor === undefined ? '' : ` by ${actor}`;
   switch (stage) {
     case 'filed':
+      if (ctx.instructionsHold !== undefined) {
+        const reason = safeReason(ctx.instructionsHold);
+        const held = `Filed as ${key}. ${isInstructionsHoldSentence(reason) ? reason : 'Holding per workspace instructions'}.`;
+        return owner === undefined ? held : `${held} Over to ${owner}.`;
+      }
       return owner === undefined ? `Filed as ${key}.` : `Filed as ${key}, assigned to ${owner}.`;
     case 'fixing':
       return `Filed as ${key}. Working on a fix now.`;
@@ -132,10 +143,12 @@ function body(stage: StatusStage, ctx: StatusCopyContext): string {
       return 'Review passed, waiting on merge.';
     case 'merged':
       return ctx.automatic === true ? 'Merged automatically (review: approve, CI: green).' : `Merged${by}. Rolling out to staging.`;
-    case 'held':
-      return owner === undefined
-        ? `Held for human review: ${safeReason(ctx.reason)}.`
-        : `Held for human review: ${safeReason(ctx.reason)}. ${owner} requested.`;
+    case 'held': {
+      // A 6.4: a hold for the workspace instructions says so in its own words.
+      const reason = safeReason(ctx.reason);
+      const lead = isInstructionsHoldSentence(reason) ? `${reason}.` : `Held for human review: ${reason}.`;
+      return owner === undefined ? lead : `${lead} ${owner} requested.`;
+    }
     case 'stopped':
       return `Stopped${by}. Ticket back in Backlog.`;
     case 'failed': {
