@@ -1,0 +1,58 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "PR #418 is ready for WEB-1042",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "**PR #418 is ready** for WEB-1042 (review agent: approve, CI: green, 2 files, +41 -6). Review requested from <at>Dana</at>.",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.OpenUrl",
+      "title": "Open PR",
+      "url": "https://github.com/example/web/pull/418"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Merge",
+      "verb": "merge",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      },
+      "style": "positive"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Request changes",
+      "verb": "request_changes",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Stop",
+      "verb": "stop",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      },
+      "style": "destructive"
+    }
+  ],
+  "msteams": {
+    "entities": [
+      {
+        "type": "mention",
+        "text": "<at>Dana</at>",
+        "mentioned": {
+          "id": "29:1aB2cD3eF4gH5iJ6kL7mN8oP",
+          "name": "Dana"
+        }
+      }
+    ]
+  }
+}

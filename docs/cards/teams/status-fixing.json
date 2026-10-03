@@ -1,0 +1,24 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "🔧 Filed as WEB-1042. Working on a fix now.",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "🔧 Filed as WEB-1042. Working on a fix now.",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Stop",
+      "verb": "stop",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      },
+      "style": "destructive"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "Reading 11 messages from 2:10 to 2:31, including Dana's screenshot and the thread under Marcus's reply.",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Reading 11 messages from 2:10 to 2:31, including Dana's screenshot and the thread under Marcus's reply.",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Looks right",
+      "verb": "looks-right",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      },
+      "style": "positive"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Widen",
+      "verb": "widen",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Narrow",
+      "verb": "narrow",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "Sounds like a second issue on the app. File it separately?",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Sounds like a second issue on the app. File it separately?",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Yes",
+      "verb": "yes",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "messageId": "1727980000.000300"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "It's the same bug",
+      "verb": "same-bug",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "messageId": "1727980000.000300"
+      }
+    }
+  ]
+}
