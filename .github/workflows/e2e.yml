@@ -1,23 +1,41 @@
 name: e2e
 
 # Runs only on demand, and only when the repository secrets it needs are present.
-# Secret names are listed in build/CONTEXT.md section 6b.
+# Secret names are listed in build/CONTEXT.md section 6b. The tier itself is
+# packages/app/test/e2e/levels.test.ts (#162): it starts a Cloudflare quick tunnel
+# (no account), so the job installs cloudflared. Without the `claude` CLI on the
+# runner the fixer is the scripted agent (packages/app/test/e2e/helpers/fake-agent.mjs).
 on:
   workflow_dispatch:
 
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+      JIRA_FIELD_IMPL_PROMPT: ${{ secrets.JIRA_FIELD_IMPL_PROMPT }}
+      JIRA_FIELD_CONVERSATION: ${{ secrets.JIRA_FIELD_CONVERSATION }}
+      JIRA_FIELD_AUTONOMY: ${{ secrets.JIRA_FIELD_AUTONOMY }}
+      JIRA_FIELD_AGENT_STATUS: ${{ secrets.JIRA_FIELD_AGENT_STATUS }}
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       SLACK_APP_TOKEN: ${{ secrets.SLACK_APP_TOKEN }}
       SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
+      SLACK_TEST_CHANNEL: ${{ secrets.SLACK_TEST_CHANNEL }}
+      SLACK_TEST_REPORTER_TOKEN: ${{ secrets.SLACK_TEST_REPORTER_TOKEN }}
+      SLACK_TEST_REPORTER_ID: ${{ secrets.SLACK_TEST_REPORTER_ID }}
+      SLACK_TEST_ENGINEER_TOKEN: ${{ secrets.SLACK_TEST_ENGINEER_TOKEN }}
+      SLACK_TEST_ENGINEER_ID: ${{ secrets.SLACK_TEST_ENGINEER_ID }}
       GITHUB_APP_ID: ${{ secrets.GH_APP_ID }}
       GITHUB_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
       GITHUB_INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
+      GITHUB_APP_SLUG: ${{ secrets.GH_APP_SLUG }}
+      GITHUB_WEBHOOK_SECRET: ${{ secrets.GH_WEBHOOK_SECRET }}
+      GITHUB_APP_CLIENT_ID: ${{ secrets.GH_APP_CLIENT_ID }}
+      GITHUB_APP_CLIENT_SECRET: ${{ secrets.GH_APP_CLIENT_SECRET }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
@@ -26,10 +44,12 @@ jobs:
         name: Check required secrets
         run: |
           missing=""
-          for name in JIRA_BASE_URL JIRA_EMAIL JIRA_API_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_SIGNING_SECRET GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_INSTALLATION_ID; do
+          for name in JIRA_BASE_URL JIRA_EMAIL JIRA_API_TOKEN JIRA_FIELD_IMPL_PROMPT JIRA_FIELD_CONVERSATION JIRA_FIELD_AUTONOMY JIRA_FIELD_AGENT_STATUS \
+                      SLACK_BOT_TOKEN SLACK_APP_TOKEN SLACK_SIGNING_SECRET SLACK_TEST_CHANNEL SLACK_TEST_REPORTER_TOKEN SLACK_TEST_REPORTER_ID SLACK_TEST_ENGINEER_TOKEN SLACK_TEST_ENGINEER_ID \
+                      GITHUB_APP_ID GITHUB_APP_PRIVATE_KEY GITHUB_INSTALLATION_ID GITHUB_APP_SLUG GITHUB_WEBHOOK_SECRET GITHUB_APP_CLIENT_ID GITHUB_APP_CLIENT_SECRET \
+                      OPENAI_API_KEY; do
             if [ -z "${!name}" ]; then missing="$missing $name"; fi
           done
-          if [ -z "$ANTHROPIC_API_KEY$OPENAI_API_KEY$GOOGLE_API_KEY" ]; then missing="$missing (one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY)"; fi
           if [ -n "$missing" ]; then
             echo "Skipping e2e tier; missing secrets:$missing"
             echo "ok=false" >> "$GITHUB_OUTPUT"
@@ -47,5 +67,11 @@ jobs:
           cache: pnpm
       - if: steps.guard.outputs.ok == 'true'
         run: pnpm install --frozen-lockfile
+      - if: steps.guard.outputs.ok == 'true'
+        name: Install cloudflared
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cloudflared" https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x "$RUNNER_TEMP/cloudflared"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - if: steps.guard.outputs.ok == 'true'
         run: pnpm test:e2e
