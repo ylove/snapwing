@@ -15,6 +15,7 @@ import type {
   ContextAssembledPayload,
   EventActor,
   IncidentEvent,
+  UserSideCheckRecord,
   PlannedPayload,
   DedupeDecidedPayload,
   TappedPayload,
@@ -101,6 +102,22 @@ export function roundClosed(round: ClarifyRound): boolean {
 /** True when a closed round ended with no answer, so the ticket gets `needs-clarification`. */
 export function roundUnanswered(round: ClarifyRound): boolean {
   return round.answer === undefined && round.payload.answer === undefined;
+}
+
+/** A 5.2: a closed user-side check, as the plan step files it. `answer` is absent when the card timed out. */
+export interface UserSideRound {
+  seq: number;
+  check: UserSideCheckRecord;
+  answer?: string;
+}
+
+/** The incident's user-side check round (the last `clarified`, when it was one), closed or not. */
+export function userSideRound(cursor: Pick<Cursor, 'clarified'>): UserSideRound | undefined {
+  const last = cursor.clarified[cursor.clarified.length - 1];
+  const check = last?.payload.userSide;
+  if (last === undefined || check === undefined) return undefined;
+  const answer = last.answer?.answer ?? last.payload.answer;
+  return { seq: last.seq, check, ...(answer === undefined ? {} : { answer }) };
 }
 
 /** Payloads with every applicable correction merged, stacking in log order (ADR 0014). */
@@ -228,7 +245,7 @@ export type Phase =
   | { kind: 'dedupe-card'; answer?: Tap }
   | { kind: 'clarify' }
   | { kind: 'clarify-card'; answer?: Tap }
-  | { kind: 'plan'; needsClarification: boolean }
+  | { kind: 'plan'; needsClarification: boolean; userSide?: UserSideRound }
   | { kind: 'fix-preview'; answer?: Tap; held?: true }
   | { kind: 'await-filed' }
   | { kind: 'after-filed' }
@@ -269,6 +286,10 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
       const answer = answerAfter(cursor, 'clarify', last.seq);
       return answer === undefined ? { kind: 'clarify-card' } : { kind: 'clarify-card', answer };
     }
+    // A 5.2: the user-side check took the round. An unanswered check files normally with the check
+    // noted; whether a gap is still open (needs-clarification) the plan step decides.
+    const userSide = userSideRound(cursor);
+    if (userSide !== undefined) return { kind: 'plan', needsClarification: false, userSide };
     return { kind: 'plan', needsClarification: roundUnanswered(last) };
   }
 

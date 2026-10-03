@@ -139,6 +139,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     planned: 'planned',
     'linked-to-existing': 'linked-to-existing',
     'not-a-bug': 'not-a-bug',
+    // A 5.2: the reporter's user-side check fixed it, so nothing is filed.
+    'user-side': 'not-filed',
   },
   planned: {
     filed: 'filed',

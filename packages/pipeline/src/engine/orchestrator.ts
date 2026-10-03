@@ -24,6 +24,11 @@
 //                 clarify card (only when the ask-back gate passes): clarified (asked), then
 //                   clarify-answered, plus resolved (resolvedBy clarify) when the answer names the
 //                   surface or component, waiting-changed {}; or, on timeout, waiting-changed {} alone
+//                 user-side check (A 5.2, clarify/user-side.ts) in place of the gap question, when a
+//                   reading's indicator reaches the playbook floor and the gate passes: clarified
+//                   (userSide), then clarify-answered; That fixed it adds waiting-changed {}, user-side
+//                   and a thread note and stops as not-filed with no Jira row; Still broken, I meant
+//                   <env>, or a timeout go on to planned with the check noted on the ticket
 //   level 0, 2, 3: planned (plan and implementation-request artifacts) [create-issue]; the job ends
 //                 (no surface at all: the fallback project, level 0, needs-clarification)
 //   level 1:      planned, fix-preview card: Dismiss appends not-a-bug and stops; Fix it, Ticket
