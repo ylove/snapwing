@@ -118,6 +118,38 @@ describe('synthesizeIssue', () => {
     expect(flat[5]).toBe('Line items lose their price when a promo is applied after a quantity change.');
   });
 
+  describe('a capture flagged by someone other than its author (#365)', () => {
+    const flagged: CanonicalIncidentPayload = {
+      ...payload,
+      reporter: { id: 'U0ENG', name: 'mobDev', email: 'dev@example.com', role: 'engineer' },
+      anchorAuthor: { id: 'U0TEST', name: 'Pat Reporter', email: 'pat@example.com', role: 'reporter' },
+    };
+
+    it('the Reporter line names the anchor author and "Flagged by" names the flagger', async () => {
+      const issue = await synthesizeIssue(planAt(2), bundle, 2, { ...ctx, payload: flagged });
+      expect(checkAdf(issue.fields.description)).toEqual([]);
+      const flat = issue.fields.description.content.map((p) => p.content.map((n) => n.text).join(''));
+      expect(flat.slice(0, 3)).toEqual(['Reporter: Pat Reporter (pat@example.com)', 'Flagged by: @mobDev', `Symptom: ${payload.anchorText}`]);
+    });
+
+    it('the implementation request report names the anchor author', async () => {
+      const issue = await synthesizeIssue(planAt(2), bundle, 2, { ...ctx, payload: flagged });
+      const request = parseImplementationRequest(issue.customFields['Implementation Prompt']);
+      expect(request.kind === 'single' ? request.evidence[0] : undefined).toMatchObject({ kind: 'report', reporter: 'pat@example.com' });
+    });
+
+    it('with no anchorAuthor (an old log) or the author flagging their own post, nothing changes', async () => {
+      for (const p of [payload, { ...payload, anchorAuthor: payload.reporter }]) {
+        const issue = await synthesizeIssue(planAt(2), bundle, 2, { ...ctx, payload: p });
+        const flat = issue.fields.description.content.map((n) => n.content.map((t) => t.text).join(''));
+        expect(flat[0]).toBe('Reporter: Pat Reporter (pat@example.com)');
+        expect(flat.some((l) => l.startsWith('Flagged by'))).toBe(false);
+        const request = parseImplementationRequest(issue.customFields['Implementation Prompt']);
+        expect(request.kind === 'single' ? request.evidence[0] : undefined).toMatchObject({ reporter: 'pat@example.com' });
+      }
+    });
+  });
+
   it('omits repro and the conversation link when unknown', async () => {
     const { deepLink: _drop, ...noLink } = payload.context;
     const issue = await synthesizeIssue(planAt(0), bundle, 0, { payload: { ...payload, context: noLink }, resolution });

@@ -6,6 +6,7 @@ import type { CanonicalIncidentPayload, ClarifyQuestion, ContextBundle, Resoluti
 import type { WorkspaceMap } from '../map/types.ts';
 import type { ModelPort } from '../ports/model.ts';
 import { findSurface } from '../resolve/lookup.ts';
+import { incidentReporter } from '../util/reporter.ts';
 import {
   DEFAULT_MAX_QUESTIONS,
   DEFAULT_SUPPRESS_REPORTERS,
@@ -91,7 +92,7 @@ export async function maybeAsk(
       surface: resolution.surfaceId !== undefined,
       component: resolution.componentId !== undefined,
       // A reporter-role person is on production (main 7.1); a screenshot may also say.
-      environment: payload.reporter.role === 'reporter' || seen.environment,
+      environment: incidentReporter(payload).role === 'reporter' || seen.environment,
       screenshot: seen.screenshot,
     },
     mapOptions: options,

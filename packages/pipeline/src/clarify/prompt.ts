@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { withInstructions, type WorkspaceInstructions } from '../config/instructions.ts';
 import type { CanonicalIncidentPayload, ContextBundle } from '../contracts/incident.ts';
 import type { ClassifyRequest, JsonSchema } from '../ports/model.ts';
+import { incidentReporter } from '../util/reporter.ts';
 import type { CandidateQuestion, QuestionAsks, QuestionKind } from './gate.ts';
 
 export const CLARIFY_SCHEMA_NAME = 'clarify-question';
@@ -101,7 +102,7 @@ export async function buildClarifyRequest(
     system: withInstructions(prompt.system, input.instructions),
     prompt: fill(prompt.request, {
       gap: input.gap,
-      'reporter-role': payload.reporter.role,
+      'reporter-role': incidentReporter(payload).role,
       report: xml(payload.anchorText),
       context,
       images,

@@ -163,6 +163,16 @@ function scene(opts: { role?: 'reporter' | 'engineer'; text?: string; readings?:
 
 const unresolved: Resolution = { resolvedBy: 'unresolved', confidence: 0 };
 
+describe('ask-back audience when someone else flagged the post (#365, main 7.1 layer 2)', () => {
+  it("the reporter-role the model sees is the anchor author's", async () => {
+    const { payload } = scene({ role: 'engineer' });
+    const flagged: CanonicalIncidentPayload = { ...payload, anchorAuthor: { id: 'U0SALES', name: 'Sam', role: 'reporter' } };
+    const s = scene();
+    expect((await buildClarifyRequest(flagged, s.bundle, { gap: 'surface', options: surfaceLabels })).prompt).toContain('<reporter-role>reporter</reporter-role>');
+    expect((await buildClarifyRequest(payload, s.bundle, { gap: 'surface', options: surfaceLabels })).prompt).toContain('<reporter-role>engineer</reporter-role>');
+  });
+});
+
 describe('maybeAsk: layers 1 to 3', () => {
   let dir: string;
   beforeEach(async () => {
