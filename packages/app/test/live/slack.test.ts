@@ -21,28 +21,16 @@
 //      contract tests), update those where the shapes differ, then commit the captured files.
 // Until a capture exists, the hand-written fixtures stay in place. The capture test is skipped without the flag.
 
-import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { findEnvFile } from './helpers/env.ts';
 import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets.ts';
 import { createSocketModeClient, type SlackDispatcher } from '../../src/adapters/slack/transport.ts';
 import { createSlackWeb } from '../../src/adapters/slack/web.ts';
 
 const PREFIX = '[snapwing-test]';
-
-function findEnvFile(): string {
-  const fromEnv = process.env.SNAPWING_ENV_LIVE;
-  if (fromEnv !== undefined && fromEnv !== '') return resolve(fromEnv);
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, '.env.live');
-    if (existsSync(candidate)) return candidate;
-    dir = dirname(dir);
-  }
-  return join(dir, '.env.live');
-}
 
 const secrets = createEnvFileSecrets({ path: findEnvFile() });
 const NAMES = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_TEST_CHANNEL'] as const;

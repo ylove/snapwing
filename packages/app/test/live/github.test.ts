@@ -9,11 +9,10 @@
 // Set SNAPWING_RECORD_DIR to write each response body to that directory (one file per call, bodies verbatim).
 // Those are for comparing with test/fixtures/github and the inline contract payloads; sanitize before committing.
 
-import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import { findEnvFile } from './helpers/env.ts';
 import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets.ts';
 import { createGitHubAuth } from '../../src/github/auth.ts';
 import type { GitHubAuth } from '../../src/github/auth.ts';
@@ -23,18 +22,6 @@ import { createCodeownersResolver } from '../../src/github/codeowners.ts';
 const REPO = 'ylove/snapwing-fixture-web';
 const R = `/repos/${REPO}`;
 const BASE = 'main';
-
-function findEnvFile(): string {
-  const fromEnv = process.env.SNAPWING_ENV_LIVE;
-  if (fromEnv !== undefined && fromEnv !== '') return resolve(fromEnv);
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, '.env.live');
-    if (existsSync(candidate)) return candidate;
-    dir = dirname(dir);
-  }
-  return join(dir, '.env.live');
-}
 
 const secrets = createEnvFileSecrets({ path: findEnvFile() });
 const present = await Promise.all(['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'].map((n) => secrets.get(n).then(() => true, () => false)));
