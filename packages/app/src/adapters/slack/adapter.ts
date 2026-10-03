@@ -7,10 +7,16 @@
 // The transport layer (`transport.ts`) parses nothing itself; it asks the adapter, which parses and
 // normalizes once per request and caches the result so `authenticateRequest`, `normalizePayload`, and
 // the transport's own check agree on one `eventId`.
+//
+// Every card and status message it posts is recorded as `bot-message-posted` with its role (A 1.3,
+// #287) when the adapter has `state`. The record is best effort: the message is already out, so a
+// failure goes to `onError` and never fails the post.
 
 import type { IngestionAdapter, InteractiveCard, StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { CanonicalIncidentPayload } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { recordBotMessage, roleOfCard, type PostedMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { verifySlackSignature } from './auth.ts';
 import { normalizeSlack, type SlackIgnoreReason, type SlackNormalizeResult } from './normalize.ts';
 import { buildCard, type CardOptions } from './cards/cards.ts';
@@ -56,6 +62,8 @@ export interface SlackAdapterOptions {
   /** Per-card viewer options (who sees `Fix it`, who may merge). Default: none. */
   cardOptions?: (payload: CanonicalIncidentPayload, card: InteractiveCard) => CardOptions | Promise<CardOptions>;
   statusStore?: SlackStatusStore;
+  /** Records each posted card and status message as `bot-message-posted` (A 1.3). Absent: nothing is recorded. */
+  state?: Pick<StatePort, 'read' | 'append'>;
   /** Errors from work that runs after the acknowledgement (the ephemeral post). */
   onError?: (error: unknown) => void;
   clock?: () => Date;
@@ -97,6 +105,12 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
   const clock = options.clock ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const results = new WeakMap<object, Promise<SlackNormalizeResult>>();
+
+  /** Records a posted message under the incident (the payload's event id); best effort. */
+  async function record(incidentId: string, posted: { channel: string; ts: string }, role: PostedMessage['role']): Promise<void> {
+    if (options.state === undefined) return;
+    await recordBotMessage(options.state, incidentId, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role }, clock).catch(onError);
+  }
 
   /** The thread a reply goes to: the anchor's thread, or none in a direct message. */
   const threadFor = (payload: CanonicalIncidentPayload): string | undefined => {
@@ -181,12 +195,13 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
     async postInteractive(payload, card) {
       const viewer = options.cardOptions === undefined ? {} : await options.cardOptions(payload, card);
       const message = buildCard(payload.eventId, card, viewer);
-      await web.postMessage({
+      const posted = await web.postMessage({
         channel: payload.context.channelId,
         text: message.text,
         blocks: message.blocks,
         ...withThread(payload),
       });
+      await record(payload.eventId, posted, roleOfCard(card.kind));
     },
 
     async postStatus(payload, status: StatusUpdate) {
@@ -200,6 +215,7 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
       const posted = await web.postMessage({ channel: payload.context.channelId, ...body, ...withThread(payload) });
       await web.pinsAdd(posted.channel, posted.ts).catch(onError);
       await options.statusStore?.set(payload.eventId, { channel: posted.channel, ts: posted.ts });
+      await record(payload.eventId, posted, 'status');
     },
   };
 }

@@ -27,7 +27,7 @@ import type {
   Resolution,
   TriageResolutionPlan,
 } from './incident.ts';
-import type { Intent, SignalEvent } from './signals.ts';
+import type { Intent, SignalEvent, TargetRole } from './signals.ts';
 
 // Event names -------------------------------------------------------------------------------------
 
@@ -87,7 +87,9 @@ export type EventType =
   | 'fixer-checkpoint'
   | 'fixer-artifact'
   | 'fixer-done'
-  | 'fixer-failed';
+  | 'fixer-failed'
+  // A 1.3 target resolution: every message Snapwing posts, with its role
+  | 'bot-message-posted';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
 export const EVENT_TYPES = Object.freeze([
@@ -137,6 +139,7 @@ export const EVENT_TYPES = Object.freeze([
   'fixer-artifact',
   'fixer-done',
   'fixer-failed',
+  'bot-message-posted',
 ] as const satisfies readonly EventType[]);
 
 // Compile-time: EVENT_TYPES lists every member of EventType (the `satisfies` above rules out extras).
@@ -619,6 +622,26 @@ export interface JiraTransitionedPayload {
   reconciled?: true;
 }
 
+/** A message Snapwing posts: every A 1.3 target role but `anchor`, which is a human's message. */
+export type BotMessageRole = Exclude<TargetRole, 'anchor'>;
+
+/**
+ * A 1.3: Snapwing posted a message a person can react to, so a later reaction on it resolves to
+ * `(intent, role, reactor role)`. Appended by the code that posts it (the chat adapter for cards, the
+ * PR card's chat side, the status projector for the status message and its mirror), right after the
+ * post. Ephemeral messages are not recorded: nobody can react to them. A message is keyed by
+ * platform, channel, and id (a Slack `ts` is unique only within its channel). Feeds `bot_messages`.
+ * Never changes the status.
+ */
+export interface BotMessagePostedPayload {
+  platform: 'slack' | 'teams';
+  /** The channel or conversation id the message is in. */
+  channel: string;
+  /** The platform message id (a Slack `ts`, a Teams activity id). */
+  messageId: string;
+  role: BotMessageRole;
+}
+
 /** The payload interface for each event type. */
 export interface EventPayloads {
   captured: CapturedPayload;
@@ -667,6 +690,7 @@ export interface EventPayloads {
   'fixer-artifact': FixerArtifactPayload;
   'fixer-done': FixerDonePayload;
   'fixer-failed': FixerFailedPayload;
+  'bot-message-posted': BotMessagePostedPayload;
 }
 
 // Compile-time: EventPayloads has exactly one entry per EventType.

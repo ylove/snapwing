@@ -134,6 +134,18 @@ export interface EscalationScoresTable {
   window_ends: Ts;
 }
 
+/** A message Snapwing posted, with its A 1.3 target role (#287). */
+export interface BotMessagesTable {
+  platform: 'slack' | 'teams';
+  channel: string;
+  message_id: string;
+  workspace_id: string;
+  incident_id: string;
+  role: string;
+  seq: number;
+  posted_at: Ts;
+}
+
 export interface ArtifactsTable {
   id: string;
   version: number;
@@ -236,6 +248,7 @@ export interface Database {
   jobs: JobsTable;
   job_waits: JobWaitsTable;
   linked_identities: LinkedIdentitiesTable;
+  bot_messages: BotMessagesTable;
 }
 
 /** Every table the migration set creates, in creation order. */
@@ -254,6 +267,7 @@ export const STATE_TABLES: readonly (keyof Database)[] = Object.freeze([
   'jobs',
   'job_waits',
   'linked_identities',
+  'bot_messages',
 ] as const);
 
 // Factory ------------------------------------------------------------------------------------------

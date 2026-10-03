@@ -1,8 +1,9 @@
-// Projections (B 3, B 4, B 5): incidents, claims, subscriptions, escalation scores, folded from the
+// Projections (B 3, B 4, B 5, A 1.3): incidents, claims, subscriptions, escalation scores, bot messages, folded from the
 // event log inside the append transaction, and the store's reads over them.
 //
 // Each table has a pure reducer next to its mapping: `foldIncident` (incidents.ts), `foldClaims`
-// (claims.ts), `foldIncidentSubscriptions` (subscriptions.ts), `foldScores` (escalation.ts). None
+// (claims.ts), `foldIncidentSubscriptions` (subscriptions.ts), `foldScores` (escalation.ts); `bot_messages`
+// is written per event by `writeBotMessage` (bot-messages.ts). None
 // reads the clock: every timestamp comes from an event, and JSON arrays are kept sorted, so
 // replaying a log writes the same rows on both dialects. `applyProjections` loads an incident's
 // rows once, folds the events in seq order, and writes back only the tables that changed. Events
@@ -19,12 +20,14 @@ import { inTransaction, type StateContext } from '../context.ts';
 import { read } from '../events.ts';
 import { enqueueOutbox } from '../outbox.ts';
 import { upcast } from '../upcast.ts';
+import { writeBotMessage } from './bot-messages.ts';
 import { foldClaims, loadClaims, writeClaims } from './claims.ts';
 import { foldScores, loadScores, writeScores, type ScoreRow } from './escalation.ts';
 import { foldIncident, loadIncident, rowToIncident, writeIncident } from './incidents.ts';
 import { outboxFor, type IncidentChange } from './outbox.ts';
 import { ALL_SCOPE_ID, bySubscription, foldIncidentSubscriptions, loadIncidentSubscriptions, rowToSubscription, writeIncidentSubscriptions } from './subscriptions.ts';
 
+export { getMessageTarget, type MessageRef, type MessageTarget } from './bot-messages.ts';
 export { foldClaims } from './claims.ts';
 export { foldScores, type ScoreRow } from './escalation.ts';
 export { foldIncident, type IncidentFold } from './incidents.ts';
@@ -118,6 +121,9 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   }
   if (subs !== subsBefore) {
     await writeIncidentSubscriptions(tx, view.workspaceId, incidentId, subs);
+  }
+  for (const { event } of steps) {
+    await writeBotMessage(tx, event);
   }
   if (!outbox) {
     return;

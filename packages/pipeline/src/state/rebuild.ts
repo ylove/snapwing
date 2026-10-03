@@ -5,7 +5,7 @@
 // 1. Lock out appends to what is being rebuilt. Postgres: `all` takes `share` on `incident_events`
 //    (conflicts with the inserts append makes, not with reads); one incident takes the advisory lock
 //    append takes (events.ts). SQLite: the handle's one connection already serializes transactions.
-// 2. Delete the projection rows: `claims`, `escalation_scores`, the incident-scoped `subscriptions`
+// 2. Delete the projection rows: `claims`, `escalation_scores`, `bot_messages`, the incident-scoped `subscriptions`
 //    (the only ones events write; surface and workspace subscriptions are not derived and stay),
 //    then `incidents`. Child work items that point at a rebuilt incident through `parent_id` are
 //    unlinked first and relinked after the replay.
@@ -66,7 +66,7 @@ export interface RebuildResult {
 export type RebuildState = StatePort | StateContext;
 
 /** The projection tables `rebuild` truncates and `snapshotProjections` lists (keys sorted there). */
-export const PROJECTION_TABLES = Object.freeze(['incidents', 'claims', 'subscriptions', 'escalation_scores'] as const);
+export const PROJECTION_TABLES = Object.freeze(['incidents', 'claims', 'subscriptions', 'escalation_scores', 'bot_messages'] as const);
 export type ProjectionTable = (typeof PROJECTION_TABLES)[number];
 
 /** Truncates the projection rows for `target` and replays the log into them. See the file header. */
@@ -164,6 +164,7 @@ export async function snapshotProjections(state: RebuildState): Promise<string> 
 async function truncateAll(tx: StateContext): Promise<void> {
   await tx.db.deleteFrom('claims').execute();
   await tx.db.deleteFrom('escalation_scores').execute();
+  await tx.db.deleteFrom('bot_messages').execute();
   await tx.db.deleteFrom('subscriptions').where('scope_kind', '=', 'incident').execute();
   // One statement removes parents and children together, so `parent_id` never dangles.
   await tx.db.deleteFrom('incidents').execute();
@@ -172,6 +173,7 @@ async function truncateAll(tx: StateContext): Promise<void> {
 async function truncateIncident(tx: StateContext, incidentId: string): Promise<void> {
   await tx.db.deleteFrom('claims').where('incident_id', '=', incidentId).execute();
   await tx.db.deleteFrom('escalation_scores').where('incident_id', '=', incidentId).execute();
+  await tx.db.deleteFrom('bot_messages').where('incident_id', '=', incidentId).execute();
   await tx.db.deleteFrom('subscriptions').where('scope_kind', '=', 'incident').where('scope_id', '=', incidentId).execute();
   await tx.db.deleteFrom('incidents').where('id', '=', incidentId).execute();
 }
@@ -232,6 +234,7 @@ const COLUMN_KINDS: Readonly<Record<ProjectionTable, Readonly<Record<string, Col
   claims: { since: 'timestamp', last_activity: 'timestamp', expires_at: 'timestamp', hold_expires_at: 'timestamp' },
   subscriptions: { created_at: 'timestamp' },
   escalation_scores: { reactor_ids: 'json', score: 'number', step_reached: 'number', window_ends: 'timestamp' },
+  bot_messages: { seq: 'number', posted_at: 'timestamp' },
 };
 
 const PRIMARY_KEYS: Readonly<Record<ProjectionTable, readonly string[]>> = {
@@ -239,6 +242,7 @@ const PRIMARY_KEYS: Readonly<Record<ProjectionTable, readonly string[]>> = {
   claims: ['incident_id', 'claimer_id'],
   subscriptions: ['workspace_id', 'user_id', 'scope_kind', 'scope_id'],
   escalation_scores: ['incident_id', 'intent'],
+  bot_messages: ['platform', 'channel', 'message_id'],
 };
 
 function decodeRow(ctx: StateContext, table: ProjectionTable, row: Record<string, unknown>): Record<string, unknown> {

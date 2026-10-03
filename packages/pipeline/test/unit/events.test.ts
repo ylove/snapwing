@@ -93,6 +93,7 @@ const SAMPLES = {
   'fixer-artifact': { kind: 'diagnosis', artifact: ART },
   'fixer-done': { prNumber: 7, branch: 'fix/WEB-1042', summary: 'restore total', testsAdded: ['test/cart.test.ts', 'test/total.test.ts'] },
   'fixer-failed': { reason: 'tests red', partialBranch: 'fix/WEB-1042', attempts: 2 },
+  'bot-message-posted': { platform: 'slack', channel: 'C0FAKEBUGS', messageId: '1730000000.000400', role: 'fix-preview' },
 } as const satisfies { readonly [K in EventType]: EventPayloads[K] };
 
 describe('EVENT_TYPES', () => {

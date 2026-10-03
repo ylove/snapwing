@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import type { IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { CanonicalIncidentPayload } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { ACK_TEXT, createSlackAdapter, type SlackInbound } from '../../src/adapters/slack/adapter.ts';
@@ -191,6 +192,53 @@ describe('SlackAdapter over HTTP', () => {
     if (payload === undefined) throw new Error('no payload');
     await adapter.postInteractive(payload, { kind: 'scope-preview', summary: 'Checkout total shows NaN' });
     expect(web.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C0WEB', thread_ts: '1699999900.000100' }));
+  });
+
+  it('records each posted card and a new status message with its role (A 1.3, #287); an edit records nothing', async () => {
+    const web = fakeWeb();
+    const appended: NewEvent[] = [];
+    const state = {
+      read: () => Promise.resolve([{ workspaceId: 'W0FAKE', seq: 3 }] as unknown as IncidentEvent[]),
+      append: (_id: string, events: NewEvent[], seq: number) => {
+        appended.push(...events);
+        return Promise.resolve({ seq: seq + events.length });
+      },
+    };
+    const known = new Map<string, { channel: string; ts: string }>();
+    const adapter = createSlackAdapter({
+      web,
+      signingSecret: SECRET,
+      botUserId: BOT,
+      getMap: () => Promise.resolve(map),
+      clock: () => NOW,
+      state,
+      statusStore: { get: (id) => Promise.resolve(known.get(id)), set: (id, ref) => Promise.resolve(void known.set(id, ref)) },
+    });
+    const payload = { eventId: '01HZZZZZZZZZZZZZZZZZZZZZZZ', context: { channelId: 'C0WEB', rawPayloadSnapshot: {} } } as unknown as CanonicalIncidentPayload;
+    await adapter.postInteractive(payload, { kind: 'dedupe', issueKey: 'WEB-1', summary: 'Checkout total shows NaN' });
+    await adapter.postInteractive(payload, { kind: 'clarify', question: { text: 'Which app?', audience: 'reporter' } } as never);
+    await adapter.postStatus(payload, { issueKey: 'WEB-1', stage: 'filed', text: 'Filed.' } as never);
+    await adapter.postStatus(payload, { issueKey: 'WEB-1', stage: 'fixing', text: 'Fixing.' } as never);
+    expect(appended.map((e) => [e.incidentId, e.workspaceId, e.type, e.source, e.payload])).toEqual(
+      ['dedupe', 'other', 'status'].map((role) => [
+        '01HZZZZZZZZZZZZZZZZZZZZZZZ',
+        'W0FAKE',
+        'bot-message-posted',
+        'slack',
+        { platform: 'slack', channel: 'C0WEB', messageId: '1700000600.000100', role },
+      ]),
+    );
+  });
+
+  it('a failing record never fails the post', async () => {
+    const web = fakeWeb();
+    const onError = vi.fn();
+    const state = { read: () => Promise.reject(new Error('db down')), append: vi.fn() };
+    const adapter = createSlackAdapter({ web, signingSecret: SECRET, botUserId: BOT, getMap: () => Promise.resolve(map), clock: () => NOW, state, onError });
+    const payload = { eventId: '01HZZZZZZZZZZZZZZZZZZZZZZZ', context: { channelId: 'C0WEB', rawPayloadSnapshot: {} } } as unknown as CanonicalIncidentPayload;
+    await adapter.postInteractive(payload, { kind: 'scope-preview', summary: 'Checkout total shows NaN' });
+    expect(web.postMessage).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'db down' }));
   });
 
   it('a bad signature is 401 and reaches neither handleInbound nor onAction', async () => {

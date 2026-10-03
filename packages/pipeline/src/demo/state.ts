@@ -104,6 +104,7 @@ const PAYLOAD_SHAPES = {
   'fixer-artifact': { kind: 'string', artifact: 'object' },
   'fixer-done': { prNumber: 'number', branch: 'string', summary: 'string', testsAdded: 'array' },
   'fixer-failed': { reason: 'string', attempts: 'number', partialBranch: 'string?' },
+  'bot-message-posted': { platform: 'string', channel: 'string', messageId: 'string', role: 'string' },
 } as const satisfies { readonly [K in EventType]: Shape };
 
 /** Closed value sets for the discriminants and enums a typo would silently break. */
@@ -116,6 +117,7 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
   'dedupe-checked': { decision: ['none', 'link', 'create-anyway', 'pending-user'] },
   'scope-changed': { choice: ['widen', 'narrow'] },
   'dedupe-decided': { decision: ['link', 'create-anyway', 'not-related'] },
+  'bot-message-posted': { platform: ['slack', 'teams'], role: ['scope-preview', 'dedupe', 'fix-preview', 'pr', 'staging-check', 'status', 'other'] },
 };
 
 function kindOf(value: unknown): Kind | 'null' | 'other' {

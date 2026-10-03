@@ -286,6 +286,8 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'scope-changed',
   'dedupe-decided',
   'clarify-answered',
+  // A 1.3: a record of a message the bot posted, for target resolution.
+  'bot-message-posted',
 ]);
 
 export interface TransitionResult {

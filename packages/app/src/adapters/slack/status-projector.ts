@@ -7,13 +7,15 @@
 // The thread and the message to edit come from the incidents row, not the payload.
 //
 // - First row: post the message in the thread (none in a direct message), pin it, then append
-//   `status-message-posted { messageId }` with `expectedSeq` (a conflict is retried from a fresh read).
+//   `status-message-posted { messageId }` with `expectedSeq` (a conflict is retried from a fresh read),
+//   with `bot-message-posted { role: 'status' }` in the same append (A 1.3, #287).
 //   `incidents.status_msg_id` then names the message; a later row `chat.update`s it.
 // - Deleted message (`message_not_found` on update): post a new one, pin it, append again.
 // - Direct message incidents: once the incident resolves to a surface with a bug channel, the same
 //   message is mirrored there (main 15.1) and edited in place; its ref is kept in the cache under
 //   `slack-status-mirror:{incident}`. The mirror is best effort: a failure there is reported through
-//   `onError` and never fails the row. It is not pinned.
+//   `onError` and never fails the row. It is not pinned. A new mirror is recorded as
+//   `bot-message-posted { role: 'status' }`, best effort too.
 // - Rows of one incident that pile up (a paused drain) collapse to the latest: each row carries the
 //   whole message, so the older ones are acked unsent.
 // - Failures: HTTP 429 pauses the drain for `Retry-After`, the row untouched. A row that cannot be
@@ -26,6 +28,7 @@ import { isExpectedSeqConflict, type IncidentView, type OutboxItem } from '@snap
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { botMessagePosted, recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { buildStatusMessage, type SlackUserFor } from './cards/status.ts';
 import { SlackApiError, SlackRateLimitError, type SlackWeb } from './web.ts';
 
@@ -150,7 +153,7 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
 
   const iso = (ms: number): string => new Date(ms).toISOString();
 
-  async function recordPosted(row: OutboxItem, incidentId: string, messageId: string): Promise<void> {
+  async function recordPosted(row: OutboxItem, incidentId: string, channel: string, messageId: string): Promise<void> {
     for (let i = 0; i < POSTED_APPEND_TRIES; i++) {
       const log: IncidentEvent[] = await state.read(incidentId);
       const posted: NewEvent<'status-message-posted'> = {
@@ -163,7 +166,8 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
         payload: { messageId },
       };
       try {
-        await state.append(incidentId, [posted], log.at(-1)?.seq ?? 0);
+        const bot = botMessagePosted(row.workspaceId, incidentId, { platform: 'slack', channel, messageId, role: 'status' }, posted.occurredAt);
+        await state.append(incidentId, [posted, bot], log.at(-1)?.seq ?? 0);
         return;
       } catch (err) {
         if (!isExpectedSeqConflict(err)) throw err;
@@ -187,7 +191,7 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
       if (err instanceof SlackRateLimitError) throw err;
       onError(err);
     });
-    await recordPosted(row, incident.id, posted.ts);
+    await recordPosted(row, incident.id, posted.channel, posted.ts);
   }
 
   async function mirror(incident: IncidentView, body: Body, map: WorkspaceMap | undefined): Promise<void> {
@@ -209,6 +213,7 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
     if (channel === undefined) return;
     const posted = await web.postMessage({ channel, ...body });
     await cache.set(key, JSON.stringify({ channel: posted.channel, ts: posted.ts }));
+    await recordBotMessage(state, incident.id, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'status' }, now);
   }
 
   async function send(row: OutboxItem, map: WorkspaceMap | undefined): Promise<void> {

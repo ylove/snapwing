@@ -7,7 +7,8 @@
 //   with the tapper resolved through the workspace map. An accepted tap replaces the card's buttons
 //   with a line naming who chose what; a refused one gets an ephemeral reply.
 // - Authorization is `policy/authorize.ts` (main 16). A reporter tapping `Fix it` gets "I've asked
-//   @owner to approve" and the card is reposted in the thread mentioning the owning engineer (main 8.2).
+//   @owner to approve" and the card is reposted in the thread mentioning the owning engineer (main 8.2),
+//   recorded as `bot-message-posted { role: 'fix-preview' }` (A 1.3, #287; best effort).
 // - `stop` (any card or status message) and `dismiss` at levels 2 and 3 call `stopIncident`; `Not a
 //   bug` there also appends `not-a-bug` and queues a Jira close to Done with resolution "Won't Do"
 //   (main 8.2), through the outbox in the same transaction.
@@ -32,6 +33,7 @@ import type { AutonomyLevelId, MapPerson, WorkspaceMap } from '@snapwing/pipelin
 import { authorize, type DenyReason } from '@snapwing/pipeline/policy/authorize.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { probableOwner } from '@snapwing/pipeline/resolve/lookup.ts';
+import { recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { JIRA_DONE, jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import type { SlackAdapter } from './adapter.ts';
@@ -240,12 +242,14 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
     await ephemeral(tap, ownerId === undefined ? "I've asked the owning engineer to approve." : `I've asked ${mention(ownerId)} to approve.`);
     if (ownerId !== undefined && tap.blocks.length > 0) {
       const lead = section(`${mention(ownerId)}, ${mention(tap.userId)} asked for a fix. Tap *Fix it* to approve.`);
-      await web.postMessage({
+      const posted = await web.postMessage({
         channel: tap.channel,
         text: `${mention(ownerId)}, ${mention(tap.userId)} asked for a fix`,
         blocks: [lead, ...tap.blocks],
         ...(tap.threadTs === undefined ? {} : { thread_ts: tap.threadTs }),
       });
+      const ref = { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'fix-preview' } as const;
+      await recordBotMessage(state, tap.incidentId, ref, clock).catch(() => undefined);
     }
     return { kind: 'denied', action: tap.actionId, reason, ...(ownerId === undefined ? {} : { askedOwner: ownerId }) };
   }
