@@ -1,0 +1,8 @@
+{
+  "value": [
+    {
+      "id": "inst-1",
+      "teamsApp": { "id": "catalog-app-1", "externalId": "11111111-2222-3333-4444-555555555555", "displayName": "Snapwing", "distributionMethod": "organization" }
+    }
+  ]
+}

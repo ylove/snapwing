@@ -1,0 +1,15 @@
+{
+  "value": [
+    {
+      "id": "1700000000000",
+      "replyToId": null,
+      "messageType": "message",
+      "createdDateTime": "2026-10-03T10:00:00.000Z",
+      "lastModifiedDateTime": "2026-10-03T10:00:00.000Z",
+      "from": { "user": { "id": "aad-user-1", "displayName": "Dana Reporter" } },
+      "body": { "contentType": "text", "content": "First" },
+      "attachments": [],
+      "reactions": []
+    }
+  ]
+}

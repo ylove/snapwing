@@ -1,0 +1,14 @@
+{
+  "id": "1700000000002",
+  "replyToId": null,
+  "messageType": "message",
+  "createdDateTime": "2026-10-03T10:00:02.000Z",
+  "lastModifiedDateTime": "2026-10-03T10:05:00.000Z",
+  "from": { "user": { "id": "aad-user-1", "displayName": "Dana Reporter" } },
+  "body": { "contentType": "text", "content": "Checkout is broken" },
+  "attachments": [],
+  "reactions": [
+    { "reactionType": "like", "createdDateTime": "2026-10-03T10:05:00.000Z", "user": { "user": { "id": "aad-user-2", "displayName": "Sam Engineer", "userIdentityType": "aadUser" } } },
+    { "reactionType": "1f41e_ladybeetle", "createdDateTime": "2026-10-03T10:06:00.000Z", "user": { "user": { "id": "aad-user-3", "userIdentityType": "aadUser" } } }
+  ]
+}
