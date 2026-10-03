@@ -96,8 +96,16 @@ export interface SlackWorld {
   unknown: string[];
 }
 
+export interface SlackWorldOptions {
+  /**
+   * The channel's members for `conversations.members` (A 4.4, #337). Absent: Slack answers
+   * `missing_scope`, as it does for an app installed before `channels:read`, and nothing is written.
+   */
+  members?: readonly string[];
+}
+
 /** The Slack Web API methods the composed pieces call, over one channel's recorded messages. */
-export function slackWorld(server: SetupServer, channel: string, messages: readonly Record<string, unknown>[]): SlackWorld {
+export function slackWorld(server: SetupServer, channel: string, messages: readonly Record<string, unknown>[], options: SlackWorldOptions = {}): SlackWorld {
   const calls: SlackPostCall[] = [];
   const unknown: string[] = [];
   let seq = 0;
@@ -120,6 +128,13 @@ export function slackWorld(server: SetupServer, channel: string, messages: reado
       const ts = q.get('ts') ?? '';
       const thread = messages.filter((m) => (m['ts'] === ts || m['thread_ts'] === ts) && inRange(m, q));
       return page(thread.sort((a, b) => Number(a['ts']) - Number(b['ts'])));
+    }),
+    http.get(`${SLACK_API}/conversations.members`, ({ request }) => {
+      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
+      if (options.members === undefined) return HttpResponse.json({ ok: false, error: 'missing_scope' });
+      const q = new URL(request.url).searchParams;
+      if (q.get('channel') !== channel) return HttpResponse.json({ ok: false, error: 'channel_not_found' });
+      return HttpResponse.json({ ok: true, members: options.members, response_metadata: { next_cursor: '' } });
     }),
     http.post(`${SLACK_API}/auth.test`, ({ request }) =>
       authorized(request) ? HttpResponse.json({ ok: true, user_id: BOT_USER, url: `https://${WORKSPACE_DOMAIN}.slack.com/` }) : HttpResponse.json({ ok: false, error: 'invalid_auth' }),

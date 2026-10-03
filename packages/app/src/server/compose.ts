@@ -41,6 +41,16 @@
 //                enters a container; a provider whose key is unset has no proxy routes.
 //   Reconciler   follow-ups after a reconciled event: `ci-green` starts `merge.evaluate`, `ci-red` the
 //                fixer retry (`retryFixerAfterCiRed`), a transition to In Progress the fixer.
+//   Phase 4      (#337, the "Phase 4 wiring" section) claims mid-flight (A 2.2): after each claim
+//                commits, `handleMidFlightClaim` posts the Slack card, whose taps reach `answerMidFlight`
+//                (Stop assigns the claimer through the Jira outbox). Holds and claim expiry (A 2.3, 2.4):
+//                `holds.onEvent` after each claim and each signal, thread nudges through `say`, the
+//                engine's `handleClaim` after a release. The instructions gate (A 6.4) on the fixer and
+//                merge deps. Digests (A 4.6) and the ux-friction scan (A 5.3) on the worker. Channel
+//                members (A 4.4) in kv for the notification policy, from `conversations.members` and the
+//                membership events. Modules that register their own handlers (`register()`,
+//                `registerMidFlightJobs`, `registerDigestJobs`) get a port whose `work` becomes a job
+//                module here and whose `cron` waits for the worker (`registrar`).
 //
 // GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
@@ -66,10 +76,17 @@ import type { EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
-import { adoptPendingSignals, type SignalDeps } from '@snapwing/pipeline/signals/handler.ts';
+import { answerMidFlight, handleMidFlightClaim, registerMidFlightJobs, type MidFlightDeps, type MidFlightPorts } from '@snapwing/pipeline/fixer/claims.ts';
+import { registerDigestJobs } from '@snapwing/pipeline/notify/digest.ts';
+import { createHolds } from '@snapwing/pipeline/signals/holds.ts';
+import { recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
+import { createUxFriction } from '@snapwing/pipeline/signals/ux-friction.ts';
+import { jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
+import { ulid } from '@snapwing/pipeline/util/ulid.ts';
+import { adoptPendingSignals, type SignalDeps, type SignalEngine } from '@snapwing/pipeline/signals/handler.ts';
 import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
-import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { createPrActions } from '@snapwing/pipeline/merge/actions.ts';
 import { retryFixerAfterCiRed } from '@snapwing/pipeline/merge/ci.ts';
 import { requestHumanReview, type HumanDeps, type HumanReviewDeps, type PrReadyChat } from '@snapwing/pipeline/merge/human.ts';
@@ -95,13 +112,15 @@ import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
 import { createSlackAdapter } from '../adapters/slack/adapter.ts';
+import { buildMidFlightCard } from '../adapters/slack/cards/mid-flight.ts';
+import { CHANNEL_MEMBERS_REFRESH_MS, createSlackChannelMembers, observeChannelMembers } from '../adapters/slack/channel-members.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
 import { createSlackPrReadyChat } from '../adapters/slack/pr-ready.ts';
 import { createSlackContextSource } from '../adapters/slack/reader.ts';
 import { createSlackHome } from '../adapters/slack/home.ts';
 import { createSlackStatusProjector } from '../adapters/slack/status-projector.ts';
 import { createSlackStatusQuery } from '../adapters/slack/status-query.ts';
-import { createSlackSignals, observeSignals } from '../adapters/slack/signals.ts';
+import { createSlackSignals, observeSignals, type SlackSignalOutcome } from '../adapters/slack/signals.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
 import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
 import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
@@ -119,7 +138,7 @@ import { createJiraClient, jiraSearch, type JiraClient } from '../jira/client/in
 import { createJiraProjector } from '../jira/projector/drain.ts';
 import { CUSTOM_FIELD_ENV, requireCustomFieldIds } from '../jira/projector/fields.ts';
 import { createStatusResolver } from '../jira/projector/statuses.ts';
-import { fetchScreenshot, screenshotFilename, type LoadScreenshot } from '../jira/projector/ops.ts';
+import { fetchScreenshot, screenshotFilename, textToAdf, type LoadScreenshot } from '../jira/projector/ops.ts';
 import { createModelProxyRoutes, MODEL_PROXY_PREFIX, type ModelProviderUpstream, type ModelProxyProvider } from '../model-proxy/routes.ts';
 import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier } from '../model-proxy/token.ts';
 import { createDockerRunner, type DockerModelProxy } from '../providers/docker/runner.ts';
@@ -138,6 +157,8 @@ export const REVIEW_GIT_PERMISSIONS: GitHubPermissions = Object.freeze({ content
 export const DEFAULT_MAP_FILE = 'workspace-context.xml';
 /** How long a map read from the config cache is reused before the cache is asked again. */
 const MAP_REFRESH_MS = 5_000;
+/** How often the worker scans the log for ux friction (A 5.3); the pattern window is days, so this is often enough. */
+export const UX_FRICTION_SCAN_MS = 15 * 60_000;
 
 /** Secrets every `snapwing serve` needs (CONTEXT.md 6b). Model keys and per-provider secrets are added per config. */
 export const REQUIRED_SECRETS: readonly string[] = Object.freeze([
@@ -396,6 +417,58 @@ function job(name: JobName, handler: JobModule['handler']): JobModule {
   return { name, handler };
 }
 
+/**
+ * The port a module that registers its own handlers is given (#337): `work` adds a job module (the
+ * worker registers it, as it does compose's own), `cron` is kept until the worker starts it, and
+ * everything else is the real port.
+ */
+function registrar(workflow: WorkflowPort, jobs: JobModule[], crons: (() => Promise<void>)[]): WorkflowPort {
+  return {
+    start: (name, input, opts) => workflow.start(name, input, opts),
+    schedule: (name, input, runAt, opts) => workflow.schedule(name, input, runAt, opts),
+    cancel: (key) => workflow.cancel(key),
+    work: (name, handler, opts) => {
+      jobs.push({ name, handler, ...(opts?.concurrency === undefined ? {} : { concurrency: opts.concurrency }) });
+    },
+    park: (jobId, waitingOn, timeoutAt) => workflow.park(jobId, waitingOn, timeoutAt),
+    resume: (waitingOn, result) => workflow.resume(waitingOn, result),
+    cron: (name, expression, input) => {
+      crons.push(() => workflow.cron(name, expression, input));
+      return Promise.resolve();
+    },
+  };
+}
+
+/** A worker service that runs `tick` at start and every `everyMs`; a failing tick is logged, never fatal. */
+function every(name: string, everyMs: number, tick: () => Promise<unknown>, log: ComposeLog): ComposedService {
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let running: Promise<void> | undefined;
+  const run = (): void => {
+    running ??= tick()
+      .then(() => undefined)
+      .catch((e: unknown) => log.error(`${name}: ${message(e)}`))
+      .finally(() => {
+        running = undefined;
+      });
+  };
+  return {
+    name,
+    start: () => {
+      if (timer === undefined) {
+        run();
+        timer = setInterval(run, everyMs);
+        timer.unref();
+      }
+      return Promise.resolve();
+    },
+    stop: async () => {
+      if (timer !== undefined) clearInterval(timer);
+      timer = undefined;
+      await running;
+    },
+  };
+}
+
 // compose ----------------------------------------------------------------------------------------
 
 export const compose: ComposeFn = async (deps) => {
@@ -546,6 +619,8 @@ export const compose: ComposeFn = async (deps) => {
     github: createFixerGitHub(auth),
     config: { harness: fixerChoice },
     clock,
+    // A 6.4 (#307, #337): the live INSTRUCTIONS.md may hold a fixer start the agent makes on its own.
+    instructionsGate: { instructions: configWatch.instructions, model },
   };
   const reviewDeps: ReviewDeps = {
     workspaceId,
@@ -562,7 +637,8 @@ export const compose: ComposeFn = async (deps) => {
     config: { testCommand: (): string | undefined => env['SNAPWING_TEST_COMMAND']?.trim() || undefined, harness: reviewChoice },
     clock,
   };
-  const mergeDeps: MergeDeps = { workspaceId, state, workflow, github, merge: config.merge, map: getMap, clock };
+  // A 6.4 (#307, #337): the live INSTRUCTIONS.md may hold an autopilot merge (level 3 to 2).
+  const mergeDeps: MergeDeps = { workspaceId, state, workflow, github, merge: config.merge, map: getMap, clock, instructionsGate: { instructions: configWatch.instructions, model } };
 
   const oauth = createGitHubOAuth({ state, secrets: deps.secrets, workspaceId });
   const humanDeps: HumanDeps = {
@@ -630,6 +706,218 @@ export const compose: ComposeFn = async (deps) => {
     onCaptured: (incidentId) => adoptPendingSignals(signalDeps, incidentId),
   };
   const engine = new IncidentOrchestrator(engineDeps);
+
+  // Phase 4 wiring (#337) ------------------------------------------------------------------------
+  // Mid-flight claims (A 2.2), holds and claim expiry (A 2.3, 2.4), digests (A 4.6), ux friction
+  // (A 5.3), channel members (A 4.4). The instructions gate (A 6.4) is on `fixerDeps` and `mergeDeps`.
+  const phase4Jobs: JobModule[] = [];
+  const phase4Crons: (() => Promise<void>)[] = [];
+  const registering = registrar(workflow, phase4Jobs, phase4Crons);
+  // The map as last read, for the synchronous lookups (a handle, a surface); refreshed on each use below.
+  let mapSnapshot: WorkspaceMap = await getMap();
+  const liveMap = async (): Promise<WorkspaceMap> => (mapSnapshot = await getMap());
+  const personBySlackId = (userId: string): MapPerson | undefined => mapSnapshot.people.find((p) => p.slackId === userId);
+
+  /** Posts in the incident's Slack thread and records it (role `other`), so a reaction on it counts as activity. */
+  async function threadPost(incidentId: string, post: { text: string; blocks?: readonly unknown[] }): Promise<void> {
+    const incident = await state.getIncident(incidentId);
+    if (incident === null || incident.source !== 'slack' || incident.channelId === undefined) {
+      log.info(`thread post for incident ${incidentId} skipped: it has no Slack thread`);
+      return;
+    }
+    const posted = await web.postMessage({
+      channel: incident.channelId,
+      text: post.text,
+      ...(post.blocks === undefined ? {} : { blocks: [...post.blocks] }),
+      ...(incident.anchorId === undefined ? {} : { thread_ts: incident.anchorId }),
+    });
+    await recordBotMessage(state, incidentId, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'other' }, clock).catch((e: unknown) =>
+      log.error(`thread post record: ${message(e)}`),
+    );
+  }
+
+  /** The claimer as the Jira assignee: the `update-fields` row #323 added, which the projector resolves by email. */
+  async function assignClaimer(incidentId: string, claimerId: string): Promise<void> {
+    const incident = await state.getIncident(incidentId);
+    const email = (await liveMap()).people.find((p) => p.slackId === claimerId)?.email;
+    if (incident?.jiraKey === undefined || email === undefined) {
+      log.info(`mid-flight: ${claimerId} not assigned on incident ${incidentId}: ${incident?.jiraKey === undefined ? 'no Jira issue yet' : 'no email in the map'}`);
+      return;
+    }
+    const now = clock();
+    const at = now.toISOString();
+    await state.enqueueOutbox({
+      id: ulid(now.getTime()),
+      workspaceId,
+      target: 'jira',
+      incidentId,
+      op: 'update-fields',
+      payload: { issueKey: incident.jiraKey, fields: { assignee: { email } } },
+      batchKey: jiraFieldBatchKey(incidentId, 'assignee'),
+      attempts: 0,
+      nextAttempt: at,
+      createdAt: at,
+    });
+  }
+
+  const midFlightPorts: MidFlightPorts = {
+    postCard: (incidentId, card) => {
+      const built = buildMidFlightCard(incidentId, card, parseDuration(card.grace));
+      return threadPost(incidentId, { text: built.text, blocks: built.blocks });
+    },
+    notify: (incidentId, text) => threadPost(incidentId, { text }),
+    assign: assignClaimer,
+  };
+  const midFlightDeps: MidFlightDeps = {
+    ...fixerDeps,
+    // Forwards every call to the real port; only `registerMidFlightJobs`'s `work` becomes a job module.
+    workflow: registering,
+    ports: midFlightPorts,
+    // Read per use, so a hot-reloaded playbook applies to the next offer.
+    get midFlightGrace(): string {
+      return configWatch.playbook().claims.midFlightGrace;
+    },
+  };
+  registerMidFlightJobs(midFlightDeps);
+
+  // Business hours stay off until a config names them: the claim expiry counts wall-clock time.
+  const holds = createHolds({
+    workspaceId,
+    state,
+    workflow: registering,
+    clock,
+    claims: configWatch.playbook().claims,
+    say: async (incidentId, said) => {
+      // The text names people as `@handle`; in Slack the one it addresses is a real mention.
+      const id = said.mentionUserId;
+      const text = id === undefined ? said.text : said.text.split(`@${personBySlackId(id)?.handle ?? id}`).join(`<@${id}>`);
+      await threadPost(incidentId, { text });
+    },
+    handleOf: (userId) => personBySlackId(userId)?.handle,
+    afterRelease: async (incidentId, seq, scope) => {
+      if (scope === 'claim') await engine.handleClaim(incidentId, seq);
+    },
+  });
+  holds.register();
+
+  /** After a claim commits (the signal handler's `handleClaim` call): the engine, then A 2.2 and A 2.3/2.4. */
+  const claimAwareEngine: SignalEngine = {
+    handleTap: (tap) => engine.handleTap(tap),
+    handleClaim: async (incidentId, seq) => {
+      const woke = await engine.handleClaim(incidentId, seq);
+      try {
+        await liveMap();
+        await handleMidFlightClaim(midFlightDeps, incidentId, seq);
+      } catch (e) {
+        log.error(`mid-flight claim on incident ${incidentId}: ${message(e)}`);
+      }
+      try {
+        await holds.onEvent(incidentId, seq);
+      } catch (e) {
+        log.error(`holds after the claim on incident ${incidentId}: ${message(e)}`);
+      }
+      return woke;
+    },
+  };
+  /** After each signal commits: every event it appended goes through the holds (activity, a hold, a release). */
+  async function afterSignal(outcome: SlackSignalOutcome): Promise<void> {
+    if (outcome.kind !== 'signal' || !outcome.outcome.handled) return;
+    const { incidentId, seq, appended } = outcome.outcome;
+    try {
+      await liveMap();
+      for (let n = 0; n < appended.length; n++) await holds.onEvent(incidentId, seq + n);
+    } catch (e) {
+      log.error(`holds after a signal on incident ${incidentId}: ${message(e)}`);
+    }
+  }
+
+  // Digests: one cron job per playbook digest, posted to a channel (`#name`) or a person (`@handle`, an
+  // email, or a Slack id). A digest added or removed by a hot reload applies at the next restart.
+  const digestTarget = async (to: string): Promise<string> => {
+    const map = await liveMap();
+    const t = to.trim();
+    if (t.startsWith('#')) return map.channels.find((c) => c.name === t.slice(1))?.id ?? t;
+    const person = map.people.find((p) => (t.startsWith('@') ? p.handle === t.slice(1) : p.email === t));
+    return person?.slackId ?? t;
+  };
+  try {
+    await registerDigestJobs(
+      {
+        state,
+        workflow: registering,
+        clock,
+        workspaceId,
+        post: async (to, text) => {
+          await web.postMessage({ channel: await digestTarget(to), text });
+        },
+      },
+      configWatch.playbook().notifications.digests,
+    );
+  } catch (e) {
+    log.error(`digests not scheduled: ${message(e)}`);
+  }
+
+  // UX friction (A 5.3): the scan files a Task through the Jira outbox and posts it to the surface's bug channel.
+  const uxFriction = createUxFriction({
+    state,
+    cache,
+    clock,
+    playbook: configWatch.playbook,
+    map: () => mapSnapshot,
+    onError: (e) => log.error(`ux friction: ${message(e)}`),
+    file: async (task) => {
+      const surface = mapSnapshot.surfaces.find((x) => x.id === task.surfaceId);
+      if (surface === undefined) throw new Error(`surface ${task.surfaceId} is not in the map`);
+      const now = clock();
+      const at = now.toISOString();
+      await state.enqueueOutbox({
+        id: ulid(now.getTime()),
+        workspaceId: task.workspaceId,
+        target: 'jira',
+        op: 'create-task',
+        payload: {
+          fields: { project: { key: surface.jira.project }, issuetype: { name: task.issueType }, summary: task.summary, description: textToAdf(task.description), labels: [...task.labels] },
+        },
+        attempts: 0,
+        nextAttempt: at,
+        createdAt: at,
+      });
+      if (task.channelId === undefined) return;
+      // The Task is queued; a failed post must not file it twice, so it is logged, not thrown.
+      await web
+        .postMessage({ channel: task.channelId, text: `${task.summary}. When several people hit the same thing, the product is inviting it: filed a ${surface.jira.project} Task labeled ${task.labels[0]}.` })
+        .catch((e: unknown) => log.error(`ux friction post to ${task.channelId ?? ''}: ${message(e)}`));
+    },
+  });
+
+  // Channel members (A 4.4): kv `channel-members:{channel}` for the notification policy.
+  const channelMembers = createSlackChannelMembers({
+    web,
+    cache,
+    getMap: liveMap,
+    onSkip: (channel, error) => log.info(`channel members of ${channel} unknown (${error}): watchers there are mentioned in the thread`),
+    onError: (e) => log.error(`channel members: ${message(e)}`),
+  });
+  const phase4WorkerServices: ComposedService[] = [
+    {
+      name: 'phase 4 schedules',
+      start: async () => {
+        for (const cron of phase4Crons) await cron();
+      },
+      stop: () => Promise.resolve(),
+    },
+    every(
+      'ux friction scan',
+      UX_FRICTION_SCAN_MS,
+      async () => {
+        await liveMap();
+        await uxFriction.scan();
+      },
+      log,
+    ),
+    every('channel members refresh', CHANNEL_MEMBERS_REFRESH_MS, () => channelMembers.refreshAll(), log),
+  ];
+  // End of phase 4 wiring --------------------------------------------------------------------------
   // Signals (A 1.2 to 1.4, #335): reactions and thread replies, applied by `handleSignal`.
   const signalDeps: SignalDeps = {
     workspaceId,
@@ -637,7 +925,7 @@ export const compose: ComposeFn = async (deps) => {
     cache,
     playbook: configWatch.playbook,
     map: getMap,
-    engine,
+    engine: claimAwareEngine,
     stopIncident: (input) => stopIncident(fixerDeps, input),
     startFixer: (input) => startFixer(fixerDeps, input),
     clock,
@@ -651,6 +939,7 @@ export const compose: ComposeFn = async (deps) => {
     web,
     model,
     standing: state,
+    onOutcome: afterSignal,
     onError: (e) => log.error(`slack signals: ${message(e)}`),
   });
 
@@ -661,6 +950,7 @@ export const compose: ComposeFn = async (deps) => {
     orchestrator: engine,
     stopIncident: (input) => stopIncident(fixerDeps, input),
     prActions,
+    midFlight: (input) => answerMidFlight(midFlightDeps, input),
     getMap,
     githubLinked: (userId) => oauth.isLinked({ chat: 'slack', userId }),
     botUserId,
@@ -681,7 +971,7 @@ export const compose: ComposeFn = async (deps) => {
   const socket = transportChoice === 'socket' || ((transportChoice === undefined || transportChoice === '') && appToken !== undefined);
   const slackError = (e: unknown): void => log.error(`slack: ${message(e)}`);
   const transportBase = {
-    adapter: observeSignals(observeReactionRemoval(adapter, interactivity, slackError), slackSignals, slackError),
+    adapter: observeChannelMembers(observeSignals(observeReactionRemoval(adapter, interactivity, slackError), slackSignals, slackError), channelMembers, slackError),
     handleInbound: (source: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(source, raw),
     onAction: (payload: Parameters<typeof interactivity.onAction>[0]) => interactivity.onAction(payload),
     status: slackStatusQuery,
@@ -823,6 +1113,7 @@ export const compose: ComposeFn = async (deps) => {
         );
       }
     }),
+    ...phase4Jobs,
   ];
 
   // Both processes read the files, so each starts the watch (start and stop are idempotent).
@@ -849,6 +1140,7 @@ export const compose: ComposeFn = async (deps) => {
     { name: 'reconcile schedule', start: () => workflow.cron(RECONCILE_JOB, DEFAULT_RECONCILE_CRON), stop: () => Promise.resolve() },
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
+    ...phase4WorkerServices,
     configService,
   ];
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';

@@ -14,6 +14,9 @@
 //   (main 8.2), through the outbox in the same transaction.
 // - `merge`, `request_changes`, and `revert` go to an injected `PrActions`; merge and revert need a
 //   linked GitHub identity (ADR 0007), request changes needs an engineer.
+// - The mid-flight claim card's `Let it finish` and `Stop it, I'll take over` (A 2.2, #337; block
+//   `midflight_actions:<runId>:<claimerId>`, cards/mid-flight.ts) go to the injected `midFlight`
+//   (`answerMidFlight`), which needs an engineer and the same run still going.
 // - `handleEvent` takes Events API bodies: a `reaction_removed` of the trigger emoji by one of its reactors
 //   within 60 s of the trigger is a Stop for that trigger's incident (main 15.1). The transport never
 //   hands events to anything but the adapter, so `observeReactionRemoval` wraps the adapter given to it.
@@ -27,6 +30,7 @@ import type { IncidentStatus, IncidentView, OutboxItem } from '@snapwing/pipelin
 import { isExpectedSeqConflict } from '@snapwing/pipeline/contracts/state.ts';
 import type { CardKind } from '@snapwing/pipeline/engine/cursor.ts';
 import type { TapInput, TapOutcome } from '@snapwing/pipeline/engine/orchestrator.ts';
+import type { MidFlightAnswer, MidFlightAnswerInput } from '@snapwing/pipeline/fixer/claims.ts';
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
 import { PrActionRefusedError, type PrActionRefusal } from '@snapwing/pipeline/merge/actions.ts';
 import type { AutonomyLevelId, MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -39,6 +43,7 @@ import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import type { SlackAdapter } from './adapter.ts';
 import { parsedBodyOf, slackPayloadType } from './adapter.ts';
 import { context, esc, mention, section } from './cards/blocks.ts';
+import { midFlightChoiceOf, parseMidFlightBlock } from './cards/mid-flight.ts';
 import type { SlackActionPayload } from './transport.ts';
 import type { SlackWeb } from './web.ts';
 
@@ -101,6 +106,8 @@ export interface SlackInteractivityOptions {
   /** `stopIncident` from `@snapwing/pipeline/fixer/stop.ts`, bound to its FixerDeps. */
   stopIncident: (input: StopInput) => Promise<StopOutcome>;
   prActions: PrActions;
+  /** The mid-flight card's taps (`answerMidFlight`, A 2.2). Absent: those taps are ignored. */
+  midFlight?: (input: MidFlightAnswerInput) => Promise<MidFlightAnswer>;
   /** The current workspace map; read per payload so a config change is picked up. */
   getMap: () => Promise<WorkspaceMap>;
   /** True when the Slack user has a linked GitHub identity (ADR 0007). Default: nobody is linked. */
@@ -118,7 +125,8 @@ export type InteractivityOutcome =
   | { kind: 'denied'; action: string; reason: DenyReason; askedOwner?: string }
   | { kind: 'stopped'; incidentId: string; outcome: StopOutcome; wontDo?: boolean }
   | { kind: 'pr-action'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string }
-  | { kind: 'pr-refused'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string; reason: PrActionRefusal };
+  | { kind: 'pr-refused'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string; reason: PrActionRefusal }
+  | { kind: 'mid-flight'; incidentId: string; answer: MidFlightAnswer };
 
 export interface SlackInteractivity {
   /** One interactivity payload; resolves to what it did. */
@@ -216,6 +224,13 @@ function levelOf(incident: IncidentView | null): AutonomyLevelId {
 const FIX_PREVIEW_ACTIONS: ReadonlySet<string> = new Set<ApprovalAction>(['approve_fix', 'ticket_only', 'dismiss']);
 
 const NOT_PENDING_TEXT = 'This card already has an answer.';
+
+/** Why a mid-flight tap did nothing, for the tapper. */
+const MID_FLIGHT_REFUSED: Readonly<Record<Extract<MidFlightAnswer, { accepted: false }>['reason'], string>> = {
+  'engineer-required': DENY_TEXT['engineer-required'],
+  'run-finished': 'That fixer run has already finished.',
+  'wrong-run': 'That fixer run has already finished; a newer one is going.',
+};
 
 export function createSlackInteractivity(options: SlackInteractivityOptions): SlackInteractivity {
   const { web, state } = options;
@@ -411,10 +426,34 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
     return { kind: 'pr-action', action, incidentId: tap.incidentId };
   }
 
+  /** A 2.2: the claimer (or another engineer) answers the mid-flight card. */
+  async function midFlightTap(tap: Tap, offer: { runId: string; claimerId: string }): Promise<InteractivityOutcome> {
+    const choice = midFlightChoiceOf(tap.actionId);
+    if (choice === undefined || options.midFlight === undefined) return ignored('unknown-action');
+    const actor = actorFor(await options.getMap(), tap.userId);
+    const answer = await options.midFlight({ incidentId: tap.incidentId, runId: offer.runId, claimerId: offer.claimerId, choice, actor });
+    if (!answer.accepted) {
+      await ephemeral(tap, MID_FLIGHT_REFUSED[answer.reason]);
+      return { kind: 'mid-flight', incidentId: tap.incidentId, answer };
+    }
+    if (answer.choice === 'stop-it' && !answer.stop.stopped && answer.stop.reason !== 'already-stopped') {
+      await ephemeral(tap, answer.stop.reason === 'terminal' ? 'This incident is already closed.' : NOT_PENDING_TEXT);
+      return { kind: 'mid-flight', incidentId: tap.incidentId, answer };
+    }
+    const line =
+      answer.choice === 'let-it-finish'
+        ? `${mention(tap.userId)} chose *Let it finish*. The fixer keeps going.`
+        : `${mention(tap.userId)} stopped the fixer. The branch stays for ${mention(offer.claimerId)}, who has the ticket.`;
+    await markCard(tap, line);
+    return { kind: 'mid-flight', incidentId: tap.incidentId, answer };
+  }
+
   async function handleAction(payload: SlackActionPayload): Promise<InteractivityOutcome> {
     if (slackPayloadType(payload) !== 'block_actions') return ignored('not-block-actions');
     const tap = parseTap(payload);
     if (tap === undefined) return ignored('malformed');
+    const offer = parseMidFlightBlock(tap.blockId);
+    if (offer !== undefined) return midFlightTap(tap, offer);
     // The Home view gives each item's actions block `<card block id>:<incident id>` (block ids are unique per view).
     const card = BLOCK_CARDS[tap.blockId.split(':')[0] ?? ''];
     if (card === undefined) return ignored('unknown-block');

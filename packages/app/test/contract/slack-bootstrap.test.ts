@@ -73,11 +73,11 @@ describe('manifest.yaml', () => {
     ]);
     expect([...botScopes].sort()).toEqual(
       [
-        'commands', 'app_mentions:read', 'chat:write', 'channels:history', 'channels:join', 'groups:history', 'reactions:read',
+        'commands', 'app_mentions:read', 'chat:write', 'channels:history', 'channels:join', 'channels:read', 'groups:history', 'groups:read', 'reactions:read',
         'reactions:write', 'users:read', 'users:read.email', 'files:read', 'im:history', 'im:write', 'pins:write',
       ].sort(),
     );
-    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'message.channels', 'message.groups', 'app_mention', 'app_home_opened', 'reaction_added', 'reaction_removed', 'file_shared']);
+    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'message.channels', 'message.groups', 'app_mention', 'app_home_opened', 'reaction_added', 'reaction_removed', 'file_shared', 'member_joined_channel', 'member_left_channel']);
     expect(manifest.features.slash_commands).toEqual([expect.objectContaining({ command: '/snapwing-status' })]);
     expect(manifest.settings.interactivity.is_enabled).toBe(true);
     expect(manifest.settings.socket_mode_enabled).toBe(true);

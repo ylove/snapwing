@@ -8,7 +8,9 @@
 // - Subscriptions: the incident's (as the log has folded them up to this event), plus the workspace's
 //   standing `surface` rows for the incident's surface and `all` rows.
 // - Channel members, when known: kv key `channel-members:{channelId}` holding a JSON array of user ids.
-//   Nothing writes it yet, so a watcher is mentioned in the thread unless their subscription says DM.
+//   The Slack channel members module writes it (`app/src/adapters/slack/channel-members.ts`, #337); a
+//   channel it could not list has no key, so a watcher there is mentioned in the thread unless their
+//   subscription says DM.
 // - The window: `windowFromRows` over the incident's `notify` outbox rows, including rows an earlier
 //   event of the same append just enqueued.
 
