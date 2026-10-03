@@ -11,6 +11,7 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import type { SlackAdapter } from '../../src/adapters/slack/adapter.ts';
+import { createSlackAuthorOf } from '../../src/adapters/slack/authorship.ts';
 import { createSlackStatusQuery, looksLikeStatusQuestion, type SlackStatusQuery } from '../../src/adapters/slack/status-query.ts';
 import { createSlackDispatcher } from '../../src/adapters/slack/transport.ts';
 import type { PostEphemeralArgs, PostMessageArgs, SlackWeb } from '../../src/adapters/slack/web.ts';
@@ -222,11 +223,71 @@ describe('a mention anywhere', () => {
     expect(text).toContain('?');
   });
 
-  it('ignores the bot and other bots', () => {
+  it('ignores the bot and other bots', async () => {
     expect(sq.intercepts(mention(BOT, 'status'))).toBe(false);
-    const fromBot = mention(REPORTER, 'status') as { event: Record<string, unknown> };
-    fromBot.event['bot_id'] = 'B1';
-    expect(sq.intercepts(fromBot)).toBe(false);
+    const legacy = mention(REPORTER, 'status') as { event: Record<string, unknown> };
+    legacy.event['subtype'] = 'bot_message';
+    expect(sq.intercepts(legacy)).toBe(false);
+    const userless = mention(REPORTER, 'status') as { event: Record<string, unknown> };
+    delete userless.event['user'];
+    userless.event['bot_id'] = 'B1';
+    expect(sq.intercepts(userless)).toBe(false);
+    // Another app's bot user (not in the map, and no `users.info` here): routed, then left unanswered.
+    const otherBot = mention(STRANGER, 'status') as { event: Record<string, unknown> };
+    otherBot.event['bot_id'] = 'B1';
+    await sq.handleEvent(otherBot);
+    expect(posts).toEqual([]);
+  });
+});
+
+// #360: the live status-pull row asked from the reporter's own account through the "Snapwing Test
+// Driver" app (a user token), so Slack stamped the DM with `bot_id` and `app_id`, and the query dropped
+// it as a bot's. A person posting through an app is still a person.
+describe('a person posting through an app (bot_id and app_id on their message)', () => {
+  const throughApp = (payload: unknown): unknown => {
+    const event = (payload as { event: Record<string, unknown> }).event;
+    Object.assign(event, { bot_id: 'B0TESTDRIVER', app_id: 'A0TESTDRIVER', bot_profile: { id: 'B0TESTDRIVER', app_id: 'A0TESTDRIVER', name: 'Snapwing Test Driver' } });
+    return payload;
+  };
+
+  it("answers the reporter's DM question, reporter-shaped", async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    await seed(CART_A, 'Cart total blank', 'checkout');
+    const text = await answerTo(throughApp(dm(REPORTER, `<@${BOT}> where are we with the cart total thing? [snapwing-test]`)));
+    expect(posts[0]).toMatchObject({ channel: DM });
+    expect(text).toMatch(/^\*?WEB-1051\b/);
+    expect(posts[0]?.blocks).toHaveLength(1);
+  });
+
+  it('answers a mention in a thread', async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    const text = await answerTo(throughApp(mention(ENGINEER, 'where are we with this?', { threadTs: NAV.anchor })));
+    expect(text).toContain('WEB-1042');
+  });
+
+  it('settles someone the map does not name with users.info', async () => {
+    await seed(CART_A, 'Cart total blank', 'checkout');
+    const asked: string[] = [];
+    const withLookup = createSlackStatusQuery({
+      web: { postMessage: (a: PostMessageArgs) => (posts.push(a), Promise.resolve({ channel: a.channel, ts: '1759396000.000901' })) } as unknown as SlackWeb,
+      state,
+      workspaceId: WS,
+      getMap: () => Promise.resolve(map),
+      botUserId: BOT,
+      authorOf: createSlackAuthorOf({ botUserId: BOT, botId: 'B0SNAPWING', usersInfo: (u) => (asked.push(u), Promise.resolve({ is_bot: u === 'U0OTHERBOT' })) }),
+      clock: () => new Date(T0),
+      onError: (e) => errors.push(e),
+    });
+    await withLookup.handleEvent(throughApp(dm('U0OTHERBOT', 'where are we with the cart total?')));
+    expect(posts).toEqual([]);
+    await withLookup.handleEvent(throughApp(dm(STRANGER, 'where are we with the cart total?')));
+    await withLookup.handleEvent(throughApp(dm(STRANGER, 'where are we with the cart total?')));
+    expect(posts).toHaveLength(2);
+    expect(asked).toEqual(['U0OTHERBOT', STRANGER]);
+    // Snapwing's own bot id is its own message, whoever the user field names.
+    const own = throughApp(dm(STRANGER, 'where are we with the cart total?')) as { event: Record<string, unknown> };
+    own.event['bot_id'] = 'B0SNAPWING';
+    expect(withLookup.intercepts(own)).toBe(false);
   });
 });
 

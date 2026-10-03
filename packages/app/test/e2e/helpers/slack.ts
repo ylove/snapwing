@@ -84,7 +84,7 @@ export interface SlackDriver {
   reporterPostsIn(channel: string, text: string): Promise<string>;
   /** Messages in `channel` newer than `oldest`, oldest first, read with the bot token. */
   history(channel: string, oldest: string): Promise<SlackMessage[]>;
-  /** Deletes, in a DM, the bot's messages and the reporter's newer than `oldest`; returns what was left. */
+  /** Deletes, in a DM, every message newer than `oldest` with its author's token; returns what was left. */
   cleanupDm(channel: string, oldest: string): Promise<string[]>;
   /** The anchor and every reply in its thread, read with the bot token. */
   thread(anchorTs: string): Promise<SlackMessage[]>;
@@ -168,7 +168,9 @@ export function createSlackDriver(o: SlackDriverOptions): SlackDriver {
         if (!gone(e)) failures.push(`read DM ${channel}: ${String(e)}`);
       }
       for (const m of messages) {
-        const token = m.user === bot || m.bot_id !== undefined ? o.botToken : m.user === o.reporter.id ? o.reporter.token : undefined;
+        // By author: the test users post through the Test Driver app, so their messages carry `bot_id`
+        // too, and only the author's token can delete them (#360: `cant_delete_message`).
+        const token = byBot(m, bot) ? o.botToken : m.user === o.reporter.id ? o.reporter.token : m.user === o.engineer.id ? o.engineer.token : undefined;
         if (token === undefined) {
           failures.push(`DM message ${m.ts} by another user was left in place`);
           continue;
@@ -210,7 +212,7 @@ export function createSlackDriver(o: SlackDriverOptions): SlackDriver {
         if (!gone(e)) failures.push(`read thread ${anchorTs}: ${String(e)}`);
       }
       const bot = await driver.botUserId();
-      const replies = messages.filter((m) => m.ts !== anchorTs && (m.user === bot || m.bot_id !== undefined));
+      const replies = messages.filter((m) => m.ts !== anchorTs && byBot(m, bot));
       // Newest first; a pinned message is unpinned before it goes.
       for (const m of [...replies].reverse()) {
         await slackCall(o.botToken, 'pins.remove', { channel: o.channel, timestamp: m.ts }).catch(() => undefined);
@@ -236,6 +238,15 @@ export function createSlackDriver(o: SlackDriverOptions): SlackDriver {
     },
   };
   return driver;
+}
+
+/**
+ * A message the bot posted: its user is the bot user, or it has a `bot_id` and no user at all. Not
+ * `bot_id` alone: the test users post through the "Snapwing Test Driver" app with their user tokens,
+ * and Slack stamps `bot_id` and `app_id` on those messages too (#360).
+ */
+export function byBot(m: SlackMessage, botUserId: string): boolean {
+  return m.user === botUserId || (m.user === undefined && m.bot_id !== undefined);
 }
 
 /** The `block_id`s of a message's blocks. */

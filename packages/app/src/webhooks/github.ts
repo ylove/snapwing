@@ -296,7 +296,7 @@ async function deploymentSteps(deps: GitHubWebhookDeps, repo: string, body: Reco
   const deployment = rec(body['deployment']);
   if (str(status, 'state') !== 'success') return [];
   const sha = str(deployment, 'sha');
-  const stage = deployStage(deps, str(status, 'environment') ?? str(deployment, 'environment'), deployment['production_environment'] === true);
+  const stage = deployStageOf(str(status, 'environment') ?? str(deployment, 'environment'), deployment['production_environment'] === true, deps.environments);
   if (sha === undefined || stage === undefined) return [];
   const deploymentId = int(deployment['id']);
   const occurredAt = time(status['updated_at']) ?? time(status['created_at']) ?? deps.clock().toISOString();
@@ -328,11 +328,15 @@ async function deploymentSteps(deps: GitHubWebhookDeps, repo: string, body: Reco
   return steps;
 }
 
-function deployStage(deps: GitHubWebhookDeps, environment: string | undefined, productionFlag: boolean): DeployStage | undefined {
+/**
+ * The stage a deployment's environment is: by name (`environments`, case-insensitive), else GitHub's
+ * `production_environment` flag. Shared with the deploy poll (reconcile/sources.ts, #360).
+ */
+export function deployStageOf(environment: string | undefined, productionFlag: boolean, environments?: Partial<Record<DeployStage, readonly string[]>>): DeployStage | undefined {
   const name = environment?.trim().toLowerCase();
   if (name !== undefined) {
     for (const stage of ['production', 'staging'] as const) {
-      const names = deps.environments?.[stage] ?? DEFAULT_DEPLOY_ENVIRONMENTS[stage];
+      const names = environments?.[stage] ?? DEFAULT_DEPLOY_ENVIRONMENTS[stage];
       if (names.some((n) => n.trim().toLowerCase() === name)) return stage;
     }
   }

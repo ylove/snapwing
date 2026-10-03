@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { checkSlackSignature, verifySlackSignature } from '../../src/adapters/slack/auth.ts';
+import { createSlackAuthorOf } from '../../src/adapters/slack/authorship.ts';
 import {
   normalizeSlack,
   type SlackNormalizeContext,
@@ -232,9 +233,28 @@ describe('normalizeSlack: direct messages', () => {
     expect(both.context.rawPayloadSnapshot['files']).toHaveLength(1);
   });
 
+  // #360: a person posting through an app with their user token gets `bot_id` and `app_id` on the
+  // message; it is still their report.
+  it('captures a DM a mapped person posted through an app (bot_id and app_id on it)', async () => {
+    const p = incident(await normalizeSlack(im('message-im-text', { bot_id: 'B0TESTDRIVER', app_id: 'A0TESTDRIVER' }), ctx()));
+    expect(p.reporter.id).toBe('U0REPORTER');
+    expect(p.anchorText).toBe('The invoice page 500s when I click Download');
+  });
+
+  it('asks users.info about someone the map does not name, and ignores our own bot id', async () => {
+    const asked: string[] = [];
+    const authorOf = createSlackAuthorOf({ botUserId: BOT, botId: 'B0SNAPWING', usersInfo: (u) => (asked.push(u), Promise.resolve({ is_bot: u === 'U0OTHERBOT' })) });
+    const person = incident(await normalizeSlack(im('message-im-text', { user: 'U0NOBODY', bot_id: 'B0TESTDRIVER' }), ctx({ authorOf })));
+    expect(person.reporter.id).toBe('U0NOBODY');
+    expect(await normalizeSlack(im('message-im-text', { user: 'U0OTHERBOT', bot_id: 'B0OTHER' }), ctx({ authorOf }))).toEqual({ kind: 'ignored', reason: 'bot-message' });
+    expect(asked).toEqual(['U0NOBODY', 'U0OTHERBOT']);
+    expect(await normalizeSlack(im('message-im-text', { bot_id: 'B0SNAPWING' }), ctx({ authorOf }))).toEqual({ kind: 'ignored', reason: 'own-message' });
+  });
+
   it('ignores the bot own messages, other bots, edits, and non-DM channels', async () => {
     expect(await normalizeSlack(im('message-im-text', { user: BOT }), ctx())).toEqual({ kind: 'ignored', reason: 'own-message' });
-    expect(await normalizeSlack(im('message-im-text', { bot_id: 'B0X' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
+    expect(await normalizeSlack(im('message-im-text', { user: 'U0OTHERBOT', bot_id: 'B0X' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
+    expect(await normalizeSlack(im('message-im-text', { user: undefined, bot_id: 'B0X' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
     expect(await normalizeSlack(im('message-im-text', { subtype: 'bot_message' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
     expect(await normalizeSlack(im('message-im-text', { subtype: 'message_changed' }), ctx())).toEqual({
       kind: 'ignored',

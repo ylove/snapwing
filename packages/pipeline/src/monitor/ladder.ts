@@ -48,9 +48,11 @@ import type { IncidentView } from '../contracts/state.ts';
 import type { EscalationCondition, Playbook, PlaybookEscalation } from '../config/playbook.ts';
 import { appendDecided, latest, newEvent } from '../fixer/job.ts';
 import { isTerminalStatus, type LifecycleStatus } from '../lifecycle/machine.ts';
+import type { WorkspaceMap } from '../map/types.ts';
 import { SecretNotFoundError, type SecretsPort } from '../ports/secrets.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
+import { channelOwner } from '../resolve/lookup.ts';
 import { parseDuration } from '../util/duration.ts';
 import type { Pager } from './pager.ts';
 
@@ -105,6 +107,11 @@ export interface LadderDeps {
   stalled?: (incident: IncidentView) => boolean | Promise<boolean>;
   /** A link back to the incident for the page. */
   link?: (incident: IncidentView) => string | undefined;
+  /**
+   * The workspace map: `mention="owner"` falls back to the owner of the channel's surface while
+   * nothing names one yet (a ladder started at adoption, before resolution, #360). Absent: no fallback.
+   */
+  map?: () => WorkspaceMap | Promise<WorkspaceMap>;
   /** Default `console.warn`. Never given a secret. */
   log?: (message: string) => void;
 }
@@ -252,6 +259,17 @@ export function createEscalationLadders(deps: LadderDeps): EscalationLadders {
     return true;
   }
 
+  /** The owner of the channel's surface in the map; undefined without a map or when it cannot say. */
+  async function mapOwner(incident: IncidentView): Promise<string | undefined> {
+    if (deps.map === undefined) return undefined;
+    try {
+      return channelOwner(await deps.map(), incident.channelId);
+    } catch (e) {
+      log(`escalation: incident ${incident.id}: map: ${errorText(e)}`);
+      return undefined;
+    }
+  }
+
   async function fire(data: EscalateTimerData): Promise<StepOutcome> {
     const { incidentId, ladder, step } = data;
     const events = await deps.state.read(incidentId);
@@ -279,7 +297,7 @@ export function createEscalationLadders(deps: LadderDeps): EscalationLadders {
     const text = stepText(incident, def, step);
 
     if (after.mention !== undefined || after.channel !== undefined) {
-      const mentioned = after.mention === undefined ? undefined : personRef(after.mention, incident);
+      const mentioned = after.mention === undefined ? undefined : (personRef(after.mention, incident) ?? (after.mention === 'owner' ? await mapOwner(incident) : undefined));
       if (after.mention !== undefined) payload.mention = after.mention;
       if (mentioned !== undefined) payload.mentioned = mentioned;
       if (after.channel !== undefined) payload.channel = after.channel;
@@ -413,7 +431,10 @@ export function isEscalateTimerData(v: unknown): v is EscalateTimerData {
   );
 }
 
-/** `owner` is the Jira assignee, else the resolved owner (as the status message names it); `@X` is `X`. */
+/**
+ * `owner` is the Jira assignee, else the resolved owner (as the status message names it); `@X` is `X`.
+ * Undefined for an owner nothing names yet (the caller then asks the map).
+ */
 function personRef(mention: string, incident: IncidentView): string | undefined {
   if (mention === 'owner') return incident.assigneeId ?? incident.ownerRef;
   return mention.startsWith('@') ? mention.slice(1) : mention;

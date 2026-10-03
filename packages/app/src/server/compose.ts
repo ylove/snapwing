@@ -127,6 +127,7 @@ import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
 import { createSlackAdapter, type SlackInbound } from '../adapters/slack/adapter.ts';
+import { createSlackAuthorOf } from '../adapters/slack/authorship.ts';
 import { buildMidFlightCard } from '../adapters/slack/cards/mid-flight.ts';
 import { CHANNEL_MEMBERS_REFRESH_MS, createSlackChannelMembers, observeChannelMembers } from '../adapters/slack/channel-members.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
@@ -393,15 +394,15 @@ function harnessChoice(config: HarnessConfig, adapter: HarnessAdapter): HarnessC
   return { adapter: 'generic', templateId: template.id };
 }
 
-/** The bot's own user id and the workspace subdomain, from one `auth.test` call. */
-async function slackIdentity(token: string): Promise<{ userId: string; domain?: string }> {
+/** The bot's own user id, its bot id, and the workspace subdomain, from one `auth.test` call. */
+async function slackIdentity(token: string): Promise<{ userId: string; botId?: string; domain?: string }> {
   const res = await fetch('https://slack.com/api/auth.test', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
   });
-  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; url?: string; error?: string };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; bot_id?: string; url?: string; error?: string };
   if (body.ok !== true || typeof body.user_id !== 'string') throw new Error(`slack auth.test failed: ${body.error ?? `http_${res.status}`}`);
-  return { userId: body.user_id, ...workspaceDomain(body.url) };
+  return { userId: body.user_id, ...(typeof body.bot_id === 'string' && body.bot_id !== '' ? { botId: body.bot_id } : {}), ...workspaceDomain(body.url) };
 }
 
 /** `https://acme.slack.com/` gives `acme`; anything else (a custom domain, no url) gives nothing. */
@@ -711,10 +712,18 @@ export const compose: ComposeFn = async (deps) => {
     overrides.slackBotUserId !== undefined && overrides.slackWorkspaceDomain !== undefined ? undefined : await slackIdentity(secret('SLACK_BOT_TOKEN'));
   const botUserId = overrides.slackBotUserId ?? identity?.userId ?? '';
   const workspaceDomain = overrides.slackWorkspaceDomain ?? identity?.domain;
+  // Who wrote a message, shared by every inbound path that reads people's messages (#360): a person
+  // posting through an app carries `bot_id` and is still a person.
+  const authorOf = createSlackAuthorOf({
+    botUserId,
+    ...(identity?.botId === undefined ? {} : { botId: identity.botId }),
+    usersInfo: (user) => web.usersInfo(user),
+  });
   const adapter = createSlackAdapter({
     web,
     signingSecret: secret('SLACK_SIGNING_SECRET'),
     botUserId,
+    authorOf,
     ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
     getMap,
     state,
@@ -994,6 +1003,8 @@ export const compose: ComposeFn = async (deps) => {
     playbook: configWatch.playbook,
     clock,
     chat: escalationChat,
+    // Steps reached at adoption fire before resolution names the owner: the map's owner of the channel's surface (#360).
+    map: liveMap,
     // After a step fires: a Highest priority or the outage step's `monitoring-started` arms the monitor.
     ladders: { evaluate: evaluateMonitoring },
     log: (line) => log.error(line),
@@ -1011,6 +1022,7 @@ export const compose: ComposeFn = async (deps) => {
     outage: (incident) => reactionEscalation.outage(incident),
     stalled: (incident) => activeMonitor.stalled(incident),
     link: (incident) => (incident.jiraKey === undefined ? undefined : `${secret('JIRA_BASE_URL').replace(/\/+$/, '')}/browse/${incident.jiraKey}`),
+    map: liveMap,
     log: (line) => log.error(line),
   });
   ladders.register();
@@ -1112,6 +1124,7 @@ export const compose: ComposeFn = async (deps) => {
     deps: signalDeps,
     getMap,
     botUserId,
+    authorOf,
     ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
     githubLinked: (userId) => oauth.isLinked({ chat: 'slack', userId }),
     web,
@@ -1136,7 +1149,7 @@ export const compose: ComposeFn = async (deps) => {
     botUserId,
     clock,
   });
-  const slackStatusQuery = createSlackStatusQuery({ web, state, standing: state, workspaceId, getMap, botUserId, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
+  const slackStatusQuery = createSlackStatusQuery({ web, state, standing: state, workspaceId, getMap, botUserId, authorOf, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
   const slackHome = createSlackHome({
     web,
     state,

@@ -360,6 +360,43 @@ describe('SlackAdapter status', () => {
     expect(web.updateMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C0WEB', ts: '1700000600.000100' }));
     expect(web.postMessage).toHaveBeenCalledTimes(1);
   });
+
+  // #360: the A 5.2 note after That fixed it (#305, `issueKey: ''`) went out as the pinned status
+  // message, "🐛 Great, no bug then...", so the live user-side row never found a note starting with it.
+  it('a status with no issue key is a plain thread note: no emoji, no pin, not the status message, role other', async () => {
+    const web = fakeWeb();
+    const refs = new Map<string, { channel: string; ts: string }>();
+    const appended: NewEvent[] = [];
+    const state = {
+      read: () => Promise.resolve([{ workspaceId: 'W0FAKE', seq: 3 }] as unknown as IncidentEvent[]),
+      append: (_id: string, events: NewEvent[], seq: number) => {
+        appended.push(...events);
+        return Promise.resolve({ seq: seq + events.length });
+      },
+    };
+    const adapter = createSlackAdapter({
+      web,
+      signingSecret: SECRET,
+      botUserId: BOT,
+      getMap: () => Promise.resolve(map),
+      clock: () => NOW,
+      state,
+      statusStore: { get: (id) => Promise.resolve(refs.get(id)), set: (id, ref) => Promise.resolve(void refs.set(id, ref)) },
+    });
+    // A file share anchor in a channel (the live row's screenshot), not in a thread yet.
+    const payload = { eventId: 'inc1', context: { channelId: 'C0WEB', rawPayloadSnapshot: { type: 'reaction_added', ts: '1699999900.000100' } } } as unknown as CanonicalIncidentPayload;
+    await adapter.postStatus(payload, { issueKey: '', stage: 'clarified', text: 'Great, no bug then. Flagging that the staging link is easy to land on.' });
+
+    expect(web.postMessage).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(web.postMessage).mock.calls[0]?.[0] as { channel: string; text: string; thread_ts?: string; blocks: { text?: { text?: string } }[] };
+    expect(sent.channel).toBe('C0WEB');
+    expect(sent.thread_ts).toBe('1699999900.000100');
+    expect(sent.text).toBe('Great, no bug then. Flagging that the staging link is easy to land on.');
+    expect(sent.blocks[0]?.text?.text).toBe(sent.text);
+    expect(web.pinsAdd).not.toHaveBeenCalled();
+    expect(refs.size).toBe(0);
+    expect(appended.map((e) => (e.payload as { role?: string }).role)).toEqual(['other']);
+  });
 });
 
 describe('Socket Mode', () => {

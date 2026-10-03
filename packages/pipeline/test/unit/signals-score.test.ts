@@ -214,7 +214,7 @@ interface World {
   ladderRuns: string[];
 }
 
-function world(playbook: Playbook = defaultPlaybook()): World {
+function world(playbook: Playbook = defaultPlaybook(), map?: WorkspaceMap): World {
   const posts: EscalationPost[] = [];
   const ladderRuns: string[] = [];
   const escalation = createReactionEscalation({
@@ -222,6 +222,7 @@ function world(playbook: Playbook = defaultPlaybook()): World {
     state,
     playbook: () => playbook,
     clock: () => new Date(now),
+    ...(map === undefined ? {} : { map: () => map }),
     chat: {
       post: (m) => {
         posts.push(m);
@@ -417,6 +418,50 @@ describe(`the reaction ladder (${TEST_DIALECT})`, () => {
     // The status went on as it was: the plan step files at Highest (engine.test.ts covers the floor).
     await append(...PLANNED(), ev('filed', { jiraKey: 'WEB-1042' }));
     expect((await state.getIncident(INC))?.status).toBe('filed');
+  });
+
+  // #360, the live escalation row: the engine adopts the waiting reactions right after `captured`
+  // (`EngineDeps.onCaptured`), before `resolved` names an owner, so `mention="owner"` named nobody and
+  // the post went out without the owner. The map's owner of the channel's surface stands in.
+  it('adopted at capture, before resolution: the owner of the channel surface in the map is mentioned', async () => {
+    const map = {
+      channels: [{ id: CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [] }],
+      surfaces: [{ id: 'web', label: 'Website', components: [] }],
+      people: [
+        { slackId: OWNER.id, handle: 'olu', role: 'engineer', owns: [{ surface: 'web' }] },
+        { slackId: reporter(1).id, handle: 'rep1', role: 'reporter', owns: [] },
+      ],
+    } as unknown as WorkspaceMap;
+    const w = world(defaultPlaybook(), map);
+    for (const n of [1, 2, 3, 4, 5]) await handleSignal(w.deps, react('escalate', reporter(n)));
+    await append(CAPTURED());
+    expect(await state.getIncident(INC)).toMatchObject({ status: 'captured' });
+    expect((await state.getIncident(INC))?.ownerRef).toBeUndefined();
+    expect(await adoptPendingSignals(w.deps, INC)).toBe(5);
+
+    expect((await escalated()).map((p) => [p.step, p.mentionOwner === true])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+    expect(w.posts).toEqual([
+      {
+        incidentId: INC,
+        ladder: REACTION_LADDER,
+        step: 2,
+        where: { kind: 'thread', channel: CHANNEL, threadId: ANCHOR },
+        mention: 'olu',
+        text: '5 people are reporting this. Priority raised to Highest.',
+      },
+    ]);
+  });
+
+  it('adopted at capture with no map, or a channel the map does not know: posted without a mention', async () => {
+    const w = world(defaultPlaybook(), { channels: [], surfaces: [], people: [] } as unknown as WorkspaceMap);
+    for (const n of [1, 2, 3, 4, 5]) await handleSignal(w.deps, react('escalate', reporter(n)));
+    await append(CAPTURED());
+    await adoptPendingSignals(w.deps, INC);
+    expect(w.posts).toHaveLength(1);
+    expect(w.posts[0]?.mention).toBeUndefined();
   });
 
   it('before filing the row takes the priority and Jira gets nothing; a closed incident escalates no more', async () => {

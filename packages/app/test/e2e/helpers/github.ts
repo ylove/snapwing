@@ -13,7 +13,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { dirname } from 'node:path';
 import type { SecretsPort } from '@snapwing/pipeline/ports/secrets.ts';
 import { runWebhook, type WebhookResult } from '../../../../../scripts/github-bootstrap.ts';
-import { createGitHubAuth } from '../../../src/github/auth.ts';
+import { createGitHubAuth, signAppJwt } from '../../../src/github/auth.ts';
 import { createGitHubTransport } from '../../../src/github/client.ts';
 import { FIXTURE_REPO, PREFIX } from './env.ts';
 
@@ -80,6 +80,54 @@ export function createGitHubDriver(secrets: SecretsPort) {
 }
 
 export type GitHubDriver = ReturnType<typeof createGitHubDriver>;
+
+/** One delivery of the App's webhook, as `GET /app/hook/deliveries` lists it (no payload, no secret). */
+export interface HookDelivery {
+  event: string;
+  action?: string;
+  statusCode: number;
+  deliveredAt: string;
+}
+
+/**
+ * The App webhook's recent deliveries (`GET /app/hook/deliveries`, the App's JWT), newest first, for a
+ * diagnosis: an App whose webhook was never switched on (`pnpm github:bootstrap webhook` prints the
+ * one-time browser step only while the URL is the placeholder) has none at all, and a delivery the
+ * server refused shows its status code (401 is the webhook secret). #360.
+ */
+export async function appHookDeliveries(secrets: SecretsPort, perPage = 100): Promise<HookDelivery[]> {
+  const [appId, pem] = await Promise.all([secrets.get('GITHUB_APP_ID'), secrets.get('GITHUB_APP_PRIVATE_KEY')]);
+  const res = await fetch(`https://api.github.com/app/hook/deliveries?per_page=${String(perPage)}`, {
+    headers: { Authorization: `Bearer ${signAppJwt(appId.trim(), pem, new Date())}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+  });
+  if (!res.ok) throw new Error(`GET /app/hook/deliveries answered ${String(res.status)}`);
+  const body = (await res.json()) as unknown;
+  return (Array.isArray(body) ? (body as Rec[]) : []).map((d) => ({
+    event: String(d['event'] ?? ''),
+    ...(typeof d['action'] === 'string' ? { action: d['action'] } : {}),
+    statusCode: Number(d['status_code'] ?? 0),
+    deliveredAt: String(d['delivered_at'] ?? ''),
+  }));
+}
+
+/** What the App's deliveries say about `event` since `sinceMs`, in one line for a failure message. */
+export async function deliveryDiagnosis(secrets: SecretsPort, event: string, sinceMs: number): Promise<string> {
+  try {
+    const all = await appHookDeliveries(secrets);
+    const recent = all.filter((d) => Date.parse(d.deliveredAt) >= sinceMs);
+    const wanted = recent.filter((d) => d.event === event);
+    if (all.length === 0) {
+      return 'the App webhook has no deliveries at all: it is most likely inactive (tick "Active" under Webhook on the App settings page; `pnpm github:bootstrap webhook` prints the link)';
+    }
+    if (wanted.length === 0) {
+      const seen = [...new Set(recent.map((d) => d.event))].join(', ') || 'nothing';
+      return `GitHub sent no ${event} delivery since the row started (it sent: ${seen}); check that the App subscribes to "${event}" and has deployments: read`;
+    }
+    return `${event} deliveries since the row started: ${wanted.map((d) => `${d.action ?? ''} ${String(d.statusCode)} at ${d.deliveredAt}`.trim()).join('; ')}`;
+  } catch (e) {
+    return `could not list the App webhook deliveries: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
 
 /** True when `gh` runs and its account administers the fixture repository. */
 export function ghAdministersFixture(): boolean {

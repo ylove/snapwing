@@ -11,6 +11,11 @@
 // Every card and status message it posts is recorded as `bot-message-posted` with its role (A 1.3,
 // #287) when the adapter has `state`. The record is best effort: the message is already out, so a
 // failure goes to `onError` and never fails the post.
+//
+// A status update with an empty `issueKey` is a note about an incident that has no issue (the A 5.2
+// "That fixed it" note, #305, #360): a plain reply in the thread, without the stage emoji (a 🐛 on
+// "no bug then" reads wrong), never pinned, never remembered as the incident's status message, and
+// recorded with role `other`.
 
 import type { IngestionAdapter, InteractiveCard, StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { CanonicalIncidentPayload } from '@snapwing/pipeline/contracts/incident.ts';
@@ -18,9 +23,11 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { recordBotMessage, roleOfCard, type PostedMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { verifySlackSignature } from './auth.ts';
+import type { SlackAuthorOf } from './authorship.ts';
 import { normalizeSlack, type SlackIgnoreReason, type SlackNormalizeResult } from './normalize.ts';
 import { buildCard, type CardOptions } from './cards/cards.ts';
-import { buildStatusMessage } from './cards/status.ts';
+import { section } from './cards/blocks.ts';
+import { buildStatusMessage, statusMrkdwn } from './cards/status.ts';
 import { anchorTsOf } from './reader.ts';
 import type { SlackMessage, SlackWeb } from './web.ts';
 
@@ -56,6 +63,8 @@ export interface SlackAdapterOptions {
   signingSecret: string;
   /** The bot's own user id (`auth.test`); its reactions and messages are ignored. */
   botUserId: string;
+  /** Who wrote a direct message (`authorship.ts`, #360). Default: the map and `botUserId` only. */
+  authorOf?: SlackAuthorOf;
   /** The current workspace map; read per request so a config change is picked up. */
   getMap: () => Promise<WorkspaceMap>;
   workspaceDomain?: string;
@@ -154,6 +163,7 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
       return normalizeSlack(parsed, {
         map: await options.getMap(),
         botUserId: options.botUserId,
+        ...(options.authorOf === undefined ? {} : { authorOf: options.authorOf }),
         reactionsGet,
         ...(options.workspaceDomain === undefined ? {} : { workspaceDomain: options.workspaceDomain }),
         ...(options.newEventId === undefined ? {} : { newEventId: options.newEventId }),
@@ -205,6 +215,12 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
     },
 
     async postStatus(payload, status: StatusUpdate) {
+      if (status.issueKey === '') {
+        const text = statusMrkdwn(status.text);
+        const posted = await web.postMessage({ channel: payload.context.channelId, text, blocks: [section(text)], ...withThread(payload) });
+        await record(payload.eventId, posted, 'other');
+        return;
+      }
       const message = buildStatusMessage(payload.eventId, status);
       const body = { text: message.text, blocks: message.blocks };
       const known = await options.statusStore?.get(payload.eventId);

@@ -274,6 +274,16 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     });
   });
 
+  // #360: the e2e people post through the "Snapwing Test Driver" app with their own user tokens, so
+  // Slack stamps `bot_id` and `app_id` on their replies. A person posting through an app is a person.
+  it('"on it" from a mapped person posting through an app (bot_id and app_id on the reply) is their claim', async () => {
+    await filed();
+    const w = setup();
+    expect(await w.post(variant('signal-thread-reply', 'Ev0SIGAPP001', { bot_id: 'B0TESTDRIVER', app_id: 'A0TESTDRIVER' }))).toBe(200);
+    expect(w.outcomes).toMatchObject([{ kind: 'signal', intent: 'claim', source: 'message', outcome: { handled: true, role: 'anchor', effect: 'hold' } }]);
+    expect((await comments()).at(-1)).toMatchObject({ actor: { id: DANA }, payload: { intent: 'claim', raw: 'on it' } });
+  });
+
   it("a staging verification: the reporter's check mark on the staging check appends verified", async () => {
     await onStaging();
     const w = setup();
