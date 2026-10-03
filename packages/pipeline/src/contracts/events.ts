@@ -237,7 +237,10 @@ export interface CapturedPayload {
   parentId?: string;
   idempotencyKey: string;
   source: ChannelSource;
+  /** Who brought the report in: the author of a DM or capture, the person who reacted or ran the shortcut. */
   reporter: IncidentActor;
+  /** The anchor message's author when someone else brought it in (#363); `incidents.reporter_id` when present. */
+  anchorAuthor?: IncidentActor;
   anchorText: string;
   /** The anchor message id; `incidents.anchor_id`. */
   anchorId?: string;

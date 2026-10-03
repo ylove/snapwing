@@ -74,7 +74,8 @@ function step(prev: IncidentView | undefined, statusEvent: IncidentEvent, dataEv
       kind: p.kind,
       lastSeq: dataEvent.seq,
       status: INITIAL_STATUS,
-      reporterId: p.reporter.id,
+      // The person who reported it: the anchor's author when someone else brought it in (#363).
+      reporterId: (p.anchorAuthor ?? p.reporter).id,
       source: p.source,
       channelId: p.channelId,
       ...(p.anchorId !== undefined ? { anchorId: p.anchorId } : {}),

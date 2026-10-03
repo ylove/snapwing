@@ -101,6 +101,12 @@ export interface CanonicalIncidentPayload {
   idempotencyKey: string;
   source: ChannelSource;
   reporter: IncidentActor;
+  /**
+   * Spec silent (#363). Who wrote the anchor message, when that is a person other than `reporter`:
+   * an engineer's trigger reaction or message action on a reporter's post. The incident's reporter
+   * (`IncidentView.reporterId`, the one asked to check staging, A 4.4) is this person when present.
+   */
+  anchorAuthor?: IncidentActor;
   anchorText: string;
   context: {
     channelId: string;

@@ -41,7 +41,7 @@ function ev<T extends NewEvent['type']>(incidentId: string, type: T, payload: Ex
 }
 
 /** Captures an incident on surface `web` (a Slack thread) and files it. Returns its id. */
-async function filedIncident(opts: { priority?: 'Highest' | 'High' | 'Medium' | 'Low' | 'Lowest'; surface?: string; file?: boolean } = {}): Promise<{ id: string; seq: number }> {
+async function filedIncident(opts: { priority?: 'Highest' | 'High' | 'Medium' | 'Low' | 'Lowest'; surface?: string; file?: boolean; triggeredBy?: string } = {}): Promise<{ id: string; seq: number }> {
   serial += 1;
   const id = `01JZ0000000000000000${String(serial).padStart(6, '0')}`;
   const drafts: NewEvent[] = [
@@ -49,7 +49,10 @@ async function filedIncident(opts: { priority?: 'Highest' | 'High' | 'Medium' | 
       kind: 'incident',
       idempotencyKey: `slack:${id}`,
       source: 'slack',
-      reporter: { id: REPORTER, name: 'Test Reporter', role: 'reporter' },
+      // An engineer's trigger on the reporter's post: the engineer brought it in, the reporter wrote it (#363).
+      ...(opts.triggeredBy === undefined
+        ? { reporter: { id: REPORTER, name: 'Test Reporter', role: 'reporter' } }
+        : { reporter: { id: opts.triggeredBy, name: 'Test Engineer', role: 'engineer' }, anchorAuthor: { id: REPORTER, name: 'Test Reporter', role: 'reporter' } }),
       anchorText: 'Checkout says 500',
       anchorId: '1700000000.000100',
       channelId: CHANNEL,
@@ -179,6 +182,27 @@ describe('the wired hook (A 4.4)', () => {
       ['watch', 'dm', ['U-FAR']],
     ]);
     await state.unsubscribe({ workspaceId, userId: 'U-FAR', scopeKind: 'surface', scopeId: 'web' });
+  });
+
+  it('asks the anchor\'s author, not the engineer whose trigger brought it in, to check staging (#363)', async () => {
+    time += 3_600_000;
+    await state.putConfigVersion('playbook', 'hash-empty', '<playbook xmlns="urn:snapwing:playbook:v1" version="1"/>');
+    const { id, seq } = await filedIncident({ triggeredBy: 'U-FAKE-ENGINEER' });
+    expect((await state.getIncident(id))?.reporterId).toBe(REPORTER);
+    await notifyRows(id);
+    time += 60_000;
+    await push(
+      id,
+      seq,
+      ev(id, 'fixer-started', { runId: 'run-1', harness: 'claude-code', attempt: 1 }),
+      ev(id, 'pr-opened', { prNumber: 418, branch: 'fix/x' }, 'github'),
+      ...toMerged(id),
+      ev(id, 'deployed:staging', { env: 'staging', sha: 'abc' } as never),
+    );
+    const request = (await notifyRows(id)).filter((r) => payload(r).reason === 'request');
+    expect(request.map((r) => [payload(r).delivery, payload(r).mentions])).toEqual([['thread', [REPORTER]]]);
+    expect(payload(request[0] as OutboxItem).text).toMatch(new RegExp(`^<@${REPORTER}> .* Can you check\\?$`));
+    expect(payload(request[0] as OutboxItem).text).not.toContain('U-FAKE-ENGINEER');
   });
 
   it('lets a waiting notify row sit without holding back the incident\'s status rows', async () => {

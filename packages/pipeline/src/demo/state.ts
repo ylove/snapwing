@@ -59,7 +59,7 @@ type Shape = Readonly<Record<string, Kind | `${Kind}?`>>;
  * their discriminant separately.
  */
 const PAYLOAD_SHAPES = {
-  captured: { kind: 'string', idempotencyKey: 'string', source: 'string', reporter: 'object', anchorText: 'string', channelId: 'string', anchorId: 'string?', threadId: 'string?', parentId: 'string?', deepLink: 'string?', rawPayloadSnapshot: 'object?' },
+  captured: { kind: 'string', idempotencyKey: 'string', source: 'string', reporter: 'object', anchorAuthor: 'object?', anchorText: 'string', channelId: 'string', anchorId: 'string?', threadId: 'string?', parentId: 'string?', deepLink: 'string?', rawPayloadSnapshot: 'object?' },
   'context-assembled': { bundle: 'object', includedCount: 'number', excludedCount: 'number' },
   resolved: { resolvedBy: 'string', confidence: 'number', surfaceId: 'string?', componentId: 'string?', ownerId: 'string?', repo: 'string?', jiraProject: 'string?' },
   'dedupe-checked': { candidates: 'array', decision: 'string' },

@@ -136,6 +136,22 @@ describe('SlackAdapter over HTTP', () => {
     expect(web.reactionsGet).toHaveBeenCalledTimes(1);
   });
 
+  it("emoji trigger on someone else's message: the message's author is the anchor author, a bot's message has none (#363)", async () => {
+    const posted = { ts: '1700000000.000200', text: 'Cart total is wrong', user: 'U0POSTER' };
+    const web = fakeWeb({ reactionsGet: vi.fn(() => Promise.resolve({ reactions: [{ name: 'bug', users: ['U0REPORTER'] }], message: posted })) });
+    const { route, payloads } = setup({ web });
+    await route(SLACK_EVENTS_PATH)(signedRequest(SLACK_EVENTS_PATH, JSON.stringify(fixture('reaction-added'))), ctx);
+    expect(payloads[0]?.reporter.id).toBe('U0REPORTER');
+    expect(payloads[0]?.anchorAuthor?.id).toBe('U0POSTER');
+
+    // An integration's post: no person wrote it, and the event's item_user is not read over it.
+    const alert = { ts: '1700000000.000200', text: 'Checkout 500s', bot_id: 'B0ALERTS', subtype: 'bot_message' };
+    const fromBot = setup({ web: fakeWeb({ reactionsGet: vi.fn(() => Promise.resolve({ reactions: [{ name: 'bug', users: ['U0REPORTER'] }], message: alert })) }) });
+    await fromBot.route(SLACK_EVENTS_PATH)(signedRequest(SLACK_EVENTS_PATH, JSON.stringify(fixture('reaction-added'))), ctx);
+    expect(fromBot.payloads[0]?.reporter.id).toBe('U0REPORTER');
+    expect(fromBot.payloads[0]?.anchorAuthor).toBeUndefined();
+  });
+
   it('emoji trigger on a thread reply: the reply text is the anchor and the parent ts is the thread', async () => {
     const PARENT = '1699999900.000100';
     const reply = { ts: '1700000000.000200', thread_ts: PARENT, text: 'It also fails on Safari' };

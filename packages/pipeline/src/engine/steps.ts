@@ -214,6 +214,7 @@ export function payloadOf(cursor: Cursor): CanonicalIncidentPayload {
     idempotencyKey: c.idempotencyKey,
     source: c.source,
     reporter: c.reporter,
+    ...(c.anchorAuthor === undefined ? {} : { anchorAuthor: c.anchorAuthor }),
     anchorText: c.anchorText,
     context: {
       channelId: c.channelId,
@@ -363,6 +364,7 @@ export async function captureStep(env: Omit<StepEnv, 'payload'>, initial: Canoni
       idempotencyKey: p.idempotencyKey,
       source: p.source,
       reporter: p.reporter,
+      ...(p.anchorAuthor === undefined ? {} : { anchorAuthor: p.anchorAuthor }),
       anchorText: p.anchorText,
       anchorId: anchor.message.id,
       channelId: p.context.channelId,
