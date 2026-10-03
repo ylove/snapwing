@@ -51,6 +51,17 @@
 //                membership events. Modules that register their own handlers (`register()`,
 //                `registerMidFlightJobs`, `registerDigestJobs`) get a port whose `work` becomes a job
 //                module here and whose `cron` waits for the worker (`registrar`).
+//   Signals      (#348, the "Signal side effects, ladders, monitoring" section) the reaction ladder (A
+//                1.4) is the signal handler's `escalation`, posting through the escalation chat; a
+//                removed reaction is reversed by the handler's `planRemoval` (A 1.6). Thread replies
+//                also reach `handleTextSignal` and claim reactions `acceptHandoff` (A 3) through the
+//                Slack signals, whose card taps come before the interactivity's. The escalation
+//                ladders (A 6.2, paging with `PAGERDUTY_ROUTING_KEY_<SERVICE>` or
+//                `PAGERDUTY_ROUTING_KEY` from the secrets port) and active monitoring (A 4.5, polling
+//                the reconciler's sources) register their timers through the registrar; the worker
+//                service `active monitoring` reads the log and evaluates both after every event that
+//                can change their facts (a priority, a surface, a close, monitoring starting or
+//                stopping, an outage step), and the monitor's stall timer evaluates the ladders.
 //
 // GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
@@ -69,9 +80,9 @@ import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AppConfig, HarnessAdapter, HarnessConfig, ModelProvider } from '@snapwing/pipeline/config/app-config.ts';
-import type { IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
+import type { EventType, IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { isFixerBudgetData, isFixerRunData, isReviewRunData, type JobName } from '@snapwing/pipeline/contracts/jobs.ts';
-import { StateNotFoundError, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
+import { LOG_START, StateNotFoundError, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import type { EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
@@ -81,6 +92,10 @@ import { registerDigestJobs } from '@snapwing/pipeline/notify/digest.ts';
 import { createHolds } from '@snapwing/pipeline/signals/holds.ts';
 import { recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { createUxFriction } from '@snapwing/pipeline/signals/ux-friction.ts';
+import { createReactionEscalation } from '@snapwing/pipeline/signals/score.ts';
+import type { LinkedIncidentRequest, TextSignalDeps } from '@snapwing/pipeline/signals/text.ts';
+import { createActiveMonitor, type PolledEventType } from '@snapwing/pipeline/monitor/active.ts';
+import { createEscalationLadders, type EscalationChat, type EscalationPost, type LadderChange } from '@snapwing/pipeline/monitor/ladder.ts';
 import { jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { adoptPendingSignals, type SignalDeps, type SignalEngine } from '@snapwing/pipeline/signals/handler.ts';
@@ -111,7 +126,7 @@ import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
-import { createSlackAdapter } from '../adapters/slack/adapter.ts';
+import { createSlackAdapter, type SlackInbound } from '../adapters/slack/adapter.ts';
 import { buildMidFlightCard } from '../adapters/slack/cards/mid-flight.ts';
 import { CHANNEL_MEMBERS_REFRESH_MS, createSlackChannelMembers, observeChannelMembers } from '../adapters/slack/channel-members.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
@@ -120,7 +135,9 @@ import { createSlackContextSource } from '../adapters/slack/reader.ts';
 import { createSlackHome } from '../adapters/slack/home.ts';
 import { createSlackStatusProjector } from '../adapters/slack/status-projector.ts';
 import { createSlackStatusQuery } from '../adapters/slack/status-query.ts';
-import { createSlackSignals, observeSignals, type SlackSignalOutcome } from '../adapters/slack/signals.ts';
+import { createSlackSignals, createSlackTextCards, observeSignals, type SlackSignalOutcome } from '../adapters/slack/signals.ts';
+import { SLACK_SHORTCUT_CALLBACK_ID } from '../adapters/slack/normalize.ts';
+import { createPagerDutyPager } from '../pager/pagerduty.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
 import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
 import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
@@ -159,6 +176,29 @@ export const DEFAULT_MAP_FILE = 'workspace-context.xml';
 const MAP_REFRESH_MS = 5_000;
 /** How often the worker scans the log for ux friction (A 5.3); the pattern window is days, so this is often enough. */
 export const UX_FRICTION_SCAN_MS = 15 * 60_000;
+/** How often the worker reads new events for active monitoring and the escalation ladders (#348). */
+export const MONITOR_TRIGGER_POLL_MS = 2_000;
+/** Where the worker keeps its place in the log for them (kv). */
+export const MONITOR_CURSOR_KEY = 'monitor:triggers-cursor';
+/**
+ * Events after which active monitoring (A 4.5) and the escalation ladders (A 6.2) are evaluated: a
+ * priority (`planned`, `escalated`, `jira-priority-changed`), a surface (`resolved`, `corrected`),
+ * monitoring starting or stopping (the reaction ladder's outage step appends a start), and a close.
+ */
+export const MONITOR_TRIGGERS: ReadonlySet<EventType> = new Set<EventType>([
+  'resolved',
+  'corrected',
+  'planned',
+  'escalated',
+  'jira-priority-changed',
+  'monitoring-started',
+  'monitoring-stopped',
+  'closed',
+  'not-a-bug',
+  'linked-to-existing',
+  'resolution-signal',
+  'user-side',
+]);
 
 /** Secrets every `snapwing serve` needs (CONTEXT.md 6b). Model keys and per-provider secrets are added per config. */
 export const REQUIRED_SECRETS: readonly string[] = Object.freeze([
@@ -918,6 +958,141 @@ export const compose: ComposeFn = async (deps) => {
     every('channel members refresh', CHANNEL_MEMBERS_REFRESH_MS, () => channelMembers.refreshAll(), log),
   ];
   // End of phase 4 wiring --------------------------------------------------------------------------
+
+  // Signal side effects, ladders, monitoring (#348) ------------------------------------------------
+  // The reaction ladder (A 1.4), text signals (A 3), the escalation ladders (A 6.2), and active
+  // monitoring (A 4.5). Removals (A 1.6) are the signal handler's own (`planRemoval`).
+
+  /** A ladder step, a reaction ladder note, or a heartbeat: in the incident's thread or the step's channel. */
+  async function postEscalation(post: EscalationPost): Promise<void> {
+    const map = await liveMap();
+    const who = post.mention === undefined ? undefined : slackMention(map, post.mention);
+    const text = who === undefined ? post.text : `${who} ${post.text}`;
+    if (post.where.kind === 'channel') {
+      const named = post.where.channel.replace(/^#/, '');
+      await web.postMessage({ channel: map.channels.find((c) => c.name === named || c.id === named)?.id ?? post.where.channel, text });
+      return;
+    }
+    const posted = await web.postMessage({ channel: post.where.channel, text, ...(post.where.threadId === undefined ? {} : { thread_ts: post.where.threadId }) });
+    // Recorded, so a reaction on it resolves to the incident (best effort: the post is out).
+    await recordBotMessage(state, post.incidentId, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'other' }, clock).catch((e: unknown) =>
+      log.error(`escalation post record: ${message(e)}`),
+    );
+  }
+  const escalationChat: EscalationChat = { post: postEscalation };
+
+  /** Active monitoring then the ladders, which read `monitored` and the facts the monitor keeps. */
+  async function evaluateMonitoring(incidentId: string): Promise<LadderChange[]> {
+    await activeMonitor.evaluate(incidentId);
+    return ladders.evaluate(incidentId);
+  }
+
+  const reactionEscalation = createReactionEscalation({
+    workspaceId,
+    state,
+    playbook: configWatch.playbook,
+    clock,
+    chat: escalationChat,
+    // After a step fires: a Highest priority or the outage step's `monitoring-started` arms the monitor.
+    ladders: { evaluate: evaluateMonitoring },
+    log: (line) => log.error(line),
+  });
+  const ladders = createEscalationLadders({
+    workspaceId,
+    state,
+    workflow: registering,
+    playbook: configWatch.playbook,
+    chat: escalationChat,
+    pager: createPagerDutyPager({ secrets: deps.secrets }),
+    // `PAGERDUTY_ROUTING_KEY_<SERVICE>`, else `PAGERDUTY_ROUTING_KEY`, read per page.
+    secrets: deps.secrets,
+    clock,
+    outage: (incident) => reactionEscalation.outage(incident),
+    stalled: (incident) => activeMonitor.stalled(incident),
+    link: (incident) => (incident.jiraKey === undefined ? undefined : `${secret('JIRA_BASE_URL').replace(/\/+$/, '')}/browse/${incident.jiraKey}`),
+    log: (line) => log.error(line),
+  });
+  ladders.register();
+  const reconcileSources = createReconcileSources({
+    github: auth,
+    jira,
+    jiraChangelog: { baseUrl: secret('JIRA_BASE_URL'), email: secret('JIRA_EMAIL'), apiToken: secret('JIRA_API_TOKEN') },
+  });
+  const activeMonitor = createActiveMonitor({
+    workspaceId,
+    state,
+    workflow: registering,
+    playbook: configWatch.playbook,
+    sources: reconcileSources,
+    // What the webhook or the reconciler would have started; deploys start nothing.
+    followUp: async (event: IncidentEvent<PolledEventType>, incident) => {
+      if (event.type === 'deployed:staging' || event.type === 'deployed:production') return;
+      await reconcileFollowUp(event as IncidentEvent<ReconciledEventType>, incident);
+    },
+    chat: escalationChat,
+    ladders,
+    clock,
+    log: (line) => log.error(line),
+  });
+  activeMonitor.register();
+
+  // Reads the log from where it left off and evaluates each incident an event could have changed.
+  let monitorCursor: string | undefined;
+  async function monitorTriggers(): Promise<void> {
+    monitorCursor ??= (await cache.get(MONITOR_CURSOR_KEY)) ?? LOG_START;
+    for (;;) {
+      const page = await state.readSince(monitorCursor, 200);
+      const incidents = new Set(page.events.filter((e) => MONITOR_TRIGGERS.has(e.type)).map((e) => e.incidentId));
+      for (const incidentId of incidents) {
+        try {
+          await evaluateMonitoring(incidentId);
+        } catch (e) {
+          log.error(`active monitoring: incident ${incidentId}: ${message(e)}`);
+        }
+      }
+      const moved = page.cursor !== monitorCursor;
+      monitorCursor = page.cursor;
+      if (moved) await cache.set(MONITOR_CURSOR_KEY, monitorCursor);
+      if (!moved || page.events.length === 0) return;
+    }
+  }
+  const monitorServices: ComposedService[] = [every('active monitoring', overrides.projectorPollMs ?? MONITOR_TRIGGER_POLL_MS, monitorTriggers, log)];
+
+  /** A 3 scope change: the second issue captured as its own incident, as "Fix it from here" on that message. */
+  async function fileLinked(request: LinkedIncidentRequest): Promise<{ incidentId: string } | undefined> {
+    if (request.platform !== 'slack' || request.channel === '') return undefined;
+    const parent = await state.getIncident(request.parentIncidentId);
+    const raw: SlackInbound = {
+      transport: 'socket',
+      payload: {
+        type: 'message_action',
+        callback_id: SLACK_SHORTCUT_CALLBACK_ID,
+        channel: { id: request.channel },
+        user: { id: request.reporter.id, name: request.reporter.name ?? '' },
+        message_ts: request.messageId,
+        message: { ts: request.messageId, text: request.text, ...(parent?.anchorId === undefined ? {} : { thread_ts: parent.anchorId }) },
+      },
+    };
+    const normalized = await adapter.normalizeResult(raw);
+    if (normalized.kind !== 'incident') return undefined;
+    await engine.handleInbound('slack', raw);
+    return { incidentId: normalized.payload.eventId };
+  }
+  const textSignalDeps: TextSignalDeps = {
+    workspaceId,
+    state,
+    playbook: configWatch.playbook,
+    model,
+    clock,
+    ports: {
+      ...createSlackTextCards({ web, state }),
+      fileLinked,
+      // The handoff's taker as the Jira assignee (the #323 row, by the map's email).
+      assign: assignClaimer,
+    },
+  };
+  // End of signal side effects, ladders, monitoring --------------------------------------------------
+
   // Signals (A 1.2 to 1.4, #335): reactions and thread replies, applied by `handleSignal`.
   const signalDeps: SignalDeps = {
     workspaceId,
@@ -928,6 +1103,8 @@ export const compose: ComposeFn = async (deps) => {
     engine: claimAwareEngine,
     stopIncident: (input) => stopIncident(fixerDeps, input),
     startFixer: (input) => startFixer(fixerDeps, input),
+    // A 1.4 (#290, #348): the reaction ladder after each counted signal and once after adoption.
+    escalation: reactionEscalation,
     clock,
   };
   const slackSignals = createSlackSignals({
@@ -939,6 +1116,8 @@ export const compose: ComposeFn = async (deps) => {
     web,
     model,
     standing: state,
+    // A 3 (#294, #348): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
+    text: textSignalDeps,
     onOutcome: afterSignal,
     onError: (e) => log.error(`slack signals: ${message(e)}`),
   });
@@ -973,7 +1152,10 @@ export const compose: ComposeFn = async (deps) => {
   const transportBase = {
     adapter: observeChannelMembers(observeSignals(observeReactionRemoval(adapter, interactivity, slackError), slackSignals, slackError), channelMembers, slackError),
     handleInbound: (source: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(source, raw),
-    onAction: (payload: Parameters<typeof interactivity.onAction>[0]) => interactivity.onAction(payload),
+    // The text-signal cards' taps (#348) are the Slack signals'; every other tap is the interactivity's.
+    onAction: async (payload: Parameters<typeof interactivity.onAction>[0]) => {
+      if (!(await slackSignals.onAction(payload))) await interactivity.onAction(payload);
+    },
     status: slackStatusQuery,
     home: slackHome,
     onError: slackError,
@@ -1013,11 +1195,7 @@ export const compose: ComposeFn = async (deps) => {
   const reconcileDeps: ReconcileDeps = {
     state,
     workflow,
-    sources: createReconcileSources({
-      github: auth,
-      jira,
-      jiraChangelog: { baseUrl: secret('JIRA_BASE_URL'), email: secret('JIRA_EMAIL'), apiToken: secret('JIRA_API_TOKEN') },
-    }),
+    sources: reconcileSources,
     followUp: async (event, incident) => {
       try {
         await reconcileFollowUp(event, incident);
@@ -1141,6 +1319,7 @@ export const compose: ComposeFn = async (deps) => {
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
     ...phase4WorkerServices,
+    ...monitorServices,
     configService,
   ];
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
@@ -1186,6 +1365,17 @@ export function mergePrometheus(blocks: readonly string[]): string {
   }
   const lines = [...families.values()].flatMap((f) => [...f.meta, ...f.samples]);
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
+}
+
+/**
+ * A person reference from a ladder step or the owner (a Slack user id, a map handle, or an email) as a
+ * Slack mention; a reference the map does not know stays `@name`.
+ */
+function slackMention(map: WorkspaceMap, ref: string): string {
+  const r = ref.trim().replace(/^@/, '');
+  const person = map.people.find((p) => p.slackId === r || p.handle === r || (p.email !== undefined && p.email === r));
+  if (person?.slackId !== undefined) return `<@${person.slackId}>`;
+  return /^[UW][A-Z0-9]{2,}$/.test(r) ? `<@${r}>` : `@${r}`;
 }
 
 /** The local runner reports for the fixer's work item, which is the incident (`fixer.run`). */

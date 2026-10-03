@@ -46,8 +46,13 @@
 // of the surface weight from the playbook; window from the incident's `openedAt`). A signal after the
 // window is recorded but not counted. A removed reaction (`reaction-removed`) is recorded with the
 // same count and no attribution, so the projections take the reactor back out; its other reversals
-// are A 1.6 (#289). After a counted signal commits, `escalation.evaluate` (signals/score.ts, #290)
-// walks the reaction ladder; adoption evaluates once, after every stored signal is recorded.
+// are A 1.6 (`planRemoval`, signals/removal.ts, #289, wired in #348): the plan is made on the log as
+// read before the removal comment and the claims (`getClaims`), the comment records its `effect`, and
+// its events (a `released`, a `held` gate) go after the comment in the same append. A released claim
+// then calls `handleClaim` like any release. A trigger removed within 60 s is the adapter's Stop
+// (`viaAdapter`), so the handler never calls `stopIncident` for it. After a counted signal commits,
+// `escalation.evaluate` (signals/score.ts, #290) walks the reaction ladder; adoption evaluates once,
+// after every stored signal is recorded.
 //
 // Before the incident exists (A 1.4 last paragraph): a reaction on a message with no incident is
 // stored in the cache under the message, one `setIfAbsent` slot per signal (so concurrent reactions
@@ -77,6 +82,7 @@ import type { ReviewVerdict } from '../review/verdict.ts';
 import { jiraCreateBatchKey, jiraFieldBatchKey, JIRA_DONE, type TransitionRow } from '../state/projections/outbox/jira.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
+import { planRemoval, type RemovalEffect } from './removal.ts';
 import { resolveSignal, resolveTarget, type MessageRef, type SignalEffect } from './target.ts';
 
 /** The resolution a filed issue closes with on `not-a-bug` (the engine's claim card uses the same). */
@@ -142,7 +148,7 @@ export type SignalAction =
   | 'release'
   | 'stop'
   | 'watch'
-  | 'removed';
+  | RemovalEffect;
 
 export type SignalOutcome =
   | { handled: false; reason: 'no-intent' | 'low-confidence' | 'no-target' | 'unknown-incident' }
@@ -219,6 +225,8 @@ interface Decision {
   outbox?: OutboxItem[];
   /** Outbox batch keys dropped (target jira) in the append's transaction. */
   drop?: string[];
+  /** A removal's Stop is the adapter's (`RemovalPlan.viaAdapter`). */
+  viaAdapter?: true;
 }
 
 async function applySignal(
@@ -242,7 +250,11 @@ async function applySignal(
   for (let attempt = 1; ; attempt++) {
     const incident = await deps.state.getIncident(incidentId);
     if (incident === null) return unknown;
-    const decision: Decision = removed ? { effect: 'removed' } : pre !== undefined ? { effect: pre } : await decide(deps, playbook, signal, incident, role);
+    const decision: Decision = removed
+      ? await removal(deps, signal, incident, role)
+      : pre !== undefined
+        ? { effect: pre }
+        : await decide(deps, playbook, signal, incident, role);
     if (decision.effect === 'reopen' && reopenReview === undefined) reopenReview = await putRejection(deps, incidentId, signal);
     const count = await countFor(deps, playbook, signal, incident, role);
     const comment = commentEvent(deps, incidentId, signal, actor, role, decision.effect, count);
@@ -377,9 +389,38 @@ function notABug(deps: SignalDeps, signal: SignalInput, incident: IncidentView, 
   return { effect: 'not-a-bug', events: [event], outbox: [row] };
 }
 
-/** After the append commits: the claim hook (#291) and the reopened fixer. */
+/**
+ * A removed reaction (A 1.6): the plan for it, on the log as read before the removal comment and the
+ * claims held now. Its events go after the comment in the same append.
+ */
+async function removal(deps: SignalDeps, signal: SignalInput, incident: IncidentView, role: TargetRole): Promise<Decision> {
+  const [log, claims] = await Promise.all([deps.state.read(incident.id), deps.state.getClaims(incident.id)]);
+  const plan = planRemoval({
+    workspaceId: deps.workspaceId,
+    incidentId: incident.id,
+    signal: {
+      intent: signal.intent,
+      actor: actorOf(signal.actor),
+      target: { messageId: signal.target.messageId },
+      timestamp: signal.timestamp,
+      ...(signal.environment === undefined ? {} : { environment: signal.environment }),
+    },
+    role,
+    log,
+    claimerIds: claims.map((c) => c.claimerId),
+    source: signal.platform,
+  });
+  return { effect: plan.effect, events: plan.events, ...(plan.viaAdapter === true ? { viaAdapter: true as const } : {}) };
+}
+
+/** After the append commits: the claim hook (#291), a removal's release or Stop, and the reopened fixer. */
 async function afterAppend(deps: SignalDeps, signal: SignalInput, incident: IncidentView, decision: Decision, seq: number, review: ArtifactRef | undefined): Promise<void> {
-  if (signal.source === 'reaction-removed') return;
+  if (signal.source === 'reaction-removed') {
+    if (decision.effect === 'release') await deps.engine.handleClaim(incident.id, seq);
+    // A trigger removed within 60 s is the adapter's Stop (#148): never a second one here.
+    else if (decision.effect === 'stop' && decision.viaAdapter !== true) await deps.stopIncident({ incidentId: incident.id, actor: actorOf(signal.actor), source: signal.platform });
+    return;
+  }
   if (signal.intent === 'claim' || decision.effect === 'release') {
     await deps.engine.handleClaim(incident.id, seq);
     return;

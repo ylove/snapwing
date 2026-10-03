@@ -631,11 +631,55 @@ describe(`handleSignal: counting (${TEST_DIALECT})`, () => {
     const w = world();
     await handleSignal(w.deps, signal('escalate', PAT, ANCHOR));
     await handleSignal(w.deps, signal('escalate', SAM, ANCHOR));
-    expect(await handleSignal(w.deps, signal('escalate', SAM, ANCHOR, { source: 'reaction-removed' }))).toMatchObject({ effect: 'removed' });
+    expect(await handleSignal(w.deps, signal('escalate', SAM, ANCHOR, { source: 'reaction-removed' }))).toMatchObject({ effect: 'lower' });
     const scores = await getEscalationScores((state as unknown as StateStore).ctx, INC);
     expect(scores.find((s) => s.intent === 'escalate')).toMatchObject({ score: 1, uniqueReactors: [PAT.id] });
     await handleSignal(w.deps, signal('accept', SAM, STAGING, { source: 'reaction-removed' }));
     expect((await pending('jira')).filter((r) => r.op === 'add-comment')).toEqual([]);
+  });
+});
+
+// Removal (A 1.6, #289, wired in #348) ------------------------------------------------------------
+
+describe(`handleSignal: removal plans (${TEST_DIALECT})`, () => {
+  it('a removed claim releases the claim in the same append and calls handleClaim', async () => {
+    await filed();
+    const w = world();
+    await handleSignal(w.deps, signal('claim', DANA, ANCHOR));
+    w.claims.length = 0;
+    const out = await handleSignal(w.deps, signal('claim', DANA, ANCHOR, { source: 'reaction-removed' }));
+    expect(out).toMatchObject({ handled: true, effect: 'release', appended: ['comment', 'released'] });
+    const released = (await log()).filter((e): e is IncidentEvent<'released'> => e.type === 'released');
+    expect(released.map((e) => e.payload)).toEqual([{ scope: 'claim', claimerId: DANA.id, reason: 'requested' }]);
+    expect(await state.getClaims(INC)).toEqual([]);
+    expect(w.claims).toEqual([{ incidentId: INC, seq: (await log()).at(-1)?.seq }]);
+  });
+
+  it('a trigger removed within 60 s is recorded as the adapter\'s Stop and never stops a second time', async () => {
+    await filed();
+    const w = world();
+    const stops: unknown[] = [];
+    w.deps = {
+      ...w.deps,
+      stopIncident: (input) => {
+        stops.push(input);
+        return Promise.resolve({ stopped: true });
+      },
+    };
+    await handleSignal(w.deps, signal('trigger', PAT, ANCHOR));
+    now += 30_000;
+    const out = await handleSignal(w.deps, signal('trigger', PAT, ANCHOR, { source: 'reaction-removed' }));
+    expect(out).toMatchObject({ handled: true, effect: 'stop', appended: ['comment'] });
+    expect((await lastComment()).payload.effect).toBe('stop');
+    expect(stops).toEqual([]);
+  });
+
+  it('a trigger removed after 60 s is recorded only', async () => {
+    await filed();
+    const w = world();
+    await handleSignal(w.deps, signal('trigger', PAT, ANCHOR));
+    now += 2 * MINUTE;
+    expect(await handleSignal(w.deps, signal('trigger', PAT, ANCHOR, { source: 'reaction-removed' }))).toMatchObject({ effect: 'removed', appended: ['comment'] });
   });
 });
 

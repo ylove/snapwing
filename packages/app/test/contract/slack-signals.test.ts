@@ -316,7 +316,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     await w.post(variant('signal-reaction-escalate', 'Ev0SIGFIRE11', { type: 'reaction_removed', user: DANA, item: { type: 'message', channel: CHANNEL, ts: ANCHOR } }));
     expect(w.outcomes).toMatchObject([
       { kind: 'signal', intent: 'escalate', source: 'reaction', outcome: { effect: 'count' } },
-      { kind: 'signal', intent: 'escalate', source: 'reaction-removed', outcome: { effect: 'removed' } },
+      { kind: 'signal', intent: 'escalate', source: 'reaction-removed', outcome: { effect: 'lower' } },
     ]);
     const scores = await getEscalationScores((state as unknown as StateStore).ctx, INC);
     expect(scores.find((s) => s.intent === 'escalate')).toMatchObject({ uniqueReactors: [], score: 0 });
