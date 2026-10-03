@@ -3,23 +3,19 @@
 // Classify runs on Claude Opus 5.5 and vision on Claude Sonnet 5.5; both use structured outputs, and both
 // go to the beta endpoint with `fallbacks: "default"` and `server-side-fallback-2026-07-01` (#281), so a
 // rejected fallback shape fails here too. Vision sends a 64x64 PNG (images.ts).
-// Reads ANTHROPIC_API_KEY from the environment, else from the `.env.live` at SNAPWING_ENV_LIVE or up the
-// tree; skips without it.
+// Reads ANTHROPIC_API_KEY from the environment, else from the `.env.live` at SNAPWING_ENV_LIVE or at this
+// checkout's root (never above it, env-file.ts); skips without it.
 import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { anthropicProvider } from '../../../src/models/anthropic/index.ts';
 import { createModelRouter, MODEL_TASK_LIST } from '../../../src/models/router.ts';
+import { envLiveFile } from './env-file.ts';
 import { whitePng } from './images.ts';
 
 function liveKey(): string | undefined {
   const fromEnv = process.env['ANTHROPIC_API_KEY'];
   if (fromEnv !== undefined && fromEnv.trim() !== '') return fromEnv.trim();
-  let file = process.env['SNAPWING_ENV_LIVE'];
-  for (let dir = process.cwd(); file === undefined; dir = dirname(dir)) {
-    if (existsSync(join(dir, '.env.live'))) file = join(dir, '.env.live');
-    else if (dirname(dir) === dir) return undefined;
-  }
+  const file = envLiveFile();
   if (!existsSync(file)) return undefined;
   const line = readFileSync(file, 'utf8').split(/\r?\n/).find((l) => l.startsWith('ANTHROPIC_API_KEY='));
   const value = line?.slice('ANTHROPIC_API_KEY='.length).trim().replace(/^(['"])(.*)\1$/, '$2');
