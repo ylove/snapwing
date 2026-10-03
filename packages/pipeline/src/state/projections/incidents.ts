@@ -14,6 +14,8 @@
 // - `filed`, `linked-to-existing`: Jira key. `pr-opened`, `fixer-done`: PR number and branch.
 // - `level-changed`, and `released` with a `restoredLevel`: autonomy level.
 // - `jira-priority-changed`, `jira-assignee-changed`: priority and assignee (B 7.3, the human wins).
+// - `escalated` with `priority` (the A 1.4 reaction ladder, signals/score.ts): priority. The ladder
+//   only ever records a higher one; the status stays (ADR 0018).
 // - `status-message-posted`: `status_msg_id` (A 4.3, the pinned status message).
 // - `waiting-changed`: `waiting_on`, with `since` from the event's `occurredAt`; absent clears it.
 //   Any status change also clears it: the wait it described is over (ADR 0014).
@@ -138,6 +140,8 @@ function applyFields(v: IncidentView, e: IncidentEvent): IncidentView {
       return e.payload.scope === 'claim' && e.payload.restoredLevel !== undefined ? { ...v, autonomyLevel: e.payload.restoredLevel } : v;
     case 'jira-priority-changed':
       return { ...v, priority: e.payload.to };
+    case 'escalated':
+      return e.payload.priority === undefined ? v : { ...v, priority: e.payload.priority };
     case 'jira-assignee-changed':
       return withOpt(v, 'assigneeId', e.payload.to);
     case 'status-message-posted':

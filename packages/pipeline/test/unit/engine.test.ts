@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { ChatReader } from '../../src/context/chat-reader.ts';
 import type { IngestionAdapter, InteractiveCard, StatusUpdate } from '../../src/contracts/adapters.ts';
-import type { EventActorRole, EventType, IncidentEvent } from '../../src/contracts/events.ts';
+import type { EscalatedPayload, EventActorRole, EventType, IncidentEvent } from '../../src/contracts/events.ts';
 import type { CanonicalIncidentPayload, SourceMessage } from '../../src/contracts/incident.ts';
 import type { OutboxItem } from '../../src/contracts/state.ts';
 import type { JiraSearch, JiraSearchHit } from '../../src/dedupe/index.ts';
@@ -615,6 +615,43 @@ describe('early exits and waits', () => {
     const row = create?.payload as unknown as CreateRow;
     expect(row.fields.labels).not.toContain('needs-clarification');
     expect(row.fields.project.key).toBe('WEB');
+  });
+});
+
+describe('reaction escalation (A 1.4, #290)', () => {
+  it('a step that suppressed the ask-back skips the question, and the plan files at the escalated priority', async () => {
+    const question = {
+      audience: 'reporter',
+      kind: 'experiential',
+      asks: 'component',
+      text: 'Which part of the website were you using?',
+      options: ['Navigation', 'Checkout'],
+      screenshotRequest: false,
+    };
+    const h = setup({ channel: 'C0WEBBUGS', clarify: question });
+    await inbound(h);
+    // Five people reacted while the scope preview waited: the ladder reached Highest (signals/score.ts).
+    const log = await events(h);
+    await state.append(
+      h.payload.eventId,
+      (
+        [
+          { intent: 'escalate', step: 1, action: 'post', score: 5, reactors: 5, priority: 'High', note: true },
+          { intent: 'escalate', step: 2, action: 'mention', score: 5, reactors: 5, priority: 'Highest', mentionOwner: true, suppressAskBack: true },
+        ] satisfies EscalatedPayload[]
+      ).map((payload) => ({ workspaceId: WS, incidentId: h.payload.eventId, type: 'escalated' as const, v: 1, source: 'agent' as const, occurredAt: new Date(now).toISOString(), payload })),
+      log.length,
+    );
+    expect(await status(h)).toBe('assembling');
+    await tap(h, 'scope-preview', 'looks-right');
+
+    expect(h.adapter.cards.map((c) => c.kind)).not.toContain('clarify');
+    expect(h.model.tasks).not.toContain('clarify');
+    const planned = eventOf(await events(h), 'planned');
+    expect(planned?.payload.priority).toBe('Highest');
+    expect(await state.getIncident(h.payload.eventId)).toMatchObject({ status: 'planned', priority: 'Highest' });
+    const create = (await outbox()).find((r) => r.op === 'create-issue');
+    expect((create?.payload as { fields: { priority: { name: string } } }).fields.priority).toEqual({ name: 'Highest' });
   });
 });
 

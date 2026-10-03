@@ -78,7 +78,7 @@ const PAYLOAD_SHAPES = {
   verified: { env: 'string', note: 'string?' },
   'deployed:production': { commitSha: 'string', deploymentId: 'string?' },
   closed: { reason: 'string?' },
-  escalated: { intent: 'string', step: 'number', action: 'string', score: 'number' },
+  escalated: { intent: 'string', step: 'number', action: 'string', score: 'number', reactors: 'number?', priority: 'string?', note: 'boolean?', mentionOwner: 'boolean?', suppressAskBack: 'boolean?', outage: 'boolean?' },
   stopped: { reason: 'string?' },
   released: { scope: 'string', reason: 'string', claimerId: 'string?', restoredLevel: 'number?', env: 'string?' },
   held: { kind: 'string', env: 'string?', claimerId: 'string?', expiresAt: 'string?', reason: 'string?', gate: 'object?' },

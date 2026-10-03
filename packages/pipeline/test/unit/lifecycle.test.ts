@@ -89,8 +89,11 @@ const ARROWS: Row[] = [
   // At any state
   ['filed', ev('stopped'), 'stopped'],
   ['fixing', ev('stopped'), 'stopped'],
-  ['mergeable', ev('escalated'), 'escalated'],
-  ['captured', ev('escalated'), 'escalated'],
+  // The `escalated` event is the A 1.4 reaction ladder (ADR 0018): it keeps the status
+  ['mergeable', ev('escalated'), 'mergeable'],
+  ['captured', ev('escalated'), 'captured'],
+  ['planned', ev('escalated'), 'planned'],
+  ['linked-to-existing', ev('escalated'), 'linked-to-existing'],
   // Stopped accepts what filed accepts
   ['stopped', ev('filed'), 'filed'],
   ['stopped', ev('claimed'), 'claimed'],
@@ -123,7 +126,6 @@ const INVALID: Row[] = [
   ['in-review', ev('fixer-started'), 'in-review'],
   ['closed', ev('fixer-done'), 'closed'],
   ['not-filed', ev('stopped'), 'not-filed'],
-  ['linked-to-existing', ev('escalated'), 'linked-to-existing'],
   ['filed', ev('reverted'), 'filed'],
   ['resolved', ev('captured'), 'resolved'],
 ];

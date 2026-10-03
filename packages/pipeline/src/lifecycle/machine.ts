@@ -23,7 +23,8 @@
 //   reported as not fitting. Both keep the status (the following `pr-opened` moves it). A second
 //   `fixer-started` is the retry run after `review-failed` or `ci-red` (`fixing-retry`) or a restart after a
 //   crash (`fixing`).
-// - `escalated` is left by the next human or agent action (claim, fixer start, human PR, close).
+// - `escalated` (the status) is left by the next human or agent action (claim, fixer start, human PR,
+//   close). The `escalated` event is the A 1.4 reaction ladder and keeps the status (ADR 0018).
 // - `fixer-started` from `deployed:staging` is the fixer re-enqueued after a reject on the staging
 //   check (A 1.3, signals/handler.ts): the incident is reopened and goes back to `fixing`.
 // - `review-failed` after the review passed (`ci`, `mergeable`, `held`) is a human's Request changes
@@ -260,10 +261,13 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
   'linked-to-existing': {},
 };
 
-/** B 5 "at any state": legal in every non-terminal status; `stopped` and `escalated` set the status. */
+/**
+ * B 5 "at any state": legal in every non-terminal status; `stopped` sets the status. The `escalated`
+ * event is the A 1.4 reaction ladder's step (ADR 0018) and changes no status (`NON_STATE_CHANGING`);
+ * the `escalated` status is reached by a failure (`fixer-failed`, a second `review-failed` or `ci-red`).
+ */
 const FROM_ANY_ACTIVE: Row = {
   stopped: 'stopped',
-  escalated: 'escalated',
 };
 
 /**
@@ -294,10 +298,12 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'clarify-answered',
   // A 1.3: a record of a message the bot posted, for target resolution.
   'bot-message-posted',
-  // A 6.2 escalation ladders (#299): mentions, posts, pages; never a status change (unlike `escalated`).
+  // A 6.2 escalation ladders (#299): mentions, posts, pages; never a status change.
   'escalation-ladder',
   // A 3 text signals (#294): the steps are records; `closed` and `jira-priority-changed` move state.
   'text-signal',
+  // A 1.4 reaction ladder (#290, ADR 0018): priority, owner mention, outage; the work goes on as it was.
+  'escalated',
 ]);
 
 export interface TransitionResult {

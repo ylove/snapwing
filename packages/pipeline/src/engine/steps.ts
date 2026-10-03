@@ -23,6 +23,7 @@ import type { MapPerson, WorkspaceMap } from '../map/types.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { lastSeqPastBotRecords, RECORD_APPEND_TRIES } from '../signals/messages.ts';
+import { atLeastPriority, escalationState, type EscalationState } from '../signals/score.ts';
 import { findSurface } from '../resolve/lookup.ts';
 import { JIRA_DONE, JIRA_IN_PROGRESS, LABEL_HUMAN_CLAIMED, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
@@ -485,7 +486,9 @@ async function linkStep(env: StepEnv, issueKey: string, tap: Tap): Promise<StepR
 export async function clarifyStep(env: StepEnv): Promise<StepResult> {
   const bundle = await loadBundle(env);
   const resolution = must(env.cursor.resolved, 'resolved').resolution;
-  const evidence = (await env.deps.evidence?.(env.payload, resolution)) ?? {};
+  // A 1.4: once the reaction ladder suppressed the ask-back, it is an incident, not a question.
+  const escalated = (await reactionEscalation(env)).suppressAskBack;
+  const evidence: ClarifyEvidence = { ...((await env.deps.evidence?.(env.payload, resolution)) ?? {}), ...(escalated ? { escalated } : {}) };
   const check = await userSideCheckFor(env, bundle, evidence);
   if (check?.question.gatePassed === true) {
     const asked = newEvent(env, 'clarified', {
@@ -522,7 +525,19 @@ async function userSideCheckFor(env: StepEnv, bundle: ContextBundle, evidence: C
     suppressWhenReportersAtLeast: policy?.suppressWhenReportersAtLeast ?? DEFAULT_SUPPRESS_REPORTERS,
     questionsAsked: env.cursor.clarified.length,
     reportersInWindow: evidence.reportersInWindow ?? 1,
+    ...(evidence.escalated === undefined ? {} : { escalated: evidence.escalated }),
   });
+}
+
+/** What the A 1.4 reaction ladder has done so far (signals/score.ts), read from the log. */
+async function reactionEscalation(env: StepEnv): Promise<EscalationState> {
+  return escalationState(await env.deps.state.read(env.cursor.incidentId));
+}
+
+/** A 1.4: priority only moves up automatically, so the plan never files below what reactions raised. */
+function withEscalatedPriority<T extends { priority: TriageResolutionPlan['priority'] }>(plan: T, escalation: EscalationState): T {
+  const priority = atLeastPriority(plan.priority, escalation.priority);
+  return priority === plan.priority ? plan : { ...plan, priority };
 }
 
 /**
@@ -702,8 +717,9 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
   const clarify = needsClarification || gapLeft || fallback !== undefined;
   const labeled: TriageResolutionPlan = clarify ? { ...decided, labels: [...new Set([...decided.labels, LABEL_NEEDS_CLARIFICATION])] } : decided;
   // Unrouted: no repo for a fixer, so ticket only, and the description says why it is here.
-  const triaged: TriageResolutionPlan =
+  const routedPlan: TriageResolutionPlan =
     fallback === undefined ? labeled : { ...labeled, autonomyLevel: 0, descriptionAdf: withUnroutedNote(labeled.descriptionAdf, labeled.projectKey) };
+  const triaged = withEscalatedPriority(routedPlan, await reactionEscalation(env));
   const level = triaged.autonomyLevel;
   const issue = await synthesizeIssue(triaged, bundle, level, synthesisContext(env, resolution, clarify));
   const prompt = issue.customFields['Implementation Prompt'];
@@ -825,7 +841,10 @@ export async function fixPreviewStep(env: StepEnv, phase: Extract<Phase, { kind:
     await commit(env, [newEvent(env, 'not-a-bug', { reason: `dismissed at the fix preview by ${who(answer)}` })]);
     return 'continue';
   }
-  const issue = withClaim(env, await plannedIssue(env));
+  const planned = await plannedIssue(env);
+  // Reactions may have raised the priority while the preview waited (A 1.4).
+  const { priority } = withEscalatedPriority({ priority: planned.fields.priority.name }, await reactionEscalation(env));
+  const issue = withClaim(env, { ...planned, fields: { ...planned.fields, priority: { name: priority } } });
   const bundle = await loadBundle(env);
   await commit(env, [newEvent(env, 'waiting-changed', {})], async (tx) => {
     await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue, bundle)));

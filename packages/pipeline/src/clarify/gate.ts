@@ -25,6 +25,11 @@ export interface GateContext {
   suppressWhenReportersAtLeast: number;
   questionsAsked: number;
   reportersInWindow: number;
+  /**
+   * The A 1.4 reaction ladder reached a step that suppresses the ask-back (`suppressAskBack`, the
+   * Highest step by default; signals/score.ts `escalationState`). Absent: not suppressed.
+   */
+  escalated?: boolean;
   /** Which things are already known from the bundle or the map. */
   known: { surface: boolean; component: boolean; environment: boolean; screenshot: boolean };
   /** For surface and component questions: the labels the map offers; options must come from them. */
@@ -40,6 +45,7 @@ export const GATE_CODES = {
   alreadyKnown: 'already-answerable',
   budget: 'budget-exceeded',
   suppressed: 'suppressed-by-volume',
+  escalated: 'suppressed-by-escalation',
 } as const;
 
 /** Words a non-technical person would not use for something on their own screen. */
@@ -99,8 +105,13 @@ export function evaluateGate(candidate: CandidateQuestion, ctx: GateContext): st
   return failures;
 }
 
-/** The two checks that depend only on counts; layer 1 runs them before any model call. */
-export function evaluateBudget(ctx: Pick<GateContext, 'maxQuestionsPerIncident' | 'suppressWhenReportersAtLeast' | 'questionsAsked' | 'reportersInWindow'>): string[] {
+/**
+ * The checks that need no question: the budget, the reporter volume, and the reaction escalation (A
+ * 1.4). Layer 1 runs them before any model call.
+ */
+export function evaluateBudget(
+  ctx: Pick<GateContext, 'maxQuestionsPerIncident' | 'suppressWhenReportersAtLeast' | 'questionsAsked' | 'reportersInWindow' | 'escalated'>,
+): string[] {
   const failures: string[] = [];
   if (ctx.questionsAsked >= ctx.maxQuestionsPerIncident) {
     failures.push(`${GATE_CODES.budget}: ${ctx.questionsAsked} asked, at most ${ctx.maxQuestionsPerIncident} allowed`);
@@ -109,6 +120,9 @@ export function evaluateBudget(ctx: Pick<GateContext, 'maxQuestionsPerIncident' 
     failures.push(
       `${GATE_CODES.suppressed}: ${ctx.reportersInWindow} reporters, suppressed at ${ctx.suppressWhenReportersAtLeast}; this is an incident, not a question`,
     );
+  }
+  if (ctx.escalated === true) {
+    failures.push(`${GATE_CODES.escalated}: escalated by the weight of reactions; this is an incident, not a question`);
   }
   return failures;
 }
