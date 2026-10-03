@@ -14,6 +14,15 @@
     </sch:rule>
   </sch:pattern>
 
+  <sch:pattern id="channel-platform">
+    <sch:rule context="w:channel">
+      <sch:assert id="channel-teams-needs-team"
+                  test="not(@platform = 'teams') or @team">Teams channel <sch:value-of select="@name"/> needs a team (the team's group id).</sch:assert>
+      <sch:assert id="channel-slack-has-no-team"
+                  test="@platform = 'teams' or not(@team)">Slack channel <sch:value-of select="@name"/> must not carry a team.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+
   <sch:pattern id="fallback-surface">
     <sch:rule context="w:surfaces[@fallbackSurface]">
       <sch:assert id="fallback-surface-exists"

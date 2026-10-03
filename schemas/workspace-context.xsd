@@ -40,6 +40,13 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:simpleType name="PlatformType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="slack"/>
+      <xs:enumeration value="teams"/>
+    </xs:restriction>
+  </xs:simpleType>
+
   <xs:simpleType name="LevelNumber">
     <xs:restriction base="xs:integer">
       <xs:minInclusive value="0"/>
@@ -132,6 +139,9 @@
     <!-- A surface id, or the literal from-payload; the Schematron checks which. -->
     <xs:attribute name="surface" type="NonEmptyString" use="required"/>
     <xs:attribute name="confidence" type="ConfidenceType" use="optional"/>
+    <!-- Absent means slack. A teams channel carries its team's group id; the Schematron checks the pairing. -->
+    <xs:attribute name="platform" type="PlatformType" use="optional"/>
+    <xs:attribute name="team" type="NonEmptyString" use="optional"/>
   </xs:complexType>
 
   <xs:complexType name="MessageActionType">
@@ -205,17 +215,26 @@
   <xs:complexType name="SurfaceOverrideType">
     <xs:attribute name="ref" type="IdType" use="required"/>
     <xs:attribute name="level" type="LevelNumber" use="required"/>
+      <!-- Who changed this level and when (main 4.6); a map handle or an email, and an ISO 8601 time. -->
+    <xs:attribute name="changedBy" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="changedAt" type="xs:dateTime" use="optional"/>
   </xs:complexType>
 
   <xs:complexType name="ComponentOverrideType">
     <xs:attribute name="surface" type="IdType" use="required"/>
     <xs:attribute name="ref" type="IdType" use="required"/>
     <xs:attribute name="level" type="LevelNumber" use="required"/>
+      <!-- Who changed this level and when (main 4.6); a map handle or an email, and an ISO 8601 time. -->
+    <xs:attribute name="changedBy" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="changedAt" type="xs:dateTime" use="optional"/>
   </xs:complexType>
 
   <xs:complexType name="PriorityOverrideType">
     <xs:attribute name="atLeast" type="PriorityType" use="required"/>
     <xs:attribute name="level" type="LevelNumber" use="required"/>
+      <!-- Who changed this level and when (main 4.6); a map handle or an email, and an ISO 8601 time. -->
+    <xs:attribute name="changedBy" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="changedAt" type="xs:dateTime" use="optional"/>
   </xs:complexType>
 
   <xs:complexType name="AutonomyType">
@@ -232,6 +251,9 @@
       </xs:element>
     </xs:sequence>
     <xs:attribute name="default" type="LevelNumber" use="required"/>
+    <!-- Who changed this level and when (main 4.6); a map handle or an email, and an ISO 8601 time. -->
+    <xs:attribute name="changedBy" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="changedAt" type="xs:dateTime" use="optional"/>
   </xs:complexType>
 
   <xs:complexType name="RiskGateType">
