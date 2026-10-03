@@ -1,0 +1,34 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "Close WEB-1042 as Cannot Reproduce?",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Close WEB-1042 as Cannot Reproduce?",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Close it",
+      "verb": "close",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "messageId": "1727980000.000200"
+      },
+      "style": "positive"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Keep it open",
+      "verb": "keep-open",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "messageId": "1727980000.000200"
+      }
+    }
+  ]
+}

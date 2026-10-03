@@ -1,0 +1,39 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "Which page were you on when the price went missing?",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "Which page were you on when the price went missing?",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Cart",
+      "verb": "Cart",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Checkout",
+      "verb": "Checkout",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Product page",
+      "verb": "Product page",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "✅ Fix is on staging. @U0PAT, can you check?",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "✅ Fix is on staging. <at>Pat</at>, can you check?",
+      "wrap": true
+    }
+  ],
+  "msteams": {
+    "entities": [
+      {
+        "type": "mention",
+        "text": "<at>Pat</at>",
+        "mentioned": {
+          "id": "29:9zY8xW7vU6tS5rQ4pO3nM2lK",
+          "name": "Pat"
+        }
+      }
+    ]
+  }
+}

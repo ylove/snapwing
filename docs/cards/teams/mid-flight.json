@@ -1,0 +1,55 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "@U0WEBDEV1, the fixer started on this 4 minutes ago and is on fix/WEB-1042.",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "<at>Dana</at>, the fixer started on this 4 minutes ago and is on fix/WEB-1042.",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "No answer in 10 minutes means **Let it finish**.",
+      "wrap": true,
+      "isSubtle": true,
+      "size": "Small"
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Let it finish",
+      "verb": "let_it_finish",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "runId": "01J9Z3N5P8S2T4V6W8X0Y2Z4AB",
+        "claimerId": "U0WEBDEV1"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Stop it, I'll take over",
+      "verb": "stop_it",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "runId": "01J9Z3N5P8S2T4V6W8X0Y2Z4AB",
+        "claimerId": "U0WEBDEV1"
+      },
+      "style": "destructive"
+    }
+  ],
+  "msteams": {
+    "entities": [
+      {
+        "type": "mention",
+        "text": "<at>Dana</at>",
+        "mentioned": {
+          "id": "29:1aB2cD3eF4gH5iJ6kL7mN8oP",
+          "name": "Dana"
+        }
+      }
+    ]
+  }
+}

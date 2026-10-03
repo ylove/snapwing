@@ -1,0 +1,40 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "This looks like WEB-812: Nav dropdown not rendering on Safari.",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "This looks like **WEB-812** (open since Tuesday, assigned to Dana): \"Nav dropdown not rendering on Safari.\"",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Link this thread to WEB-812",
+      "verb": "link",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      },
+      "style": "positive"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Create new anyway",
+      "verb": "create-anyway",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Not related",
+      "verb": "not-related",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    }
+  ]
+}

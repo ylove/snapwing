@@ -1,0 +1,54 @@
+{
+  "type": "AdaptiveCard",
+  "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+  "version": "1.5",
+  "fallbackText": "Diagnosis: Null `price` on cart line item when a promo code is applied after quantity change.",
+  "body": [
+    {
+      "type": "TextBlock",
+      "text": "🔧 **Fixing now.** **Diagnosis:** Null \\`price\\` on cart line item when a promo code is applied after quantity change.",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "**Surface:** Website › Checkout  **Owner:** <at>Dana</at>  **Priority:** High",
+      "wrap": true
+    },
+    {
+      "type": "TextBlock",
+      "text": "**Proposed fix touches:** src/cart/lineItem.ts, src/promo/apply.ts",
+      "wrap": true
+    }
+  ],
+  "actions": [
+    {
+      "type": "Action.Execute",
+      "title": "Stop",
+      "verb": "stop",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      },
+      "style": "destructive"
+    },
+    {
+      "type": "Action.Execute",
+      "title": "Not a bug",
+      "verb": "dismiss",
+      "data": {
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+      }
+    }
+  ],
+  "msteams": {
+    "entities": [
+      {
+        "type": "mention",
+        "text": "<at>Dana</at>",
+        "mentioned": {
+          "id": "29:1aB2cD3eF4gH5iJ6kL7mN8oP",
+          "name": "Dana"
+        }
+      }
+    ]
+  }
+}
