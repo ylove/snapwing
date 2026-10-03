@@ -2,6 +2,7 @@
 // object, so tests pass fakes for each and #48 can drive the same engine end to end with MSW.
 
 import type { ClarifyEvidence } from '../clarify/index.ts';
+import { defaultPlaybook, type Playbook } from '../config/playbook.ts';
 import type { ChatReader } from '../context/chat-reader.ts';
 import type { Anchor, CollectPolicy } from '../context/collect.ts';
 import type { LoadImage } from '../context/vision/index.ts';
@@ -11,7 +12,6 @@ import type { CanonicalIncidentPayload, ChannelSource, Resolution } from '../con
 import type { OutboxItem } from '../contracts/state.ts';
 import type { JiraSearch } from '../dedupe/index.ts';
 import type { WorkspaceInstructions } from '../config/instructions.ts';
-import type { Playbook } from '../config/playbook.ts';
 import type { WorkspaceMap } from '../map/types.ts';
 import type { CachePort } from '../ports/cache.ts';
 import type { ModelPort } from '../ports/model.ts';
@@ -125,4 +125,8 @@ export function idempotencyTtlSec(deps: EngineDeps, source: ChannelSource): numb
 
 export async function currentMap(deps: EngineDeps): Promise<WorkspaceMap> {
   return typeof deps.map === 'function' ? deps.map() : deps.map;
+}
+
+export async function currentPlaybook(deps: EngineDeps): Promise<Playbook> {
+  return deps.playbook?.() ?? defaultPlaybook();
 }

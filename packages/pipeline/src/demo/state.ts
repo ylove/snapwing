@@ -19,6 +19,7 @@ import pg from 'pg';
 import { isEventType, type EventType, type IncidentEvent, type NewEvent } from '../contracts/events.ts';
 import { LOG_START, stateOptionsFromEnv, type IncidentStatus, type StateOptions } from '../contracts/state.ts';
 import { INITIAL_STATUS, isValidTransition, nextStatus } from '../lifecycle/machine.ts';
+import { USER_SIDE_KINDS } from '../models/user-side.ts';
 import type { OpenedState } from '../ports/state.ts';
 import { openState } from '../state/db.ts';
 import { rebuild, snapshotProjections } from '../state/rebuild.ts';
@@ -62,7 +63,7 @@ const PAYLOAD_SHAPES = {
   'context-assembled': { bundle: 'object', includedCount: 'number', excludedCount: 'number' },
   resolved: { resolvedBy: 'string', confidence: 'number', surfaceId: 'string?', componentId: 'string?', ownerId: 'string?', repo: 'string?', jiraProject: 'string?' },
   'dedupe-checked': { candidates: 'array', decision: 'string' },
-  clarified: { audience: 'string', question: 'string', asks: 'string?', options: 'array?', answer: 'string?', timedOut: 'boolean' },
+  clarified: { audience: 'string', question: 'string', asks: 'string?', options: 'array?', userSide: 'object?', answer: 'string?', timedOut: 'boolean' },
   planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?', plan: 'object?', degraded: 'string?' },
   filed: { jiraKey: 'string' },
   claimed: { claimerId: 'string', expiresAt: 'string' },
@@ -106,6 +107,7 @@ const PAYLOAD_SHAPES = {
   'fixer-failed': { reason: 'string', attempts: 'number', partialBranch: 'string?' },
   'bot-message-posted': { platform: 'string', channel: 'string', messageId: 'string', role: 'string' },
   'escalation-ladder': { phase: 'string', ladder: 'string', step: 'number?', after: 'string?', mention: 'string?', mentioned: 'string?', channel: 'string?', pagerduty: 'string?', paged: 'boolean?', posted: 'boolean?', reason: 'string?' },
+  'user-side': { kind: 'string', evidence: 'string', questionSeq: 'number', surfaceId: 'string?' },
 } as const satisfies { readonly [K in EventType]: Shape };
 
 /** Closed value sets for the discriminants and enums a typo would silently break. */
@@ -120,6 +122,7 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
   'dedupe-decided': { decision: ['link', 'create-anyway', 'not-related'] },
   'bot-message-posted': { platform: ['slack', 'teams'], role: ['scope-preview', 'dedupe', 'fix-preview', 'pr', 'staging-check', 'status', 'other'] },
   'escalation-ladder': { phase: ['started', 'step', 'stopped'] },
+  'user-side': { kind: USER_SIDE_KINDS },
 };
 
 function kindOf(value: unknown): Kind | 'null' | 'other' {

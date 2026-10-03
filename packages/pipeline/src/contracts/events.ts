@@ -26,6 +26,7 @@ import type {
   MergeGateResult,
   Resolution,
   TriageResolutionPlan,
+  UserSideKind,
 } from './incident.ts';
 import type { Intent, SignalEvent, TargetRole } from './signals.ts';
 
@@ -91,7 +92,9 @@ export type EventType =
   // A 1.3 target resolution: every message Snapwing posts, with its role
   | 'bot-message-posted'
   // A 6.2 escalation ladders (#299): started, each step, stopped. Not `escalated` (see the payload)
-  | 'escalation-ladder';
+  | 'escalation-ladder'
+  // A 5.2: the reporter's user-side check answered That fixed it (no ticket)
+  | 'user-side';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
 export const EVENT_TYPES = Object.freeze([
@@ -143,6 +146,7 @@ export const EVENT_TYPES = Object.freeze([
   'fixer-failed',
   'bot-message-posted',
   'escalation-ladder',
+  'user-side',
 ] as const satisfies readonly EventType[]);
 
 // Compile-time: EVENT_TYPES lists every member of EventType (the `satisfies` above rules out extras).
@@ -276,6 +280,11 @@ export interface ClarifiedPayload {
   asks?: ClarifyQuestion['asks'];
   /** The buttons offered, so a reposted card keeps them. */
   options?: string[];
+  /**
+   * A 5.2: set when this round is the user-side check rather than a gap question: the indicator it
+   * was asked about, and the environment its `I meant <env>` button names (absent when it has none).
+   */
+  userSide?: UserSideCheckRecord;
   /** Legacy (#47 set it with a correction). New rounds record the answer as `clarify-answered`. */
   answer?: string;
   /** Legacy (#47 set it with a correction). New rounds record `false` and never correct it. */
@@ -730,6 +739,7 @@ export interface EventPayloads {
   'fixer-failed': FixerFailedPayload;
   'bot-message-posted': BotMessagePostedPayload;
   'escalation-ladder': EscalationLadderPayload;
+  'user-side': UserSidePayload;
 }
 
 // Compile-time: EventPayloads has exactly one entry per EventType.
@@ -740,3 +750,26 @@ type PayloadKeysMatch = [keyof EventPayloads] extends [EventType]
   : Exclude<keyof EventPayloads, EventType>;
 const payloadKeysMatch: PayloadKeysMatch = true;
 void payloadKeysMatch;
+
+/** A 5.2: what a user-side check (a `clarified` round) asked about. */
+export interface UserSideCheckRecord {
+  kind: UserSideKind;
+  /** The indicator's evidence as the card quoted it ("URL bar shows staging.example.com"). */
+  evidence: string;
+  /** The environment the `I meant <env>` button names, as the screenshot shows it ("staging"). */
+  environment?: string;
+}
+
+/**
+ * A 5.2: the reporter answered the user-side check with That fixed it, so nothing is filed (the
+ * incident ends `not-filed`). The actor is the reporter who tapped; nothing here reaches Jira. A 5.3
+ * counts these per indicator kind and surface.
+ */
+export interface UserSidePayload {
+  kind: UserSideKind;
+  evidence: string;
+  /** The `clarified` round this answers. */
+  questionSeq: number;
+  /** The resolved surface, when there was one. */
+  surfaceId?: string;
+}

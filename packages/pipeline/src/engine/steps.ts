@@ -4,13 +4,15 @@
 // the first to get there: on `ExpectedSeqConflictError` the caller re-reads the log and decides again.
 
 import { applyAnswer } from '../clarify/answer.ts';
-import { maybeAsk } from '../clarify/index.ts';
+import { DEFAULT_MAX_QUESTIONS, DEFAULT_SUPPRESS_REPORTERS } from '../clarify/gate.ts';
+import { findGap, maybeAsk, type ClarifyEvidence } from '../clarify/index.ts';
+import { fixedNote, readAnswer, ticketNote, userSideCheck, withEnvironment, type UserSideCheck } from '../clarify/user-side.ts';
 import { collectWindow, DEFAULT_COLLECT_POLICY, widenPolicy, type Anchor, type CollectPolicy } from '../context/collect.ts';
 import { narrow, scopePreview } from '../context/scope-preview.ts';
 import { segment } from '../context/segment.ts';
 import { readImages } from '../context/vision/index.ts';
 import type { InteractiveCard } from '../contracts/adapters.ts';
-import type { ArtifactRef, EventActor, EventPayloads, EventSource, EventType, NewEvent, WaitingOn } from '../contracts/events.ts';
+import type { ArtifactRef, EventActor, EventPayloads, EventSource, EventType, NewEvent, UserSideCheckRecord, WaitingOn } from '../contracts/events.ts';
 import type { CanonicalIncidentPayload, ChannelSource, ContextBundle, Resolution, TriageResolutionPlan } from '../contracts/incident.ts';
 import type { Job } from '../contracts/jobs.ts';
 import { isExpectedSeqConflict, type OutboxItem } from '../contracts/state.ts';
@@ -27,8 +29,8 @@ import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
 import type { ClaimHold } from './claims.ts';
-import { approvedFix, answerAfter, pendingCard, type Cursor, type Phase, type Tap } from './cursor.ts';
-import { DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps, type StatusSubscription } from './deps.ts';
+import { approvedFix, answerAfter, pendingCard, userSideRound, type Cursor, type Phase, type Tap, type UserSideRound } from './cursor.ts';
+import { currentPlaybook, DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps, type StatusSubscription } from './deps.ts';
 
 /** The logical Jira target that starts the fixer (main 14.1: "fires fixer webhook"); the projector resolves it (#268). */
 export const IN_PROGRESS: JiraLogicalStatus = JIRA_IN_PROGRESS;
@@ -463,12 +465,25 @@ async function linkStep(env: StepEnv, issueKey: string, tap: Tap): Promise<StepR
 /**
  * main 7: the ask-back gate. A question that passes is recorded as `clarified` (asked, with what it
  * asks about and its options) and posted; one that fails the gate is not asked and the ticket gets
- * `needs-clarification`.
+ * `needs-clarification`. A user-side check (A 5.2) that passes the gate comes first and is the
+ * round's one question: it is recorded as `clarified` with `userSide`, so it counts against the budget.
  */
 export async function clarifyStep(env: StepEnv): Promise<StepResult> {
   const bundle = await loadBundle(env);
   const resolution = must(env.cursor.resolved, 'resolved').resolution;
   const evidence = (await env.deps.evidence?.(env.payload, resolution)) ?? {};
+  const check = await userSideCheckFor(env, bundle, evidence);
+  if (check?.question.gatePassed === true) {
+    const asked = newEvent(env, 'clarified', {
+      audience: 'reporter',
+      question: check.question.text,
+      ...(check.question.asks === undefined ? {} : { asks: check.question.asks }),
+      ...(check.question.options === undefined ? {} : { options: check.question.options }),
+      userSide: check.record,
+      timedOut: false,
+    });
+    return awaitCard(env, { kind: 'clarify', question: check.question }, env.payload.reporter.id, [asked]);
+  }
   const question = await maybeAsk(env.payload, bundle, resolution, env.map, env.deps.model, {
     ...evidence,
     questionsAsked: env.cursor.clarified.length,
@@ -485,6 +500,43 @@ export async function clarifyStep(env: StepEnv): Promise<StepResult> {
   return awaitCard(env, { kind: 'clarify', question }, waitFor, [asked]);
 }
 
+/** A 5.2: the user-side check for this bundle under the current playbook and the ask-back budget (main 7.2). */
+async function userSideCheckFor(env: StepEnv, bundle: ContextBundle, evidence: ClarifyEvidence): Promise<UserSideCheck | undefined> {
+  const policy = env.map.policies.askBack;
+  return userSideCheck(bundle, await currentPlaybook(env.deps), {
+    maxQuestionsPerIncident: policy?.maxQuestionsPerIncident ?? DEFAULT_MAX_QUESTIONS,
+    suppressWhenReportersAtLeast: policy?.suppressWhenReportersAtLeast ?? DEFAULT_SUPPRESS_REPORTERS,
+    questionsAsked: env.cursor.clarified.length,
+    reportersInWindow: evidence.reportersInWindow ?? 1,
+  });
+}
+
+/**
+ * The answer to a user-side check (A 5.2). That fixed it ends the incident unfiled: `clarify-answered`,
+ * then `user-side` with the indicator kind (no ticket, no Jira row, so the reporter's name reaches no
+ * issue), and a friendly note in the thread, sent first as `linkStep` does. Still broken and I meant
+ * <env> append `clarify-answered` and go on to the plan step, which files with the check recorded or
+ * the environment set.
+ */
+async function userSideAnswerStep(env: StepEnv, questionSeq: number, check: UserSideCheckRecord, answer: Tap): Promise<StepResult> {
+  const choice = answer.payload.choice;
+  const answered = newEvent(env, 'clarify-answered', { questionSeq, answer: choice }, decidedBy(env, answer));
+  if (readAnswer(check, choice).kind !== 'fixed') {
+    await commit(env, [answered, ...ended(env)]);
+    return 'continue';
+  }
+  const surfaceId = env.cursor.resolved?.resolution.surfaceId;
+  await adapterFor(env)?.postStatus(env.payload, { issueKey: '', stage: 'clarified', text: fixedNote(check) });
+  const userSide = newEvent(
+    env,
+    'user-side',
+    { kind: check.kind, evidence: check.evidence, questionSeq, ...(surfaceId === undefined ? {} : { surfaceId }) },
+    decidedBy(env, answer),
+  );
+  await commit(env, [answered, ...ended(env), userSide]);
+  return 'continue';
+}
+
 /**
  * The clarify card (main 7, ADR 0015). An answer appends `clarify-answered`; when the question asked
  * about the surface or component and the answer is that entry's map label, a second `resolved`
@@ -495,6 +547,8 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
   const last = must(env.cursor.clarified[env.cursor.clarified.length - 1], 'clarified');
   const resolution = must(env.cursor.resolved, 'resolved').resolution;
   const answer = phase.answer;
+  const check = last.payload.userSide;
+  if (answer !== undefined && check !== undefined) return userSideAnswerStep(env, last.seq, check, answer);
   if (answer !== undefined) {
     const text = answer.payload.choice;
     const applied = applyAnswer(last.payload.asks, text, resolution, env.map);
@@ -583,11 +637,23 @@ function unroutedNote(projectKey: string): string {
   return `Snapwing could not tell which product this report is about, so it filed it in ${projectKey} for someone to route. It is ticket only until then.`;
 }
 
+/** `descriptionAdf` with `text` as its first paragraph. */
+function withNote(adf: Record<string, unknown>, text: string): Record<string, unknown> {
+  const content = Array.isArray(adf['content']) ? (adf['content'] as unknown[]) : [];
+  const note = toAdf(text)['content'] as unknown[];
+  return { ...adf, type: 'doc', version: 1, content: [...note, ...content] };
+}
+
 /** `descriptionAdf` with a first paragraph saying why the ticket landed in the fallback project. */
 function withUnroutedNote(adf: Record<string, unknown>, projectKey: string): Record<string, unknown> {
-  const content = Array.isArray(adf['content']) ? (adf['content'] as unknown[]) : [];
-  const note = toAdf(unroutedNote(projectKey))['content'] as unknown[];
-  return { ...adf, type: 'doc', version: 1, content: [...note, ...content] };
+  return withNote(adf, unroutedNote(projectKey));
+}
+
+/** The bundle as filed: after `I meant <env>` on a user-side check (A 5.2), its readings say that environment. */
+function filedBundle(bundle: ContextBundle, userSide: UserSideRound | undefined): ContextBundle {
+  if (userSide?.answer === undefined) return bundle;
+  const answer = readAnswer(userSide.check, userSide.answer);
+  return answer.kind === 'meant' ? withEnvironment(bundle, answer.environment) : bundle;
 }
 
 /**
@@ -597,8 +663,8 @@ function withUnroutedNote(adf: Record<string, unknown>, projectKey: string): Rec
  * as not a bug. An incident with no surface files to the fallback project at level 0 with
  * `needs-clarification` (#115), so triage never fails for want of a project.
  */
-export async function planStep(env: StepEnv, needsClarification: boolean, known?: ContextBundle): Promise<StepResult> {
-  const bundle = known ?? (await loadBundle(env));
+export async function planStep(env: StepEnv, needsClarification: boolean, known?: ContextBundle, userSide?: UserSideRound): Promise<StepResult> {
+  const bundle = filedBundle(known ?? (await loadBundle(env)), userSide);
   const resolution = must(env.cursor.resolved, 'resolved').resolution;
   const checked = must(env.cursor.dedupe, 'dedupe-checked').result;
   const fallback = fallbackProject(env, resolution);
@@ -611,8 +677,15 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
   // The dedupe card already decided: candidates reach triage only after Create anyway (or its
   // timeout), so a `link_existing` draft is filed as a new issue rather than overruling that choice.
   const { linkTo: _linkTo, ...unlinked } = drafted;
-  const decided: TriageResolutionPlan = drafted.action === 'link_existing' ? { ...unlinked, action: 'create_issue' } : drafted;
-  const clarify = needsClarification || fallback !== undefined;
+  const linked: TriageResolutionPlan = drafted.action === 'link_existing' ? { ...unlinked, action: 'create_issue' } : drafted;
+  // A 5.2: the user-side check is recorded on the ticket, so engineers do not repeat it. It took the
+  // round's one question, so a gap it left open still gets `needs-clarification`.
+  const decided: TriageResolutionPlan =
+    userSide === undefined
+      ? linked
+      : { ...linked, descriptionAdf: withNote(linked.descriptionAdf, ticketNote(userSide.check, userSide.answer === undefined ? undefined : readAnswer(userSide.check, userSide.answer))) };
+  const gapLeft = userSide !== undefined && findGap(resolution, env.map) !== undefined;
+  const clarify = needsClarification || gapLeft || fallback !== undefined;
   const labeled: TriageResolutionPlan = clarify ? { ...decided, labels: [...new Set([...decided.labels, LABEL_NEEDS_CLARIFICATION])] } : decided;
   // Unrouted: no repo for a fixer, so ticket only, and the description says why it is here.
   const triaged: TriageResolutionPlan =
@@ -709,7 +782,7 @@ async function plannedIssue(env: StepEnv): Promise<SynthesizedIssue> {
   const planned = must(env.cursor.planned, 'planned').payload;
   const resolution = must(env.cursor.resolved, 'resolved').resolution;
   const triaged = await plannedPlan(env);
-  const issue = await synthesizeIssue(triaged, await loadBundle(env), triaged.autonomyLevel, synthesisContext(env, resolution, triaged.labels.includes(LABEL_NEEDS_CLARIFICATION)));
+  const issue = await synthesizeIssue(triaged, filedBundle(await loadBundle(env), userSideRound(env.cursor)), triaged.autonomyLevel, synthesisContext(env, resolution, triaged.labels.includes(LABEL_NEEDS_CLARIFICATION)));
   // The implementation request validated at plan time is the one the fixer gets.
   const stored = planned.implementationRequest;
   const prompt = stored === undefined ? '' : (await env.deps.state.getArtifact(stored.artifactId, stored.version)).body;
@@ -984,7 +1057,7 @@ export function runPhase(env: StepEnv, phase: Exclude<Phase, { kind: 'capture' |
     case 'clarify-card':
       return clarifyCardStep(env, phase);
     case 'plan':
-      return planStep(env, phase.needsClarification);
+      return planStep(env, phase.needsClarification, undefined, phase.userSide);
     case 'fix-preview':
       return fixPreviewStep(env, phase);
     case 'after-filed':

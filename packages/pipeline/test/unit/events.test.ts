@@ -95,6 +95,7 @@ const SAMPLES = {
   'fixer-failed': { reason: 'tests red', partialBranch: 'fix/WEB-1042', attempts: 2 },
   'bot-message-posted': { platform: 'slack', channel: 'C0FAKEBUGS', messageId: '1730000000.000400', role: 'fix-preview' },
   'escalation-ladder': { phase: 'step', ladder: 'outage', step: 3, after: 'PT60M', pagerduty: 'PFAKE01', paged: true },
+  'user-side': { kind: 'wrong-environment', evidence: 'URL bar shows staging.example.com', questionSeq: 5, surfaceId: 'web' },
 } as const satisfies { readonly [K in EventType]: EventPayloads[K] };
 
 describe('EVENT_TYPES', () => {
