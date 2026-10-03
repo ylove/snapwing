@@ -8,12 +8,21 @@
 //   prState(pr)       open, closed, or merged with the merge commit (`GET /pulls/{n}`).
 //   issueStatus(key)  the issue's status and, from its changelog, the last status change, with
 //                     `byAgent` when the agent's own Jira account made it. Null for a deleted issue.
+//   deployments(ref)  the active monitor's deploy source (A 4.5, `MonitorSources.deployments`, #360):
+//                     the repository's most recent deployments (`GET /deployments`, newest first),
+//                     staged by environment name as the `deployment_status` webhook stages them
+//                     (`deployStageOf`), and per stage the newest whose latest status is `success` and
+//                     whose sha is the merge commit or contains it (`compareCommits`). At most one per
+//                     stage; a stage with none is left out. What a missed `deployment_status` webhook
+//                     would have said, for the incidents the monitor polls.
 
 import { ciChecksOf } from '@snapwing/pipeline/merge/ci.ts';
+import type { DeployRef, DeployState, MonitorSources } from '@snapwing/pipeline/monitor/active.ts';
 import type { IssueStatus, PrChecks, PrRef, PrState, ReconcileSources } from '@snapwing/pipeline/reconcile/job.ts';
 import type { GitHubAuth } from '../github/auth.ts';
 import { createGitHubClient, createGitHubTransport, type GitHubClientOptions } from '../github/client.ts';
 import { repoFullName } from '../github/repo.ts';
+import { deployStageOf, type DeployStage } from '../webhooks/github.ts';
 import type { JiraClient } from '../jira/client/client.ts';
 
 export interface JiraChangelogAccess {
@@ -30,7 +39,17 @@ export interface ReconcileSourcesOptions {
   jira: Pick<JiraClient, 'myself'>;
   /** Read access to an issue's changelog, which the Jira client does not expose. */
   jiraChangelog: JiraChangelogAccess;
+  /** Which environment names are staging and production (as the webhook's `environments`). */
+  environments?: Partial<Record<DeployStage, readonly string[]>>;
 }
+
+/** Recent deployments read per poll (newest first). */
+export const DEPLOYMENTS_PER_POLL = 30;
+/** Deployments per stage whose statuses are read, newest first, before giving up for this poll. */
+export const DEPLOY_CANDIDATES_PER_STAGE = 5;
+
+/** The sources the reconciler and the active monitor share; `deployments` is the monitor's only. */
+export type ReconcileAndMonitorSources = ReconcileSources & Required<Pick<MonitorSources, 'deployments'>>;
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -45,7 +64,7 @@ function repoOf(pr: PrRef): string {
   return repoFullName(pr.repo);
 }
 
-export function createReconcileSources(options: ReconcileSourcesOptions): ReconcileSources {
+export function createReconcileSources(options: ReconcileSourcesOptions): ReconcileAndMonitorSources {
   const ghOptions = options.githubOptions ?? {};
   let agentAccount: Promise<string> | undefined;
   const agent = (): Promise<string> => {
@@ -76,6 +95,47 @@ export function createReconcileSources(options: ReconcileSourcesOptions): Reconc
         return { state: 'merged', mergeCommitSha, ...(mergedAt === undefined ? {} : { mergedAt }) };
       }
       return { state: body['state'] === 'closed' ? 'closed' : 'open' };
+    },
+
+    async deployments(ref: DeployRef): Promise<DeployState[]> {
+      if (ref.repo === undefined || ref.repo === '') return [];
+      const repo = repoFullName(ref.repo);
+      const call = createGitHubTransport(options.github, { ...ghOptions, repo });
+      const client = createGitHubClient(options.github, { ...ghOptions, repo });
+      const read = async (path: string, query: Record<string, string | number>): Promise<unknown[]> => {
+        const res = await call({ method: 'GET', path: `/repos/${repo}${path}`, permissions: { deployments: 'read' }, query });
+        const body = JSON.parse(res.text === '' ? '[]' : res.text) as unknown;
+        return Array.isArray(body) ? body : [];
+      };
+      const recent = (await read('/deployments', { per_page: DEPLOYMENTS_PER_POLL })).map(record);
+      const contains = new Map<string, Promise<boolean>>();
+      const containsMerge = (sha: string): Promise<boolean> => {
+        if (sha === ref.mergeCommitSha) return Promise.resolve(true);
+        let answer = contains.get(sha);
+        if (answer === undefined) {
+          answer = client.compareCommits(ref.mergeCommitSha, sha).then((c) => c.contains);
+          contains.set(sha, answer);
+        }
+        return answer;
+      };
+      const out: DeployState[] = [];
+      for (const stage of ['staging', 'production'] as const) {
+        const candidates = recent
+          .filter((d) => deployStageOf(str(d['environment']), d['production_environment'] === true, options.environments) === stage)
+          .slice(0, DEPLOY_CANDIDATES_PER_STAGE);
+        for (const d of candidates) {
+          const id = d['id'];
+          const sha = str(d['sha']);
+          if ((typeof id !== 'number' && typeof id !== 'string') || sha === undefined) continue;
+          const [latest] = (await read(`/deployments/${encodeURIComponent(String(id))}/statuses`, { per_page: 1 })).map(record);
+          if (latest === undefined || latest['state'] !== 'success') continue;
+          if (!(await containsMerge(sha))) continue;
+          const deployedAt = str(latest['created_at']);
+          out.push({ stage, commitSha: sha, deploymentId: String(id), ...(deployedAt === undefined ? {} : { deployedAt }) });
+          break;
+        }
+      }
+      return out;
     },
 
     async issueStatus(key): Promise<IssueStatus | null> {

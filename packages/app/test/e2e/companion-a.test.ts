@@ -71,11 +71,11 @@ import { stallAnchor } from '@snapwing/pipeline/monitor/active.ts';
 import { reporterViolations } from '@snapwing/pipeline/status/copy.ts';
 import { runBootstrap } from '../../../../scripts/jira-bootstrap.ts';
 import { loadLiveEnv, PREFIX } from './helpers/env.ts';
-import { createFixtureAdmin, createGitHubDriver, ghAdministersFixture, pointGitHubWebhook, type FixtureAdmin, type GitHubDriver } from './helpers/github.ts';
+import { appHookDeliveries, createFixtureAdmin, createGitHubDriver, deliveryDiagnosis, ghAdministersFixture, pointGitHubWebhook, type FixtureAdmin, type GitHubDriver } from './helpers/github.ts';
 import { adfText, createJiraDriver, type JiraDriver } from './helpers/jira.ts';
 import { installRecorder, type Recorder, type SlackWrite } from './helpers/recorder.ts';
 import { startServer, type RunningServer } from './helpers/server.ts';
-import { blockActions, blockIdsOf, buttonsOf, createSlackDriver, textOf, type SlackDriver, type SlackMessage } from './helpers/slack.ts';
+import { blockActions, blockIdsOf, buttonsOf, byBot, createSlackDriver, textOf, type SlackDriver, type SlackMessage } from './helpers/slack.ts';
 import { freePort, hasCloudflared, startTunnel, waitReachable, type Tunnel } from './helpers/tunnel.ts';
 
 const FAKE_AGENT = fileURLToPath(new URL('./helpers/fake-agent.mjs', import.meta.url));
@@ -298,7 +298,7 @@ async function diagnose(r: Row): Promise<string> {
 /** The bot's messages in the row's thread. */
 async function botReplies(r: Row): Promise<SlackMessage[]> {
   const bot = await slack.botUserId();
-  return (await slack.thread(r.anchorTs ?? '')).filter((m) => m.ts !== r.anchorTs && (m.user === bot || m.bot_id !== undefined));
+  return (await slack.thread(r.anchorTs ?? '')).filter((m) => m.ts !== r.anchorTs && byBot(m, bot));
 }
 
 /** Thread posts the app made in the row's thread, from the recorder (oldest first). */
@@ -436,6 +436,19 @@ async function untilFiled(r: Row, choices: Readonly<Record<string, Choice>> = DE
   return key;
 }
 
+/**
+ * A deploy the test made, then the stage it should move the incident to. The only path from a GitHub
+ * deployment to `deployed:*` for an unmonitored incident is the App's `deployment_status` webhook, so a
+ * timeout says what GitHub delivered (#360: the first live run timed out with no way to tell).
+ */
+async function untilDeployed(r: Row, status: 'deployed:staging' | 'deployed:production', deployedAt: number): Promise<IncidentView> {
+  try {
+    return await untilStatus(r, status, 3 * MINUTE, ENDED);
+  } catch (e) {
+    throw new Error(`${e instanceof Error ? e.message : String(e)} / GitHub: ${await deliveryDiagnosis(live.secrets, 'deployment_status', deployedAt - 5 * SECOND)}`, { cause: e });
+  }
+}
+
 /** Waits for the lifecycle to reach `status`, failing early when it ends somewhere else. */
 async function untilStatus(r: Row, status: IncidentView['status'], ms: number, dead: readonly string[]): Promise<IncidentView> {
   return waitFor(
@@ -565,6 +578,12 @@ describe.skipIf(!ready)('e2e Companion A rows on Slack (A 8)', () => {
       const hook = await pointGitHubWebhook(live.file, tunnel.url);
       if (hook.needsActivation) console.warn(`e2e companion A: the GitHub App webhook is not active yet.\n${hook.lines.join('\n')}`);
     }
+    // `needsActivation` is only known while the URL is the placeholder; an App webhook that was never
+    // ticked Active has no deliveries at all, and the staging row then cannot see its deploys (#360).
+    if (ghAdmin) {
+      const deliveries = await appHookDeliveries(live.secrets, 1).catch(() => undefined);
+      if (deliveries?.length === 0) console.warn('e2e companion A: the GitHub App webhook has never delivered anything; it is most likely inactive, so the staging row will not see its deploys (tick "Active" under Webhook on the App settings page).');
+    }
   }, 3 * MINUTE);
 
   afterEach(async () => {
@@ -655,8 +674,9 @@ describe.skipIf(!ready)('e2e Companion A rows on Slack (A 8)', () => {
     expect((pr['base'] as Record<string, unknown>)['ref']).toBe(base);
 
     // The fixture's deploy system puts the merge commit on staging; GitHub tells the App.
+    const stagedAt = Date.now();
     r.deployments.push(await admin.deploy(mergeSha, 'staging'));
-    await untilStatus(r, 'deployed:staging', 3 * MINUTE, ENDED);
+    await untilDeployed(r, 'deployed:staging', stagedAt);
 
     // The staging check, mentioning the reporter, recorded with its role so a reaction on it resolves.
     const check = await waitFor(
@@ -691,8 +711,9 @@ describe.skipIf(!ready)('e2e Companion A rows on Slack (A 8)', () => {
     );
 
     // Production proceeds at level 3: nothing holds the deploy, and the level never dropped.
+    const shippedAt = Date.now();
     r.deployments.push(await admin.deploy(mergeSha, 'production'));
-    const done = await untilStatus(r, 'deployed:production', 3 * MINUTE, ENDED);
+    const done = await untilDeployed(r, 'deployed:production', shippedAt);
     expect(done.autonomyLevel).toBe(3);
     const log = await logOf(r);
     expect(log.filter((e) => e.type === 'level-changed' || e.type === 'held')).toEqual([]);
@@ -781,7 +802,7 @@ describe.skipIf(!ready)('e2e Companion A rows on Slack (A 8)', () => {
     const reply = await waitFor(
       'the answer in the DM',
       MINUTE,
-      async () => (await slack.history(dm, asked)).find((m) => m.ts !== asked && (m.user === bot || m.bot_id !== undefined)),
+      async () => (await slack.history(dm, asked)).find((m) => m.ts !== asked && byBot(m, bot)),
       async () => `server: ${(r.server?.lines ?? []).slice(-5).join(' | ')}`,
       SECOND,
     );

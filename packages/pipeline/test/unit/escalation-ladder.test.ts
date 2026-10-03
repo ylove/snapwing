@@ -21,6 +21,7 @@ import {
 import type { Pager, PagerTriggerInput } from '../../src/monitor/pager.ts';
 import { SecretNotFoundError, type SecretsPort } from '../../src/ports/secrets.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
+import type { WorkspaceMap } from '../../src/map/types.ts';
 import type { Job, JobName, WaitKey, WorkflowPort } from '../../src/ports/workflow.ts';
 import { InProcessWorkflow } from '../../src/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
@@ -373,6 +374,25 @@ describe('outage ladder', () => {
     await w.ladders.evaluate(INC);
     await at(0);
     expect(w.chat.posts[0]?.mention).toBe('U-FAKE-ASSIGNEE');
+  });
+
+  // #360: an outage reached by reactions adopted at capture starts the ladder before resolution names
+  // an owner; `mention="owner"` then falls back to the owner of the channel's surface in the map.
+  it('before resolution, mentions the owner of the channel surface from the map', async () => {
+    const map = {
+      channels: [{ id: 'C-FAKE', name: 'web-bugs', surface: 'checkout', triggerEmoji: [] }],
+      surfaces: [{ id: 'checkout', label: 'Checkout', components: [] }],
+      people: [{ slackId: 'U-FAKE-DANA', handle: 'dana', role: 'engineer', owns: [{ surface: 'checkout', primary: true }] }],
+    } as unknown as WorkspaceMap;
+    const w = await setup({ deps: { map: () => map } });
+    const early = '01K6LADDERINC00000000000ZZ';
+    await append(toFiled(early)[0] as NewEvent);
+    expect((await state.getIncident(early))?.ownerRef).toBeUndefined();
+    w.flags.outage = true;
+    await w.ladders.evaluate(early);
+    await at(0);
+    expect(w.chat.posts.find((p) => p.incidentId === early)?.mention).toBe('dana');
+    expect((await ladderEvents(early)).find((p) => p.phase === 'step')).toMatchObject({ mention: 'owner', mentioned: 'dana', posted: true });
   });
 });
 

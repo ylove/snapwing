@@ -5,6 +5,7 @@
 import type { CanonicalIncidentPayload, IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
+import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
 
 /** The callback id of the "Fix it from here" message shortcut in the Slack app manifest. */
 export const SLACK_SHORTCUT_CALLBACK_ID = 'fix_it_from_here';
@@ -26,6 +27,11 @@ export interface SlackNormalizeContext {
   /** Slack workspace subdomain, for the conversation deep link. */
   workspaceDomain?: string;
   newEventId?: (nowMs: number) => string;
+  /**
+   * Who wrote a direct message (`authorship.ts`): a person posting through an app carries `bot_id` and
+   * is still a person. Default: the map and `botUserId` only.
+   */
+  authorOf?: SlackAuthorOf;
 }
 
 export type SlackIgnoreReason =
@@ -183,13 +189,14 @@ async function reactionAdded(body: Rec, event: Rec, ctx: SlackNormalizeContext):
   };
 }
 
-function directMessage(body: Rec, event: Rec, ctx: SlackNormalizeContext): SlackNormalizeResult {
+async function directMessage(body: Rec, event: Rec, ctx: SlackNormalizeContext): Promise<SlackNormalizeResult> {
   if (event['channel_type'] !== 'im') return ignored('not-a-direct-message');
   const subtype = str(event['subtype']);
-  if (subtype === 'bot_message' || event['bot_id'] !== undefined) return ignored('bot-message');
+  const author = await (ctx.authorOf ?? createSlackAuthorOf({ botUserId: ctx.botUserId }))(event, ctx.map);
+  if (author === 'own') return ignored('own-message');
+  if (author === 'bot') return ignored('bot-message');
   if (subtype !== '' && subtype !== 'file_share') return ignored('unsupported-subtype');
   const userId = str(event['user']);
-  if (userId === ctx.botUserId) return ignored('own-message');
   const channel = str(event['channel']);
   const ts = str(event['ts']);
   if (userId === '' || channel === '' || ts === '') return ignored('unsupported-payload');

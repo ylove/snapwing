@@ -25,7 +25,9 @@
 //                human's edit in Jira drops it, B 7.3). Before filing, the plan and the create
 //                payload take it (`atLeastPriority`, engine/steps.ts).
 //   note         "3 people are reporting this", posted to the incident's thread.
-//   mentionOwner the same post mentions the owner (the Jira assignee, else the resolved owner).
+//   mentionOwner the same post mentions the owner (the Jira assignee, else the resolved owner, else,
+//                before resolution has run, the owner of the channel's surface in the map: steps
+//                reached at adoption fire while the incident is only captured, #360).
 //   suppressAskBack  the ask-back gate is suppressed from here on (`escalationState`, which the
 //                engine's clarify step passes to the gate as `escalated`): it is an incident, not a
 //                question. The user-side check is a question too, and is suppressed with it.
@@ -48,9 +50,10 @@ import type { LadderStep, Playbook, PlaybookLadder, PriorityChange } from '../co
 import type { EscalatedPayload, IncidentEvent, NewEvent } from '../contracts/events.ts';
 import { isExpectedSeqConflict, type IncidentView, type OutboxItem } from '../contracts/state.ts';
 import { isTerminalStatus } from '../lifecycle/machine.ts';
-import type { JiraPriorityName } from '../map/types.ts';
+import type { JiraPriorityName, WorkspaceMap } from '../map/types.ts';
 import type { EscalationChat, EscalationLadders } from '../monitor/ladder.ts';
 import type { StatePort } from '../ports/state.ts';
+import { channelOwner } from '../resolve/lookup.ts';
 import { jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { ulid } from '../util/ulid.ts';
 
@@ -261,6 +264,8 @@ export interface ReactionEscalationDeps {
   clock: () => Date;
   /** Posts the note and the owner mention to the incident's thread. Absent: nothing is posted. */
   chat?: EscalationChat;
+  /** The workspace map, for the owner of the channel's surface before resolution names one. Absent: no fallback. */
+  map?: () => WorkspaceMap | Promise<WorkspaceMap>;
   /** The playbook escalation ladders (monitor/ladder.ts), re-evaluated after a step fires. */
   ladders?: Pick<EscalationLadders, 'evaluate'>;
   /** Default `console.warn`. */
@@ -333,6 +338,17 @@ export function createReactionEscalation(deps: ReactionEscalationDeps): Reaction
     }
   }
 
+  /** The owner of the channel's surface in the map; undefined without a map or when it cannot say. */
+  async function mapOwner(incident: IncidentView): Promise<string | undefined> {
+    if (deps.map === undefined) return undefined;
+    try {
+      return channelOwner(await deps.map(), incident.channelId);
+    } catch (err) {
+      log(`reaction escalation: incident ${incident.id}: map: ${message(err)}`);
+      return undefined;
+    }
+  }
+
   /** Best effort: the steps are recorded already. */
   async function post(incident: IncidentView, events: readonly IncidentEvent[], fired: readonly EscalatedPayload[]): Promise<boolean> {
     if (deps.chat === undefined || !fired.some((p) => p.note === true || p.mentionOwner === true)) return false;
@@ -340,7 +356,8 @@ export function createReactionEscalation(deps: ReactionEscalationDeps): Reaction
     if (channel === undefined || channel === '') return false;
     let threadId: string | undefined = incident.anchorId;
     for (const e of events) if (e.type === 'captured' && e.payload.threadId !== undefined) threadId = e.payload.threadId;
-    const owner = incident.assigneeId ?? incident.ownerRef;
+    const mentions = fired.some((p) => p.mentionOwner === true);
+    const owner = incident.assigneeId ?? incident.ownerRef ?? (mentions ? await mapOwner(incident) : undefined);
     const last = fired[fired.length - 1];
     try {
       await deps.chat.post({
@@ -348,7 +365,7 @@ export function createReactionEscalation(deps: ReactionEscalationDeps): Reaction
         ladder: REACTION_LADDER,
         step: last?.step ?? 0,
         where: threadId === undefined || threadId === '' ? { kind: 'thread', channel } : { kind: 'thread', channel, threadId },
-        ...(fired.some((p) => p.mentionOwner === true) && owner !== undefined ? { mention: owner } : {}),
+        ...(mentions && owner !== undefined ? { mention: owner } : {}),
         text: escalationText(fired),
       });
       return true;

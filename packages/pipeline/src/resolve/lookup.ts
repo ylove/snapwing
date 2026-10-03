@@ -37,6 +37,20 @@ export function probableOwner(map: WorkspaceMap, surfaceId: string, componentId?
   return engineers.length === 1 ? engineers[0] : undefined;
 }
 
+/**
+ * The owner of the surface a channel maps to (`<channel surface>`, then `probableOwner`), as a handle:
+ * who the incident's owner most likely is before resolution has run (#360: a reaction ladder step
+ * reached at adoption, when the incident is only captured). Undefined for an unmapped channel, a
+ * `from-payload` one, or an ambiguous owner.
+ */
+export function channelOwner(map: WorkspaceMap, channelId: string | undefined): string | undefined {
+  if (channelId === undefined || channelId === '') return undefined;
+  const surface = map.channels.find((c) => c.id === channelId)?.surface;
+  if (surface === undefined || surface === 'from-payload' || findSurface(map, surface) === undefined) return undefined;
+  const owner = probableOwner(map, surface);
+  return owner === undefined ? undefined : ownerIdOf(owner);
+}
+
 export function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

@@ -11,7 +11,8 @@
 //   reply by a person is read, with the thread root as the target; the handler drops it unless that
 //   root is an incident's anchor or a message Snapwing posted. A top-level message, a bot's message
 //   (Snapwing's own included), an edit or deletion, and a message that mentions the bot (the status
-//   query answers those, A 4.3) are ignored.
+//   query answers those, A 4.3) are ignored. A person posting through an app (`bot_id` on a person's
+//   message) is a person (`authorship.ts`, #360).
 // - A reply goes through the lexicon (`classifyLexicon`) first. One that misses it and sits in an
 //   active incident's thread (the root resolves and the incident is not terminal) goes to the model
 //   (`classifyLlm`, task `segmentation`) with the earlier thread messages as context, when `model` is
@@ -73,6 +74,7 @@ import {
 } from '@snapwing/pipeline/signals/text.ts';
 import type { Playbook } from '@snapwing/pipeline/config/playbook.ts';
 import { parsedBodyOf, type SlackAdapter } from './adapter.ts';
+import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
 import { actions, context, esc, mention, section, type SlackMessage } from './cards/blocks.ts';
 import type { SlackActionPayload } from './transport.ts';
 import type { SlackWeb } from './web.ts';
@@ -99,6 +101,8 @@ export interface SlackSignalsOptions {
   getMap: () => Promise<WorkspaceMap>;
   /** The bot's own user id: its reactions and messages are ignored, and a mention of it is the status query's. */
   botUserId: string;
+  /** Who wrote a thread reply (`authorship.ts`, #360). Default: the map and `botUserId` only. */
+  authorOf?: SlackAuthorOf;
   /** The Slack subdomain for permalinks (`<domain>.slack.com`). Absent: no deep link. */
   workspaceDomain?: string;
   /** The user has a linked GitHub identity (main 11.2). Absent: nobody is linked. */
@@ -186,6 +190,7 @@ export function slackPermalink(domain: string, channel: string, ts: string, thre
 export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
   const { deps } = options;
   const onError = options.onError ?? (() => undefined);
+  const authorOf = options.authorOf ?? createSlackAuthorOf({ botUserId: options.botUserId });
 
   const playbook = async (): Promise<Playbook> => (typeof deps.playbook === 'function' ? deps.playbook() : deps.playbook);
 
@@ -265,7 +270,7 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     if (!CHANNEL_TYPES.has(str(event['channel_type']))) return ignored('not-a-channel-message');
     const subtype = str(event['subtype']);
     const user = str(event['user']);
-    if (subtype === 'bot_message' || event['bot_id'] !== undefined || (user !== '' && user === options.botUserId)) return ignored('bot-message');
+    if ((await authorOf(event, await options.getMap())) !== 'person') return ignored('bot-message');
     if (!REPLY_SUBTYPES.has(subtype)) return ignored('unsupported-subtype');
     const channel = str(event['channel']);
     const ts = str(event['ts']);

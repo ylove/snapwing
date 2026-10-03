@@ -17,6 +17,9 @@
 // subscriptions of whatever the resolution named and answers over that. A handful of indexed reads;
 // the whole answer stays well under a second.
 //
+// Only a person's message is a question: Snapwing's own and other bots' are ignored, and a person posting
+// through an app (Slack stamps `bot_id` on it) is still a person (`authorship.ts`, #360).
+//
 // The asker's role comes from the workspace map (`people[].slackId`); an unmapped user is `unknown`
 // and so gets the reporter or lead shape, never the engineer one.
 
@@ -31,6 +34,7 @@ import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signa
 import { createStatusQueries, type QueryResolution } from '@snapwing/pipeline/status/query.ts';
 import { statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { actions, section, type SlackBlock } from './cards/blocks.ts';
+import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
 import type { SlackWeb } from './web.ts';
 
 /**
@@ -54,6 +58,8 @@ export interface SlackStatusQueryOptions {
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
   /** The bot's own user id (`auth.test`): its messages are ignored and its mention is stripped. */
   botUserId: string;
+  /** Who wrote a message (`authorship.ts`, #360). Default: the map and `botUserId` only. */
+  authorOf?: SlackAuthorOf;
   clock?: () => Date;
   /** IANA zone for the wall-clock times in an answer. Default UTC. */
   timeZone?: string;
@@ -143,6 +149,7 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
   const doFetch: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const limit = options.incidentLimit ?? 500;
   const seen = new Set<string>();
+  const authorOf = options.authorOf ?? createSlackAuthorOf({ botUserId: options.botUserId });
 
   const mentionOfBot = new RegExp(`<@${options.botUserId.replace(/[^A-Za-z0-9]/g, '')}(?:\\|[^>]*)?>`, 'g');
 
@@ -251,8 +258,8 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
     const user = str(event['user']);
     const channel = str(event['channel']);
     const ts = str(event['ts']);
-    if (user === '' || channel === '' || ts === '' || user === options.botUserId) return undefined;
-    if (event['bot_id'] !== undefined || str(event['subtype']) !== '') return undefined;
+    if (user === '' || channel === '' || ts === '' || authorOf.plainly(event) !== undefined) return undefined;
+    if (str(event['subtype']) !== '') return undefined;
     const raw = str(event['text']);
     const text = raw.replace(mentionOfBot, ' ').replace(/\s+/g, ' ').trim();
     const threadTs = str(event['thread_ts']);
@@ -283,6 +290,9 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
         if (seen.size > 1000) seen.delete(seen.values().next().value as string);
       }
       try {
+        // `intercepts` is synchronous; a `bot_id` on a message from someone the map does not name is
+        // settled here, and another bot's question goes unanswered (capture would drop it too).
+        if ((await authorOf(rec(rec(parsed)['event']), await options.getMap())) !== 'person') return;
         if (request.standing === true && options.standing !== undefined) {
           const outcome = await applyStandingWatch(options.standing, await options.getMap(), {
             workspaceId: options.workspaceId,
