@@ -18,6 +18,7 @@ interface Manifest {
   display_information: { name: string };
   features: {
     app_home: { messages_tab_enabled: boolean };
+    slash_commands: { command: string }[];
     shortcuts: { type: string; name: string; callback_id: string }[];
   };
   oauth_config: { scopes: { bot: string[] } };
@@ -72,11 +73,12 @@ describe('manifest.yaml', () => {
     ]);
     expect([...botScopes].sort()).toEqual(
       [
-        'commands', 'chat:write', 'channels:history', 'channels:join', 'groups:history', 'reactions:read',
+        'commands', 'app_mentions:read', 'chat:write', 'channels:history', 'channels:join', 'groups:history', 'reactions:read',
         'reactions:write', 'users:read', 'users:read.email', 'files:read', 'im:history', 'im:write', 'pins:write',
       ].sort(),
     );
-    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'reaction_added', 'reaction_removed', 'file_shared']);
+    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'app_mention', 'reaction_added', 'reaction_removed', 'file_shared']);
+    expect(manifest.features.slash_commands).toEqual([expect.objectContaining({ command: '/snapwing-status' })]);
     expect(manifest.settings.interactivity.is_enabled).toBe(true);
     expect(manifest.settings.socket_mode_enabled).toBe(true);
     expect(manifest.features.app_home.messages_tab_enabled).toBe(true);

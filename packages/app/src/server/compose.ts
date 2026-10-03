@@ -95,6 +95,7 @@ import { createSlackInteractivity, observeReactionRemoval } from '../adapters/sl
 import { createSlackPrReadyChat } from '../adapters/slack/pr-ready.ts';
 import { createSlackContextSource } from '../adapters/slack/reader.ts';
 import { createSlackStatusProjector } from '../adapters/slack/status-projector.ts';
+import { createSlackStatusQuery } from '../adapters/slack/status-query.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
 import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
 import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
@@ -621,6 +622,7 @@ export const compose: ComposeFn = async (deps) => {
     botUserId,
     clock,
   });
+  const slackStatusQuery = createSlackStatusQuery({ web, state, workspaceId, getMap, botUserId, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
   const appToken = s.get('SLACK_APP_TOKEN');
   const socket = transportChoice === 'socket' || ((transportChoice === undefined || transportChoice === '') && appToken !== undefined);
   const slackError = (e: unknown): void => log.error(`slack: ${message(e)}`);
@@ -628,6 +630,7 @@ export const compose: ComposeFn = async (deps) => {
     adapter: observeReactionRemoval(adapter, interactivity, slackError),
     handleInbound: (source: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(source, raw),
     onAction: (payload: Parameters<typeof interactivity.onAction>[0]) => interactivity.onAction(payload),
+    status: slackStatusQuery,
     onError: slackError,
   };
   const transport = socket

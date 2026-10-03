@@ -13,6 +13,11 @@ features:
   bot_user:
     display_name: Snapwing
     always_online: true
+  slash_commands:
+    - command: /snapwing-status
+      description: Where are we with a report? Give a key or a few words.
+      usage_hint: "[WEB-1042 or a few words]"
+      should_escape: false
   shortcuts:
     - name: Fix it from here
       type: message
@@ -22,6 +27,7 @@ oauth_config:
   scopes:
     bot:
       - commands
+      - app_mentions:read
       - chat:write
       - channels:history
       - channels:join
@@ -38,6 +44,7 @@ settings:
   event_subscriptions:
     bot_events:
       - message.im
+      - app_mention
       - reaction_added
       - reaction_removed
       - file_shared
