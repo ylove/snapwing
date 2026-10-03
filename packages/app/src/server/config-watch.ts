@@ -38,6 +38,8 @@ export interface ConfigWatchOptions {
   /** The current map; the playbook's references resolve against it. */
   getMap: () => Promise<WorkspaceMap>;
   log: ConfigWatchLog;
+  /** Called with the text of every playbook file that validated and went live (the config cache keeps it for the notification policy). */
+  onPlaybook?: (xml: string) => Promise<void>;
   debounceMs?: number;
   /** Test seam: replaces `fs.watch` on a directory. */
   watch?: (dir: string, onChange: (filename: string | null) => void) => { close(): void };
@@ -110,6 +112,7 @@ export async function createConfigWatch(options: ConfigWatchOptions): Promise<Co
       return false;
     }
     currentPlaybook = result.playbook;
+    await options.onPlaybook?.(xml);
     log.info(`playbook ${playbookPath} ${startup ? 'loaded' : 'reloaded'}`);
     if (currentInstructions !== undefined) await lint(currentInstructions.text);
     return true;

@@ -243,6 +243,19 @@ export async function loadPlaybook(xml: string, map: WorkspaceMap): Promise<Play
   }
 }
 
+/**
+ * The playbook in a cached body (`config_versions`, kind `playbook`), converted without validation:
+ * loaders validate before they cache. Synchronous because the append transaction reads it
+ * (`projections/notify-context.ts`). `undefined` when the body does not convert.
+ */
+export function parseCachedPlaybook(xml: string): Playbook | undefined {
+  try {
+    return convert(xml);
+  } catch {
+    return undefined;
+  }
+}
+
 function rejected(errors: readonly ValidationError[], fallbackRule: string): PlaybookResult {
   return {
     ok: false,

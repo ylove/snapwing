@@ -95,3 +95,65 @@ export async function writeIncidentSubscriptions(ctx: StateContext, workspaceId:
     )
     .execute();
 }
+
+// Standing subscriptions ----------------------------------------------------------------------------
+// Scope `surface` ("keep me posted on the website") and scope `all`: not derived from events, so
+// rebuild leaves them alone and these writers are their only source.
+
+/**
+ * Writes a standing subscription (scope `surface` or `all`). The person's earlier row for the same scope
+ * is replaced, so changing `thread` to `dm` keeps one row; `createdAt` stays the first one's.
+ */
+export async function putStandingSubscription(ctx: StateContext, sub: Subscription): Promise<void> {
+  if (sub.scopeKind === 'incident') {
+    throw new TypeError('putStandingSubscription: scope incident is written by the watch signal, not here');
+  }
+  const scopeId = sub.scopeKind === 'all' ? ALL_SCOPE_ID : sub.scopeId;
+  if (scopeId === undefined || (sub.scopeKind === 'surface' && scopeId === '')) {
+    throw new TypeError('putStandingSubscription: scope surface needs a scopeId');
+  }
+  await ctx.db
+    .insertInto('subscriptions')
+    .values({
+      workspace_id: sub.workspaceId,
+      user_id: sub.userId,
+      scope_kind: sub.scopeKind,
+      scope_id: scopeId,
+      channel: sub.channel,
+      created_at: ctx.codec.timestamp(sub.createdAt),
+    })
+    .onConflict((oc) => oc.columns(['workspace_id', 'user_id', 'scope_kind', 'scope_id']).doUpdateSet({ channel: sub.channel }))
+    .execute();
+}
+
+/** Removes a standing subscription; true when there was one. */
+export async function removeStandingSubscription(
+  ctx: StateContext,
+  key: { workspaceId: string; userId: string; scopeKind: 'surface' | 'all'; scopeId?: string },
+): Promise<boolean> {
+  const scopeId = key.scopeKind === 'all' ? ALL_SCOPE_ID : (key.scopeId ?? '');
+  const res = await ctx.db
+    .deleteFrom('subscriptions')
+    .where('workspace_id', '=', key.workspaceId)
+    .where('user_id', '=', key.userId)
+    .where('scope_kind', '=', key.scopeKind)
+    .where('scope_id', '=', scopeId)
+    .executeTakeFirst();
+  return Number(res.numDeletedRows) > 0;
+}
+
+/** The workspace's surface and `all` subscriptions that can apply to an incident on `surfaceId`. */
+export async function loadStandingSubscriptions(ctx: StateContext, workspaceId: string, surfaceId: string | undefined): Promise<Subscription[]> {
+  const rows = await ctx.db
+    .selectFrom('subscriptions')
+    .selectAll()
+    .where('workspace_id', '=', workspaceId)
+    .where((eb) =>
+      eb.or([
+        eb('scope_kind', '=', 'all'),
+        ...(surfaceId === undefined ? [] : [eb.and([eb('scope_kind', '=', 'surface'), eb('scope_id', '=', surfaceId)])]),
+      ]),
+    )
+    .execute();
+  return rows.map((r) => rowToSubscription(ctx, r)).sort(bySubscription);
+}

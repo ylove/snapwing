@@ -24,6 +24,7 @@ import { writeBotMessage } from './bot-messages.ts';
 import { foldClaims, loadClaims, writeClaims } from './claims.ts';
 import { foldScores, loadScores, writeScores, type ScoreRow } from './escalation.ts';
 import { foldIncident, loadIncident, rowToIncident, writeIncident } from './incidents.ts';
+import { loadNotifyContext } from './notify-context.ts';
 import { outboxFor, type IncidentChange } from './outbox.ts';
 import { ALL_SCOPE_ID, bySubscription, foldIncidentSubscriptions, loadIncidentSubscriptions, rowToSubscription, writeIncidentSubscriptions } from './subscriptions.ts';
 
@@ -32,7 +33,7 @@ export { foldClaims } from './claims.ts';
 export { foldScores, type ScoreRow } from './escalation.ts';
 export { foldIncident, type IncidentFold } from './incidents.ts';
 export { outboxFor, type IncidentChange } from './outbox.ts';
-export { foldIncidentSubscriptions } from './subscriptions.ts';
+export { foldIncidentSubscriptions, putStandingSubscription, removeStandingSubscription } from './subscriptions.ts';
 
 /** `findIncidents` page size when `limit` is absent, and the largest it accepts. */
 export const FIND_INCIDENTS_DEFAULT_LIMIT = 100;
@@ -80,7 +81,7 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   // it. Upcast as rebuild does, with the default registry.
   const log = events.some((e) => e.type === 'corrected') ? (await read(tx, incidentId)).map((e) => upcast(e)) : [];
   let view = before;
-  const steps: { event: IncidentEvent; status: IncidentStatus; change: IncidentChange }[] = [];
+  const steps: { event: IncidentEvent; status: IncidentStatus; change: IncidentChange; subs: readonly Subscription[] }[] = [];
   for (const e of events) {
     const prev = view;
     const from = prev?.status;
@@ -94,7 +95,7 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
     } else if (!fold.valid && from !== undefined) {
       console.warn(`projections: incident ${incidentId} seq ${e.seq}: event ${e.type} does not fit status ${from}; status kept`);
     }
-    steps.push({ event: e, status: view.status, change: { before: prev, after: view, valid: fold.valid } });
+    steps.push({ event: e, status: view.status, change: { before: prev, after: view, valid: fold.valid }, subs: [] });
   }
   if (view === undefined) {
     return;
@@ -108,10 +109,11 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   let claims: readonly Claim[] = claimsBefore;
   let scores: readonly ScoreRow[] = scoresBefore;
   let subs: readonly Subscription[] = subsBefore;
-  for (const { event, status } of steps) {
-    claims = foldClaims(claims, event, status);
-    scores = foldScores(scores, event);
-    subs = foldIncidentSubscriptions(subs, event);
+  for (const step of steps) {
+    claims = foldClaims(claims, step.event, step.status);
+    scores = foldScores(scores, step.event);
+    subs = foldIncidentSubscriptions(subs, step.event);
+    step.subs = subs;
   }
   if (claims !== claimsBefore) {
     await writeClaims(tx, incidentId, claims);
@@ -128,8 +130,10 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   if (!outbox) {
     return;
   }
-  for (const { event, change } of steps) {
-    for (const item of outboxFor(event, change)) {
+  for (const { event, change, subs: stepSubs } of steps) {
+    // The notify context is read per step: a row an earlier event just enqueued opens the burst window.
+    const notify = await loadNotifyContext(tx, event, change, stepSubs);
+    for (const item of outboxFor(event, notify === undefined ? change : { ...change, notify })) {
       await enqueueOutbox(tx, item);
     }
   }

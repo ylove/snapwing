@@ -11,6 +11,9 @@ import { OUTBOX_TARGETS, type OutboxItem, type OutboxTarget } from '../contracts
 import type { StateContext } from './context.ts';
 import type { OutboxTable } from './db.ts';
 
+/** Rows of this op do not hold back later rows of their incident while they wait for `next_attempt` (outbox/notify.ts). */
+const UNORDERED_OP = 'notify';
+
 /** Ids per `ackOutbox` statement, well under SQLite's bound-parameter limit. */
 const ACK_CHUNK = 500;
 
@@ -48,7 +51,7 @@ export async function enqueueOutbox(ctx: StateContext, item: OutboxItem): Promis
 /**
  * See `StatePort.drainOutbox`. Up to `limit` rows for `target` (and `workspaceId`) with `done_at`
  * null and `next_attempt <= now`, oldest `created_at` first (then `id`, so ties are stable), leaving
- * out any row behind an undone, not yet due row of the same incident. Read only.
+ * out any row behind an undone, not yet due row of the same incident (a waiting `notify` row holds none back). Read only.
  */
 export async function drainOutbox(ctx: StateContext, target: OutboxTarget, limit: number, workspaceId?: string): Promise<OutboxItem[]> {
   if (!Number.isInteger(limit) || limit < 0) {
@@ -73,6 +76,8 @@ export async function drainOutbox(ctx: StateContext, target: OutboxTarget, limit
             .whereRef('prior.incident_id', '=', 'outbox.incident_id')
             .where('prior.done_at', 'is', null)
             .where('prior.next_attempt', '>', now)
+            // A notification waits out its burst window (A 4.4); it must not hold the status edits behind it.
+            .where('prior.op', '!=', UNORDERED_OP)
             .where((p) =>
               p.or([
                 p('prior.created_at', '<', p.ref('outbox.created_at')),
@@ -168,6 +173,19 @@ export async function listParkedOutbox(ctx: StateContext, target: OutboxTarget, 
     .orderBy('done_at', 'desc')
     .orderBy('id', 'desc')
     .limit(limit)
+    .execute();
+  return rows.map((row) => toOutboxItem(ctx, row));
+}
+
+/** An incident's outbox rows for one `op`, done or not, oldest first. Read only; the projection hooks use it (notify window). */
+export async function outboxRowsOf(ctx: StateContext, incidentId: string, op: string): Promise<OutboxItem[]> {
+  const rows = await ctx.db
+    .selectFrom('outbox')
+    .selectAll()
+    .where('incident_id', '=', incidentId)
+    .where('op', '=', op)
+    .orderBy('created_at', 'asc')
+    .orderBy('id', 'asc')
     .execute();
   return rows.map((row) => toOutboxItem(ctx, row));
 }
