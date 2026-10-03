@@ -122,6 +122,31 @@ describe('parseWorkspaceMap rejects invalid input with InvalidMapError', () => {
     expect(err.errors.map((e) => e.message)).toEqual(['The fallback surface desktop is not declared.']);
   });
 
+  it('XSD: duplicate surface id', async () => {
+    const err = await parseError(example.replace('<surface id="mobile"', '<surface id="web"'));
+    expect(err.errors.some((e) => /surfaceIdUnique/.test(e.message))).toBe(true);
+  });
+
+  it('XSD: duplicate channel id', async () => {
+    const err = await parseError(example.replace('<channel id="C0MKTBUGS"', '<channel id="C0WEBBUGS"'));
+    expect(err.errors.some((e) => /channelIdUnique/.test(e.message))).toBe(true);
+  });
+
+  it('XSD: duplicate component id under one surface', async () => {
+    const err = await parseError(example.replace('<component id="checkout"', '<component id="nav"'));
+    expect(err.errors.some((e) => /componentIdUnique/.test(e.message))).toBe(true);
+  });
+
+  it('XSD: duplicate person handle', async () => {
+    const err = await parseError(example.replace('handle="mobDev"', 'handle="webDev1"'));
+    expect(err.errors.some((e) => /personHandleUnique/.test(e.message))).toBe(true);
+  });
+
+  it('XSD: duplicate person Slack id', async () => {
+    const err = await parseError(example.replace('slackId="U0MOBDEV"', 'slackId="U0WEBDEV1"'));
+    expect(err.errors.some((e) => /personSlackIdUnique/.test(e.message))).toBe(true);
+  });
+
   it('a map without fallbackSurface parses with the field absent', async () => {
     const map = await parseWorkspaceMap(example.replace(' fallbackSurface="web"', ''));
     expect('fallbackSurface' in map).toBe(false);
