@@ -1,7 +1,7 @@
 {
   "task": "vision",
   "schemaName": "_vision",
-  "promptSha256": "add57f6c0a847ed48ad40e2550f2f10f19304da08663f5c641a4f9c35540dc2f",
+  "promptSha256": "68d169692e45d352814c73573c72b9892590de59d7c1ec74daa527906a175f17",
   "imagesSha256": "e9baff00cb47857d40e3bfd504500ad5f5f5cb59f0e972e54ad0f6ecb7d8002e",
   "response": {
     "readings": [
@@ -19,7 +19,8 @@
         ],
         "environmentHint": "production",
         "plainDescription": "the total field is blank on the checkout page",
-        "sensitive": false
+        "sensitive": false,
+        "userSideIndicators": []
       }
     ]
   },

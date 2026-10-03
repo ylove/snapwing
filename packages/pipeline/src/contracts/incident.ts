@@ -30,6 +30,17 @@ export interface Attachment {
   reading?: ImageReading;          // vision pass output for images (5.2a)
 }
 
+/** A sign in a screenshot that the cause may be on the reporter's side (spec A 5.1). */
+export type UserSideKind =
+  | 'wrong-environment' | 'wrong-account' | 'stale-cache' | 'extension-interference'
+  | 'input-mode' | 'expired-session' | 'network' | 'wrong-surface' | 'other';
+
+export interface UserSideIndicator {
+  kind: UserSideKind;
+  evidence: string;                // "URL bar shows staging.example.com"
+  confidence: number;              // 0..1
+}
+
 export interface ImageReading {
   errorText?: string;              // verbatim, if visible
   surfaceSignals: { urlBar?: string; pageTitle?: string; chrome?: 'web' | 'mobile' | 'desktop' | 'admin' | 'unknown' };
@@ -37,6 +48,7 @@ export interface ImageReading {
   environmentHint?: 'production' | 'staging' | 'local' | 'unknown';
   plainDescription: string;        // reporter-facing: "the total field is blank"
   sensitive: boolean;              // credentials, tokens, or personal data visible
+  userSideIndicators?: UserSideIndicator[]; // A 5.1; absent on readings recorded before it existed
 }
 
 export type ChannelSource = 'slack' | 'teams' | 'raycast' | 'cli' | 'alert_webhook';

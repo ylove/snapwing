@@ -1,7 +1,7 @@
 {
   "task": "vision",
   "schemaName": "_vision",
-  "promptSha256": "f7760043f99229eeb12beb123c7d07233670bf02aa328bc8ac084d64d2978e3b",
+  "promptSha256": "0a4807d230e730814a780fd504b13135e3c88e8b446aec0f94105fe4bebcee15",
   "imagesSha256": "4f9a7467b9212b4bd799e2aae622a1bc298ea6f3e0ec0329b5f6476c2bdd8686",
   "response": {
     "readings": [
@@ -18,7 +18,8 @@
         ],
         "environmentHint": "unknown",
         "plainDescription": "saving the settings fails with an invalid key message",
-        "sensitive": true
+        "sensitive": true,
+        "userSideIndicators": []
       }
     ]
   },

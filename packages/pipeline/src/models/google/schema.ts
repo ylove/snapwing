@@ -1,6 +1,7 @@
 // JsonSchema (ports/model.ts) to Gemini's responseSchema dialect, an OpenAPI 3.0 subset:
 // upper-case type names, no additionalProperties, $ref, $defs, allOf, oneOf or const.
 
+import { USER_SIDE_INDICATORS_SCHEMA } from '../user-side.ts';
 import type { JsonSchema, JsonSchemaTypeName } from '../../ports/model.ts';
 
 export type GeminiSchema = { [key: string]: unknown };
@@ -72,6 +73,7 @@ export const IMAGE_READING_ARRAY_SCHEMA: JsonSchema = {
       environmentHint: { type: 'string', enum: ['production', 'staging', 'local', 'unknown'] },
       plainDescription: { type: 'string', description: 'Reporter-facing description of what the image shows.' },
       sensitive: { type: 'boolean', description: 'True when credentials, tokens, or personal data are visible.' },
+      userSideIndicators: USER_SIDE_INDICATORS_SCHEMA,
     },
     required: ['surfaceSignals', 'uiElements', 'plainDescription', 'sensitive'],
   },

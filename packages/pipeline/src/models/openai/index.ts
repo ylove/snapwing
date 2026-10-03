@@ -3,6 +3,7 @@
 // The router wraps this in withValidation, so `classify` here returns the parsed object unvalidated and
 // throws ModelOutputError when the answer cannot be parsed.
 
+import { USER_SIDE_INDICATORS_SCHEMA, parseUserSideIndicators } from '../user-side.ts';
 import OpenAI, { APIConnectionError, APIError } from 'openai';
 import type { ChatCompletion, ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
 import type { ImageReading } from '../../contracts/incident.ts';
@@ -158,7 +159,7 @@ const nullableString: JsonSchema = { type: ['string', 'null'] };
 const READING_SCHEMA: JsonSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['errorText', 'surfaceSignals', 'uiElements', 'environmentHint', 'plainDescription', 'sensitive'],
+  required: ['errorText', 'surfaceSignals', 'uiElements', 'environmentHint', 'plainDescription', 'sensitive', 'userSideIndicators'],
   properties: {
     errorText: nullableString,
     surfaceSignals: {
@@ -175,6 +176,7 @@ const READING_SCHEMA: JsonSchema = {
     environmentHint: { type: ['string', 'null'], enum: ['production', 'staging', 'local', 'unknown', null] },
     plainDescription: { type: 'string' },
     sensitive: { type: 'boolean' },
+    userSideIndicators: USER_SIDE_INDICATORS_SCHEMA,
   },
 };
 const READINGS_SCHEMA: JsonSchema = {
@@ -220,6 +222,8 @@ function parseReading(item: unknown, raw: string): ImageReading {
   if (typeof item.errorText === 'string') reading.errorText = item.errorText;
   const environmentHint = ENVIRONMENTS.find((e) => e === item.environmentHint);
   if (environmentHint) reading.environmentHint = environmentHint;
+  const userSideIndicators = parseUserSideIndicators(item.userSideIndicators);
+  if (userSideIndicators !== undefined) reading.userSideIndicators = userSideIndicators;
   return reading;
 }
 

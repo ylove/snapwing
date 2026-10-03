@@ -1,7 +1,7 @@
 {
   "task": "vision",
   "schemaName": "_vision",
-  "promptSha256": "3593f706a1f795db82590fa3a47cb58b9235198ad9c5fcf2e202be173276b618",
+  "promptSha256": "debc2316449f696a47538a3341c60fc7be40de08dabaa0c7fa9f358218babcca",
   "imagesSha256": "6d898ff65306c1cfb277f63781d64d2e326986fe15eb5eb16453d7e6c8785392",
   "response": {
     "readings": [
@@ -17,7 +17,8 @@
         ],
         "environmentHint": "production",
         "plainDescription": "the cart shows an error after tapping Checkout",
-        "sensitive": false
+        "sensitive": false,
+        "userSideIndicators": []
       }
     ]
   },

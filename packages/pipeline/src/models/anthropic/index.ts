@@ -21,6 +21,7 @@
 //
 // The router applies withValidation, so `classify` here returns the parsed answer unvalidated.
 
+import { USER_SIDE_INDICATORS_SCHEMA, parseUserSideIndicators } from '../user-side.ts';
 import Anthropic from '@anthropic-ai/sdk';
 import type { ImageReading } from '../../contracts/incident.ts';
 import type {
@@ -259,6 +260,7 @@ const IMAGE_READING_SCHEMA: JsonSchema = {
     environmentHint: { type: 'string', enum: ['production', 'staging', 'local', 'unknown'] },
     plainDescription: { type: 'string', description: 'What the reporter would say, in plain words.' },
     sensitive: { type: 'boolean', description: 'True when credentials, tokens, or personal data are visible.' },
+    userSideIndicators: USER_SIDE_INDICATORS_SCHEMA,
   },
   required: ['surfaceSignals', 'uiElements', 'plainDescription', 'sensitive'],
   additionalProperties: false,
@@ -343,6 +345,7 @@ function parseReading(item: unknown, index: number, raw: string): ImageReading {
   };
   if (!isRecord(item)) return fail('not an object');
   const { errorText, surfaceSignals, uiElements, environmentHint, plainDescription, sensitive } = item;
+  const userSideIndicators = parseUserSideIndicators(item['userSideIndicators']);
   if (typeof plainDescription !== 'string') return fail('plainDescription must be a string');
   if (typeof sensitive !== 'boolean') return fail('sensitive must be a boolean');
   if (!Array.isArray(uiElements) || !uiElements.every((e) => typeof e === 'string')) {
@@ -370,6 +373,7 @@ function parseReading(item: unknown, index: number, raw: string): ImageReading {
     ...(environmentHint === undefined ? {} : { environmentHint: environmentHint as (typeof ENVIRONMENTS)[number] }),
     plainDescription,
     sensitive,
+    ...(userSideIndicators === undefined ? {} : { userSideIndicators }),
   };
 }
 
