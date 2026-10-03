@@ -94,7 +94,9 @@ export type EventType =
   // A 6.2 escalation ladders (#299): started, each step, stopped. Not `escalated` (see the payload)
   | 'escalation-ladder'
   // A 5.2: the reporter's user-side check answered That fixed it (no ticket)
-  | 'user-side';
+  | 'user-side'
+  // Text signals after filing (A 3, #294)
+  | 'text-signal';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
 export const EVENT_TYPES = Object.freeze([
@@ -147,6 +149,7 @@ export const EVENT_TYPES = Object.freeze([
   'bot-message-posted',
   'escalation-ladder',
   'user-side',
+  'text-signal',
 ] as const satisfies readonly EventType[]);
 
 // Compile-time: EVENT_TYPES lists every member of EventType (the `satisfies` above rules out extras).
@@ -756,6 +759,7 @@ export interface EventPayloads {
   'bot-message-posted': BotMessagePostedPayload;
   'escalation-ladder': EscalationLadderPayload;
   'user-side': UserSidePayload;
+  'text-signal': TextSignalPayload;
 }
 
 // Compile-time: EventPayloads has exactly one entry per EventType.
@@ -788,4 +792,44 @@ export interface UserSidePayload {
   questionSeq: number;
   /** The resolved surface, when there was one. */
   surfaceId?: string;
+}
+
+/**
+ * A 3: a text signal in a filed incident's thread (signals/text.ts, #294), one record per step. The
+ * actor is the person whose message, tap, or reaction it records; `messageId` is the chat message the
+ * signal was read from, and ties a step to the one it answers. Never changes the status: the events
+ * that do (`closed`, `jira-priority-changed`) go in the same append.
+ *
+ * - `environment`: the thread named the environment the bug is on (`env`, normalized: `production`,
+ *   `staging`, `development`, or the word as said); `from` is the one it replaces. `priority` is set
+ *   when a production mention on a staging incident raised the priority one step.
+ * - `resolution`: the thread says it is resolved. `asked` records the one confirmation prompt (to the
+ *   actor), then `confirmed` (the incident closes with `resolution`) or `declined`.
+ * - `scope-change`: the message describes a second issue. `proposed` records the card (`cardMessageId`),
+ *   then `split` (filed as its own incident, `linkedIncidentId`) or `same` (it is the same bug).
+ * - `handoff`: the message asks `to` (a chat user id) to take the incident. `asked` holds until
+ *   `expiresAt`; `accepted` records the reassignment when `to` claimed or said yes in time.
+ */
+export interface TextSignalPayload {
+  kind: 'environment' | 'resolution' | 'scope-change' | 'handoff';
+  messageId: string;
+  /** `asked`, `confirmed`, `declined` (resolution); `proposed`, `split`, `same` (scope-change); `asked`, `accepted` (handoff). Absent for environment. */
+  phase?: 'asked' | 'confirmed' | 'declined' | 'proposed' | 'split' | 'same' | 'accepted';
+  /** The message text, on the step a message started. */
+  text?: string;
+  /** The classifier's confidence, on the step a message started (1 for a lexicon hit). */
+  confidence?: number;
+  env?: string;
+  from?: string;
+  priority?: { from: string; to: string };
+  /** The Jira resolution name: `Fixed` or `Cannot Reproduce`. */
+  resolution?: string;
+  /** Where the second issue is, when the message says ("mobile"). */
+  where?: string;
+  cardMessageId?: string;
+  linkedIncidentId?: string;
+  to?: string;
+  expiresAt?: string;
+  /** How a handoff was taken: a `claim` reaction or a yes in the thread. */
+  via?: 'reaction' | 'message';
 }
