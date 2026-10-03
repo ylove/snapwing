@@ -1,6 +1,22 @@
 // Runtime resolution: the confidence stack (main 4.4). Signals are consumed in order and the first
-// confident hit wins. Steps 1 to 6 are deterministic and never call the model; step 7 calls it only when
-// they all miss. Step 8, the ask-back gate (main 7), runs when this returns resolvedBy 'unresolved'.
+// confident hit wins. Every step but the model is deterministic and never calls it; the model runs only
+// when they all miss. The ask-back gate (main 7) runs when this returns resolvedBy 'unresolved'.
+//
+//   order  resolvedBy         confidence  source
+//   1      mention            0.95        main 4.4 step 1
+//   2      channel-explicit   0.90        main 4.4 step 2
+//   3      file-path          0.85        main 15.3 (#375; main 4.4 is silent on its place)
+//   4      vocabulary         0.80        main 4.4 step 3
+//   5      image              0.70        main 4.4 step 4
+//   6      channel-inferred   0.60        main 4.4 step 5
+//   7      alert              0.60        main 4.4 step 6
+//   8      llm                the model's main 4.4 step 7
+//
+// file-path sits below a named owner and an explicit channel, which are declarations the map's author
+// made, and above a vocabulary word: a path that exists in exactly one surface's repo tree names the code
+// that failed, which a word in the text, a screenshot, or a channel guess only suggests. It runs only
+// with `ResolveOptions.repoTrees`, reads trees only when the text names a path, and falls through on a
+// path found in several surfaces' repos (a tie) or in no readable tree (a missing tree is not a match).
 
 import type { CanonicalIncidentPayload, ContextBundle, ImageReading, Resolution, SourceMessage } from '../contracts/incident.ts';
 import { FROM_PAYLOAD } from '../map/types.ts';
@@ -8,8 +24,12 @@ import type { MapSurface, WorkspaceMap } from '../map/types.ts';
 import type { ModelPort } from '../ports/model.ts';
 import { LLM_MIN_CONFIDENCE, UNKNOWN_SURFACE, buildResolveRequest } from './llm.ts';
 import { containsTerm, findPerson, findSurface, hasComponent, ownerIdOf, probableOwner } from './lookup.ts';
+import { extractPaths, indexTree, matchPath } from './paths.ts';
+import type { IndexedTree, RepoTrees } from './paths.ts';
 
 export { buildResolvePrompt, buildResolveRequest, RESOLVE_SCHEMA_NAME } from './llm.ts';
+export { extractPaths } from './paths.ts';
+export type { RepoTrees } from './paths.ts';
 
 type ResolvedBy = Resolution['resolvedBy'];
 
@@ -17,11 +37,17 @@ type ResolvedBy = Resolution['resolvedBy'];
 export const STEP_CONFIDENCE = {
   mention: 0.95,
   'channel-explicit': 0.9,
+  'file-path': 0.85,
   vocabulary: 0.8,
   image: 0.7,
   'channel-inferred': 0.6,
   alert: 0.6,
 } as const;
+
+export interface ResolveOptions {
+  /** The repo trees the file-path step matches against; absent skips the step. */
+  repoTrees?: RepoTrees;
+}
 
 interface Hit {
   surfaceId: string;
@@ -29,6 +55,7 @@ interface Hit {
   ownerId?: string;
   resolvedBy: ResolvedBy;
   confidence: number;
+  evidence?: { path: string };
 }
 
 /** Fills repo, Jira project, and (when the step did not name one) the probable owner from the map. */
@@ -45,6 +72,7 @@ function finish(map: WorkspaceMap, hit: Hit): Resolution | undefined {
     jiraProject: surface.jira.project,
     resolvedBy: hit.resolvedBy,
     confidence: hit.confidence,
+    ...(hit.evidence === undefined ? {} : { evidence: hit.evidence }),
   };
 }
 
@@ -94,7 +122,51 @@ function byMention(map: WorkspaceMap, payload: CanonicalIncidentPayload, bundle:
   return undefined;
 }
 
-// Step 3: vocabulary match in the message text.
+// Step 3: file paths in the text, matched against the surfaces' repo trees (main 15.3).
+
+/** The last segment of each map repo: the directory name a checkout most likely has. */
+function repoRoots(map: WorkspaceMap): string[] {
+  return [...new Set(map.surfaces.map((s) => s.repo.split('/').at(-1) ?? '').filter((r) => r !== ''))];
+}
+
+/** Each distinct map repo's tree, read once; a repo whose tree is unavailable (or whose read fails) is left out. */
+async function loadTrees(map: WorkspaceMap, repoTrees: RepoTrees): Promise<Map<string, IndexedTree>> {
+  const repos = [...new Set(map.surfaces.map((s) => s.repo))];
+  const read = await Promise.all(repos.map((repo) => repoTrees(repo).catch(() => undefined)));
+  const trees = new Map<string, IndexedTree>();
+  repos.forEach((repo, i) => {
+    const entries = read[i];
+    if (entries !== undefined) trees.set(repo, indexTree(entries));
+  });
+  return trees;
+}
+
+async function byFilePath(map: WorkspaceMap, payload: CanonicalIncidentPayload, bundle: ContextBundle, repoTrees: RepoTrees): Promise<Hit | undefined> {
+  const roots = repoRoots(map);
+  const perText = textsInOrder(payload, bundle).map((text) => extractPaths(text, { roots }));
+  if (perText.every((paths) => paths.length === 0)) return undefined;
+  const trees = await loadTrees(map, repoTrees);
+  if (trees.size === 0) return undefined;
+  for (const paths of perText) {
+    const named = new Map<string, string>(); // surface id to the first path that named it alone
+    for (const path of paths) {
+      const match = matchPath(path, trees);
+      if (match === undefined) continue;
+      const surfaces = map.surfaces.filter((s) => match.repos.includes(s.repo));
+      const [surface] = surfaces;
+      if (surfaces.length !== 1 || surface === undefined) continue; // in several surfaces' repos: a tie
+      if (!named.has(surface.id)) named.set(surface.id, match.entries.get(surface.repo) ?? path);
+    }
+    if (named.size !== 1) continue; // paths in this text disagree on the surface: try the next text
+    const [first] = named;
+    if (first === undefined) continue;
+    const [surfaceId, path] = first;
+    return { surfaceId, resolvedBy: 'file-path', confidence: STEP_CONFIDENCE['file-path'], evidence: { path } };
+  }
+  return undefined;
+}
+
+// Step 4: vocabulary match in the message text.
 
 function byVocabulary(map: WorkspaceMap, payload: CanonicalIncidentPayload, bundle: ContextBundle): Hit | undefined {
   for (const text of textsInOrder(payload, bundle)) {
@@ -116,7 +188,7 @@ function byVocabulary(map: WorkspaceMap, payload: CanonicalIncidentPayload, bund
   return undefined;
 }
 
-// Step 4: surface signals from the vision pass.
+// Step 5: surface signals from the vision pass.
 
 const CHROME_WORDS: Record<NonNullable<ImageReading['surfaceSignals']['chrome']>, string[]> = {
   web: ['web', 'website', 'site'],
@@ -166,7 +238,7 @@ function byImage(map: WorkspaceMap, bundle: ContextBundle): Hit | undefined {
   return undefined;
 }
 
-// Step 6: alert payload fields (service name).
+// Step 7: alert payload fields (service name).
 
 const ALERT_FIELDS = ['surface', 'service', 'serviceName', 'service_name', 'app', 'application'] as const;
 
@@ -188,7 +260,7 @@ function byAlert(map: WorkspaceMap, payload: CanonicalIncidentPayload): Hit | un
   return undefined;
 }
 
-// Step 7: model inference.
+// Step 8: model inference.
 
 async function byModel(map: WorkspaceMap, payload: CanonicalIncidentPayload, bundle: ContextBundle, model: ModelPort): Promise<Hit | undefined> {
   const { value } = await model.classify(buildResolveRequest(payload, bundle, map));
@@ -200,28 +272,32 @@ async function byModel(map: WorkspaceMap, payload: CanonicalIncidentPayload, bun
 }
 
 /**
- * Resolve surface, component, and owner for an incident. Returns the first confident hit of steps 1 to 7
- * with `resolvedBy` naming the step, or `resolvedBy: 'unresolved'` so the ask-back gate (step 8) can run.
- * `model` is only touched at step 7; omit it to run the deterministic steps alone.
+ * Resolve surface, component, and owner for an incident. Returns the first confident hit of the step
+ * table above with `resolvedBy` naming the step, or `resolvedBy: 'unresolved'` so the ask-back gate can
+ * run. `model` is only touched by the last step; omit it to run the deterministic steps alone.
+ * `options.repoTrees` enables the file-path step; without it the stack is main 4.4's as written.
  */
 export async function resolve(
   payload: CanonicalIncidentPayload,
   bundle: ContextBundle,
   map: WorkspaceMap,
   model?: ModelPort,
+  options: ResolveOptions = {},
 ): Promise<Resolution> {
   const explicit = channelSurface(map, payload, 'explicit');
   const inferred = channelSurface(map, payload, 'inferred');
-  const steps: (() => Hit | undefined)[] = [
+  const { repoTrees } = options;
+  const steps: (() => Hit | undefined | Promise<Hit | undefined>)[] = [
     () => byMention(map, payload, bundle),
     () => (explicit === undefined ? undefined : { surfaceId: explicit, resolvedBy: 'channel-explicit', confidence: STEP_CONFIDENCE['channel-explicit'] }),
+    () => (repoTrees === undefined ? undefined : byFilePath(map, payload, bundle, repoTrees)),
     () => byVocabulary(map, payload, bundle),
     () => byImage(map, bundle),
     () => (inferred === undefined ? undefined : { surfaceId: inferred, resolvedBy: 'channel-inferred', confidence: STEP_CONFIDENCE['channel-inferred'] }),
     () => byAlert(map, payload),
   ];
   for (const step of steps) {
-    const hit = step();
+    const hit = await step();
     const resolution = hit === undefined ? undefined : finish(map, hit);
     if (resolution !== undefined) return resolution;
   }
