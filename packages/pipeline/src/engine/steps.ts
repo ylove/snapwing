@@ -15,20 +15,21 @@ import type { CanonicalIncidentPayload, ChannelSource, ContextBundle, Resolution
 import type { Job } from '../contracts/jobs.ts';
 import type { OutboxItem } from '../contracts/state.ts';
 import { dedupe, rememberIncident } from '../dedupe/index.ts';
+import type { JiraLogicalStatus } from '../jira/statuses.ts';
 import { LABEL_NEEDS_CLARIFICATION, LABEL_PROMPT_FAILED, synthesizeIssue, type SynthesisContext, type SynthesizedIssue } from '../jira/synthesis.ts';
 import type { WorkspaceMap } from '../map/types.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { findSurface } from '../resolve/lookup.ts';
-import { jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
+import { JIRA_IN_PROGRESS, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
 import { approvedFix, answerAfter, pendingCard, type Cursor, type Phase, type Tap } from './cursor.ts';
 import { DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps, type StatusSubscription } from './deps.ts';
 
-/** The Jira transition that starts the fixer (main 14.1: "fires fixer webhook"). */
-export const IN_PROGRESS = 'In Progress';
+/** The logical Jira target that starts the fixer (main 14.1: "fires fixer webhook"); the projector resolves it (#268). */
+export const IN_PROGRESS: JiraLogicalStatus = JIRA_IN_PROGRESS;
 
 /** What a step tells the job loop: run the next phase, or return from the handler. */
 export type StepResult = 'continue' | 'park' | 'stop';
@@ -58,10 +59,10 @@ export interface CreateIssueRow {
   screenshots?: { url: string; filename?: string; contentType?: string }[];
 }
 
-/** `transition`: move an existing issue. */
+/** `transition`: move an existing issue to a logical target (`jira/statuses.ts`). */
 export interface TransitionRow {
   issueKey: string;
-  to: string;
+  to: JiraLogicalStatus;
 }
 
 /** `add-comment`: plain text; the projector renders ADF and merges by `batchKey` (B 7.1). */

@@ -3,6 +3,7 @@
 
 import { fileURLToPath } from 'node:url';
 import { parseXmlDocument, type Element } from 'slimdom';
+import { JIRA_LOGICAL_STATUSES, type JiraLogicalStatus, type JiraStatusOverrides } from '../jira/statuses.ts';
 import { validateXsd, type ValidationResult } from '../schemas/validate.ts';
 import { parseDuration } from '../util/duration.ts';
 
@@ -102,6 +103,15 @@ export const DEFAULT_MERGE_CONFIG: MergeConfig = {
   forbidden: [...DEFAULT_MERGE_FORBIDDEN],
 };
 
+/**
+ * Jira (main 9.1, #268). `statuses` names the project status for a logical lifecycle target
+ * (`<status logical="backlog" name="Selected for Development"/>`); a target without one resolves by
+ * status category (`jira/statuses.ts`).
+ */
+export interface JiraConfig {
+  statuses: JiraStatusOverrides;
+}
+
 export interface AppConfig {
   version: 1;
   runtime: RuntimeConfig;
@@ -109,6 +119,8 @@ export interface AppConfig {
   harness: HarnessConfig;
   /** Always present; defaults apply when `<merge>` is absent. */
   merge: MergeConfig;
+  /** Always present; empty when `<jira>` is absent. */
+  jira: JiraConfig;
 }
 
 export class AppConfigError extends Error {
@@ -188,8 +200,9 @@ export function loadAppConfig(xml: string): AppConfig {
   }
 
   const merge = loadMerge(children(root, 'merge')[0]);
+  const jira = loadJira(children(root, 'jira')[0]);
 
-  return { version: 1, runtime, models, harness, merge };
+  return { version: 1, runtime, models, harness, merge, jira };
 }
 
 function children(parent: Element, name: string): Element[] {
@@ -236,4 +249,14 @@ function loadMerge(el: Element | undefined): MergeConfig {
     // Built-in protections always apply; <forbidden> elements only add to them (main 11.3).
     forbidden: [...new Set([...DEFAULT_MERGE_FORBIDDEN, ...forbidden])],
   };
+}
+
+function loadJira(el: Element | undefined): JiraConfig {
+  const statuses: Partial<Record<JiraLogicalStatus, string>> = {};
+  for (const status of el === undefined ? [] : children(el, 'status')) {
+    const logical = oneOf(JIRA_LOGICAL_STATUSES, requiredAttr(status, 'logical'), '<jira> status logical');
+    if (statuses[logical] !== undefined) throw new AppConfigError(`<jira> names a status for "${logical}" more than once`);
+    statuses[logical] = requiredAttr(status, 'name').trim();
+  }
+  return { statuses };
 }

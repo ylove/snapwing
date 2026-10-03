@@ -6,7 +6,10 @@
 // (`pipeline/src/state/projections/outbox/jira.ts`, #141) write them:
 //
 //   create-issue   { fields, customFields, suggestedAssigneeEmail?, promptErrors?, screenshots? }
-//   transition     { issueKey, to, resolution? }            resolution is a name, e.g. "Won't Do"
+//   transition     { issueKey, to, resolution? }            to is a logical target (backlog, in-progress,
+//                                                           in-review, done; #268) the projector maps to the
+//                                                           project's status (statuses.ts); resolution is a
+//                                                           name, e.g. "Won't Do"
 //   add-comment    { issueKey, text }                       batched by `batch_key` (drain.ts)
 //   add-labels     { issueKey, labels }
 //   update-fields  { issueKey, fields?, customFields? }     at least one field
@@ -17,7 +20,9 @@
 // Jira assigns by account id, and resolving one is a user search this client does not make.
 
 import type { OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
-import type { Adf, JiraClient, UploadAttachmentInput } from '../client/index.ts';
+import { JIRA_LOGICAL_STATUSES, toJiraLogicalStatus, type JiraLogicalStatus } from '@snapwing/pipeline/jira/statuses.ts';
+import { JiraTransitionNotFoundError, type Adf, type JiraClient, type UploadAttachmentInput } from '../client/index.ts';
+import type { StatusResolver } from './statuses.ts';
 
 /** The label `create-issue` adds so a retry finds the issue an earlier attempt created (#140). */
 export function incidentLabel(incidentId: string): string {
@@ -49,7 +54,8 @@ export interface CreateIssueOp {
 export interface TransitionOp {
   op: 'transition';
   issueKey: string;
-  to: string;
+  /** A logical target; a row written before #268 that names a status spelling one (`In Progress`) reads as it. */
+  to: JiraLogicalStatus;
   /** A resolution name sent with the transition (`fields.resolution`); the client falls back to none if the screen lacks it. */
   resolution?: string;
 }
@@ -128,10 +134,11 @@ export function parseJiraRow(row: OutboxItem): JiraOp {
       return parseCreateIssue(row, bad);
     case 'transition': {
       const key = issueKey();
-      if (!nonEmpty(p['to'])) bad('to must name a status');
+      const to = toJiraLogicalStatus(p['to']);
+      if (to === undefined) bad(`to must be a lifecycle target (${JIRA_LOGICAL_STATUSES.join(', ')}), got ${JSON.stringify(p['to'])}`);
       const resolution = p['resolution'];
       if (resolution !== undefined && !nonEmpty(resolution)) bad('resolution must be a non-empty string naming a resolution');
-      return { op: 'transition', issueKey: key, to: (p['to'] as string).trim(), ...(resolution === undefined ? {} : { resolution: (resolution as string).trim() }) };
+      return { op: 'transition', issueKey: key, to: to as JiraLogicalStatus, ...(resolution === undefined ? {} : { resolution: (resolution as string).trim() }) };
     }
     case 'add-comment': {
       const key = issueKey();
@@ -324,12 +331,35 @@ export async function uploadScreenshots(client: JiraClient, issueKey: string, re
   }
 }
 
-/** Sends one non-create op. Resolves false when there was nothing to write (only unmapped custom fields). */
-export async function sendOp(client: JiraClient, op: Exclude<JiraOp, CreateIssueOp>, customFieldIds: Readonly<Record<string, string>>): Promise<boolean> {
+/**
+ * Transitions to the status `target` resolves to. When the workflow offers no transition there and
+ * the issue is already in that status (a project without In Review keeps a merged issue in progress,
+ * or an earlier attempt moved it before its ack was lost), there is nothing to do: resolves false.
+ */
+export async function transitionTo(client: JiraClient, statuses: StatusResolver, op: TransitionOp): Promise<boolean> {
+  const status = await statuses.resolve(op.issueKey, op.to);
+  try {
+    await client.transitionIssue(op.issueKey, status, op.resolution);
+    return true;
+  } catch (err) {
+    if (!(err instanceof JiraTransitionNotFoundError)) throw err;
+    const issue = await client.getIssue(op.issueKey, { fields: ['status'] });
+    const current = isRecord(issue.fields['status']) ? issue.fields['status']['name'] : undefined;
+    if (typeof current === 'string' && current.trim().toLowerCase() === status.trim().toLowerCase()) return false;
+    throw err;
+  }
+}
+
+/** Sends one non-create op. Resolves false when there was nothing to write (only unmapped custom fields, or already in the status). */
+export async function sendOp(
+  client: JiraClient,
+  op: Exclude<JiraOp, CreateIssueOp>,
+  customFieldIds: Readonly<Record<string, string>>,
+  statuses: StatusResolver,
+): Promise<boolean> {
   switch (op.op) {
     case 'transition':
-      await client.transitionIssue(op.issueKey, op.to, op.resolution);
-      return true;
+      return transitionTo(client, statuses, op);
     case 'add-comment':
       await client.addComment(op.issueKey, textToAdf(op.text));
       return true;

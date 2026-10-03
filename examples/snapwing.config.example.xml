@@ -22,4 +22,8 @@
     <forbidden path="**/pnpm-lock.yaml"/>
     <forbidden path="**/vitest.config.*"/>
   </merge>
+  <!-- Jira statuses resolve by category (backlog to To Do or Backlog, in-progress to In Progress,
+       in-review to In Review when present, done to Done); name one only when the guess is wrong,
+       for example <status logical="backlog" name="Selected for Development"/>. -->
+  <jira/>
 </snapwing>

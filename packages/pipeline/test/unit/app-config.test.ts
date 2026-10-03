@@ -78,4 +78,24 @@ describe('loadAppConfig', () => {
     expect(() => loadAppConfig(example.replace('timeout="PT30M"', 'timeout="30m"'))).toThrow(/not an ISO 8601 duration/);
     expect(() => loadAppConfig(example.replace(/<generic [^>]*\/>/, ''))).toThrow(/declares no <generic>/);
   });
+
+  it('reads <jira> status overrides and defaults to none (#268)', async () => {
+    expect(loadAppConfig(example).jira).toEqual({ statuses: {} });
+    expect(loadAppConfig(example.replace('<jira/>', '')).jira).toEqual({ statuses: {} });
+    const xml = example.replace(
+      '<jira/>',
+      '<jira><status logical="backlog" name="Selected for Development"/><status logical="in-review" name="Code Review"/></jira>',
+    );
+    expect(await validateAppConfig(xml)).toEqual({ valid: true, errors: [] });
+    expect(loadAppConfig(xml).jira).toEqual({ statuses: { backlog: 'Selected for Development', 'in-review': 'Code Review' } });
+  });
+
+  it('rejects an unknown logical target and a target named twice, in the XSD and the loader', async () => {
+    const unknown = example.replace('<jira/>', '<jira><status logical="triage" name="Triage"/></jira>');
+    expect((await validateAppConfig(unknown)).valid).toBe(false);
+    expect(() => loadAppConfig(unknown)).toThrow(/<jira> status logical "triage" must be one of backlog, in-progress, in-review, done/);
+    const twice = example.replace('<jira/>', '<jira><status logical="done" name="Done"/><status logical="done" name="Closed"/></jira>');
+    expect((await validateAppConfig(twice)).valid).toBe(false);
+    expect(() => loadAppConfig(twice)).toThrow(/more than once/);
+  });
 });

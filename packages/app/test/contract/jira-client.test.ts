@@ -86,6 +86,21 @@ describe('operations', () => {
     expect(body).toEqual({ transition: { id: '11' } });
   });
 
+  it('projectStatuses flattens the issue types, each status once, with its category (#268)', async () => {
+    server.use(http.get(`${BASE}/rest/api/3/project/OAJ/statuses`, () => HttpResponse.json(fixture('project-statuses'))));
+    expect(await client.projectStatuses('OAJ')).toEqual([
+      { name: 'To Do', category: 'new' },
+      { name: 'In Progress', category: 'indeterminate' },
+      { name: 'In Review', category: 'indeterminate' },
+      { name: 'Done', category: 'done' },
+    ]);
+  });
+
+  it('getProject reads the style that marks a team-managed project', async () => {
+    server.use(http.get(`${BASE}/rest/api/3/project/OAJ`, () => HttpResponse.json(fixture('project-team-managed'))));
+    expect(await client.getProject('OAJ')).toMatchObject({ key: 'OAJ', style: 'next-gen', simplified: true });
+  });
+
   it('transitionIssue throws JiraTransitionNotFoundError listing the available names', async () => {
     server.use(http.get(`${BASE}/rest/api/3/issue/TEST-1/transitions`, () => HttpResponse.json(fixture('transitions'))));
     const err = await client.transitionIssue('TEST-1', 'Shipped').catch((e: unknown) => e);
