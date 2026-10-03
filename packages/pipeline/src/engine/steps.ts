@@ -415,7 +415,9 @@ export async function scopeStep(env: StepEnv, phase: Extract<Phase, { kind: 'sco
     if (p.slackId !== undefined) names[p.slackId] = p.handle;
     if (p.teamsId !== undefined) names[p.teamsId] = p.handle;
   }
-  return awaitCard(env, { kind: 'scope-preview', summary: scopePreview(bundle, { names }).text }, env.payload.reporter.id);
+  const limitation = await env.deps.context?.get(env.payload.source)?.limitation?.(env.payload);
+  const summary = scopePreview(bundle, { names, ...(limitation === undefined ? {} : { limitation }) }).text;
+  return awaitCard(env, { kind: 'scope-preview', summary }, env.payload.reporter.id);
 }
 
 /** main 4.4: the confidence stack. */
