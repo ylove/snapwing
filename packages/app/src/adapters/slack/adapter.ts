@@ -151,6 +151,15 @@ export function createSlackAdapter(options: SlackAdapterOptions): SlackAdapter {
       ...(anchor?.text === undefined ? {} : { text: anchor.text }),
       ...(anchor?.thread_ts === undefined ? {} : { threadTs: anchor.thread_ts }),
       reactions: got.reactions.map((r) => ({ name: r.name, users: r.users ?? [] })),
+      ...(anchor === undefined
+        ? {}
+        : {
+            author: {
+              ...(anchor.user === undefined ? {} : { user: anchor.user }),
+              ...(anchor.bot_id === undefined ? {} : { bot_id: anchor.bot_id }),
+              ...(anchor.subtype === undefined ? {} : { subtype: anchor.subtype }),
+            },
+          }),
     };
   }
 

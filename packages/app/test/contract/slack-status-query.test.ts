@@ -83,7 +83,7 @@ function ev<T extends EventType>(id: string, type: T, payload: EventPayloads[T])
 }
 
 /** Filed on web/`component` with the fixer running; `threadId` is the thread the anchor was a reply in. */
-async function seed(inc: Seed, summary: string, component: string, opts: { channel?: string; threadId?: string } = {}): Promise<void> {
+async function seed(inc: Seed, summary: string, component: string, opts: { channel?: string; threadId?: string; triggeredBy?: string } = {}): Promise<void> {
   await state.append(
     inc.id,
     [
@@ -91,7 +91,10 @@ async function seed(inc: Seed, summary: string, component: string, opts: { chann
         kind: 'incident',
         idempotencyKey: `slack-${inc.anchor}-bug`,
         source: 'slack',
-        reporter: { id: REPORTER, name: 'salesLead', role: 'reporter' },
+        // An engineer's trigger on the reporter's post brings it in; the post is the reporter's (#363).
+        ...(opts.triggeredBy === undefined
+          ? { reporter: { id: REPORTER, name: 'salesLead', role: 'reporter' } }
+          : { reporter: { id: opts.triggeredBy, name: 'webDev1', role: 'engineer' }, anchorAuthor: { id: REPORTER, name: 'salesLead', role: 'reporter' } }),
         anchorText: summary,
         anchorId: inc.anchor,
         channelId: opts.channel ?? CHANNEL,
@@ -257,6 +260,21 @@ describe('a person posting through an app (bot_id and app_id on their message)',
     expect(posts[0]).toMatchObject({ channel: DM });
     expect(text).toMatch(/^\*?WEB-1051\b/);
     expect(posts[0]?.blocks).toHaveLength(1);
+  });
+
+  it("answers the reporter in their shape when an engineer's trigger brought their post in (#363)", async () => {
+    await seed(CART_A, 'Cart total blank', 'checkout', { triggeredBy: ENGINEER });
+    const text = await answerTo(throughApp(dm(REPORTER, `<@${BOT}> where are we with the cart thing? [snapwing-test]`)));
+    expect(text).toMatch(/^\*?WEB-1051\b/);
+    expect(text).toContain('Next: ');
+    expect(text).toMatch(/Nothing needed from you right now\.$|Waiting on you: /);
+    expect(text).not.toContain('\n');
+    expect(text).not.toContain(' · ');
+    expect(JSON.stringify(posts[0]?.blocks)).not.toContain('status_actions');
+
+    // The engineer who reacted still gets the engineer's answer.
+    posts.length = 0;
+    expect(await answerTo(dm(ENGINEER, 'where are we with the cart thing?'))).toContain(' · ');
   });
 
   it('answers a mention in a thread', async () => {

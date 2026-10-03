@@ -15,6 +15,8 @@ export interface SlackReactionsGetResult {
   text?: string;
   threadTs?: string;
   reactions: { name: string; users: readonly string[] }[];
+  /** Who wrote the anchor message, as Slack marks it (`user`, `bot_id`, `subtype`); absent when Slack sent no message. */
+  author?: { user?: string; bot_id?: string; subtype?: string };
 }
 
 export interface SlackNormalizeContext {
@@ -28,8 +30,8 @@ export interface SlackNormalizeContext {
   workspaceDomain?: string;
   newEventId?: (nowMs: number) => string;
   /**
-   * Who wrote a direct message (`authorship.ts`): a person posting through an app carries `bot_id` and
-   * is still a person. Default: the map and `botUserId` only.
+   * Who wrote a direct message or a reacted-to message (`authorship.ts`): a person posting through an
+   * app carries `bot_id` and is still a person. Default: the map and `botUserId` only.
    */
   authorOf?: SlackAuthorOf;
 }
@@ -78,11 +80,26 @@ function actor(ctx: SlackNormalizeContext, id: string, fallbackName: string): In
   };
 }
 
+/**
+ * The anchor message's author, when a person other than the one who brought the report in wrote it
+ * (#363): an engineer's trigger reaction or shortcut on a reporter's post. That person is the
+ * incident's reporter, the one asked to check staging (A 4.4) and answered in the reporter's shape
+ * (A 4.3). A bot's or Snapwing's own message has no reporter of its own, so it gives none.
+ */
+async function anchorAuthorOf(ctx: SlackNormalizeContext, message: Rec, broughtBy: string): Promise<IncidentActor | undefined> {
+  const user = str(message['user']);
+  if (user === '' || user === broughtBy) return undefined;
+  const authorOf = ctx.authorOf ?? createSlackAuthorOf({ botUserId: ctx.botUserId });
+  if ((await authorOf(message, ctx.map)) !== 'person') return undefined;
+  return actor(ctx, user, '');
+}
+
 function build(
   ctx: SlackNormalizeContext,
   parts: {
     key: string;
     reporter: IncidentActor;
+    anchorAuthor?: IncidentActor;
     anchorText: string;
     channel: string;
     anchorTs: string;
@@ -101,6 +118,7 @@ function build(
     idempotencyKey: parts.key,
     source: 'slack',
     reporter: parts.reporter,
+    ...(parts.anchorAuthor === undefined ? {} : { anchorAuthor: parts.anchorAuthor }),
     anchorText: parts.anchorText,
     context: {
       channelId: parts.channel,
@@ -124,7 +142,7 @@ export async function normalizeSlack(raw: unknown, ctx: SlackNormalizeContext): 
   return ignored('unsupported-payload');
 }
 
-function messageAction(body: Rec, ctx: SlackNormalizeContext): SlackNormalizeResult {
+async function messageAction(body: Rec, ctx: SlackNormalizeContext): Promise<SlackNormalizeResult> {
   if (str(body['callback_id']) !== (ctx.callbackId ?? SLACK_SHORTCUT_CALLBACK_ID)) return ignored('unknown-callback');
   const channel = str(rec(body['channel'])['id']);
   const message = rec(body['message']);
@@ -133,11 +151,13 @@ function messageAction(body: Rec, ctx: SlackNormalizeContext): SlackNormalizeRes
   const userId = str(user['id']);
   if (channel === '' || ts === '' || userId === '') return ignored('unsupported-payload');
   const threadTs = str(message['thread_ts']);
+  const anchorAuthor = await anchorAuthorOf(ctx, message, userId);
   return {
     kind: 'incident',
     payload: build(ctx, {
       key: `slack-${channel}-${ts}`,
       reporter: actor(ctx, userId, str(user['name'])),
+      ...(anchorAuthor === undefined ? {} : { anchorAuthor }),
       anchorText: str(message['text']),
       channel,
       anchorTs: ts,
@@ -174,11 +194,14 @@ async function reactionAdded(body: Rec, event: Rec, ctx: SlackNormalizeContext):
   }
   if (reactors.size < min) return ignored('below-min-reactors');
   const threadTs = got.threadTs ?? '';
+  // The message as `reactions.get` sent it, else the event's `item_user` (no bot marks to read).
+  const anchorAuthor = await anchorAuthorOf(ctx, got.author ?? { user: str(event['item_user']) }, userId);
   return {
     kind: 'incident',
     payload: build(ctx, {
       key: `slack-${channel}-${ts}-${reaction}`,
       reporter: actor(ctx, userId, ''),
+      ...(anchorAuthor === undefined ? {} : { anchorAuthor }),
       anchorText: got.text ?? '',
       channel,
       anchorTs: ts,

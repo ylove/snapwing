@@ -387,6 +387,20 @@ describe('levels (main 14.1)', () => {
     expect(h.adapter.statuses).toEqual([{ issueKey: 'APP-101', stage: 'filed', text: 'Filed as APP-101, assigned to @mobDev.' }]);
   });
 
+  it("an engineer's trigger on someone else's post: captured keeps both, and the post's author is the incident's reporter (#363)", async () => {
+    const h = setup({ level: 0 });
+    h.payload.reporter = { id: 'U-FAKE-ENG', name: 'mobDev', role: 'engineer' };
+    h.payload.anchorAuthor = { id: REPORTER.id, name: 'Pat', role: 'reporter' };
+    await inbound(h);
+    const [captured] = await state.read(h.payload.eventId);
+    expect(captured?.type === 'captured' ? [captured.payload.reporter.id, captured.payload.anchorAuthor?.id] : []).toEqual(['U-FAKE-ENG', REPORTER.id]);
+    expect((await state.getIncident(h.payload.eventId))?.reporterId).toBe(REPORTER.id);
+    // Still the reporter once filed.
+    await tap(h, 'scope-preview', 'looks-right');
+    await file(h, 'APP-101');
+    expect((await state.getIncident(h.payload.eventId))?.reporterId).toBe(REPORTER.id);
+  });
+
   it('level 1: parks on the fix preview, files on Fix it, and moves to In Progress after filed', async () => {
     const h = setup({ level: 1 });
     await inbound(h);

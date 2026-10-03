@@ -79,6 +79,8 @@ interface Spec {
   /** Minutes after BASE of the first event. */
   start?: number;
   then?: Draft[];
+  /** Someone else's trigger on the reporter's post: they brought it in, the reporter wrote it (#363). */
+  triggeredBy?: IncidentActor;
 }
 
 interface Built {
@@ -92,7 +94,7 @@ function build(spec: Spec): Built {
       kind: 'incident',
       idempotencyKey: `slack:${spec.id}`,
       source: 'slack',
-      reporter: REPORTER,
+      ...(spec.triggeredBy === undefined ? { reporter: REPORTER } : { reporter: spec.triggeredBy, anchorAuthor: REPORTER }),
       anchorText: spec.summary,
       channelId: CHANNEL,
       anchorId: spec.anchor ?? `1700000000.${spec.id.slice(-6)}`,
@@ -359,6 +361,24 @@ describe('answer', () => {
     expect(audienceFor(STAKEHOLDER, CART.view)).toBe('lead');
     expect(audienceFor(REPORTER)).toBe('lead');
     expect(q.respond(ask('status?', REPORTER, { channelId: CHANNEL, threadId: '1700000000.000100' })).audience).toBe('reporter');
+  });
+
+  it("the anchor's author is the reporter when an engineer's trigger brought it in, and asking from their DM gets the reporter's one line (#363)", () => {
+    const filed = build({ id: '01JZ00000000000000000000B1', key: 'WEB-2001', summary: 'Discounts ten times too small', surface: 'web', owner: 'dana', priority: 'High', level: 0, triggeredBy: ENGINEER });
+    expect(filed.view.reporterId).toBe(REPORTER.id);
+    const world = createStatusQueries(snapshot([filed]));
+    const dm = { channelId: 'D-FAKE-REPORTER' };
+
+    const mine = world.respond(ask('where are we with the discounts thing?', REPORTER, dm));
+    expect(mine).toMatchObject({ incidentId: filed.view.id, audience: 'reporter', actions: [] });
+    expect(mine.text).toMatch(/^WEB-2001\b/);
+    expect(mine.text).toContain('Next: ');
+    expect(mine.text).toMatch(/Nothing needed from you right now\.$|Waiting on you: /);
+    expect(mine.text).not.toContain('\n');
+    expect(reporterViolations(mine.text)).toEqual([]);
+
+    // The engineer whose trigger brought it in still gets the engineer's shape.
+    expect(world.respond(ask('where are we with the discounts thing?', ENGINEER, dm)).audience).toBe('engineer');
   });
 });
 

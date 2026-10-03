@@ -213,6 +213,41 @@ describe('normalizeSlack: reaction_added', () => {
   });
 });
 
+describe('normalizeSlack: the anchor author (#363)', () => {
+  const author = { id: 'U0AUTHOR', name: 'U0AUTHOR', role: 'unknown' };
+
+  it("names the anchor's author when someone else reacted with the trigger or ran the shortcut", async () => {
+    // reactions.get's message, else the event's item_user.
+    const sent = { text: 't', reactions: [], author: { user: 'U0AUTHOR' } };
+    expect(incident(await normalizeSlack(fixture('reaction-added'), ctx({ reactionsGet: () => Promise.resolve(sent) }))).anchorAuthor).toEqual(author);
+    expect(incident(await normalizeSlack(fixture('reaction-added'), ctx())).anchorAuthor).toEqual(author);
+    const p = incident(await normalizeSlack(fixture('message-action'), ctx()));
+    expect(p.reporter.id).toBe('U0REPORTER');
+    expect(p.anchorAuthor).toEqual(author);
+  });
+
+  it('reads the map for the author, and a mapped person posting through an app is still a person', async () => {
+    const m = map({ people: [{ slackId: 'U0AUTHOR', handle: 'pat', role: 'reporter', owns: [] }, { slackId: 'U0REPORTER', handle: 'dana', role: 'engineer', owns: [] }] });
+    const sent = { text: 't', reactions: [], author: { user: 'U0AUTHOR', bot_id: 'B0DRIVER' } };
+    const p = incident(await normalizeSlack(fixture('reaction-added'), ctx({ map: m, reactionsGet: () => Promise.resolve(sent) })));
+    expect(p.reporter).toEqual({ id: 'U0REPORTER', name: 'dana', role: 'engineer' });
+    expect(p.anchorAuthor).toEqual({ id: 'U0AUTHOR', name: 'pat', role: 'reporter' });
+  });
+
+  it('names nobody for your own message, a bot, or Snapwing itself', async () => {
+    const as = (a: SlackReactionsGetResult['author']) => ctx({ reactionsGet: () => Promise.resolve({ text: 't', reactions: [], ...(a === undefined ? {} : { author: a }) }) });
+    const own = reaction({ item_user: 'U0REPORTER' });
+    expect(incident(await normalizeSlack(own, as({ user: 'U0REPORTER' }))).anchorAuthor).toBeUndefined();
+    expect(incident(await normalizeSlack(own, as(undefined))).anchorAuthor).toBeUndefined();
+    expect(incident(await normalizeSlack(reaction({}), as({ user: 'U0ALERTS', bot_id: 'B0ALERTS' }))).anchorAuthor).toBeUndefined();
+    expect(incident(await normalizeSlack(reaction({}), as({ bot_id: 'B0HOOK', subtype: 'bot_message' }))).anchorAuthor).toBeUndefined();
+    expect(incident(await normalizeSlack(reaction({}), as({ user: BOT }))).anchorAuthor).toBeUndefined();
+    const raw = fixture('message-action') as { message: Record<string, unknown> };
+    expect(incident(await normalizeSlack({ ...raw, message: { ...raw.message, user: 'U0REPORTER' } }, ctx())).anchorAuthor).toBeUndefined();
+    expect(incident(await normalizeSlack({ ...raw, message: { ...raw.message, user: 'U0ALERTS', bot_id: 'B0ALERTS' } }, ctx())).anchorAuthor).toBeUndefined();
+  });
+});
+
 describe('normalizeSlack: direct messages', () => {
   it('normalizes text, image, and both, keyed by channel and ts', async () => {
     const text = incident(await normalizeSlack(fixture('message-im-text'), ctx()));

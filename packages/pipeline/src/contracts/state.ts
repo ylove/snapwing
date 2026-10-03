@@ -138,6 +138,7 @@ export interface IncidentView {
    * Known before anyone is assigned in Jira; the status message names it (main 12).
    */
   ownerRef?: string;
+  /** Who reported it: the anchor message's author when someone else brought it in (`captured.anchorAuthor`, #363), else `captured.reporter`. */
   reporterId?: string;
   source: ChannelSource;
   channelId?: string;
