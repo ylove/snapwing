@@ -618,7 +618,7 @@ export const compose: ComposeFn = async (deps) => {
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
     status: createStatusSubscriber({ workspaceId, clock }),
     clock,
-    options: { loadImage: slackContext.loadImage },
+    options: { loadImage: slackContext.loadImage, loadRecording: slackContext.loadRecording },
     // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
   };

@@ -7,7 +7,12 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { ImageReading } from '../../contracts/incident.ts';
+import type {
+  ImageReading,
+  RecordingFrame,
+  RecordingReading,
+  SequenceEntry,
+} from '../../contracts/incident.ts';
 import type { ModelPort } from '../../ports/model.ts';
 import { loadVisionPrompt, type VisionPrompt } from './index.ts';
 import { isImageReading, unreadableReading } from './reading.ts';
@@ -33,29 +38,7 @@ export interface RecordingOptions {
   tmpDir?: string;
 }
 
-export interface RecordingFrame {
-  /** Seconds from the start of the recording. */
-  seconds: number;
-  reading: ImageReading;
-}
-
-export interface SequenceEntry {
-  seconds: number;
-  /** "0:04". */
-  time: string;
-  text: string;
-}
-
-export type RecordingReading =
-  | {
-      status: 'read';
-      durationSeconds: number;
-      frames: RecordingFrame[];
-      sequence: SequenceEntry[];
-      summary: string;
-      note?: string;
-    }
-  | { status: 'skipped'; note: string };
+export type { RecordingFrame, RecordingReading, SequenceEntry };
 
 interface RunResult {
   code: number | undefined;
