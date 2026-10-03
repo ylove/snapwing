@@ -7,6 +7,7 @@ import type { MapSurface } from '../map/types.ts';
 import { buildImplementationRequest, IMPLEMENTATION_REQUEST_XSD } from '../prompts/implementation-request.ts';
 import type { Evidence, ImplementationRequestInput } from '../prompts/implementation-request.ts';
 import { validate } from '../schemas/validate.ts';
+import { flaggedBy, incidentReporter } from '../util/reporter.ts';
 import { doc, labeled, labeledLink, paragraph, text } from './adf.ts';
 import type { AdfDoc, AdfParagraph } from './adf.ts';
 
@@ -104,8 +105,11 @@ function environmentText(bundle: ContextBundle, ctx: SynthesisContext): string {
 
 export function buildDescription(plan: TriageResolutionPlan, bundle: ContextBundle, ctx: SynthesisContext): AdfDoc {
   const { payload } = ctx;
+  const reporter = incidentReporter(payload);
+  const flagger = flaggedBy(payload);
   const blocks: AdfParagraph[] = [
-    labeled('Reporter', payload.reporter.email === undefined ? payload.reporter.name : `${payload.reporter.name} (${payload.reporter.email})`),
+    labeled('Reporter', reporter.email === undefined ? reporter.name : `${reporter.name} (${reporter.email})`),
+    ...(flagger === undefined ? [] : [labeled('Flagged by', `@${flagger.name}`)]),
     labeled('Symptom', payload.anchorText),
     labeled('Environment', environmentText(bundle, ctx)),
     ...(ctx.repro === undefined || ctx.repro.trim() === '' ? [] : [labeled('Repro', ctx.repro.trim())]),
@@ -133,7 +137,7 @@ function evidenceFor(bundle: ContextBundle, ctx: SynthesisContext, key: string):
       kind: 'report',
       source: payload.source,
       channel: payload.context.channelId,
-      reporter: payload.reporter.email ?? payload.reporter.name,
+      reporter: incidentReporter(payload).email ?? incidentReporter(payload).name,
       ts: payload.timestamp,
       text: payload.anchorText,
     },

@@ -820,6 +820,20 @@ describe('unresolved surface (#115)', () => {
     expect(h.adapter.cards.at(-1)).toMatchObject({ kind: 'clarify', question: { asks: 'surface', options: SURFACE_QUESTION.options } });
   }
 
+  it("an experiential question on a post an engineer flagged waits on the post's author (#365)", async () => {
+    const h = setup(scene());
+    h.payload.reporter = { id: 'U-FAKE-ENG', name: 'mobDev', role: 'engineer' };
+    h.payload.anchorAuthor = { id: REPORTER.id, name: 'Pat', role: 'reporter' };
+    await toQuestion(h);
+    expect((await state.getIncident(h.payload.eventId))?.waitingOn).toMatchObject({ kind: 'human', who: REPORTER.id });
+  });
+
+  it('with no anchorAuthor the question waits on the reporter as before (#365)', async () => {
+    const h = setup(scene());
+    await toQuestion(h);
+    expect((await state.getIncident(h.payload.eventId))?.waitingOn).toMatchObject({ kind: 'human', who: REPORTER.id });
+  });
+
   it('resolves the surface from the answer and files the ticket to that project', async () => {
     const h = setup(scene());
     await toQuestion(h);

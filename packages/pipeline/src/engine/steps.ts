@@ -28,6 +28,7 @@ import { findSurface } from '../resolve/lookup.ts';
 import { JIRA_DONE, JIRA_IN_PROGRESS, LABEL_HUMAN_CLAIMED, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
+import { incidentReporter } from '../util/reporter.ts';
 import { ulid } from '../util/ulid.ts';
 import type { ClaimHold } from './claims.ts';
 import { approvedFix, answerAfter, pendingCard, userSideRound, type Cursor, type Phase, type Tap, type UserSideRound } from './cursor.ts';
@@ -501,14 +502,14 @@ export async function clarifyStep(env: StepEnv): Promise<StepResult> {
       userSide: check.record,
       timedOut: false,
     });
-    return awaitCard(env, { kind: 'clarify', question: check.question }, env.payload.reporter.id, [asked]);
+    return awaitCard(env, { kind: 'clarify', question: check.question }, incidentReporter(env.payload).id, [asked]);
   }
   const question = await maybeAsk(env.payload, bundle, resolution, env.map, env.deps.model, {
     ...evidence,
     questionsAsked: env.cursor.clarified.length,
   });
   if (question?.gatePassed !== true) return planStep(env, question !== undefined, bundle);
-  const waitFor = question.audience === 'engineer' ? resolution.ownerId : env.payload.reporter.id;
+  const waitFor = question.audience === 'engineer' ? resolution.ownerId : incidentReporter(env.payload).id;
   const asked = newEvent(env, 'clarified', {
     audience: question.audience,
     question: question.text,
@@ -600,7 +601,7 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
   }
   // A repost after a crash, with the recorded options.
   const { audience, question, asks, options } = last.payload;
-  const waitFor = audience === 'engineer' ? resolution.ownerId : env.payload.reporter.id;
+  const waitFor = audience === 'engineer' ? resolution.ownerId : incidentReporter(env.payload).id;
   const card: InteractiveCard = {
     kind: 'clarify',
     question: {
