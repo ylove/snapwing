@@ -13,8 +13,12 @@ Each of `anthropic/`, `openai/`, and `google/` contains raw JSON response bodies
 - `vision.json`: one structured image reading.
 - `valid.json`: a valid classification.
 - `invalid.json`: parseable JSON whose label fails the supplied validator.
-- `optional.json`: classification with an optional field omitted (Anthropic and
-  Google) or nullable (OpenAI's required nullable representation).
+- `optional.json`: classification with an optional field omitted (Google) or
+  null (the required nullable representation of OpenAI strict mode and Anthropic
+  structured outputs).
+- `anthropic/refusal.json`, `anthropic/max-tokens.json`: a declined request and an
+  answer cut off at `max_tokens`, with the empty thinking block Opus 5.5 and
+  Sonnet 5.5 return (`anthropic.test.ts`).
 - `error-401.json`, `error-429.json`, `error-503.json`: native error envelopes.
 
 The harness matches POST requests to the exact provider origin and endpoint:

@@ -24,6 +24,20 @@ export class ModelOutputError extends ModelError {
   }
 }
 
+/**
+ * The provider declined the request for policy reasons (Anthropic `stop_reason: "refusal"`). The partial
+ * answer is not parsed, and withValidation does not retry it: the same request would be declined again.
+ */
+export class ModelRefusalError extends ModelError {
+  /** The provider's policy category (for example `cyber`), or null when it named none. */
+  readonly category: string | null;
+  constructor(message: string, category: string | null, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ModelRefusalError';
+    this.category = category;
+  }
+}
+
 /** A `classify` answer failed `validate` on the first attempt and again on the retry (main 14.5). */
 export class ModelValidationError extends ModelError {
   readonly task: ModelTask;

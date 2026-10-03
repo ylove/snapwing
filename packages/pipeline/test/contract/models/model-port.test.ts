@@ -65,7 +65,7 @@ for (const provider of providers) {
     }
     function schema(): Record<string, unknown> {
       const body = object(requests[0]);
-      if (provider === 'anthropic') return object(object(array(body['tools'])[0])['input_schema']);
+      if (provider === 'anthropic') return object(object(object(body['output_config'])['format'])['schema']);
       if (provider === 'openai') return object(object(object(body['response_format'])['json_schema'])['schema']);
       return object(object(body['generationConfig'])['responseSchema']);
     }
@@ -116,16 +116,20 @@ for (const provider of providers) {
       expect(result.value.value).toMatchObject({ label: 'bug' });
       expect(requests).toHaveLength(1);
       const sent = schema();
-      if (provider === 'openai') {
+      if (provider === 'openai' || provider === 'anthropic') {
         expect(sent['additionalProperties']).toBe(false);
         expect(sent['required']).toEqual(expect.arrayContaining(['label', 'note']));
         const note = object(object(sent['properties'])['note']);
         const nullable = Array.isArray(note['type']) && note['type'].includes('null') ||
           Array.isArray(note['anyOf']) && note['anyOf'].some((entry: unknown) => object(entry)['type'] === 'null');
         expect(nullable).toBe(true);
-        expect(object(object(requests[0])['response_format'])).toMatchObject({ type: 'json_schema', json_schema: { strict: true } });
+        if (provider === 'openai') {
+          expect(object(object(requests[0])['response_format'])).toMatchObject({ type: 'json_schema', json_schema: { strict: true } });
+        } else {
+          expect(object(object(requests[0])['output_config'])).toMatchObject({ format: { type: 'json_schema' } });
+        }
       } else {
-        // Anthropic tool input and Gemini responseSchema allow omitted optional properties.
+        // Gemini responseSchema allows omitted optional properties.
         expect(object(sent['properties'])).toHaveProperty('note');
         expect(sent['required']).toEqual(['label']);
       }

@@ -86,6 +86,8 @@ export interface ModelRoute {
   model: string;
   /** Why this provider: a <model> row, the configured default-provider, or the first key found in env. */
   source: 'row' | 'default-provider' | 'env-key';
+  /** The row's temperature. The router sends exactly this (or none) and ignores the request's own (#275). */
+  temperature?: number;
 }
 
 /** Builds the adapter for one route. Vendor adapters read their key from `env` by PROVIDER_KEY_ENV. */
@@ -132,7 +134,13 @@ export function resolveModelRoutes(config: ModelsSelection, env: ModelEnv): Reco
   for (const task of MODEL_TASK_LIST) {
     const row = rows.get(task);
     if (row) {
-      routes[task] = { task, provider: row.provider, model: row.name, source: 'row' };
+      routes[task] = {
+        task,
+        provider: row.provider,
+        model: row.name,
+        source: 'row',
+        ...(row.temperature === undefined ? {} : { temperature: row.temperature }),
+      };
     } else {
       const { provider, source } = fallbackProvider();
       routes[task] = { task, provider, model: DEFAULT_MODELS[provider][task], source };
@@ -173,10 +181,21 @@ export function createModelRouter(config: ModelsSelection, providers: ModelProvi
   return {
     routes,
     // async so a routing failure is a rejected promise, like every other model failure
-    complete: async (request: CompletionRequest) => portFor(request.task).complete(request),
-    vision: async (request: VisionRequest) => portFor(request.task).vision(request),
-    classify: async <T>(request: ClassifyRequest<T>) => portFor(request.task).classify(request),
+    complete: async (request: CompletionRequest) => portFor(request.task).complete(withRouteSampling(request, routes)),
+    vision: async (request: VisionRequest) => portFor(request.task).vision(withRouteSampling(request, routes)),
+    classify: async <T>(request: ClassifyRequest<T>) => portFor(request.task).classify(withRouteSampling(request, routes)),
   };
+}
+
+/**
+ * The request with the route's temperature, or with none. A stage's own `temperature` is dropped: gpt-5,
+ * gpt-5-mini, Claude Opus 5.5 and Claude Sonnet 5.5 answer any non-default value with a 400 (#275), so a
+ * temperature is sent only when the task's <model> row sets one.
+ */
+function withRouteSampling<R extends CompletionRequest>(request: R, routes: Readonly<Record<ModelTask, ModelRoute>>): R {
+  const route = Object.hasOwn(routes, request.task) ? routes[request.task] : undefined;
+  const { temperature: _ignored, ...rest } = request;
+  return (route?.temperature === undefined ? rest : { ...rest, temperature: route.temperature }) as R;
 }
 
 /**

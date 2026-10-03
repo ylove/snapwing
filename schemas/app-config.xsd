@@ -63,6 +63,13 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:simpleType name="Temperature">
+    <xs:restriction base="xs:decimal">
+      <xs:minInclusive value="0"/>
+      <xs:maxInclusive value="2"/>
+    </xs:restriction>
+  </xs:simpleType>
+
   <xs:simpleType name="NonEmptyToken">
     <xs:restriction base="xs:token">
       <xs:minLength value="1"/>
@@ -86,6 +93,9 @@
                   <xs:attribute name="task" type="ModelTask" use="required"/>
                   <xs:attribute name="provider" type="ModelProvider" use="required"/>
                   <xs:attribute name="name" type="NonEmptyToken" use="required"/>
+                  <!-- Sampling temperature for this task. Absent: none is sent and the model's default applies
+                       (several models reject any other value, #275). -->
+                  <xs:attribute name="temperature" type="Temperature" use="optional"/>
                 </xs:complexType>
               </xs:element>
             </xs:sequence>

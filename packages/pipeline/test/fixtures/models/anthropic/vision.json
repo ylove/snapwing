@@ -5,23 +5,13 @@
   "model": "claude-haiku-4-5",
   "content": [
     {
-      "type": "tool_use",
-      "id": "toolu_test_0001",
-      "name": "report_image_readings",
-      "input": {
-        "readings": [
-          {
-            "plainDescription": "A white square.",
-            "sensitive": false,
-            "uiElements": [],
-            "surfaceSignals": {}
-          }
-        ]
-      }
+      "type": "text",
+      "text": "{\"readings\":[{\"errorText\":null,\"surfaceSignals\":{\"urlBar\":null,\"pageTitle\":null,\"chrome\":null},\"uiElements\":[],\"environmentHint\":null,\"plainDescription\":\"A white square.\",\"sensitive\":false}]}"
     }
   ],
-  "stop_reason": "tool_use",
+  "stop_reason": "end_turn",
   "stop_sequence": null,
+  "stop_details": null,
   "usage": {
     "input_tokens": 23,
     "output_tokens": 11

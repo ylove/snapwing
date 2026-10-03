@@ -5,16 +5,13 @@
   "model": "claude-haiku-4-5",
   "content": [
     {
-      "type": "tool_use",
-      "id": "toolu_test_0001",
-      "name": "contract_label",
-      "input": {
-        "label": 17
-      }
+      "type": "text",
+      "text": "{\"label\":17}"
     }
   ],
-  "stop_reason": "tool_use",
+  "stop_reason": "end_turn",
   "stop_sequence": null,
+  "stop_details": null,
   "usage": {
     "input_tokens": 23,
     "output_tokens": 11

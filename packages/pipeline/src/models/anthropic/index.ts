@@ -1,6 +1,15 @@
-// Anthropic ModelBackend (main 14.5, ADR 0002). Structured output is tool use with a single forced
-// tool whose input schema is the request schema; images go in as native image content blocks.
-// The router applies withValidation, so `classify` here returns the parsed tool input unvalidated.
+// Anthropic ModelBackend (main 14.5, ADR 0002). Structured output is the Messages API's structured outputs:
+// `output_config.format` carries the request schema (converted by `toStructuredSchema` in ./schema.ts) and
+// the answer is the JSON in the response's text. There is no forced `tool_choice`: Claude Opus 5.5,
+// Claude Sonnet 5.5 and Claude Fable 5.1 reject `{type: "tool"}` and `{type: "any"}` with a 400, and one
+// code path serves every model the router uses. Images go in as native image content blocks.
+//
+// Thinking: the request never sends `thinking`. Opus 5.5 and Sonnet 5.5 always think (`{type: "disabled"}`
+// is a 400 there), Haiku 4.5 does not think without it. `temperature` goes only to models that still take
+// sampling parameters (`acceptsSampling`); on the rest a non-default value is a 400. Models that think get
+// at least MIN_THINKING_MAX_TOKENS, so thinking cannot use up the answer's budget.
+//
+// The router applies withValidation, so `classify` here returns the parsed answer unvalidated.
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { ImageReading } from '../../contracts/incident.ts';
@@ -17,9 +26,22 @@ import type {
   VisionResult,
 } from '../../ports/model.ts';
 import { DEFAULT_MODELS, PROVIDER_KEY_ENV, type ModelProviderFactory } from '../router.ts';
-import { ModelAuthError, ModelError, ModelOutputError, ModelRateLimitError, ModelUnavailableError } from '../errors.ts';
+import {
+  ModelAuthError,
+  ModelError,
+  ModelOutputError,
+  ModelRateLimitError,
+  ModelRefusalError,
+  ModelUnavailableError,
+} from '../errors.ts';
+import { stripAddedNulls, toStructuredSchema } from './schema.ts';
 
-export const DEFAULT_MAX_TOKENS = 4096;
+export { ModelSchemaError, stripAddedNulls, toStructuredSchema } from './schema.ts';
+
+/** Non-streaming default: room for thinking plus the answer, under the SDK's non-streaming timeout. */
+export const DEFAULT_MAX_TOKENS = 16000;
+/** Floor for models that think on every request; a smaller caller limit would starve the answer. */
+export const MIN_THINKING_MAX_TOKENS = 16000;
 
 /** The one method of the SDK client this adapter uses; tests pass a fake. */
 export interface AnthropicClientLike {
@@ -35,6 +57,15 @@ export interface AnthropicModelOptions {
   client?: AnthropicClientLike;
 }
 
+/**
+ * True for models that take `temperature` and do not think unless asked: Haiku 4.5, the 4.6 and earlier
+ * Opus and Sonnet models, and the 3.x family. Every newer model (Opus 4.7 and later, Sonnet 5 and later,
+ * Fable, Mythos) rejects sampling parameters, and an unknown model is treated as new.
+ */
+export function acceptsSampling(model: string): boolean {
+  return /^claude-(?:3-|haiku-4-5(?:-\d{8})?$|(?:opus|sonnet)-4(?:-[0-6])?(?:-\d{8})?$)/.test(model);
+}
+
 export function createAnthropicModel(options: AnthropicModelOptions): ModelBackend {
   const client: AnthropicClientLike =
     options.client ??
@@ -47,19 +78,43 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
   };
 
   const send = async (params: Anthropic.MessageCreateParamsNonStreaming): Promise<Anthropic.Message> => {
+    let message: Anthropic.Message;
     try {
-      return await client.messages.create(params);
+      message = await client.messages.create(params);
     } catch (err) {
       throw mapAnthropicError(err);
     }
+    if (message.stop_reason === 'refusal') {
+      const category = message.stop_details?.category ?? null;
+      throw new ModelRefusalError(
+        `Anthropic declined the request (${category ?? 'no category'})${message.stop_details?.explanation ? `: ${message.stop_details.explanation}` : ''}`,
+        category,
+      );
+    }
+    return message;
   };
 
-  const baseParams = (request: CompletionRequest, model: string) => ({
-    model,
-    max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
-    system: request.system,
-    ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
-  });
+  const baseParams = (request: CompletionRequest, model: string) => {
+    const sampling = acceptsSampling(model);
+    const requested = request.maxTokens ?? DEFAULT_MAX_TOKENS;
+    return {
+      model,
+      max_tokens: sampling ? requested : Math.max(requested, MIN_THINKING_MAX_TOKENS),
+      system: request.system,
+      ...(request.temperature === undefined || !sampling ? {} : { temperature: request.temperature }),
+    };
+  };
+
+  const structured = async (
+    params: Omit<Anthropic.MessageCreateParamsNonStreaming, 'output_config'>,
+    schema: JsonSchema,
+  ): Promise<{ message: Anthropic.Message; value: unknown }> => {
+    const message = await send({
+      ...params,
+      output_config: { format: { type: 'json_schema', schema: schema as unknown as Record<string, unknown> } },
+    });
+    return { message, value: parseAnswer(message) };
+  };
 
   return {
     async complete(request: CompletionRequest): Promise<CompletionResult> {
@@ -68,60 +123,53 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
         ...baseParams(request, model),
         messages: [{ role: 'user', content: request.prompt }],
       });
-      const text = message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
-      return { text, ...meta(message, model) };
+      return { text: textOf(message), ...meta(message, model) };
     },
 
     async vision(request: VisionRequest): Promise<VisionResult> {
       const model = modelFor(request.task);
-      const message = await send({
-        ...baseParams(request, model),
-        messages: [
-          {
-            role: 'user',
-            content: [
-              ...request.images.map(
-                (image): Anthropic.ImageBlockParam => ({
-                  type: 'image',
-                  source: { type: 'base64', media_type: image.mimeType, data: image.data },
-                }),
-              ),
-              { type: 'text', text: request.prompt },
-            ],
-          },
-        ],
-        tools: [{ name: READINGS_TOOL, description: 'Report one reading per image, in order.', input_schema: READINGS_SCHEMA }],
-        tool_choice: { type: 'tool', name: READINGS_TOOL },
-      });
-      const input = toolInput(message, READINGS_TOOL);
-      const readings = parseReadings(input, request.images.length);
+      const { message, value } = await structured(
+        {
+          ...baseParams(request, model),
+          messages: [
+            {
+              role: 'user',
+              content: [
+                ...request.images.map(
+                  (image): Anthropic.ImageBlockParam => ({
+                    type: 'image',
+                    source: { type: 'base64', media_type: image.mimeType, data: image.data },
+                  }),
+                ),
+                { type: 'text', text: request.prompt },
+              ],
+            },
+          ],
+        },
+        READINGS_STRUCTURED,
+      );
+      const readings = parseReadings(stripAddedNulls(value, READINGS_SCHEMA), request.images.length);
       return { readings, ...meta(message, model) };
     },
 
     async classify(request: ClassifyRequest<unknown>): Promise<RawClassifyResult> {
       const model = modelFor(request.task);
       const wrapped = !isObjectSchema(request.schema);
-      const name = toolName(request.schemaName);
-      const message = await send({
-        ...baseParams(request, model),
-        messages: [{ role: 'user', content: request.prompt }],
-        tools: [
-          {
-            name,
-            description: request.schema.description ?? `Answer using the ${request.schemaName} schema.`,
-            input_schema: (wrapped
-              ? { type: 'object', properties: { value: request.schema }, required: ['value'] }
-              : request.schema) as Anthropic.Tool.InputSchema,
-          },
-        ],
-        tool_choice: { type: 'tool', name },
-      });
-      const input = toolInput(message, name);
-      if (!wrapped) return { value: input, ...meta(message, model) };
-      if (!isRecord(input) || !('value' in input)) {
-        throw new ModelOutputError(`tool "${name}" input has no "value" field`, JSON.stringify(input));
+      const original: JsonSchema = wrapped
+        ? { type: 'object', properties: { value: request.schema }, required: ['value'], additionalProperties: false }
+        : request.schema;
+      // Throws ModelSchemaError before any API call when the schema cannot be expressed.
+      const schema = toStructuredSchema(original);
+      const { message, value } = await structured(
+        { ...baseParams(request, model), messages: [{ role: 'user', content: request.prompt }] },
+        schema,
+      );
+      const answer = stripAddedNulls(value, original);
+      if (!wrapped) return { value: answer, ...meta(message, model) };
+      if (!isRecord(answer) || !('value' in answer)) {
+        throw new ModelOutputError('structured answer has no "value" field', JSON.stringify(answer));
       }
-      return { value: input['value'], ...meta(message, model) };
+      return { value: answer['value'], ...meta(message, model) };
     },
   };
 }
@@ -137,8 +185,6 @@ export const anthropicProvider: ModelProviderFactory = (route, env) => {
 
 // ---- structured output ----
 
-const READINGS_TOOL = 'report_image_readings';
-
 const IMAGE_READING_SCHEMA: JsonSchema = {
   type: 'object',
   properties: {
@@ -150,6 +196,7 @@ const IMAGE_READING_SCHEMA: JsonSchema = {
         pageTitle: { type: 'string' },
         chrome: { type: 'string', enum: ['web', 'mobile', 'desktop', 'admin', 'unknown'] },
       },
+      additionalProperties: false,
     },
     uiElements: { type: 'array', items: { type: 'string' }, description: 'Visible labels, menu items, field names.' },
     environmentHint: { type: 'string', enum: ['production', 'staging', 'local', 'unknown'] },
@@ -157,18 +204,46 @@ const IMAGE_READING_SCHEMA: JsonSchema = {
     sensitive: { type: 'boolean', description: 'True when credentials, tokens, or personal data are visible.' },
   },
   required: ['surfaceSignals', 'uiElements', 'plainDescription', 'sensitive'],
+  additionalProperties: false,
 };
 
-const READINGS_SCHEMA = {
+const READINGS_SCHEMA: JsonSchema = {
   type: 'object',
+  description: 'One reading per image, in order.',
   properties: { readings: { type: 'array', items: IMAGE_READING_SCHEMA } },
   required: ['readings'],
-} as Anthropic.Tool.InputSchema;
+  additionalProperties: false,
+};
+
+const READINGS_STRUCTURED = toStructuredSchema(READINGS_SCHEMA);
+
+/**
+ * The structured answer: the JSON in the text blocks. A truncated answer (`max_tokens`, or the context
+ * window filling up) is a ModelOutputError, so withValidation retries it once and then surfaces it.
+ */
+function parseAnswer(message: Anthropic.Message): unknown {
+  const text = textOf(message);
+  if (message.stop_reason === 'max_tokens' || message.stop_reason === 'model_context_window_exceeded') {
+    throw new ModelOutputError(`Anthropic answer was cut off (stop_reason ${message.stop_reason})`, text);
+  }
+  if (text.trim() === '') {
+    throw new ModelOutputError(`Anthropic returned no structured answer (stop_reason ${String(message.stop_reason)})`, text);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (err) {
+    throw new ModelOutputError('Anthropic structured answer is not JSON', text, { cause: err });
+  }
+}
+
+function textOf(message: Anthropic.Message): string {
+  return message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+}
 
 function parseReadings(input: unknown, expected: number): ImageReading[] {
   const raw = JSON.stringify(input);
   const list = isRecord(input) ? input['readings'] : undefined;
-  if (!Array.isArray(list)) throw new ModelOutputError('vision tool input has no "readings" array', raw);
+  if (!Array.isArray(list)) throw new ModelOutputError('vision answer has no "readings" array', raw);
   if (list.length !== expected) {
     throw new ModelOutputError(`expected ${expected} image readings, got ${list.length}`, raw);
   }
@@ -212,21 +287,6 @@ function parseReading(item: unknown, index: number, raw: string): ImageReading {
     plainDescription,
     sensitive,
   };
-}
-
-function toolInput(message: Anthropic.Message, name: string): unknown {
-  const block = message.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === name);
-  if (!block) {
-    const text = message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
-    throw new ModelOutputError(`the model did not call tool "${name}" (stop_reason ${String(message.stop_reason)})`, text);
-  }
-  return block.input;
-}
-
-/** Anthropic tool names allow letters, digits, underscore, hyphen, at most 64 characters. */
-function toolName(schemaName: string): string {
-  const cleaned = schemaName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-  return cleaned === '' ? 'answer' : cleaned;
 }
 
 function isObjectSchema(schema: JsonSchema): boolean {

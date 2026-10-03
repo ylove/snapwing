@@ -33,6 +33,11 @@ export interface ModelRow {
   task: ModelTask;
   provider: ModelProvider;
   name: string;
+  /**
+   * Sampling temperature for the task, 0 to 2. Absent: the router sends none and the model's default
+   * applies, whatever a stage asks for (gpt-5, Claude Opus 5.5 and Sonnet 5.5 reject other values, #275).
+   */
+  temperature?: number;
 }
 
 /**
@@ -165,10 +170,16 @@ export function loadAppConfig(xml: string): AppConfig {
     const task = oneOf(MODEL_TASKS, requiredAttr(el, 'task'), 'model task');
     if (seen.has(task)) throw new AppConfigError(`task "${task}" has more than one <model> row`);
     seen.add(task);
+    const rawTemperature = el.getAttribute('temperature');
+    const temperature = rawTemperature === null ? undefined : Number(rawTemperature.trim());
+    if (temperature !== undefined && (rawTemperature?.trim() === '' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2)) {
+      throw new AppConfigError(`<model task="${task}"> temperature "${String(rawTemperature)}" must be a number from 0 to 2`);
+    }
     return {
       task,
       provider: oneOf(MODEL_PROVIDERS, requiredAttr(el, 'provider'), 'model provider'),
       name: requiredAttr(el, 'name'),
+      ...(temperature === undefined ? {} : { temperature }),
     };
   });
   const models: ModelsConfig = {
