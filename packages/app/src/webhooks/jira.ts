@@ -20,7 +20,10 @@
 //      append `jira-priority-changed`, `jira-assignee-changed`, `jira-transitioned` (source `jira`,
 //      actor role `human`) and drop the agent's pending outbox write to the same field (batch key
 //      `field:{incident}:{field}`, `jiraFieldBatchKey`): last human write wins.
-//   6. Triggers, after the commit. A transition to In Progress with a non-empty `Implementation
+//   6. Triggers, after the commit. A transition to the project's in-progress status (the logical
+//      `in-progress` target resolved per project by `deps.statuses`, #269: a config override such as
+//      `Doing`, else the category rule; the literal name `In Progress` when no resolver is wired or
+//      the project's statuses cannot be read or resolved) with a non-empty `Implementation
 //      Prompt` calls `startFixer` (attempt 1). This one fires on the agent's own transition too: at
 //      levels 2 and 3, and at level 1 after Fix it, the engine's own In Progress transition is what
 //      starts the fixer (main 10.1, engine/steps.ts `afterFiledStep`), and `startFixer` cannot echo.
@@ -40,6 +43,7 @@ import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { jiraFieldBatchKey, type JiraField } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import type { JiraClient } from '../jira/client/client.ts';
+import type { StatusResolver } from '../jira/projector/statuses.ts';
 
 export const JIRA_WEBHOOK_PATH = '/webhooks/jira';
 /** The `seenWebhook` source. */
@@ -49,7 +53,7 @@ export const JIRA_WEBHOOK_TTL_SEC = 7 * 24 * 60 * 60;
 export const JIRA_WEBHOOK_SECRET_NAME = 'JIRA_WEBHOOK_SECRET';
 /** The label that stops the incident (main 10.4). */
 export const LABEL_STOP = 'snapwing:stop';
-/** The status whose transition starts the fixer (main 10.1). */
+/** The status name that starts the fixer when no resolver says otherwise (main 10.1). */
 export const JIRA_IN_PROGRESS = 'In Progress';
 const ISSUE_UPDATED = 'jira:issue_updated';
 const MAX_APPEND_ATTEMPTS = 8;
@@ -61,6 +65,11 @@ export interface JiraWebhookDeps {
   jira: Pick<JiraClient, 'myself'>;
   /** `JIRA_WEBHOOK_SECRET`; when absent, deliveries are not authenticated. */
   secret?: string;
+  /**
+   * Resolves the `in-progress` logical status to the issue's project's own status name (#269). When
+   * absent, or when it rejects, the trigger compares against `In Progress`.
+   */
+  statuses?: Pick<StatusResolver, 'resolve'>;
   /**
    * The Jira field id of `Implementation Prompt` (`JIRA_FIELD_IMPL_PROMPT`, for example
    * `customfield_10050`). When absent the In Progress trigger leaves the check to `fixer.run`, which
@@ -109,7 +118,7 @@ async function handle(deps: JiraWebhookDeps, agentAccount: () => Promise<string>
   const after = (await state.getIncident(incident.id)) ?? incident;
   if (!own && addedLabels(payload).includes(LABEL_STOP)) {
     await stopIncident(deps.fixer, { incidentId: incident.id, actor, source: 'jira', reason: `${LABEL_STOP} label added in Jira` });
-  } else if (movedTo(payload, JIRA_IN_PROGRESS) && fixerMayStart(after) && promptPresent(deps, payload)) {
+  } else if (await movedToInProgress(deps.statuses, jiraKey, payload) && fixerMayStart(after) && promptPresent(deps, payload)) {
     await startFixer(deps.fixer, { incidentId: incident.id, attempt: 1 });
   }
   return own ? 'echo' : 'processed';
@@ -208,6 +217,27 @@ function toEvent(deps: JiraWebhookDeps, incidentId: string, jiraKey: string, cha
 function movedTo(payload: Payload, status: string): boolean {
   const want = status.toLowerCase();
   return payload.items.some((i) => i.field === 'status' && i.toString?.trim().toLowerCase() === want);
+}
+
+/** The name `issueKey`'s project calls the in-progress status; `In Progress` when it cannot be resolved. */
+export async function inProgressStatusName(statuses: Pick<StatusResolver, 'resolve'> | undefined, issueKey: string): Promise<string> {
+  if (statuses === undefined) return JIRA_IN_PROGRESS;
+  try {
+    return await statuses.resolve(issueKey, 'in-progress');
+  } catch {
+    return JIRA_IN_PROGRESS;
+  }
+}
+
+/** Whether `status` is the in-progress status of `issueKey`'s project (compared without regard to case). */
+export async function isInProgressStatus(statuses: Pick<StatusResolver, 'resolve'> | undefined, issueKey: string, status: string): Promise<boolean> {
+  return status.trim().toLowerCase() === (await inProgressStatusName(statuses, issueKey)).trim().toLowerCase();
+}
+
+async function movedToInProgress(statuses: Pick<StatusResolver, 'resolve'> | undefined, issueKey: string, payload: Payload): Promise<boolean> {
+  // Only a delivery that changes the status needs the project's statuses read.
+  if (!payload.items.some((i) => i.field === 'status' && i.toString !== undefined)) return false;
+  return movedTo(payload, await inProgressStatusName(statuses, issueKey));
 }
 
 /** Labels the changelog adds (Jira sends labels as space-separated `fromString` and `toString`). */
