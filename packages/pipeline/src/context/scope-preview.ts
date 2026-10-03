@@ -22,6 +22,8 @@ export interface ScopePreviewOptions {
   names?: Readonly<Record<string, string>>;
   /** IANA zone for the time range. Default UTC. */
   timeZone?: string;
+  /** Why only part of the conversation was read (main 15.2); the preview says so. */
+  limitation?: 'anchor-only';
 }
 
 function clock(iso: string, timeZone: string): string {
@@ -68,7 +70,8 @@ export function scopePreview(bundle: ContextBundle, options: ScopePreviewOptions
   if (orphans.length > 0) threads.push(orphans.length === 1 ? 'a thread' : `${orphans.length} threads`);
 
   const extras = [...notable, ...threads];
-  const text = `${head}${extras.length > 0 ? `, including ${join(extras)}` : ''}.`;
+  const read = `${head}${extras.length > 0 ? `, including ${join(extras)}` : ''}.`;
+  const text = options.limitation === 'anchor-only' ? `${read} I could only read this message.` : read;
   return { text, actions: SCOPE_ACTIONS };
 }
 

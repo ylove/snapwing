@@ -31,7 +31,16 @@ export interface ContextSource {
   reader?: ChatReader;
   /** The anchor message for a payload. Called again on every resumed delivery, so it must be deterministic. */
   anchor(payload: CanonicalIncidentPayload): Promise<Anchor>;
+  /**
+   * Why this source could not read the channel around the anchor, or undefined when it can (main
+   * 15.2: Teams without the RSC grant reads the anchor message only). Asked fresh at the scope step,
+   * so it holds across a restart; the scope preview then says what was read. Slack has none.
+   */
+  limitation?(payload: CanonicalIncidentPayload): Promise<ContextLimitation | undefined>;
 }
+
+/** `anchor-only`: the history and replies reads were refused, so the bundle is the anchor message alone. */
+export type ContextLimitation = 'anchor-only';
 
 /**
  * Status loopback (main 12, phase 3): subscribes the reporter once the incident is filed, and posts
