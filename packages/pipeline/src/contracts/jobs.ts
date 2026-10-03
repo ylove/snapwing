@@ -20,7 +20,9 @@ export type JobName =
   | 'timer.heartbeat'
   | 'timer.escalate'
   | 'timer.revert'
-  | 'timer.fixer-budget';
+  | 'timer.fixer-budget'
+  // A 2.2: the grace window of a mid-flight claim card (not a B 5 row; the key is built in fixer/claims.ts)
+  | 'timer.mid-flight';
 
 export const JOB_NAMES: readonly JobName[] = [
   'incident.process',
@@ -37,6 +39,7 @@ export const JOB_NAMES: readonly JobName[] = [
   'timer.escalate',
   'timer.revert',
   'timer.fixer-budget',
+  'timer.mid-flight',
 ];
 
 /**
