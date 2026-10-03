@@ -60,6 +60,7 @@ import { constants } from 'node:fs';
 import { mkdir, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { devNull } from 'node:os';
 import { join } from 'node:path';
+import { instructionsBlock } from '../config/instructions.ts';
 import type { ArtifactRef, IncidentEvent } from '../contracts/events.ts';
 import { isReviewRunData, reviewRunKey, type ReviewRunData } from '../contracts/jobs.ts';
 import { activeRun, appendDecided, latest, lastSeqOf, newEvent, startFixer, stoppedSinceFiled } from '../fixer/job.ts';
@@ -629,8 +630,9 @@ export function combine(
 }
 
 /**
- * The review agent's input (prompts/review.xml): the request's constraints and the diff, nothing
- * of the fixer's. XML, as every machine-shaped prompt input is.
+ * The review agent's input (prompts/review.xml): the request's constraints, the workspace instructions
+ * the request carries (A 6.3), and the diff, nothing of the fixer's. XML, as every machine-shaped
+ * prompt input is.
  */
 export function buildReviewInput(request: ImplementationRequest, pr: Pick<ReviewPullRequest, 'number' | 'headSha' | 'baseRef'>, mergeBase: string, diff: string): string {
   const lines = [
@@ -646,6 +648,7 @@ export function buildReviewInput(request: ImplementationRequest, pr: Pick<Review
     for (const wi of request.workItems) lines.push(`    <scope repo="${xmlAttr(wi.repo)}">${xmlText(wi.scope)}</scope>`);
   }
   lines.push('  </constraints>');
+  if (request.workspaceInstructions !== undefined) lines.push(instructionsBlock(request.workspaceInstructions));
   const cut = diff.length > MAX_REVIEW_DIFF;
   const shown = cut ? diff.slice(0, MAX_REVIEW_DIFF) : diff;
   lines.push(`  <diff${cut ? ` truncated="true" length="${diff.length}"` : ''}><![CDATA[${shown.replaceAll(']]>', ']]]]><![CDATA[>')}]]></diff>`);

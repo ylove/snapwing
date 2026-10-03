@@ -1,6 +1,7 @@
 // Ask-back gate (main 7): three layers, then the gate. `maybeAsk` returns undefined when there is nothing
 // to ask, and otherwise a ClarifyQuestion whose `gatePassed` and `gateFailures` say whether it may be sent.
 
+import type { WorkspaceInstructions } from '../config/instructions.ts';
 import type { CanonicalIncidentPayload, ClarifyQuestion, ContextBundle, Resolution } from '../contracts/incident.ts';
 import type { WorkspaceMap } from '../map/types.ts';
 import type { ModelPort } from '../ports/model.ts';
@@ -69,6 +70,7 @@ export async function maybeAsk(
   map: WorkspaceMap,
   model: ModelPort,
   evidence: ClarifyEvidence = {},
+  instructions?: WorkspaceInstructions,
 ): Promise<ClarifyQuestion | undefined> {
   // Layer 1: exhaust what can be found.
   const gap = findGap(resolution, map, evidence);
@@ -95,7 +97,7 @@ export async function maybeAsk(
   const early = evaluateBudget(ctx);
   if (early.length > 0) return { audience: 'reporter', text: '', gatePassed: false, gateFailures: early };
 
-  const result = await model.classify(await buildClarifyRequest(payload, bundle, { gap, options }));
+  const result = await model.classify(await buildClarifyRequest(payload, bundle, { gap, options, ...(instructions === undefined ? {} : { instructions }) }));
   const drafted = result.value;
   // Layer 2: route by role. A technical question goes to an engineer, never to the reporter.
   const kind = classifyKind(drafted);

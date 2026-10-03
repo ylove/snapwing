@@ -1,6 +1,7 @@
 // Ticket synthesis (main 9.1, 9.2; Companion B 7.2 field map). Pure data in, Jira create payload out.
 // Nothing here calls Jira: the payload goes to the outbox (phase 3), which maps custom field names to site ids.
 
+import type { WorkspaceInstructions } from '../config/instructions.ts';
 import type { CanonicalIncidentPayload, ContextBundle, Resolution, TriageResolutionPlan } from '../contracts/incident.ts';
 import type { MapSurface } from '../map/types.ts';
 import { buildImplementationRequest, IMPLEMENTATION_REQUEST_XSD } from '../prompts/implementation-request.ts';
@@ -40,6 +41,8 @@ export interface SynthesisContext {
   issueKey?: string;
   /** Base branch for the fixer's PR. */
   base?: string;
+  /** INSTRUCTIONS.md (A 6.3): written into the implementation request for the fixer and the review agent. */
+  instructions?: WorkspaceInstructions;
 }
 
 export interface JiraCreateFields {
@@ -160,6 +163,7 @@ export function buildRequestInput(
       forbidden: ['Do not change behavior unrelated to this report'],
     },
     handoff: { mode: level === 3 ? 'auto' : 'review', autonomy: level, ...(ctx.base === undefined ? {} : { base: ctx.base }) },
+    ...(ctx.instructions === undefined ? {} : { workspaceInstructions: ctx.instructions.text }),
   };
 }
 

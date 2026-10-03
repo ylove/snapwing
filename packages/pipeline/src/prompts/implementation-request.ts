@@ -3,9 +3,12 @@
 //
 // Text content is whitespace-normalized (runs of whitespace collapse to one space, ends trimmed)
 // on both build and parse, so build -> parse round-trips and the XML never depends on indentation.
+// The one exception is `<workspace-instructions>` (INSTRUCTIONS.md, Companion A 6.3), the fixer's
+// copy of the workspace's prose rules: its line breaks are kept and only its ends are trimmed.
 
 import { fileURLToPath } from 'node:url';
 import { parseXmlDocument, type Element } from 'slimdom';
+import { INSTRUCTIONS_ELEMENT, instructionsBlock } from '../config/instructions.ts';
 import { validateXsd, type ValidationResult } from '../schemas/validate.ts';
 
 export const IMPLEMENTATION_REQUEST_NAMESPACE = 'urn:snapwing:impl:v1';
@@ -79,6 +82,11 @@ interface RequestBase {
   component?: string;
   intent: string;
   handoff: Handoff;
+  /**
+   * The text of INSTRUCTIONS.md when the workspace has one (A 6.3), written as the last element so the
+   * fixer, and the review agent after it, read the instructions in force when the request was made.
+   */
+  workspaceInstructions?: string;
 }
 
 /** A request for one repository (the default `kind`). */
@@ -173,6 +181,8 @@ export function buildImplementationRequest(input: ImplementationRequestInput): s
       ['allOrNothing', h.allOrNothing === undefined ? undefined : String(h.allOrNothing)],
     ])} />`,
   );
+  const instructions = input.workspaceInstructions?.trim();
+  if (instructions !== undefined && instructions !== '') body.push(instructionsBlock(instructions));
   return `<?xml version="1.0" encoding="UTF-8"?>\n<implementation-request${attrs}>\n${body.join('\n')}\n</implementation-request>\n`;
 }
 
@@ -238,6 +248,7 @@ export function parseImplementationRequest(xml: string): ImplementationRequest {
     ...optional('component', root.getAttribute('component')),
     intent: collapse(requiredChild(root, 'intent').textContent ?? ''),
     handoff: parseHandoff(requiredChild(root, 'handoff')),
+    ...optionalText('workspaceInstructions', child(root, INSTRUCTIONS_ELEMENT)?.textContent?.trim() ?? null),
   };
 
   if (kindAttr === 'parent') {
@@ -369,6 +380,10 @@ function requiredAttr(el: Element, name: string): string {
 
 function optional<K extends string>(key: K, value: string | null): { [P in K]?: string } {
   return value === null ? {} : ({ [key]: value } as { [P in K]?: string });
+}
+
+function optionalText<K extends string>(key: K, value: string | null): { [P in K]?: string } {
+  return value === null || value === '' ? {} : optional(key, value);
 }
 
 function bool(value: string, where: string): boolean {
