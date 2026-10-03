@@ -59,7 +59,7 @@ describe('validateSchematron', () => {
     const result = await validateSchematron(xrefError, sch);
     expect(result).toEqual({
       valid: false,
-      errors: [{ line: 6, message: 'Channel app-bugs names surface mobile, which is not declared.' }],
+      errors: [{ line: 6, rule: 'channel-surface-exists', message: 'Channel app-bugs names surface mobile, which is not declared.' }],
     });
   });
 
@@ -68,8 +68,8 @@ describe('validateSchematron', () => {
     const result = await validateSchematron(doc, sch);
     expect(result.valid).toBe(false);
     expect(result.errors).toEqual([
-      { line: 3, message: 'Surface web is declared more than once.' },
-      { line: 4, message: 'Surface web is declared more than once.' },
+      { line: 3, rule: 'surface-duplicate', message: 'Surface web is declared more than once.' },
+      { line: 4, rule: 'surface-duplicate', message: 'Surface web is declared more than once.' },
     ]);
   });
 
@@ -102,7 +102,7 @@ describe('validate', () => {
 
   it('reports Schematron errors once the XSD passes', async () => {
     const result = await validate(xrefError, { xsd, sch });
-    expect(result.errors).toEqual([{ line: 6, message: 'Channel app-bugs names surface mobile, which is not declared.' }]);
+    expect(result.errors).toEqual([{ line: 6, rule: 'channel-surface-exists', message: 'Channel app-bugs names surface mobile, which is not declared.' }]);
   });
 
   it('runs the XSD alone when no Schematron is given', async () => {

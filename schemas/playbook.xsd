@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Playbook, structure only (Companion A 6.2). Every element is optional and has a default
+  (the loader fills them in), so an empty <playbook/> is valid. Cross-references (mentions,
+  surfaces, channels) and escalation ordering are checked by playbook.sch.
+  Durations are ISO 8601 and limited to days, hours, minutes, and seconds, which is what
+  the loader's parseDuration accepts. XSD 1.0 only (build/decisions/0010).
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="urn:snapwing:playbook:v1"
+           xmlns:p="urn:snapwing:playbook:v1"
+           targetNamespace="urn:snapwing:playbook:v1"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified">
+
+  <!-- Simple types -->
+
+  <xs:simpleType name="NonEmptyString">
+    <xs:restriction base="xs:string">
+      <xs:minLength value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- ISO 8601: P[nD][T[nH][nM][nS]], at least one component (xs:duration rejects "P" and "PT"). -->
+  <xs:simpleType name="DurationType">
+    <xs:restriction base="xs:duration">
+      <xs:pattern value="P([0-9]+D)?(T([0-9]+H)?([0-9]+M)?([0-9]+(\.[0-9]+)?S)?)?"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="IntentName">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="trigger"/>
+      <xs:enumeration value="escalate"/>
+      <xs:enumeration value="claim"/>
+      <xs:enumeration value="release"/>
+      <xs:enumeration value="stop"/>
+      <xs:enumeration value="accept"/>
+      <xs:enumeration value="reject"/>
+      <xs:enumeration value="watch"/>
+      <xs:enumeration value="not-a-bug"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- The intents a reaction count can escalate (A 1.4). -->
+  <xs:simpleType name="LadderIntentName">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="trigger"/>
+      <xs:enumeration value="escalate"/>
+      <xs:enumeration value="accept"/>
+      <xs:enumeration value="reject"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="LadderIntentList">
+    <xs:restriction>
+      <xs:simpleType>
+        <xs:list itemType="LadderIntentName"/>
+      </xs:simpleType>
+      <xs:minLength value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="PriorityType">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="Highest"/>
+      <xs:enumeration value="High"/>
+      <xs:enumeration value="Medium"/>
+      <xs:enumeration value="Low"/>
+      <xs:enumeration value="Lowest"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- A ladder step either raises priority by n steps ("+1") or sets it. -->
+  <xs:simpleType name="PriorityChangeType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\+[1-4]|Highest|High|Medium|Low|Lowest"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ScoreType">
+    <xs:restriction base="xs:decimal">
+      <xs:minExclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="WeightType">
+    <xs:restriction base="xs:decimal">
+      <xs:minInclusive value="0"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ConfidenceType">
+    <xs:restriction base="xs:decimal">
+      <xs:minInclusive value="0"/>
+      <xs:maxInclusive value="1"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="ClockTime">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="([01][0-9]|2[0-3]):[0-5][0-9]"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Five whitespace-separated cron fields; the loader does not interpret them. -->
+  <xs:simpleType name="CronType">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="\S+(\s+\S+){4}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- 1. Signals -->
+
+  <xs:complexType name="EmojiType">
+    <xs:attribute name="slack" type="NonEmptyString" use="required"/>
+    <xs:attribute name="teams" type="NonEmptyString" use="required"/>
+    <!-- Restricts the emoji to one channel (by name or id); the Schematron checks it exists. -->
+    <xs:attribute name="channel" type="NonEmptyString" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="IntentType">
+    <xs:choice minOccurs="0" maxOccurs="unbounded">
+      <xs:element name="emoji" type="EmojiType"/>
+      <xs:element name="phrase" type="NonEmptyString"/>
+    </xs:choice>
+    <xs:attribute name="name" type="IntentName" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="LexiconType">
+    <xs:attribute name="maxWords" type="xs:positiveInteger" use="optional"/>
+    <xs:attribute name="confidenceFloor" type="ConfidenceType" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="ToggleType">
+    <xs:attribute name="enabled" type="xs:boolean" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="SignalsType">
+    <xs:sequence>
+      <xs:element name="intent" type="IntentType" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="lexicon" type="LexiconType" minOccurs="0"/>
+      <xs:element name="reactionsAsButtons" type="ToggleType" minOccurs="0"/>
+      <xs:element name="reactionsAsApproval" type="ToggleType" minOccurs="0"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- 2. Counting and escalation by reactions -->
+
+  <xs:complexType name="WeightsType">
+    <xs:attribute name="reporter" type="WeightType" use="optional"/>
+    <xs:attribute name="engineer" type="WeightType" use="optional"/>
+    <xs:attribute name="owner" type="WeightType" use="optional"/>
+    <xs:attribute name="window" type="DurationType" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="LadderStepType">
+    <xs:attribute name="score" type="ScoreType" use="required"/>
+    <xs:attribute name="priority" type="PriorityChangeType" use="optional"/>
+    <xs:attribute name="note" type="xs:boolean" use="optional"/>
+    <xs:attribute name="mentionOwner" type="xs:boolean" use="optional"/>
+    <xs:attribute name="suppressAskBack" type="xs:boolean" use="optional"/>
+    <xs:attribute name="outage" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="LadderType">
+    <xs:sequence>
+      <xs:element name="step" type="LadderStepType" minOccurs="1" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="intent" type="LadderIntentList" use="required"/>
+  </xs:complexType>
+
+  <!-- 3. Claims -->
+
+  <xs:complexType name="ClaimsType">
+    <xs:attribute name="expiry" type="DurationType" use="optional"/>
+    <xs:attribute name="holdExpiry" type="DurationType" use="optional"/>
+    <xs:attribute name="midFlightGrace" type="DurationType" use="optional"/>
+    <xs:attribute name="businessHoursOnly" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <!-- 4. Notifications -->
+
+  <xs:complexType name="QuietHoursType">
+    <xs:attribute name="tz" type="NonEmptyString" use="required"/>
+    <xs:attribute name="from" type="ClockTime" use="required"/>
+    <xs:attribute name="to" type="ClockTime" use="required"/>
+    <xs:attribute name="exceptPriority" type="PriorityType" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="RateLimitType">
+    <xs:attribute name="perIncident" type="DurationType" use="required"/>
+  </xs:complexType>
+
+  <!-- Exactly one of priority and surface; the Schematron checks it. -->
+  <xs:complexType name="ForcePushType">
+    <xs:attribute name="priority" type="PriorityType" use="optional"/>
+    <xs:attribute name="surface" type="NonEmptyString" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="DigestType">
+    <xs:attribute name="to" type="NonEmptyString" use="required"/>
+    <xs:attribute name="cron" type="CronType" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="NotificationsType">
+    <xs:sequence>
+      <xs:element name="quietHours" type="QuietHoursType" minOccurs="0"/>
+      <xs:element name="rateLimit" type="RateLimitType" minOccurs="0"/>
+      <xs:element name="forcePush" type="ForcePushType" minOccurs="0" maxOccurs="unbounded"/>
+      <xs:element name="digest" type="DigestType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- 5. Monitoring -->
+
+  <xs:complexType name="CriticalType">
+    <xs:attribute name="surface" type="NonEmptyString" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="MonitorType">
+    <xs:sequence>
+      <xs:element name="critical" type="CriticalType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="interval" type="DurationType" use="optional"/>
+    <xs:attribute name="heartbeat" type="DurationType" use="optional"/>
+    <xs:attribute name="stallAfter" type="DurationType" use="optional"/>
+  </xs:complexType>
+
+  <!-- 6. Escalation -->
+
+  <!-- mention is "owner" or "@" plus a person id from the map; the Schematron resolves it. -->
+  <xs:complexType name="AfterType">
+    <xs:attribute name="duration" type="DurationType" use="required"/>
+    <xs:attribute name="mention" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="pagerduty" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="channel" type="NonEmptyString" use="optional"/>
+  </xs:complexType>
+
+  <!-- At least one attribute; the Schematron checks it. -->
+  <xs:complexType name="ApplyWhenType">
+    <xs:attribute name="priority" type="PriorityType" use="optional"/>
+    <xs:attribute name="outage" type="xs:boolean" use="optional"/>
+    <xs:attribute name="monitored" type="xs:boolean" use="optional"/>
+    <xs:attribute name="stalled" type="xs:boolean" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="EscalationType">
+    <xs:sequence>
+      <xs:element name="after" type="AfterType" minOccurs="1" maxOccurs="unbounded"/>
+      <xs:element name="applyWhen" type="ApplyWhenType" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+    <xs:attribute name="name" type="NonEmptyString" use="required"/>
+  </xs:complexType>
+
+  <!-- 7 and 8 -->
+
+  <xs:complexType name="UserSideType">
+    <xs:attribute name="check" type="xs:boolean" use="optional"/>
+    <xs:attribute name="uxFrictionThreshold" type="xs:positiveInteger" use="optional"/>
+    <xs:attribute name="uxFrictionWindow" type="DurationType" use="optional"/>
+  </xs:complexType>
+
+  <xs:complexType name="RecordingsType">
+    <xs:attribute name="maxDuration" type="DurationType" use="optional"/>
+    <xs:attribute name="sampleFps" use="optional">
+      <xs:simpleType>
+        <xs:restriction base="xs:decimal">
+          <xs:minExclusive value="0"/>
+        </xs:restriction>
+      </xs:simpleType>
+    </xs:attribute>
+  </xs:complexType>
+
+  <!-- Root -->
+
+  <xs:element name="playbook">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="signals" type="SignalsType" minOccurs="0">
+          <xs:unique name="intentNameUnique">
+            <xs:selector xpath="p:intent"/>
+            <xs:field xpath="@name"/>
+          </xs:unique>
+        </xs:element>
+        <xs:element name="weights" type="WeightsType" minOccurs="0"/>
+        <xs:element name="ladder" type="LadderType" minOccurs="0" maxOccurs="unbounded"/>
+        <xs:element name="claims" type="ClaimsType" minOccurs="0"/>
+        <xs:element name="notifications" type="NotificationsType" minOccurs="0"/>
+        <xs:element name="monitor" type="MonitorType" minOccurs="0"/>
+        <xs:element name="escalation" type="EscalationType" minOccurs="0" maxOccurs="unbounded"/>
+        <xs:element name="userSide" type="UserSideType" minOccurs="0"/>
+        <xs:element name="recordings" type="RecordingsType" minOccurs="0"/>
+      </xs:sequence>
+      <xs:attribute name="version" type="xs:string" use="optional" fixed="1"/>
+    </xs:complexType>
+    <xs:unique name="escalationNameUnique">
+      <xs:selector xpath="p:escalation"/>
+      <xs:field xpath="@name"/>
+    </xs:unique>
+  </xs:element>
+
+</xs:schema>
