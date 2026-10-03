@@ -149,6 +149,7 @@ import { createGitHubClient, type GitHubClient } from '../github/client.ts';
 import { createCodeownersResolver } from '../github/codeowners.ts';
 import { createFixerGitHub } from '../github/fixer-github.ts';
 import { createGitHubOAuth } from '../github/oauth.ts';
+import { createGitHubProjector } from '../github/projector.ts';
 import { createGitHubRepoReader } from '../github/repo-reader.ts';
 import { repoFullName } from '../github/repo.ts';
 import { createJiraClient, jiraSearch, type JiraClient } from '../jira/client/index.ts';
@@ -1180,6 +1181,15 @@ export const compose: ComposeFn = async (deps) => {
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`jira projector: ${message(e)}`),
   });
+  // PR comments (B 7.1): `target='github'` `add-comment` rows, batched per incident within 60 s (#336).
+  const githubProjector = createGitHubProjector({
+    state,
+    auth,
+    workspaceId,
+    now: clock,
+    ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
+    onError: (e) => log.error(`github projector: ${message(e)}`),
+  });
   const statusProjector = createSlackStatusProjector({
     state,
     web,
@@ -1317,6 +1327,7 @@ export const compose: ComposeFn = async (deps) => {
     },
     { name: 'reconcile schedule', start: () => workflow.cron(RECONCILE_JOB, DEFAULT_RECONCILE_CRON), stop: () => Promise.resolve() },
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
+    { name: 'github projector', start: async () => githubProjector.start(), stop: () => githubProjector.stop() },
     { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
     ...phase4WorkerServices,
     ...monitorServices,
@@ -1331,7 +1342,7 @@ export const compose: ComposeFn = async (deps) => {
     apiServices,
     workerServices,
     async metrics() {
-      return mergePrometheus([await jiraProjector.metrics(), await statusProjector.metrics()]);
+      return mergePrometheus([await jiraProjector.metrics(), await githubProjector.metrics(), await statusProjector.metrics()]);
     },
     deps: { fixer: fixerDeps, review: reviewDeps },
   };

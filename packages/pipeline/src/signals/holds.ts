@@ -27,7 +27,7 @@
 //   the expiry over.
 //
 // What this does not do: it never posts to chat itself (`say`), and the PR comment is an outbox row for
-// target `github`, op `add-pr-comment` (payload `{ repo, prNumber, text }`), for the GitHub projector.
+// target `github`, op `add-comment` (payload `{ repo, prNumber, text }`), for the GitHub projector.
 
 import type { AutonomyLevel, EventActor, EventPayloads, EventType, IncidentEvent, NewEvent } from '../contracts/events.ts';
 import { timerKey, type Job } from '../contracts/jobs.ts';
@@ -275,7 +275,7 @@ export function createHolds(deps: HoldsDeps): Holds {
       await deps.state.enqueueOutbox(row(incidentId, 'jira', 'add-comment', { issueKey: incident.jiraKey, text }, jiraCommentBatchKey(incidentId)));
     }
     if (opts.pr && incident?.prNumber !== undefined && incident.repo !== undefined) {
-      await deps.state.enqueueOutbox(row(incidentId, 'github', 'add-pr-comment', { repo: incident.repo, prNumber: incident.prNumber, text }));
+      await deps.state.enqueueOutbox(row(incidentId, 'github', 'add-comment', { repo: incident.repo, prNumber: incident.prNumber, text }));
     }
   }
 
