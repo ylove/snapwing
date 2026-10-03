@@ -24,6 +24,10 @@
 //   incident falls back to the level 2 path (main 11.2: review requested, the card says which gate
 //   failed and why) and a later run of this job is a no-op.
 // - a Stop (`stopped` newer than the last `filed`): nothing; the stop already closed the PR.
+// - every gate passes but the workspace instructions hold the merge (A 6.4, `checkInstructions` in
+//   instructions.ts, asked only then and only when `instructionsGate` is set): the same `held` and
+//   `level-changed` 3 to 2 as a failed gate, with the status sentence as the reason ("Holding for the
+//   release window per workspace instructions"). A human's Merge tap on the 11.2 card still merges.
 //
 // Waiting, not failing: no review for the open PR yet, or required checks still pending with none
 // failing while every other gate passes. The job appends nothing and the next webhook starts it again.
@@ -47,7 +51,7 @@
 import type { AutonomyLevel, IncidentEvent, NewEvent } from '../contracts/events.ts';
 import { keySegment, timerKey } from '../contracts/jobs.ts';
 import { DEFAULT_MERGE_FORBIDDEN, type MergeConfig } from '../config/app-config.ts';
-import { appendDecided, currentLevel, latest, lastSeqOf, newEvent, stoppedSinceFiled } from '../fixer/job.ts';
+import { appendDecided, currentLevel, instructionsIncident, latest, lastSeqOf, newEvent, stoppedSinceFiled } from '../fixer/job.ts';
 import type { JiraPriorityName, WorkspaceMap } from '../map/types.ts';
 import { resolveAutonomy } from '../policy/autonomy.ts';
 import type { StatePort } from '../ports/state.ts';
@@ -57,6 +61,7 @@ import { parseDuration } from '../util/duration.ts';
 import { repoFullName } from '../util/repo.ts';
 import { awaitingCi, ciResultEvents, recordCiResult } from './ci.ts';
 import { evaluateMergeGate, type ChangedFile, type MergeGateResult, type RequiredCheck, type ReviewVerdict } from './gate.ts';
+import { checkInstructions, type InstructionsGate } from './instructions.ts';
 
 export { statusOf } from './ci.ts';
 
@@ -138,6 +143,8 @@ export interface MergeDeps {
   clock: () => Date;
   /** Called when the revert window closes on a merge that was not reverted (B 5: remove the Revert button). */
   onRevertWindowClosed?: (incidentId: string) => Promise<void>;
+  /** The live workspace instructions and the model that applies them before an autopilot merge (A 6.4). Absent: no check. */
+  instructionsGate?: InstructionsGate;
 }
 
 // Jobs -------------------------------------------------------------------------------------------
@@ -241,6 +248,15 @@ async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeO
     return hold(deps, incidentId, prNumber, pr.headSha, { ...gate, reason: ifGreen.reason ?? 'gate failed' });
   }
   if (gate.decision === 'degrade') return hold(deps, incidentId, prNumber, pr.headSha, gate);
+
+  // Every gate passed: the workspace instructions may still hold this merge, never force one (A 6.4).
+  const instructed = await checkInstructions(deps.instructionsGate, {
+    step: 'merge',
+    now: deps.clock(),
+    incident: { ...instructionsIncident(log, incident), repo, priority, level: 3 },
+    pullRequest: { number: prNumber, files: files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions })) },
+  });
+  if (instructed.hold) return hold(deps, incidentId, prNumber, pr.headSha, { ...gate, decision: 'degrade', reason: instructed.status });
 
   let merge: MergeResult;
   try {

@@ -9,7 +9,8 @@
 //                        than the last `filed`, when an engineer's claim holds the fixer (A 2.1,
 //                        `claimHold` in engine/claims.ts: claimed before any fixer start and not yet
 //                        handed back or released), when a run is still going, or when this attempt
-//                        already ran since the last `filed`. Otherwise it loads the latest version of
+//                        already ran since the last `filed`, or when the workspace instructions held the
+//                        start and no person has asked for one since (below). Otherwise it loads the latest version of
 //                        the implementation request `planned` references, mints the run id, appends
 //                        `fixer-started { runId, harness, attempt }` (the refusals are decided again on
 //                        the append's read), schedules `timer.fixer-budget` (key
@@ -19,6 +20,15 @@
 //                        appends `fixer-failed { reason: 'runner-error: ...', attempts: 0 }` and runs
 //                        `handleFixerFailed`. When a stop or a budget expiry landed while the runner
 //                        was starting (its cancel found no run then), it cancels the new run.
+//                        Workspace instructions (A 6.3, A 6.4; merge/instructions.ts): before the first
+//                        attempt that starts on the agent's own (level 2 or 3, no person asked since
+//                        `filed`), `checkInstructions` asks whether an instruction holds the start. A
+//                        hold appends `level-changed` to 0 (ticket-only) with `fixerHoldReason` (the
+//                        status sentence and the handle to mention) and starts nothing. After it, only a
+//                        person starts the fixer (`humanStartAfter`: a Jira transition, a Fix it tap, a
+//                        claim handed back); that start wins and appends, after `fixer-started`,
+//                        `level-changed` back to at most 2 with `instructions-overridden:` and the
+//                        person as actor.
 //   timer.fixer-budget   when its run is still the running one: appends `fixer-failed
 //                        { reason: 'budget-exceeded' }`, cancels the run, then `handleFixerFailed`.
 //   handleFixerDone      cancels the budget timer. The fixer API (B 9) calls it after `fixer-done`.
@@ -37,6 +47,17 @@ import type { ArtifactRef, AutonomyLevel, EventActor, EventPayloads, EventSource
 import { fixerRunKey, isFixerBudgetData, isFixerRunData, timerKey, type FixerBudgetData, type FixerRunData } from '../contracts/jobs.ts';
 import { isExpectedSeqConflict } from '../contracts/state.ts';
 import { claimHold } from '../engine/claims.ts';
+import {
+  checkInstructions,
+  fixerHoldReason,
+  INSTRUCTIONS_FIXER_HELD_LEVEL,
+  INSTRUCTIONS_HELD_REASON_PREFIX,
+  INSTRUCTIONS_OVERRIDDEN_REASON_PREFIX,
+  type InstructionsCheck,
+  type InstructionsGate,
+  type InstructionsIncident,
+} from '../merge/instructions.ts';
+import type { IncidentView } from '../contracts/state.ts';
 import type { FixerBudget, HarnessChoice, RunnerPort } from '../ports/runner.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
@@ -89,6 +110,8 @@ export interface FixerDeps {
   github: FixerGitHub;
   config: FixerConfig;
   clock: () => Date;
+  /** The live workspace instructions and the model that applies them before a fixer start (A 6.4). Absent: no check. */
+  instructionsGate?: InstructionsGate;
 }
 
 export function fixerBudget(config: FixerConfig): FixerBudget {
@@ -126,7 +149,7 @@ export type FixerRunOutcome =
   | { started: true; runId: string }
   | { started: false; reason: StartRefusal | 'not-filed' | 'no-request' | 'no-repo' | 'runner-failed' };
 
-type StartRefusal = 'stopped' | 'claimed' | 'running' | 'attempt-done';
+type StartRefusal = 'stopped' | 'claimed' | 'running' | 'attempt-done' | 'instructions-held';
 
 /** The `fixer.run` handler. */
 export async function runFixerJob(deps: FixerDeps, data: FixerRunData): Promise<FixerRunOutcome> {
@@ -147,18 +170,36 @@ export async function runFixerJob(deps: FixerDeps, data: FixerRunData): Promise<
   const repo = incident?.repo;
   if (repo === undefined || repo === '') return { started: false, reason: 'no-repo' };
 
+  // Instructions only ever hold a start the agent makes on its own; a person's start wins (A 6.4).
+  const instructed: InstructionsCheck = instructionsApply(log, data.attempt)
+    ? await checkInstructions(deps.instructionsGate, {
+        step: 'fixer-start',
+        now: deps.clock(),
+        incident: instructionsIncident(log, incident),
+        implementationRequest: artifact.body,
+      })
+    : { hold: false };
+
   const budget = fixerBudget(deps.config);
   const runId = ulid();
-  let refused: StartRefusal = 'stopped';
+  // Set by the decision that appended nothing, or that appended the instructions hold instead of a start.
+  const decided: { refused: StartRefusal } = { refused: 'stopped' };
   const appended = await appendDecided(deps.state, incidentId, (events) => {
     const again = refuseStart(events, data.attempt);
     if (again !== undefined) {
-      refused = again;
+      decided.refused = again;
       return undefined;
     }
-    return [newEvent(deps, incidentId, 'fixer-started', { runId, harness: harnessName(deps.config.harness), attempt: data.attempt })];
+    if (instructed.hold && instructionsApply(events, data.attempt)) {
+      decided.refused = 'instructions-held';
+      const from = currentLevel(events) ?? 3;
+      return [newEvent(deps, incidentId, 'level-changed', { from, to: INSTRUCTIONS_FIXER_HELD_LEVEL, reason: fixerHoldReason(instructed) })];
+    }
+    decided.refused = 'stopped';
+    const started = newEvent(deps, incidentId, 'fixer-started', { runId, harness: harnessName(deps.config.harness), attempt: data.attempt });
+    return [started, ...overrideEvents(deps, incidentId, events)];
   });
-  if (!appended.appended) return { started: false, reason: refused };
+  if (!appended.appended || decided.refused === 'instructions-held') return { started: false, reason: decided.refused };
 
   // Scheduled before the start, so a start that hangs, or a worker that dies here, still ends in
   // `fixer-failed` when the budget runs out.
@@ -376,10 +417,80 @@ function runEnd(events: readonly IncidentEvent[], runId: string): IncidentEvent 
 function refuseStart(log: readonly IncidentEvent[], attempt: number): StartRefusal | undefined {
   if (stoppedSinceFiled(log)) return 'stopped';
   if (claimHold(log) !== undefined) return 'claimed';
+  const held = instructionsFixerHold(log);
+  if (held !== undefined && humanStartAfter(log, held.seq) === undefined) return 'instructions-held';
   if (activeRun(log) !== undefined) return 'running';
   const since = lastSeqOf(log, 'filed');
   const ran = log.some((e) => e.seq > since && e.type === 'fixer-started' && e.payload.attempt === attempt);
   return ran ? 'attempt-done' : undefined;
+}
+
+// Workspace instructions at the fixer start (A 6.4) ----------------------------------------------
+
+/** The level a person's start after an instructions hold restores at most: a person merges what it opens. */
+const OVERRIDE_MAX_LEVEL: AutonomyLevel = 2;
+
+/**
+ * The `level-changed` that held the fixer start for the instructions, when it is still the level in
+ * force (no later `level-changed`) and came after the last `filed`.
+ */
+export function instructionsFixerHold(events: readonly IncidentEvent[]): IncidentEvent<'level-changed'> | undefined {
+  const last = latest(events, 'level-changed');
+  if (last === undefined || last.seq <= lastSeqOf(events, 'filed')) return undefined;
+  return last.payload.reason.startsWith(INSTRUCTIONS_HELD_REASON_PREFIX) ? last : undefined;
+}
+
+/**
+ * The latest request by a person to start the fixer after `seq`: a Jira transition (the In Progress
+ * webhook or the reconciler starts the fixer on it), a Fix it tap, or a claim handed back. Agent
+ * events carry no actor, so the agent's own Jira transition never counts.
+ */
+export function humanStartAfter(events: readonly IncidentEvent[], seq: number): IncidentEvent | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i];
+    if (e === undefined || e.seq <= seq) break;
+    if (e.actor === undefined) continue;
+    if (e.type === 'jira-transitioned' || e.type === 'let-agent-take' || (e.type === 'tapped' && e.payload.choice === 'approve_fix')) return e;
+  }
+  return undefined;
+}
+
+/** Whether this start asks the instructions: the first attempt, on the agent's own (level 2 or 3, nobody asked), not already held. */
+function instructionsApply(events: readonly IncidentEvent[], attempt: number): boolean {
+  if (attempt !== 1 || instructionsFixerHold(events) !== undefined) return false;
+  const level = currentLevel(events);
+  return level !== undefined && level >= 2 && humanStartAfter(events, lastSeqOf(events, 'filed')) === undefined;
+}
+
+/** After an instructions hold, the person's start restores the level (at most 2), recorded with them as actor. */
+function overrideEvents(deps: Pick<FixerDeps, 'workspaceId' | 'clock'>, incidentId: string, events: readonly IncidentEvent[]): NewEvent[] {
+  const held = instructionsFixerHold(events);
+  const human = held === undefined ? undefined : humanStartAfter(events, held.seq);
+  if (held === undefined || human?.actor === undefined) return [];
+  const to = held.payload.from < OVERRIDE_MAX_LEVEL ? held.payload.from : OVERRIDE_MAX_LEVEL;
+  const reason = `${INSTRUCTIONS_OVERRIDDEN_REASON_PREFIX} started by ${human.actor.id} (${human.type}) over the workspace instructions hold`;
+  return [newEvent(deps, incidentId, 'level-changed', { from: held.payload.to, to, reason }, { actor: human.actor, source: human.source })];
+}
+
+/** What the instructions check sees about the incident: the row (corrections folded in), the report, the plan. */
+export function instructionsIncident(log: readonly IncidentEvent[], incident: IncidentView | null | undefined): InstructionsIncident {
+  const captured = latest(log, 'captured')?.payload;
+  const planned = latest(log, 'planned')?.payload;
+  const level = currentLevel(log);
+  const fields: Record<string, string | undefined> = {
+    issueKey: incident?.jiraKey ?? latest(log, 'filed')?.payload.jiraKey,
+    summary: incident?.summary ?? planned?.summary,
+    surfaceId: incident?.surfaceId,
+    componentId: incident?.componentId,
+    repo: incident?.repo,
+    priority: incident?.priority ?? planned?.priority,
+  };
+  const known = Object.fromEntries(Object.entries(fields).filter((e): e is [string, string] => e[1] !== undefined && e[1] !== ''));
+  return {
+    ...known,
+    ...(level === undefined ? {} : { level }),
+    ...(captured === undefined ? {} : { reporter: { name: captured.reporter.name, role: captured.reporter.role }, report: captured.anchorText }),
+  };
 }
 
 /** The implementation request the latest plan references. */

@@ -16,7 +16,11 @@
 // - `merged`: "Merged by X. Rolling out to staging." by a human, or "Merged automatically" with
 //   Revert when autopilot merged (level 3 at merge time).
 // - `held` at a gate: "Held for human review: <reason>. @owner requested." An environment hold changes
-//   nothing.
+//   nothing. A hold for the workspace instructions (A 6.4) reads "Holding for the release window per
+//   workspace instructions. @owner requested."
+// - `level-changed` that records the workspace instructions holding the fixer start (A 6.4,
+//   merge/instructions.ts): "Filed as KEY. Holding for <reason> per workspace instructions. Over to
+//   @named." with the person the instruction names, else the owner, and no Stop.
 // - `stopped`: "Stopped by X. Ticket back in Backlog."
 // - `fixer-failed`: "Couldn't produce a passing fix." with the draft line when the fixer pushed a
 //   partial branch.
@@ -41,6 +45,7 @@
 import type { IncidentEvent } from '../contracts/events.ts';
 import type { StatusUpdate } from '../contracts/adapters.ts';
 import type { IncidentStatus, IncidentView } from '../contracts/state.ts';
+import { parseFixerHoldReason } from '../merge/instructions.ts';
 import { makeStatusUpdate, type StatusCopyContext } from './copy.ts';
 
 /** The lowest autonomy level at which filing starts the fixer at once (main 12: Stop on filed at 2 and 3). */
@@ -84,6 +89,11 @@ export function statusFor(event: IncidentEvent, incident: IncidentView, before?:
     case 'held':
       if (event.payload.kind !== 'gate' || !moved('held')) return undefined;
       return makeStatusUpdate('held', ctx({ ...owner, reason: event.payload.reason }));
+    case 'level-changed': {
+      const held = parseFixerHoldReason(event.payload.reason);
+      if (held === undefined) return undefined;
+      return makeStatusUpdate('filed', ctx({ ...(held.mention === undefined ? owner : { ownerUserId: held.mention }), instructionsHold: held.status }));
+    }
     case 'stopped':
       return moved('stopped') ? makeStatusUpdate('stopped', ctx(actorOf(event))) : undefined;
     case 'fixer-failed':
