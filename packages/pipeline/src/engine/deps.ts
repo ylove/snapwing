@@ -10,6 +10,8 @@ import type { NewEvent } from '../contracts/events.ts';
 import type { CanonicalIncidentPayload, ChannelSource, Resolution } from '../contracts/incident.ts';
 import type { OutboxItem } from '../contracts/state.ts';
 import type { JiraSearch } from '../dedupe/index.ts';
+import type { WorkspaceInstructions } from '../config/instructions.ts';
+import type { Playbook } from '../config/playbook.ts';
 import type { WorkspaceMap } from '../map/types.ts';
 import type { CachePort } from '../ports/cache.ts';
 import type { ModelPort } from '../ports/model.ts';
@@ -88,6 +90,13 @@ export interface EngineDeps {
   cache: CachePort;
   /** The loaded workspace map, or a getter that returns the current one. */
   map: WorkspaceMap | (() => Promise<WorkspaceMap>);
+  /**
+   * The live playbook (A 6.2) and INSTRUCTIONS.md (A 6.3). Getters, never captured copies: a hot reload
+   * swaps what they return, so call them at the point of use. Absent means the defaults and no
+   * instructions. The instructions go to `plan(...)`, `maybeAsk(...)`, and `SynthesisContext` (#283).
+   */
+  playbook?: () => Playbook;
+  instructions?: () => WorkspaceInstructions | undefined;
   /** A read-only view of the resolved repo for the triage scout; absent means no scout. */
   repoReader?: (resolution: Resolution) => RepoReader | undefined;
   status?: StatusSubscriber;

@@ -120,6 +120,7 @@ import { createDockerRunner, type DockerModelProxy } from '../providers/docker/r
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
 import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
+import { createConfigWatch, DEFAULT_INSTRUCTIONS_FILE, DEFAULT_PLAYBOOK_FILE } from './config-watch.ts';
 import type { Route } from './http.ts';
 import type { JobModule } from './worker.ts';
 
@@ -423,6 +424,12 @@ export const compose: ComposeFn = async (deps) => {
 
   const workspaceId = await ensureInstallWorkspace(store);
   const getMap = await loadMap(state, env['SNAPWING_MAP']?.trim() || DEFAULT_MAP_FILE, log);
+  const configWatch = await createConfigWatch({
+    playbookPath: env['SNAPWING_PLAYBOOK']?.trim() || DEFAULT_PLAYBOOK_FILE,
+    instructionsPath: env['SNAPWING_INSTRUCTIONS']?.trim() || DEFAULT_INSTRUCTIONS_FILE,
+    getMap,
+    log,
+  });
   const cache = createKvCache(store);
   const workRoot = env['SNAPWING_WORKDIR_ROOT']?.trim() || join(tmpdir(), 'snapwing-work');
 
@@ -600,6 +607,10 @@ export const compose: ComposeFn = async (deps) => {
     jiraSearch: jiraSearch(jira),
     cache,
     map: getMap,
+    // Getters, so a hot reload (config-watch.ts) reaches the next call. #291's successor: read
+    // `deps.instructions?.()` in engine/steps.ts and pass it to plan, maybeAsk, and SynthesisContext.
+    playbook: configWatch.playbook,
+    instructions: configWatch.instructions,
     repoReader: (resolution) => (resolution.repo === undefined || resolution.repo === '' ? undefined : createGitHubRepoReader(auth, { repo: repoFullName(resolution.repo) })),
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
     status: createStatusSubscriber({ workspaceId, clock }),
@@ -770,8 +781,11 @@ export const compose: ComposeFn = async (deps) => {
     }),
   ];
 
+  // Both processes read the files, so each starts the watch (start and stop are idempotent).
+  const configService: ComposedService = { name: 'playbook and instructions watch', start: () => configWatch.start(), stop: () => configWatch.stop() };
   const apiServices: ComposedService[] = [
     { name: `slack ${socket ? 'socket mode' : 'http'} transport`, start: () => transport.start(), stop: () => transport.stop() },
+    configService,
   ];
   const workerServices: ComposedService[] = [
     {
@@ -791,6 +805,7 @@ export const compose: ComposeFn = async (deps) => {
     { name: 'reconcile schedule', start: () => workflow.cron(RECONCILE_JOB, DEFAULT_RECONCILE_CRON), stop: () => Promise.resolve() },
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
+    configService,
   ];
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
   log.info(`composed: slack ${socket ? 'socket mode' : 'http'}, runner ${config.runtime.provider}${proxied}, workspace ${workspaceId}`);
