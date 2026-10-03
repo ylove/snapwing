@@ -15,7 +15,9 @@ import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import type { JiraProjectStatus, JiraStatusOverrides } from '@snapwing/pipeline/jira/statuses.ts';
 import { createJiraClient } from '../../src/jira/client/index.ts';
+import { createStatusResolver } from '../../src/jira/projector/statuses.ts';
 import { createJiraWebhookRoute, JIRA_WEBHOOK_PATH, type JiraWebhookDeps } from '../../src/webhooks/jira.ts';
 
 const BASE = 'https://example.atlassian.net';
@@ -288,6 +290,48 @@ describe('fixer trigger (main 10.1) and Stop (main 10.4)', () => {
     expect(runner.started).toHaveLength(1);
     expect((await log()).filter((e) => e.type === 'fixer-started')).toHaveLength(1);
     expect(await jiraEvents()).toHaveLength(1);
+  });
+
+  describe('the in-progress status is the project\u2019s own (#269)', () => {
+    const DOING: JiraProjectStatus[] = [
+      { name: 'To Do', category: 'new' },
+      { name: 'Doing', category: 'indeterminate' },
+      { name: 'Done', category: 'done' },
+    ];
+    const BOTH: JiraProjectStatus[] = [...DOING, { name: 'In Progress', category: 'indeterminate' }];
+
+    function movedTo(name: string, updated: string): Fixture {
+      const hook = variant(fixture('issue-updated-in-progress'), { updated });
+      const items = (hook['changelog'] as { items: Record<string, unknown>[] }).items;
+      if (items[0] !== undefined) items[0]['toString'] = name;
+      return hook;
+    }
+
+    function resolving(statuses: JiraProjectStatus[], overrides: JiraStatusOverrides = {}): (req: Request) => Promise<Response> {
+      return route({ statuses: createStatusResolver({ projectStatuses: () => Promise.resolve(statuses) }, overrides) });
+    }
+
+    it('starts on a transition to the configured status, and not on the literal name', async () => {
+      await filed(3);
+      const handler = resolving(BOTH, { 'in-progress': 'Doing' });
+      await deliver(handler, movedTo('In Progress', '2026-10-02T12:03:00.000+0000'));
+      expect(runner.started).toEqual([]);
+      await deliver(handler, movedTo('Doing', '2026-10-02T12:04:00.000+0000'));
+      expect(runner.started).toHaveLength(1);
+    });
+
+    it('starts on the category fallback when the workflow has no status named In Progress', async () => {
+      await filed(3);
+      await deliver(resolving(DOING), movedTo('doing', '2026-10-02T12:03:00.000+0000'));
+      expect(runner.started).toHaveLength(1);
+    });
+
+    it('falls back to In Progress when the project statuses cannot be read', async () => {
+      await filed(3);
+      const failing = route({ statuses: { resolve: () => Promise.reject(new Error('jira unavailable')) } });
+      await deliver(failing, movedTo('In Progress', '2026-10-02T12:03:00.000+0000'));
+      expect(runner.started).toHaveLength(1);
+    });
   });
 
   it('does not start the fixer when the Implementation Prompt is empty', async () => {

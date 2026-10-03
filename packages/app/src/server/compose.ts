@@ -111,13 +111,14 @@ import { repoFullName } from '../github/repo.ts';
 import { createJiraClient, jiraSearch, type JiraClient } from '../jira/client/index.ts';
 import { createJiraProjector } from '../jira/projector/drain.ts';
 import { CUSTOM_FIELD_ENV, requireCustomFieldIds } from '../jira/projector/fields.ts';
+import { createStatusResolver } from '../jira/projector/statuses.ts';
 import { fetchScreenshot, screenshotFilename, type LoadScreenshot } from '../jira/projector/ops.ts';
 import { createModelProxyRoutes, MODEL_PROXY_PREFIX, type ModelProviderUpstream, type ModelProxyProvider } from '../model-proxy/routes.ts';
 import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier } from '../model-proxy/token.ts';
 import { createDockerRunner, type DockerModelProxy } from '../providers/docker/runner.ts';
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
-import { createJiraWebhookRoute, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
+import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
 import type { Route } from './http.ts';
 import type { JobModule } from './worker.ts';
 
@@ -632,6 +633,8 @@ export const compose: ComposeFn = async (deps) => {
 
   // Projectors.
   const pollIntervalMs = overrides.projectorPollMs;
+  // The webhook and the reconciler resolve the in-progress status the way the projector does (#269).
+  const jiraStatuses = createStatusResolver(jira, config.jira.statuses);
   const jiraProjector = createJiraProjector({
     state,
     client: jira,
@@ -682,7 +685,7 @@ export const compose: ComposeFn = async (deps) => {
       await retryFixerAfterCiRed(fixerDeps, incident.id);
     } else if (event.type === 'jira-transitioned') {
       const payload = (event as IncidentEvent<'jira-transitioned'>).payload;
-      if (payload.to === 'In Progress' && fixerMayStart(incident)) await startFixer(fixerDeps, { incidentId: incident.id, attempt: 1 });
+      if (incident.jiraKey !== undefined && (await isInProgressStatus(jiraStatuses, incident.jiraKey, payload.to)) && fixerMayStart(incident)) await startFixer(fixerDeps, { incidentId: incident.id, attempt: 1 });
     }
   }
 
@@ -692,6 +695,7 @@ export const compose: ComposeFn = async (deps) => {
     { method: 'POST', path: JIRA_WEBHOOK_PATH, handler: createJiraWebhookRoute({
       fixer: fixerDeps,
       jira,
+      statuses: jiraStatuses,
       ...(s.has('JIRA_WEBHOOK_SECRET') ? { secret: secret('JIRA_WEBHOOK_SECRET') } : {}),
       implementationPromptFieldId: customFieldIds['Implementation Prompt'] ?? '',
     }) },
