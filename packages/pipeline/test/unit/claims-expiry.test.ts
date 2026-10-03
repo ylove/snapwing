@@ -169,7 +169,7 @@ describe('environment hold (A 2.3)', () => {
     expect(ticket).toContain('Do not redeploy staging: @dana is investigating there as of 9:00 AM UTC.');
     const pr = await outbox('github');
     expect(pr).toHaveLength(1);
-    expect(pr[0]).toMatchObject({ op: 'add-pr-comment', payload: { repo: 'fake-org/web', prNumber: 17 } });
+    expect(pr[0]).toMatchObject({ op: 'add-comment', payload: { repo: 'fake-org/web', prNumber: 17 } });
     expect(String(pr[0]?.payload['text'])).toContain('Do not redeploy staging');
     // The next step is not a deploy at this point, so no waiting line.
     expect(await types()).not.toContain('waiting-changed');
