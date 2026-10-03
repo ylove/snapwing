@@ -165,6 +165,13 @@ export interface TextSignalDeps {
    */
   environmentHint?: (incident: IncidentView) => Promise<string | undefined>;
   clock: () => Date;
+  /**
+   * How long a tap on the scope-change card waits for its proposal to reach the log (#354). The card is
+   * posted before the proposal is recorded (the record carries the card's message id), so a tap can land
+   * in between; it re-reads the log every `stepMs` for up to `maxMs` (defaults 100 ms and 5 s) before it
+   * is refused as not pending. `sleep` is a seam for tests.
+   */
+  proposalWait?: { maxMs?: number; stepMs?: number; sleep?: (ms: number) => Promise<void> };
 }
 
 /** A message in an incident's thread. */
@@ -267,7 +274,7 @@ export async function answerScopeChange(
 ): Promise<TextSignalOutcome> {
   const incident = await deps.state.getIncident(answer.incidentId);
   if (incident === null) return skip('no-target');
-  const proposal = scopeProposal(await deps.state.read(incident.id), answer.messageId);
+  const proposal = await awaitScopeProposal(deps, incident.id, answer.messageId);
   if (proposal === undefined) return skip('not-pending');
   if (proposal.decided) return skip('already-decided');
   const author = proposal.event.actor;
@@ -305,6 +312,24 @@ export async function answerScopeChange(
     };
   });
 }
+
+/**
+ * The proposal for `messageId`, waiting (bounded, see `TextSignalDeps.proposalWait`) for one still being
+ * recorded: the card is posted first, so an early tap finds nothing yet (#354).
+ */
+async function awaitScopeProposal(deps: TextSignalDeps, incidentId: string, messageId: string): Promise<ReturnType<typeof scopeProposal>> {
+  const maxMs = deps.proposalWait?.maxMs ?? PROPOSAL_WAIT_MS;
+  const stepMs = Math.max(1, deps.proposalWait?.stepMs ?? PROPOSAL_STEP_MS);
+  const sleep = deps.proposalWait?.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let waited = 0; ; waited += stepMs) {
+    const found = scopeProposal(await deps.state.read(incidentId), messageId);
+    if (found !== undefined || waited >= maxMs) return found;
+    await sleep(stepMs);
+  }
+}
+
+const PROPOSAL_WAIT_MS = 5_000;
+const PROPOSAL_STEP_MS = 100;
 
 /**
  * The named person took the handoff: a `claim` reaction anywhere on the incident (the caller passes
