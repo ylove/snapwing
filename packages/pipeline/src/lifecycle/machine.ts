@@ -296,6 +296,8 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'bot-message-posted',
   // A 6.2 escalation ladders (#299): mentions, posts, pages; never a status change (unlike `escalated`).
   'escalation-ladder',
+  // A 3 text signals (#294): the steps are records; `closed` and `jira-priority-changed` move state.
+  'text-signal',
 ]);
 
 export interface TransitionResult {

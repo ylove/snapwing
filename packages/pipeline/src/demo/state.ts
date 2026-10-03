@@ -108,6 +108,7 @@ const PAYLOAD_SHAPES = {
   'bot-message-posted': { platform: 'string', channel: 'string', messageId: 'string', role: 'string' },
   'escalation-ladder': { phase: 'string', ladder: 'string', step: 'number?', after: 'string?', mention: 'string?', mentioned: 'string?', channel: 'string?', pagerduty: 'string?', paged: 'boolean?', posted: 'boolean?', reason: 'string?' },
   'user-side': { kind: 'string', evidence: 'string', questionSeq: 'number', surfaceId: 'string?' },
+  'text-signal': { kind: 'string', messageId: 'string', phase: 'string?', text: 'string?', confidence: 'number?', env: 'string?', from: 'string?', priority: 'object?', resolution: 'string?', where: 'string?', cardMessageId: 'string?', linkedIncidentId: 'string?', to: 'string?', expiresAt: 'string?', via: 'string?' },
 } as const satisfies { readonly [K in EventType]: Shape };
 
 /** Closed value sets for the discriminants and enums a typo would silently break. */
@@ -123,6 +124,11 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
   'bot-message-posted': { platform: ['slack', 'teams'], role: ['scope-preview', 'dedupe', 'fix-preview', 'pr', 'staging-check', 'status', 'other'] },
   'escalation-ladder': { phase: ['started', 'step', 'stopped'] },
   'user-side': { kind: USER_SIDE_KINDS },
+  'text-signal': {
+    kind: ['environment', 'resolution', 'scope-change', 'handoff'],
+    phase: ['asked', 'confirmed', 'declined', 'proposed', 'split', 'same', 'accepted'],
+    via: ['reaction', 'message'],
+  },
 };
 
 function kindOf(value: unknown): Kind | 'null' | 'other' {
