@@ -3,8 +3,9 @@
   Implementation request (main 9.2, Companion B 6.2).
   Written by triage into the Jira custom field, read by the fixer and the review agent.
   One root element, two shapes selected by @kind:
-    single (default): intent, evidence, diagnosis?, constraints, handoff
-    parent:           intent, workItems, mergeOrder, handoff   (multi-repo, B 6.2)
+    single (default): intent, evidence, diagnosis?, constraints, handoff, workspace-instructions?
+    parent:           intent, workItems, mergeOrder, handoff, workspace-instructions?   (multi-repo, B 6.2)
+  workspace-instructions is the workspace's INSTRUCTIONS.md (Companion A 6.3), prose for the model.
   XSD 1.0 cannot tie the content shape to @kind; the parseImplementationRequest helper does.
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
@@ -84,6 +85,7 @@
           </xs:sequence>
         </xs:choice>
         <xs:element name="handoff" type="Handoff"/>
+        <xs:element name="workspace-instructions" type="NonEmptyText" minOccurs="0"/>
       </xs:sequence>
       <xs:attribute name="issue" type="IssueKey" use="required"/>
       <xs:attribute name="surface" type="xs:string"/>

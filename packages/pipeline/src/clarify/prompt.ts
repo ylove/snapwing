@@ -1,6 +1,7 @@
 // Builds the model request for the ask-back question (main 7). The prompt text lives in prompts/clarify.xml.
 
 import { readFile } from 'node:fs/promises';
+import { withInstructions, type WorkspaceInstructions } from '../config/instructions.ts';
 import type { CanonicalIncidentPayload, ContextBundle } from '../contracts/incident.ts';
 import type { ClassifyRequest, JsonSchema } from '../ports/model.ts';
 import type { CandidateQuestion, QuestionAsks, QuestionKind } from './gate.ts';
@@ -36,6 +37,8 @@ export interface ClarifyPromptInput {
   gap: ClarifyGap;
   /** Labels of the surfaces (or the surface's components) the question may offer, from the map. */
   options: readonly string[];
+  /** INSTRUCTIONS.md (A 6.3), appended to the system prompt. Absent means no block. */
+  instructions?: WorkspaceInstructions;
 }
 
 function xml(text: string): string {
@@ -95,7 +98,7 @@ export async function buildClarifyRequest(
   const options = input.options.map((o) => `      <option>${xml(o)}</option>`).join('\n');
   return {
     task: 'clarify',
-    system: prompt.system,
+    system: withInstructions(prompt.system, input.instructions),
     prompt: fill(prompt.request, {
       gap: input.gap,
       'reporter-role': payload.reporter.role,

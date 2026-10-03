@@ -11,7 +11,8 @@ import type {
 import type { MapSurface, WorkspaceMap } from '../map/types.ts';
 import type { ClassifyRequest, JsonSchema, ModelPort } from '../ports/model.ts';
 import { resolveAutonomy } from '../policy/autonomy.ts';
-import { loadTriagePrompts, xmlEscape } from './prompt.ts';
+import type { WorkspaceInstructions } from '../config/instructions.ts';
+import { loadTriagePrompts, triageSystemPrompt, xmlEscape } from './prompt.ts';
 import { scout } from './scout.ts';
 import type { Diagnosis, RepoReader } from './scout.ts';
 
@@ -142,6 +143,7 @@ export async function buildTriageRequest(
   dedupe: DedupeResult,
   map: WorkspaceMap,
   diagnosis?: Diagnosis,
+  instructions?: WorkspaceInstructions,
 ): Promise<ClassifyRequest<TriageDraft>> {
   const prompts = await loadTriagePrompts();
   const candidateKeys = dedupe.candidates.map((c) => c.issueKey);
@@ -149,7 +151,7 @@ export async function buildTriageRequest(
   const componentIds = (surface === undefined ? map.surfaces.flatMap((s) => s.components) : surface.components).map((c) => c.id);
   return {
     task: 'triage',
-    system: prompts.triageSystem,
+    system: triageSystemPrompt(prompts, instructions),
     prompt: buildTriagePrompt(payload, bundle, resolution, dedupe, map, diagnosis),
     schemaName: TRIAGE_SCHEMA_NAME,
     schema: draftSchema(candidateKeys, componentIds),
@@ -171,6 +173,7 @@ export function toAdf(text: string): Record<string, unknown> {
 /**
  * Builds the plan for one incident. With a `repo`, the read-only scout runs first and its diagnosis
  * goes into the triage prompt and onto `plan.diagnosis`. `autonomyLevel` is `resolveAutonomy`, not model output.
+ * `instructions` (INSTRUCTIONS.md, A 6.3) goes into the triage system prompt; the scout does not get it.
  */
 export async function plan(
   payload: CanonicalIncidentPayload,
@@ -180,6 +183,7 @@ export async function plan(
   map: WorkspaceMap,
   model: ModelPort,
   repo?: RepoReader,
+  instructions?: WorkspaceInstructions,
 ): Promise<TriageResolutionPlan> {
   const surface = findSurface(map, resolution);
   const projectKey = resolution.jiraProject ?? surface?.jira.project;
@@ -188,7 +192,7 @@ export async function plan(
   const diagnosis =
     repo === undefined ? undefined : await scout(repo, model, { payload, bundle, resolution, ...(surface === undefined ? {} : { surface }) });
 
-  const { value: draft } = await model.classify(await buildTriageRequest(payload, bundle, resolution, dedupe, map, diagnosis));
+  const { value: draft } = await model.classify(await buildTriageRequest(payload, bundle, resolution, dedupe, map, diagnosis, instructions));
 
   const componentId = draft.componentId ?? resolution.componentId;
   const autonomyLevel = resolveAutonomy(resolution, { priority: draft.priority, ...(componentId === undefined ? {} : { componentId }) }, map);

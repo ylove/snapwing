@@ -1,6 +1,7 @@
 // Loads prompts/triage.xml (main 8.1): the scout and triage system prompts.
 
 import { readFile } from 'node:fs/promises';
+import { withInstructions, type WorkspaceInstructions } from '../config/instructions.ts';
 
 const PROMPT_URL = new URL('../prompts/triage.xml', import.meta.url);
 
@@ -16,6 +17,14 @@ export function parseTriagePrompts(xml: string): TriagePrompts {
     throw new Error('prompts/triage.xml needs <scout-system> and <triage-system>');
   }
   return { scoutSystem: scoutSystem.replace(/\s+/g, ' '), triageSystem: triageSystem.replace(/\s+/g, ' ') };
+}
+
+/**
+ * The triage system prompt with the workspace instructions block (A 6.3) after it: the one place the
+ * block enters triage. Without instructions it is `triageSystem` unchanged.
+ */
+export function triageSystemPrompt(prompts: TriagePrompts, instructions: WorkspaceInstructions | undefined): string {
+  return withInstructions(prompts.triageSystem, instructions);
 }
 
 let cache: Promise<TriagePrompts> | undefined;
