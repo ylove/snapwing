@@ -73,6 +73,14 @@ export class StateStore implements StatePort {
     return projections.getSubscriptions(this.ctx, incidentId);
   }
 
+  subscribe(sub: Subscription): Promise<void> {
+    return projections.putStandingSubscription(this.ctx, sub);
+  }
+
+  unsubscribe(key: { workspaceId: string; userId: string; scopeKind: 'surface' | 'all'; scopeId?: string }): Promise<boolean> {
+    return projections.removeStandingSubscription(this.ctx, key);
+  }
+
   // Artifacts
 
   putArtifact(a: NewArtifact): Promise<{ id: string; version: number }> {

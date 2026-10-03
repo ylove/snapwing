@@ -54,6 +54,29 @@ async function open(): Promise<ConfigWatch> {
   return w;
 }
 
+describe('the playbook cache hook (#329)', () => {
+  it('hands each validated playbook to onPlaybook, and nothing that was rejected', async () => {
+    const cached: string[] = [];
+    await writeFile(playbookPath, playbookXml('<claims expiry="PT2H"/>'));
+    const w = await createConfigWatch({
+      playbookPath,
+      instructionsPath,
+      getMap: () => Promise.resolve(map),
+      log: { info: () => undefined, error: () => undefined },
+      debounceMs: 20,
+      onPlaybook: (xml) => {
+        cached.push(xml);
+        return Promise.resolve();
+      },
+    });
+    watches.push(w);
+    expect(cached).toHaveLength(1);
+    await writeFile(playbookPath, playbookXml('<claims expiry="not-a-duration"/>'));
+    expect(await w.reload('playbook')).toBe(false);
+    expect(cached).toHaveLength(1);
+  });
+});
+
 async function until(check: () => boolean, ms = 5000): Promise<void> {
   const end = Date.now() + ms;
   while (!check()) {

@@ -16,6 +16,12 @@
 //   `slack-status-mirror:{incident}`. The mirror is best effort: a failure there is reported through
 //   `onError` and never fails the row. It is not pinned. A new mirror is recorded as
 //   `bot-message-posted { role: 'status' }`, best effort too.
+// - `notify` rows (A 4.4, `outbox/notify.ts`, #329): a thread message that mentions the watchers, or a
+//   DM to one watcher. Rows that share a `batch_key` and are due together merge into one message: the
+//   union of their mentions once, then each row's line in order. They are posted, not pinned, in the
+//   incident's thread. The reporter's staging request (`reason: request`) is recorded with
+//   `bot-message-posted { role: 'staging-check' }` so a reaction on it resolves (A 1.3). Notify rows
+//   never hold back, or wait behind, the status rows of their incident.
 // - Rows of one incident that pile up (a paused drain) collapse to the latest: each row carries the
 //   whole message, so the older ones are acked unsent.
 // - Failures: HTTP 429 pauses the drain for `Retry-After`, the row untouched. A row that cannot be
@@ -29,10 +35,11 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { botMessagePosted, recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
-import { buildStatusMessage, type SlackUserFor } from './cards/status.ts';
+import { buildStatusMessage, statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { SlackApiError, SlackRateLimitError, type SlackWeb } from './web.ts';
 
 export const STATUS_OP = 'update-status';
+export const NOTIFY_OP = 'notify';
 export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
 export const DEFAULT_MAX_ATTEMPTS = 8;
@@ -111,6 +118,34 @@ function parseStatus(row: OutboxItem): StatusUpdate {
     if (typeof r[k] !== 'string') throw new SlackStatusRowError(row, `payload.status.${k} must be a string`);
   }
   return r as unknown as StatusUpdate;
+}
+
+interface NotifyPayload {
+  delivery: 'thread' | 'dm';
+  mentions: string[];
+  text: string;
+  reason: string;
+}
+
+function parseNotify(row: OutboxItem): NotifyPayload {
+  const p = row.payload;
+  if ((p['delivery'] !== 'thread' && p['delivery'] !== 'dm') || typeof p['text'] !== 'string' || typeof p['reason'] !== 'string') {
+    throw new SlackStatusRowError(row, 'notify payload needs delivery, text and reason');
+  }
+  const mentions = Array.isArray(p['mentions']) ? p['mentions'].filter((m): m is string => typeof m === 'string') : [];
+  return { delivery: p['delivery'], mentions, text: p['text'], reason: p['reason'] };
+}
+
+const LEADING_MENTIONS = /^(?:<@[^>\s]+>\s*)+/;
+
+/** One message from rows of a batch: the mentions of every row once, then each row's line in order. */
+export function mergeNotifyText(rows: readonly NotifyPayload[]): string {
+  const [first] = rows;
+  if (rows.length === 1 && first !== undefined) return first.text;
+  const mentions = [...new Set(rows.flatMap((r) => r.mentions))];
+  const lines = rows.map((r) => (r.delivery === 'thread' ? r.text.replace(LEADING_MENTIONS, '') : r.text));
+  const prefix = mentions.map((m) => `<@${m}>`).join(' ');
+  return [prefix, ...lines].filter((l) => l !== '').join('\n');
 }
 
 const SLACK_ID = /^[UW][A-Z0-9]{2,}$/;
@@ -241,6 +276,35 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
     });
   }
 
+  /** Sends the rows of one notify batch (one thread message, or one DM) as a single message. */
+  async function sendNotify(rows: readonly OutboxItem[], map: WorkspaceMap | undefined): Promise<void> {
+    const [head] = rows;
+    if (head === undefined) return;
+    const parsed = rows.map(parseNotify);
+    const kinds = new Set(parsed.map((p) => p.delivery));
+    if (kinds.size > 1) throw new SlackStatusRowError(head, 'one batch mixes thread and DM rows');
+    const delivery = parsed[0]?.delivery ?? 'thread';
+    const userFor = userForMap(map);
+    const text = statusMrkdwn(mergeNotifyText(parsed), userFor);
+    const body: Body = { text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] };
+    if (delivery === 'dm') {
+      const ref = parsed[0]?.mentions[0];
+      const user = ref === undefined ? undefined : userFor(ref);
+      if (user === undefined) throw new SlackStatusRowError(head, 'a DM notification needs a user that resolves to a Slack id');
+      await web.postMessage({ channel: user, ...body });
+      return;
+    }
+    if (head.incidentId === undefined) throw new SlackStatusRowError(head, 'no incident');
+    const incident = await state.getIncident(head.incidentId);
+    if (incident === null) throw new SlackStatusRowError(head, `unknown incident ${head.incidentId}`);
+    if (incident.channelId === undefined) throw new SlackStatusRowError(head, 'the incident has no channel');
+    const posted = await web.postMessage({ channel: incident.channelId, ...body, ...(await threadOf(incident, incident.channelId)) });
+    if (parsed.some((p) => p.reason === 'request')) {
+      // The reporter's staging request: a reaction on it is the verification (A 1.3).
+      await recordBotMessage(state, incident.id, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'staging-check' }, now);
+    }
+  }
+
   function permanent(err: unknown): boolean {
     return err instanceof SlackStatusRowError || (err instanceof SlackApiError && PERMANENT_SLACK_ERRORS.has(err.error));
   }
@@ -281,8 +345,37 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
     const keyOf = (row: OutboxItem): string => `${row.incidentId ?? ''}\n${row.batchKey ?? ''}`;
     const latest = new Map<string, string>();
     for (const row of rows) if (row.batchKey !== undefined && row.op === STATUS_OP) latest.set(keyOf(row), row.id);
+    // Notify rows of one (incident, batch_key) go out as one message, at the first of them.
+    const batches = new Map<string, OutboxItem[]>();
+    for (const row of rows) {
+      if (row.op !== NOTIFY_OP) continue;
+      const key = keyOf(row);
+      const list = batches.get(key);
+      if (list === undefined) batches.set(key, [row]);
+      else list.push(row);
+    }
     const blocked = new Set<string>();
     for (const row of rows) {
+      if (row.op === NOTIFY_OP) {
+        const batch = batches.get(keyOf(row));
+        if (batch === undefined || batch[0]?.id !== row.id) continue; // sent with the first row of its batch
+        try {
+          await sendNotify(batch, map);
+          await state.ackOutbox(batch.map((r) => r.id));
+          report.sent.push(...batch.map((r) => r.id));
+        } catch (err) {
+          if (err instanceof SlackRateLimitError) {
+            paused = new Date(now().getTime() + err.retryAfterMs);
+            report.pausedUntil = paused.toISOString();
+            return report;
+          }
+          for (const r of batch) {
+            if (await failed(r, err)) report.parked.push(r.id);
+            else report.deferred.push(r.id);
+          }
+        }
+        continue;
+      }
       const lane = row.incidentId;
       if (lane !== undefined && blocked.has(lane)) continue;
       try {

@@ -96,10 +96,10 @@ describe('StatePort signatures (B 1)', () => {
     expectTypeOf<ReturnType<StatePort['append']>>().toEqualTypeOf<Promise<{ seq: number }>>();
   });
 
-  it('keeps the B 1 method set, plus the projector retry methods (#140), dropOutbox (#143), and linked identities (#153)', () => {
+  it('keeps the B 1 method set, plus the projector retry methods (#140), dropOutbox (#143), linked identities (#153), and standing subscriptions (#329)', () => {
     expectTypeOf<keyof StatePort>().toEqualTypeOf<
       | 'append' | 'read' | 'readSince'
-      | 'getIncident' | 'findIncidents' | 'getClaims' | 'getSubscriptions'
+      | 'getIncident' | 'findIncidents' | 'getClaims' | 'getSubscriptions' | 'subscribe' | 'unsubscribe'
       | 'putArtifact' | 'getArtifact'
       | 'seenWebhook' | 'enqueueOutbox' | 'drainOutbox' | 'ackOutbox' | 'deferOutbox' | 'parkOutbox' | 'listParkedOutbox' | 'dropOutbox'
       | 'putConfigVersion' | 'getConfigVersion'

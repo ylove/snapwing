@@ -430,6 +430,8 @@ export const compose: ComposeFn = async (deps) => {
     instructionsPath: env['SNAPWING_INSTRUCTIONS']?.trim() || DEFAULT_INSTRUCTIONS_FILE,
     getMap,
     log,
+    // The notification policy reads the validated playbook from the cache inside the append (A 4.4).
+    onPlaybook: (xml) => state.putConfigVersion('playbook', createHash('sha256').update(xml).digest('hex'), xml),
   });
   const cache = createKvCache(store);
   const workRoot = env['SNAPWING_WORKDIR_ROOT']?.trim() || join(tmpdir(), 'snapwing-work');
@@ -634,7 +636,7 @@ export const compose: ComposeFn = async (deps) => {
     botUserId,
     clock,
   });
-  const slackStatusQuery = createSlackStatusQuery({ web, state, workspaceId, getMap, botUserId, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
+  const slackStatusQuery = createSlackStatusQuery({ web, state, standing: state, workspaceId, getMap, botUserId, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
   const slackHome = createSlackHome({
     web,
     state,

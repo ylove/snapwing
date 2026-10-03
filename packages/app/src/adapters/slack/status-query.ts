@@ -6,6 +6,9 @@
 // - `@Snapwing status on the checkout thing` anywhere: answered in a thread under the mention.
 // - A direct message that reads as a status question ("what's open on the website?", a bare key):
 //   answered in the DM. Any other DM is a capture and goes on to the pipeline untouched.
+// - A direct message that asks to be kept posted ("keep me posted on the website", "stop updating me on
+//   web"): a standing surface subscription (A 4.4, `signals/standing.ts`), confirmed in the DM. Only when
+//   `standing` is given.
 // - `/snapwing-status [key or words]` (A 4.3 says `/status`; Slack reserves that name): answered ephemerally to the asker through the command's `response_url`.
 //
 // `createStatusQueries` is pure over a snapshot and `events(id)` is synchronous, and a thread can match
@@ -24,6 +27,7 @@ import type { Claim, IncidentView, Subscription } from '@snapwing/pipeline/contr
 import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { createStatusQueries, type QueryResolution } from '@snapwing/pipeline/status/query.ts';
 import { statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { actions, section, type SlackBlock } from './cards/blocks.ts';
@@ -46,6 +50,8 @@ export interface SlackStatusQueryOptions {
   workspaceId: string;
   /** The current workspace map; read per question so a config change is picked up. */
   getMap: () => Promise<WorkspaceMap>;
+  /** Writes standing subscriptions asked for in a DM; without it such a DM is not intercepted. */
+  standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
   /** The bot's own user id (`auth.test`): its messages are ignored and its mention is stripped. */
   botUserId: string;
   clock?: () => Date;
@@ -126,6 +132,8 @@ interface Request {
   /** Where a mention's answer goes: the thread it is in, or the thread its own message starts. */
   replyThread?: string;
   text: string;
+  /** A DM that asks for a standing subscription rather than a status. */
+  standing?: boolean;
 }
 
 export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackStatusQuery {
@@ -251,6 +259,9 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
     if (event['type'] === 'app_mention') {
       return { asker: user, channelId: channel, ...(threadTs === '' ? {} : { threadId: threadTs }), replyThread: threadTs === '' ? ts : threadTs, text };
     }
+    if (event['type'] === 'message' && str(event['channel_type']) === 'im' && options.standing !== undefined && parseStandingWatch(text)?.command === false) {
+      return { asker: user, channelId: channel, text, standing: true };
+    }
     if (event['type'] === 'message' && str(event['channel_type']) === 'im' && looksLikeStatusQuestion(raw)) {
       return { asker: user, channelId: channel, text };
     }
@@ -272,6 +283,17 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
         if (seen.size > 1000) seen.delete(seen.values().next().value as string);
       }
       try {
+        if (request.standing === true && options.standing !== undefined) {
+          const outcome = await applyStandingWatch(options.standing, await options.getMap(), {
+            workspaceId: options.workspaceId,
+            userId: request.asker,
+            text: request.text,
+            channel: 'dm',
+            now: clock(),
+          });
+          if (outcome.handled) await web.postMessage({ channel: request.channelId, text: outcome.reply });
+          return;
+        }
         await replyTo(request, async ({ text, blocks }) => {
           // A mention answers in its thread (the mention's own ts starts one); a DM answers in the DM.
           const inThread = request.replyThread === undefined ? {} : { thread_ts: request.replyThread };
