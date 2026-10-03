@@ -1,1 +1,25 @@
-{ "accountId": "5b10a2844c20165700ede21g", "emailAddress": "mia@example.com", "displayName": "Mia Krystof", "active": true }
+{
+  "self": "https://example.atlassian.net/rest/api/3/user?accountId=5b10a2844c20165700ede201",
+  "accountId": "5b10a2844c20165700ede201",
+  "accountType": "atlassian",
+  "emailAddress": "user@example.com",
+  "avatarUrls": {
+    "48x48": "https://example.atlassian.net/avatar/48x48.png",
+    "24x24": "https://example.atlassian.net/avatar/24x24.png",
+    "16x16": "https://example.atlassian.net/avatar/16x16.png",
+    "32x32": "https://example.atlassian.net/avatar/32x32.png"
+  },
+  "displayName": "Test User",
+  "active": true,
+  "timeZone": "Etc/UTC",
+  "locale": "en_US",
+  "groups": {
+    "size": 6,
+    "items": []
+  },
+  "applicationRoles": {
+    "size": 1,
+    "items": []
+  },
+  "expand": "groups,applicationRoles"
+}

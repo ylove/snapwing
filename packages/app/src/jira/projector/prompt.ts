@@ -11,6 +11,7 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { LABEL_PROMPT_FAILED, PLACEHOLDER_ISSUE_NUMBER } from '@snapwing/pipeline/jira/synthesis.ts';
 import { validateImplementationRequest } from '@snapwing/pipeline/prompts/implementation-request.ts';
 import type { JiraClient } from '../client/index.ts';
+import { promptToAdf } from './ops.ts';
 
 const ROOT_TAG = /<implementation-request\b[^>]*>/;
 
@@ -107,6 +108,6 @@ export async function finalizePrompt(input: FinalizePromptInput): Promise<Prompt
       createdBy: input.createdBy,
     }));
   }
-  await client.editIssue(issueKey, { [fieldId]: body });
+  await client.editIssue(issueKey, { [fieldId]: promptToAdf(body) });
   return { status: 'written', version, rewritten };
 }

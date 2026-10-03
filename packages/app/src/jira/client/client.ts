@@ -23,8 +23,6 @@ import type {
   JiraSearchPage,
   JiraTransition,
   UploadAttachmentInput,
-  WebhookRegistration,
-  WebhookSpec,
 } from './types.ts';
 
 export interface JiraClientOptions {
@@ -60,7 +58,6 @@ export interface JiraClient {
   searchJql(jql: string, opts?: SearchJqlOptions): Promise<JiraSearchPage>;
   listFields(): Promise<JiraField[]>;
   createField(input: CreateFieldInput): Promise<JiraField>;
-  registerWebhook(input: { url: string; webhooks: WebhookSpec[] }): Promise<WebhookRegistration[]>;
   /** The account the credentials act as; inbound sync ignores changes made by it. */
   myself(): Promise<JiraMyself>;
   getProject(key: string): Promise<JiraProject>;
@@ -228,11 +225,6 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
     listFields: () => json<JiraField[]>('GET', '/rest/api/3/field'),
 
     createField: (input) => json<JiraField>('POST', '/rest/api/3/field', { json: input }),
-
-    async registerWebhook(input) {
-      const out = await json<{ webhookRegistrationResult: WebhookRegistration[] }>('POST', '/rest/api/3/webhook', { json: input });
-      return out.webhookRegistrationResult;
-    },
 
     myself: () => json<JiraMyself>('GET', '/rest/api/3/myself'),
 

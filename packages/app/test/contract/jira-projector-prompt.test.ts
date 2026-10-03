@@ -17,6 +17,14 @@ import { createJiraProjector } from '../../src/jira/projector/drain.ts';
 import { JiraFieldConfigError, customFieldIdsFromEnv } from '../../src/jira/projector/fields.ts';
 import { rewriteIssueKey } from '../../src/jira/projector/prompt.ts';
 
+/** The XML inside the Implementation Prompt's ADF code block (REST v3 takes the multi-line field as ADF). */
+function adfXml(value: unknown): string {
+  const doc = value as { type: string; content: { type: string; content: { text: string }[] }[] };
+  expect(doc.type).toBe('doc');
+  expect(doc.content[0]?.type).toBe('codeBlock');
+  return doc.content[0]?.content[0]?.text ?? '';
+}
+
 const BASE = 'https://example.atlassian.net';
 const WS = '01K0000000000000000000WS01';
 const T0 = Date.parse('2026-10-02T12:00:00.000Z');
@@ -175,11 +183,11 @@ describe('create-issue then update-fields', () => {
     const createFields = create.body!['fields'] as Record<string, unknown>;
     expect(createFields['customfield_10041']).toBe('https://slack.example.com/archives/C1/p1');
     expect(createFields['customfield_10042']).toBe(2);
-    expect(createFields['customfield_10040']).toContain('issue="WEB-0"');
+    expect(adfXml(createFields['customfield_10040'])).toContain('issue="WEB-0"');
     // Then the update-fields: the real key, in the field named by the bootstrap's id.
     const update = requests.find((r) => r.method === 'PUT')!;
     expect(update.path).toBe('/issue/WEB-5');
-    const prompt = (update.body!['fields'] as Record<string, string>)['customfield_10040']!;
+    const prompt = adfXml((update.body!['fields'] as Record<string, unknown>)['customfield_10040']);
     expect(prompt).toContain('issue="WEB-5"');
     expect(prompt).toContain('attachment:WEB-5/cart-blank.png');
     expect(prompt).not.toContain('WEB-0');

@@ -10,7 +10,9 @@
 //        snapwing.config.xml (`--config <path>`, default snapwing.config.xml, when it exists); print the
 //        mapping, or exit non-zero naming the project's statuses
 //   `pnpm jira:bootstrap webhook` (also needs SNAPWING_PUBLIC_URL): register the webhook at
-//     $SNAPWING_PUBLIC_URL/webhooks/jira for jira:issue_updated and comment_created, filtered to the project
+//     $SNAPWING_PUBLIC_URL/webhooks/jira for jira:issue_updated and comment_created, filtered to the project,
+//     through the admin API (/rest/webhooks/1.0/webhook). With JIRA_WEBHOOK_SECRET set the URL carries
+//     `?secret=<secret>` (the inbound route's check for unsigned REST webhooks); the secret is never printed.
 //   `--dry-run` prints the plan and writes nothing (no Jira writes, no .env.live write).
 // Reads .env.live (then the process environment), never prints a secret, one line per check.
 
@@ -29,6 +31,13 @@ export const REQUIRED_ENV = ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'J
 export const DEFAULT_CONFIG_PATH = 'snapwing.config.xml';
 export const WEBHOOK_EVENTS = ['jira:issue_updated', 'comment_created'] as const;
 export const WEBHOOK_PATH = '/webhooks/jira';
+/**
+ * The admin webhook API. `/rest/api/3/webhook` answers 403 "Only Connect and OAuth 2.0 apps can use this
+ * operation" to an API token (checked against a live site, #155), so Snapwing uses this one.
+ */
+export const WEBHOOK_API = '/rest/webhooks/1.0/webhook';
+export const WEBHOOK_FILTER_KEY = 'issue-related-events-section';
+export const WEBHOOK_NAME = 'Snapwing';
 const CF = 'com.atlassian.jira.plugin.system.customfieldtypes';
 
 export interface FieldSpec {
@@ -55,6 +64,8 @@ export interface BootstrapOptions {
   envFilePath?: string;
   /** snapwing.config.xml, read for its `<jira>` status overrides when the file exists. Defaults to `snapwing.config.xml`. */
   configPath?: string;
+  /** The webhook's name in Jira; the live tier uses its own so it never touches the real one. Defaults to `Snapwing`. */
+  webhookName?: string;
   /** Injected for tests; defaults to the global `fetch`. */
   fetch?: typeof fetch;
 }
@@ -139,7 +150,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
 
   const email = env['JIRA_EMAIL'] ?? '';
   const apiToken = env['JIRA_API_TOKEN'] ?? '';
-  const secrets = [email, apiToken, Buffer.from(`${email}:${apiToken}`).toString('base64')].filter((s) => s.length > 3);
+  const secrets = [email, apiToken, env['JIRA_WEBHOOK_SECRET'] ?? '', Buffer.from(`${email}:${apiToken}`).toString('base64')].filter((s) => s.length > 3);
   const scrub = (s: string): string => {
     let out = oneLine(s);
     for (const secret of secrets) out = out.split(secret).join('[secret]');
@@ -171,7 +182,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
     opts.fetch ? { fetch: opts.fetch } : {},
   );
 
-  // The client does not cover screens or webhook listing; these calls share its auth.
+  // The client does not cover screens or webhooks; these calls share its auth.
   const authorization = `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`;
   async function raw(method: string, path: string, body?: unknown): Promise<unknown> {
     let res: Response;
@@ -218,20 +229,35 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
     const jqlFilter = `project = ${projectKey}`;
     await run('webhook', async () => {
       if (!/^https:\/\//.test(publicUrl)) throw new Error('SNAPWING_PUBLIC_URL must be an https URL (Jira only delivers to https)');
-      const list = asRecord(await raw('GET', '/rest/api/3/webhook'));
-      const values = Array.isArray(list['values']) ? (list['values'] as Record<string, unknown>[]) : [];
-      // Jira does not list a webhook's URL, so a webhook for this project is replaced rather than compared.
-      const stale = values.filter((w) => w['jqlFilter'] === jqlFilter && typeof w['id'] === 'number').map((w) => w['id'] as number);
+      const secret = env['JIRA_WEBHOOK_SECRET'] ?? '';
+      // REST-registered webhooks are not signed, so the inbound route takes the secret as ?secret= (#143).
+      const fullUrl = secret === '' ? url : `${url}?secret=${encodeURIComponent(secret)}`;
+      const shown = secret === '' ? url : `${url} (with ?secret)`;
+      const webhookName = opts.webhookName ?? WEBHOOK_NAME;
+      const list = await raw('GET', WEBHOOK_API);
+      const all = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
+      // The admin API lists each webhook's URL, so an identical one is left alone and any other one of ours is replaced.
+      const ours = all.filter((w) => w['name'] === webhookName && asRecord(w['filters'])[WEBHOOK_FILTER_KEY] === jqlFilter && typeof w['id'] === 'number');
+      const same = ours.find((w) => w['url'] === fullUrl && w['enabled'] !== false);
+      const stale = ours.filter((w) => w !== same).map((w) => w['id'] as number);
       if (dryRun) {
-        if (stale.length > 0) plan.push(`replace ${stale.length} existing webhook(s) filtered to ${jqlFilter}`);
-        plan.push(`register webhook ${url} for ${WEBHOOK_EVENTS.join(', ')} filtered to ${jqlFilter}`);
+        if (same) plan.push(`keep the webhook already registered for ${shown}`);
+        else {
+          if (stale.length > 0) plan.push(`replace ${stale.length} existing Snapwing webhook(s) filtered to ${jqlFilter}`);
+          plan.push(`register webhook ${shown} for ${WEBHOOK_EVENTS.join(', ')} filtered to ${jqlFilter}`);
+        }
         return 'plan only';
       }
-      if (stale.length > 0) await raw('DELETE', '/rest/api/3/webhook', { webhookIds: stale });
-      const result = await client.registerWebhook({ url, webhooks: [{ jqlFilter, events: [...WEBHOOK_EVENTS] }] });
-      const errors = result.flatMap((r) => r.errors ?? []);
-      if (errors.length > 0) throw new Error(`Jira rejected the webhook: ${errors.join('; ')}`);
-      return `${stale.length > 0 ? 'replaced' : 'registered'} ${url}`;
+      for (const id of stale) await raw('DELETE', `${WEBHOOK_API}/${String(id)}`);
+      if (same) return `already registered ${shown}`;
+      await raw('POST', WEBHOOK_API, {
+        name: webhookName,
+        url: fullUrl,
+        events: [...WEBHOOK_EVENTS],
+        filters: { [WEBHOOK_FILTER_KEY]: jqlFilter },
+        excludeBody: false,
+      });
+      return `${stale.length > 0 ? 'replaced' : 'registered'} ${shown}`;
     });
     return finish();
   }

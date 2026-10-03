@@ -20,6 +20,7 @@
 // Jira assigns by account id, and resolving one is a user search this client does not make.
 
 import type { OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
+import { CUSTOM_FIELD_IMPLEMENTATION_PROMPT } from '@snapwing/pipeline/jira/synthesis.ts';
 import { JIRA_LOGICAL_STATUSES, toJiraLogicalStatus, type JiraLogicalStatus } from '@snapwing/pipeline/jira/statuses.ts';
 import { JiraTransitionNotFoundError, type Adf, type JiraClient, type UploadAttachmentInput } from '../client/index.ts';
 import type { StatusResolver } from './statuses.ts';
@@ -261,13 +262,22 @@ export function textToAdf(text: string): Adf {
   return { type: 'doc', version: 1, content: paragraphs.map((p) => ({ type: 'paragraph', content: [{ type: 'text', text: p }] })) };
 }
 
-/** Custom fields by Jira field id. Names with no id, and empty strings, are left out. */
-export function mapCustomFields(byName: Record<string, CustomFieldValue>, ids: Readonly<Record<string, string>>): Record<string, CustomFieldValue> {
-  const out: Record<string, CustomFieldValue> = {};
+/**
+ * The Implementation Prompt as the multi-line text custom field takes it on REST v3: an ADF document (a plain
+ * string is a 400 "not valid Atlassian Document Format", found by the live tier, #155). One code block, so
+ * the XML's line breaks and indentation survive.
+ */
+export function promptToAdf(text: string): Adf {
+  return { type: 'doc', version: 1, content: [{ type: 'codeBlock', attrs: { language: 'xml' }, content: [{ type: 'text', text }] }] };
+}
+
+/** Custom fields by Jira field id. Names with no id, and empty strings, are left out. The prompt goes as ADF. */
+export function mapCustomFields(byName: Record<string, CustomFieldValue>, ids: Readonly<Record<string, string>>): Record<string, CustomFieldValue | Adf> {
+  const out: Record<string, CustomFieldValue | Adf> = {};
   for (const [name, value] of Object.entries(byName)) {
     const id = ids[name];
     if (id === undefined || value === '') continue;
-    out[id] = value;
+    out[id] = name === CUSTOM_FIELD_IMPLEMENTATION_PROMPT && typeof value === 'string' ? promptToAdf(value) : value;
   }
   return out;
 }

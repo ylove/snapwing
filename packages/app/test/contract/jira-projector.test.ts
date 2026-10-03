@@ -12,7 +12,7 @@ import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createJiraClient } from '../../src/jira/client/index.ts';
 import { COMMENT_WINDOW_MS, createJiraProjector, type JiraProjector, type JiraProjectorOptions } from '../../src/jira/projector/drain.ts';
-import { incidentLabel } from '../../src/jira/projector/ops.ts';
+import { incidentLabel, promptToAdf } from '../../src/jira/projector/ops.ts';
 
 const BASE = 'https://example.atlassian.net';
 const SHOTS = 'https://files.example.com';
@@ -284,7 +284,7 @@ describe('create-issue', () => {
     expect(report.sent).toEqual([create.id]);
     const issue = jira.issue('WEB-1');
     expect(issue.labels).toEqual(['snapwing', 'slack', 'web', incidentLabel(incidentId)]);
-    expect(issue.fields['customfield_10040']).toBe('<implementation-request/>');
+    expect(issue.fields['customfield_10040']).toEqual(promptToAdf('<implementation-request/>'));
     expect(issue.fields['customfield_10042']).toBe(2);
     expect(issue.fields['customfield_10041']).toBe('https://slack.example.com/archives/C1/p1');
     expect(issue.attachments).toEqual(['cart-blank.png']);

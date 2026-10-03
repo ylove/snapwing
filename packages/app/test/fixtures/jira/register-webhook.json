@@ -1,1 +1,0 @@
-{ "webhookRegistrationResult": [ { "createdWebhookId": 1000 }, { "errors": ["The clause watchCount is unsupported"] } ] }
