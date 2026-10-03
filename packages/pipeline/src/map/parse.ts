@@ -11,7 +11,9 @@ import {
   type AutonomyLevel,
   type AutonomyLevelId,
   type AutonomyOverride,
+  type AutonomyChange,
   type ChannelConfidence,
+  type ChannelPlatform,
   type FixerStart,
   type JiraPriorityName,
   type MapActorRole,
@@ -85,14 +87,15 @@ function convert(xml: string): WorkspaceMap {
       ...(policies['askBack'] === undefined ? {} : { askBack: askBack(node(policies['askBack'])) }),
       autonomy: {
         default: levelId(attr(autonomy, 'default')),
+        ...change(autonomy),
         levels: list(autonomy['level']).map(level),
         overrides: [
-          ...list(overrides['surface']).map((o): AutonomyOverride => ({ kind: 'surface', ref: attr(o, 'ref'), level: levelId(attr(o, 'level')) })),
+          ...list(overrides['surface']).map((o): AutonomyOverride => ({ kind: 'surface', ref: attr(o, 'ref'), level: levelId(attr(o, 'level')), ...change(o) })),
           ...list(overrides['component']).map(
-            (o): AutonomyOverride => ({ kind: 'component', surface: attr(o, 'surface'), ref: attr(o, 'ref'), level: levelId(attr(o, 'level')) }),
+            (o): AutonomyOverride => ({ kind: 'component', surface: attr(o, 'surface'), ref: attr(o, 'ref'), level: levelId(attr(o, 'level')), ...change(o) }),
           ),
           ...list(overrides['priority']).map(
-            (o): AutonomyOverride => ({ kind: 'priority', atLeast: attr(o, 'atLeast') as JiraPriorityName, level: levelId(attr(o, 'level')) }),
+            (o): AutonomyOverride => ({ kind: 'priority', atLeast: attr(o, 'atLeast') as JiraPriorityName, level: levelId(attr(o, 'level')), ...change(o) }),
           ),
         ],
       },
@@ -114,11 +117,15 @@ function surface(n: Node): MapSurface {
 
 function channel(n: Node): MapChannel {
   const confidence = optAttr(n, 'confidence');
+  const platform = optAttr(n, 'platform');
+  const team = optAttr(n, 'team');
   return {
     id: attr(n, 'id'),
     name: attr(n, 'name'),
     surface: attr(n, 'surface'),
     ...(confidence === undefined ? {} : { confidence: confidence as ChannelConfidence }),
+    ...(platform === undefined ? {} : { platform: platform as ChannelPlatform }),
+    ...(team === undefined ? {} : { teamId: team }),
     triggerEmoji: list(n['trigger']).map((t) => attr(t, 'emoji')),
   };
 }
@@ -175,6 +182,12 @@ function level(n: Node): AutonomyLevel {
     merge: attr(n, 'merge') as MergeActor,
     requires: requires === undefined ? [] : (requires.split(/\s+/).filter((g) => g !== '') as AutonomyGate[]),
   };
+}
+
+function change(n: Node): AutonomyChange {
+  const changedBy = optAttr(n, 'changedBy');
+  const changedAt = optAttr(n, 'changedAt');
+  return { ...(changedBy === undefined ? {} : { changedBy }), ...(changedAt === undefined ? {} : { changedAt }) };
 }
 
 function riskGate(n: Node): MapRiskGate {

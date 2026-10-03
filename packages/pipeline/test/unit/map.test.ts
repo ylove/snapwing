@@ -40,7 +40,7 @@ describe('workspace-context example', () => {
     });
     expect(map.surfaces[1]?.components).toEqual([]);
 
-    expect(map.channels).toHaveLength(5);
+    expect(map.channels).toHaveLength(6);
     expect(map.channels[2]).toEqual({ id: 'C0APPBUGS', name: 'app-bugs', surface: 'mobile', confidence: 'explicit', triggerEmoji: ['ladybug'] });
     expect(map.channels[4]).toEqual({ id: 'C0ALERTS', name: 'alerts', surface: 'from-payload', triggerEmoji: [] });
 
@@ -57,7 +57,7 @@ describe('workspace-context example', () => {
     expect(map.vocabulary).toHaveLength(5);
     expect(map.vocabulary[4]).toEqual({ text: 'cart', surface: 'web', component: 'checkout' });
 
-    expect(map.people).toHaveLength(3);
+    expect(map.people).toHaveLength(4);
     expect(map.people[0]).toEqual({
       slackId: 'U0WEBDEV1',
       handle: 'webDev1',

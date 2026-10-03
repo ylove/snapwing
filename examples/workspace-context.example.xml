@@ -29,6 +29,8 @@
     </channel>
     <channel id="C0SALES" name="sales-team" surface="admin" confidence="inferred" />
     <channel id="C0ALERTS" name="alerts" surface="from-payload" />
+    <channel id="19:3f9a2c7e1b4d4e8f9a0b1c2d3e4f5a6b@thread.tacv2" name="web-bugs-teams" surface="web" confidence="explicit"
+             platform="teams" team="8b2f6c1e-5d3a-4c7b-9e10-2a4f6b8c0d12" />
   </channels>
 
   <!-- How a human starts the pipeline. Names are each platform's reaction identifier. -->
@@ -57,6 +59,7 @@
       <owns surface="mobile" />
     </person>
     <person slackId="U0SALESLEAD" handle="salesLead" email="pat@example.com" role="reporter" />
+    <person teamsId="5c1d7e3a-92b4-4f60-8a1e-3d5b7c9e1f24" handle="teamsDev" email="ravi@example.com" role="engineer" />
   </people>
 
   <policies>

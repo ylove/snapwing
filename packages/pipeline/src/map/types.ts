@@ -9,6 +9,12 @@ export type MergeActor = 'none' | 'human' | 'agent';
 export type AutonomyGate = 'review-agent' | 'ci-green' | 'risk-gate';
 export type JiraPriorityName = 'Highest' | 'High' | 'Medium' | 'Low' | 'Lowest';
 export type ChannelConfidence = 'explicit' | 'inferred';
+export type ChannelPlatform = 'slack' | 'teams';
+
+/** A channel's platform; the map omits it for Slack, so absent means `slack`. */
+export function channelPlatform(channel: { platform?: ChannelPlatform }): ChannelPlatform {
+  return channel.platform ?? 'slack';
+}
 
 /** The `surface` value of a channel whose surface comes from the alert payload. */
 export const FROM_PAYLOAD = 'from-payload';
@@ -32,6 +38,10 @@ export interface MapChannel {
   /** A surface id, or `from-payload`. */
   surface: string;
   confidence?: ChannelConfidence;
+  /** Absent means `slack` (see `channelPlatform`). A Teams channel id is the Bot Framework and Graph id (`19:...@thread.tacv2`). */
+  platform?: ChannelPlatform;
+  /** The Teams team's group id; present exactly when `platform` is `teams`. */
+  teamId?: string;
   /** Per-channel emoji overrides (reaction names). */
   triggerEmoji: string[];
 }
@@ -78,12 +88,18 @@ export interface AutonomyLevel {
   requires: AutonomyGate[];
 }
 
-export type AutonomyOverride =
-  | { kind: 'surface'; ref: string; level: AutonomyLevelId }
-  | { kind: 'component'; surface: string; ref: string; level: AutonomyLevelId }
-  | { kind: 'priority'; atLeast: JiraPriorityName; level: AutonomyLevelId };
+/** Who changed an autonomy level and when (main 4.6). `changedBy` is a map handle or an email; `changedAt` is ISO 8601. */
+export interface AutonomyChange {
+  changedBy?: string;
+  changedAt?: string;
+}
 
-export interface MapAutonomy {
+export type AutonomyOverride =
+  | ({ kind: 'surface'; ref: string; level: AutonomyLevelId } & AutonomyChange)
+  | ({ kind: 'component'; surface: string; ref: string; level: AutonomyLevelId } & AutonomyChange)
+  | ({ kind: 'priority'; atLeast: JiraPriorityName; level: AutonomyLevelId } & AutonomyChange);
+
+export interface MapAutonomy extends AutonomyChange {
   default: AutonomyLevelId;
   levels: AutonomyLevel[];
   overrides: AutonomyOverride[];
