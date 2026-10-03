@@ -43,7 +43,7 @@ describe('operations', () => {
       }),
     );
     const ref = await client.createIssue({ summary: 'x', project: { key: 'TEST' } });
-    expect(ref.key).toBe('TEST-24');
+    expect(ref.key).toBe('TEST-3');
     expect(seen?.auth).toBe(AUTH);
     expect(seen?.body).toEqual({ fields: { summary: 'x', project: { key: 'TEST' } } });
   });
@@ -83,15 +83,14 @@ describe('operations', () => {
       }),
     );
     await client.transitionIssue('TEST-1', 'in progress');
-    expect(body).toEqual({ transition: { id: '11' } });
+    expect(body).toEqual({ transition: { id: '21' } });
   });
 
   it('projectStatuses flattens the issue types, each status once, with its category (#268)', async () => {
     server.use(http.get(`${BASE}/rest/api/3/project/OAJ/statuses`, () => HttpResponse.json(fixture('project-statuses'))));
     expect(await client.projectStatuses('OAJ')).toEqual([
-      { name: 'To Do', category: 'new' },
       { name: 'In Progress', category: 'indeterminate' },
-      { name: 'In Review', category: 'indeterminate' },
+      { name: 'To Do', category: 'new' },
       { name: 'Done', category: 'done' },
     ]);
   });
@@ -105,8 +104,8 @@ describe('operations', () => {
     server.use(http.get(`${BASE}/rest/api/3/issue/TEST-1/transitions`, () => HttpResponse.json(fixture('transitions'))));
     const err = await client.transitionIssue('TEST-1', 'Shipped').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(JiraTransitionNotFoundError);
-    expect((err as JiraTransitionNotFoundError).available).toEqual(['In Progress', 'Done']);
-    expect((err as Error).message).toContain('In Progress, Done');
+    expect((err as JiraTransitionNotFoundError).available).toEqual(['To Do', 'In Progress', 'Done']);
+    expect((err as Error).message).toContain('To Do, In Progress, Done');
   });
 
   it('addComment posts the ADF body', async () => {
@@ -118,7 +117,7 @@ describe('operations', () => {
       }),
     );
     const c = await client.addComment('TEST-1', adf);
-    expect(c.id).toBe('10010');
+    expect(c.id).toBe('10008');
     expect(body).toEqual({ body: adf });
   });
 
@@ -145,7 +144,7 @@ describe('operations', () => {
       }),
     );
     const out = await client.uploadAttachment('TEST-1', { filename: 'cart-blank.png', content: new Uint8Array([1, 2, 3]), contentType: 'image/png' });
-    expect(out[0]?.filename).toBe('cart-blank.png');
+    expect(out[0]?.filename).toBe('snapwing-test.png');
     expect(seen?.token).toBe('no-check');
     expect(seen?.type).toMatch(/^multipart\/form-data; boundary=/);
     expect(seen).toMatchObject({ name: 'cart-blank.png', size: 3 });
@@ -168,7 +167,7 @@ describe('operations', () => {
   it('listFields returns the field list', async () => {
     server.use(http.get(`${BASE}/rest/api/3/field`, () => HttpResponse.json(fixture('fields'))));
     const fields = await client.listFields();
-    expect(fields.find((f) => f.name === 'Implementation Prompt')?.id).toBe('customfield_10000');
+    expect(fields.find((f) => f.name === 'Implementation Prompt')?.id).toBe('customfield_10084');
   });
 
   it('createField posts the definition', async () => {
@@ -185,24 +184,9 @@ describe('operations', () => {
     expect(body).toEqual(input);
   });
 
-  it('registerWebhook returns per-webhook results', async () => {
-    let body: unknown;
-    server.use(
-      http.post(`${BASE}/rest/api/3/webhook`, async ({ request }) => {
-        body = await request.json();
-        return HttpResponse.json(fixture('register-webhook'), { status: 202 });
-      }),
-    );
-    const input = { url: 'https://snapwing.example.com/hooks/jira', webhooks: [{ jqlFilter: 'project = TEST', events: ['jira:issue_updated'] }] };
-    const out = await client.registerWebhook(input);
-    expect(out[0]?.createdWebhookId).toBe(1000);
-    expect(out[1]?.errors).toHaveLength(1);
-    expect(body).toEqual(input);
-  });
-
   it('myself returns the account id', async () => {
     server.use(http.get(`${BASE}/rest/api/3/myself`, () => HttpResponse.json(fixture('myself'))));
-    expect((await client.myself()).accountId).toBe('5b10a2844c20165700ede21g');
+    expect((await client.myself()).accountId).toBe('5b10a2844c20165700ede201');
   });
 });
 

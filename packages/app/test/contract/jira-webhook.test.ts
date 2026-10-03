@@ -279,7 +279,7 @@ describe('fixer trigger (main 10.1) and Stop (main 10.4)', () => {
     await filed(3);
     const handler = route();
     // The engine's own transition at level 3: an echo, which still starts the fixer (main 10.1).
-    const transition = fixture('issue-updated-in-progress');
+    const transition = variant(fixture('issue-updated-in-progress'), { by: AGENT });
     expect(await deliver(handler, transition)).toEqual({ status: 200, outcome: 'echo' });
     expect(runner.started).toHaveLength(1);
     expect(runner.started[0]?.workItem).toMatchObject({ id: INC, issueKey: KEY, repo: 'fake-org/web' });

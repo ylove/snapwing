@@ -408,8 +408,8 @@ describe('levels 1 and 2 end to end through the composed app', () => {
     const issue = w.jira.issues.get('ADM-1');
     expect(issue?.summary).toBe('CSV usage export has a header row but no data');
     expect(issue?.custom['Autonomy Level']).toBe(1);
-    expect(String(issue?.custom['Implementation Prompt'])).toContain('<implementation-request');
-    expect(String(issue?.custom['Implementation Prompt'])).toContain('ADM-1');
+    expect(JSON.stringify(issue?.custom['Implementation Prompt'])).toContain('<implementation-request');
+    expect(JSON.stringify(issue?.custom['Implementation Prompt'])).toContain('ADM-1');
     // The domain comes from the real `auth.test` at startup (the shortcut payload's team.domain is not needed).
     expect(issue?.custom['Conversation Link']).toBe(
       `https://${WORKSPACE_DOMAIN}.slack.com/archives/${w.recording.channel.id}/p${w.recording.anchor.replace('.', '')}`,

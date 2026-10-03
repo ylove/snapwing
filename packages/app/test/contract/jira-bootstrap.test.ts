@@ -22,7 +22,7 @@ interface FakeJira {
   statuses: { name: string; category: string }[];
   /** `GET /project/OAJ`: `next-gen` is team-managed. */
   style: 'classic' | 'next-gen';
-  webhooks: { id: number; jqlFilter: string; events: string[]; url?: string }[];
+  webhooks: { id: number; name: string; url: string; events: string[]; filters: Record<string, string>; enabled: boolean }[];
   calls: string[];
   nextFieldId: number;
 }
@@ -95,21 +95,18 @@ beforeEach(() => {
         },
       ]),
     ),
-    http.get(`${BASE}/rest/api/3/webhook`, () => HttpResponse.json({ isLast: true, values: jira.webhooks })),
-    http.delete(`${BASE}/rest/api/3/webhook`, async ({ request }) => {
-      const { webhookIds } = (await request.json()) as { webhookIds: number[] };
-      log(`delete-webhook ${webhookIds.join(',')}`);
-      jira.webhooks = jira.webhooks.filter((w) => !webhookIds.includes(w.id));
-      return new HttpResponse(null, { status: 202 });
+    http.get(`${BASE}/rest/webhooks/1.0/webhook`, () => HttpResponse.json(jira.webhooks)),
+    http.delete(`${BASE}/rest/webhooks/1.0/webhook/:id`, ({ params }) => {
+      log(`delete-webhook ${String(params['id'])}`);
+      jira.webhooks = jira.webhooks.filter((w) => w.id !== Number(params['id']));
+      return new HttpResponse(null, { status: 204 });
     }),
-    http.post(`${BASE}/rest/api/3/webhook`, async ({ request }) => {
-      const body = (await request.json()) as { url: string; webhooks: { jqlFilter: string; events: string[] }[] };
+    http.post(`${BASE}/rest/webhooks/1.0/webhook`, async ({ request }) => {
+      const body = (await request.json()) as Omit<FakeJira['webhooks'][number], 'id' | 'enabled'>;
       log(`register-webhook ${body.url}`);
-      const out = body.webhooks.map((w, i) => {
-        jira.webhooks.push({ id: 900 + jira.webhooks.length + i, ...w, url: body.url });
-        return { createdWebhookId: 900 + i };
-      });
-      return HttpResponse.json({ webhookRegistrationResult: out });
+      const id = (jira.webhooks.at(-1)?.id ?? 0) + 1;
+      jira.webhooks.push({ id, enabled: true, ...body });
+      return HttpResponse.json({ ...body, enabled: true, self: `${BASE}/rest/webhooks/1.0/webhook/${id}` }, { status: 201 });
     }),
   );
 });
@@ -309,8 +306,36 @@ describe('webhook', () => {
     const report = await runBootstrap({ env: WH, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
     expect(report.ok).toBe(true);
     expect(jira.webhooks).toEqual([
-      expect.objectContaining({ jqlFilter: 'project = OAJ', events: ['jira:issue_updated', 'comment_created'], url: 'https://abc.ngrok.app/webhooks/jira' }),
+      expect.objectContaining({
+        name: 'Snapwing',
+        filters: { 'issue-related-events-section': 'project = OAJ' },
+        events: ['jira:issue_updated', 'comment_created'],
+        url: 'https://abc.ngrok.app/webhooks/jira',
+      }),
     ]);
+  });
+
+  it('appends the URL-encoded ?secret= when JIRA_WEBHOOK_SECRET is set and never prints it', async () => {
+    const report = await runBootstrap({ env: { ...WH, JIRA_WEBHOOK_SECRET: 'ZQ9 w&x' }, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
+    expect(report.ok).toBe(true);
+    expect(jira.webhooks[0]?.url).toBe('https://abc.ngrok.app/webhooks/jira?secret=ZQ9%20w%26x');
+    const out = report.lines.join('\n');
+    expect(out).not.toContain('ZQ9');
+    expect(out).toContain('(with ?secret)');
+  });
+
+  it('leaves an identical webhook alone on re-run', async () => {
+    await runBootstrap({ env: WH, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
+    const report = await runBootstrap({ env: WH, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
+    expect(report.lines.join('\n')).toContain('already registered');
+    expect(jira.webhooks).toHaveLength(1);
+    expect(jira.calls.filter((c) => c.startsWith('register-webhook'))).toHaveLength(1);
+  });
+
+  it('does not touch a webhook it does not own', async () => {
+    jira.webhooks.push({ id: 7, name: 'Someone else', url: 'https://x.example/hook', events: ['jira:issue_updated'], filters: { 'issue-related-events-section': 'project = OAJ' }, enabled: true });
+    await runBootstrap({ env: WH, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
+    expect(jira.webhooks.map((w) => w.name).sort()).toEqual(['Snapwing', 'Someone else']);
   });
 
   it('on re-run with a new URL leaves exactly one webhook', async () => {

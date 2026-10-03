@@ -43,16 +43,6 @@ export interface CreateFieldInput {
   searcherKey?: string;
 }
 
-export interface WebhookSpec {
-  jqlFilter: string;
-  events: string[];
-}
-
-export interface WebhookRegistration {
-  createdWebhookId?: number;
-  errors?: string[];
-}
-
 export interface JiraMyself {
   accountId: string;
   displayName?: string;
