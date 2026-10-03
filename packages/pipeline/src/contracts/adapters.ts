@@ -26,7 +26,20 @@ export type InteractiveCard =
   | { kind: 'dedupe'; issueKey: string; summary: string; assignee?: string; openSince?: string }
   | { kind: 'clarify'; question: ClarifyQuestion }
   | { kind: 'fix-preview'; plan: TriageResolutionPlan; surface?: string; ownerUserId?: string }
+  | ClaimedCard
   | PrReadyCard;
+
+/**
+ * A 2.1: replaces the fix preview when an engineer claimed the incident before the fixer started.
+ * "Filed as WEB-1042 and assigned to @dana, since she's on it." Buttons: `let-agent-take` (Let the
+ * agent take it) and `dismiss` (Not a bug).
+ */
+export interface ClaimedCard {
+  kind: 'claimed';
+  issueKey: string;
+  /** Chat user id of the claimer. */
+  claimerUserId: string;
+}
 
 /** main 11.2: the card posted when a pull request is ready for a human. */
 export interface PrReadyCard {

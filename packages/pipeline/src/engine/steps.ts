@@ -17,14 +17,15 @@ import type { OutboxItem } from '../contracts/state.ts';
 import { dedupe, rememberIncident } from '../dedupe/index.ts';
 import type { JiraLogicalStatus } from '../jira/statuses.ts';
 import { LABEL_NEEDS_CLARIFICATION, LABEL_PROMPT_FAILED, synthesizeIssue, type SynthesisContext, type SynthesizedIssue } from '../jira/synthesis.ts';
-import type { WorkspaceMap } from '../map/types.ts';
+import type { MapPerson, WorkspaceMap } from '../map/types.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { findSurface } from '../resolve/lookup.ts';
-import { JIRA_IN_PROGRESS, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
+import { JIRA_DONE, JIRA_IN_PROGRESS, LABEL_HUMAN_CLAIMED, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
 import { ulid } from '../util/ulid.ts';
+import type { ClaimHold } from './claims.ts';
 import { approvedFix, answerAfter, pendingCard, type Cursor, type Phase, type Tap } from './cursor.ts';
 import { DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps, type StatusSubscription } from './deps.ts';
 
@@ -59,11 +60,21 @@ export interface CreateIssueRow {
   screenshots?: { url: string; filename?: string; contentType?: string }[];
 }
 
-/** `transition`: move an existing issue to a logical target (`jira/statuses.ts`). */
+/** `transition`: move an existing issue to a logical target (`jira/statuses.ts`), with an optional resolution name. */
 export interface TransitionRow {
   issueKey: string;
   to: JiraLogicalStatus;
+  resolution?: string;
 }
+
+/** `add-labels`: appended to the issue's labels. */
+export interface AddLabelsRow {
+  issueKey: string;
+  labels: string[];
+}
+
+/** The resolution Not a bug closes a filed issue with (main 8.2). */
+export const WONT_DO_RESOLUTION = "Won't Do";
 
 /** `add-comment`: plain text; the projector renders ADF and merges by `batchKey` (B 7.1). */
 export interface AddCommentRow {
@@ -96,7 +107,11 @@ export function newEvent<T extends EventType>(
   return event as unknown as NewEvent<T>;
 }
 
-function outboxRow(env: StepEnv, op: 'create-issue' | 'transition' | 'add-comment', payload: CreateIssueRow | TransitionRow | AddCommentRow): OutboxItem {
+function outboxRow(
+  env: Pick<StepEnv, 'deps' | 'cursor'>,
+  op: 'create-issue' | 'transition' | 'add-comment' | 'add-labels',
+  payload: CreateIssueRow | TransitionRow | AddCommentRow | AddLabelsRow,
+): OutboxItem {
   const now = env.deps.clock();
   const at = now.toISOString();
   return {
@@ -593,6 +608,8 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
   const level = triaged.autonomyLevel;
   const issue = await synthesizeIssue(triaged, bundle, level, synthesisContext(env, resolution, clarify));
   const prompt = issue.customFields['Implementation Prompt'];
+  // A 2.1: an engineer already on it. Level 1 files ticket only through the fix-preview phase (no card).
+  const held = env.cursor.hold !== undefined;
   await commit(env, [], async (tx) => {
     const artifact = (kind: 'plan' | 'implementation-request', body: string) =>
       tx
@@ -607,7 +624,7 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
         .then(({ id, version }): ArtifactRef => ({ artifactId: id, version }));
     const planRef = await artifact('plan', JSON.stringify(triaged));
     const ref = prompt === '' ? undefined : await artifact('implementation-request', prompt);
-    if (level !== 1) await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue, bundle)));
+    if (level !== 1) await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(withClaim(env, issue), bundle)));
     return [
       newEvent(env, 'planned', {
         action: triaged.action,
@@ -625,7 +642,7 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
       }),
     ];
   });
-  if (level !== 1) return 'continue';
+  if (level !== 1 || held) return 'continue';
   env.cursor.waiting = false; // `planned` changed the status, which ends any wait
   return awaitCard(env, { kind: 'fix-preview', plan: triaged }, resolution.ownerId);
 }
@@ -696,11 +713,12 @@ async function plannedIssue(env: StepEnv): Promise<SynthesizedIssue> {
 /**
  * Level 1 fix preview (main 14.1). Dismiss ends the incident as not a bug. Fix it and Ticket only
  * file the ticket; a timeout files it as ticket only (B 5 default). The wait's end is recorded with
- * the `create-issue` row; whether the fixer starts is read from the tap after `filed`.
+ * the `create-issue` row; whether the fixer starts is read from the tap after `filed`. An engineer's
+ * claim (A 2.1, `held`) files it ticket only at once, with no card; the claim card follows `filed`.
  */
 export async function fixPreviewStep(env: StepEnv, phase: Extract<Phase, { kind: 'fix-preview' }>): Promise<StepResult> {
   const answer = phase.answer;
-  if (answer === undefined && !takeTimeout(env)) {
+  if (answer === undefined && phase.held !== true && !takeTimeout(env)) {
     const resolution = must(env.cursor.resolved, 'resolved').resolution;
     return awaitCard(env, { kind: 'fix-preview', plan: await plannedPlan(env) }, resolution.ownerId);
   }
@@ -708,7 +726,7 @@ export async function fixPreviewStep(env: StepEnv, phase: Extract<Phase, { kind:
     await commit(env, [newEvent(env, 'not-a-bug', { reason: `dismissed at the fix preview by ${who(answer)}` })]);
     return 'continue';
   }
-  const issue = await plannedIssue(env);
+  const issue = withClaim(env, await plannedIssue(env));
   const bundle = await loadBundle(env);
   await commit(env, [newEvent(env, 'waiting-changed', {})], async (tx) => {
     await tx.enqueueOutbox(outboxRow(env, 'create-issue', createIssueRow(issue, bundle)));
@@ -736,7 +754,9 @@ async function subscribeStatus(env: StepEnv, issueKey: string, text: string, not
  * After the outbox worker appends `filed` (phase 3; tests append it) and continues the job: level 2
  * and 3, and level 1 after Fix it, move the issue to In Progress (an outbox row; the fixer webhook
  * fires on it). Level 2 and 3 post the informational fix preview with Stop. Every level subscribes
- * the reporter to status and records who the incident now waits on, which marks this step done.
+ * the reporter to status and records who the incident now waits on, which marks this step done. A
+ * reporter's claim before this step becomes a comment on the ticket here. An engineer's claim
+ * (A 2.1) replaces the In Progress transition and the fix preview with the claim card.
  */
 export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
   const { cursor } = env;
@@ -747,10 +767,19 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
   // A Stop between `filed` and this step leaves the issue in Backlog: no In Progress transition (so
   // no fixer) and no fix preview card (#206).
   const stopped = cursor.stoppedAfterFiled !== undefined;
+  await rememberIncident(env.deps.cache, resolution, { issueKey, summary: planned.payload.summary });
+  const comments = reporterClaimRows(env, issueKey, () => true);
+
+  const hold = cursor.hold;
+  if (hold !== undefined && !stopped) {
+    const claimer = personLabel(env, hold.claimerId, hold.actor);
+    const note = `${claimer} is on it, so this is filed as ticket only.`;
+    const subscription = await subscribeStatus(env, issueKey, filedText(issueKey, claimer.slice(1), note), note);
+    return postClaimCard(env, hold, issueKey, subscription.events, [...subscription.outbox, ...comments]);
+  }
+
   const fixer = !stopped && (level >= 2 || (level === 1 && approvedFix(cursor)));
   const timedOut = level === 1 && answerAfter(cursor, 'fix-preview', planned.seq) === undefined;
-
-  await rememberIncident(env.deps.cache, resolution, { issueKey, summary: planned.payload.summary });
   if (level >= 2 && !stopped) await adapterFor(env)?.postInteractive(env.payload, { kind: 'fix-preview', plan: await plannedPlan(env) });
   const note =
     planned.payload.degraded === 'unresolved-surface'
@@ -763,12 +792,161 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
 
   const waitingOn: WaitingOn | undefined = fixer ? undefined : { kind: 'human', ...(owner === undefined ? {} : { who: owner }) };
   await commit(env, [...subscription.events, newEvent(env, 'waiting-changed', waitingOn === undefined ? {} : { waitingOn })], async (tx) => {
-    for (const row of subscription.outbox) await tx.enqueueOutbox(row);
-    // Keyed as a write of the status field, so a human transition before it is sent drops it (B 7.3).
-    if (fixer) await tx.enqueueOutbox({ ...outboxRow(env, 'transition', { issueKey, to: IN_PROGRESS }), batchKey: jiraFieldBatchKey(env.cursor.incidentId, 'status') });
+    for (const row of [...subscription.outbox, ...comments]) await tx.enqueueOutbox(row);
+    if (fixer) await tx.enqueueOutbox(inProgressRow(env, issueKey));
     return [];
   });
   return 'continue';
+}
+
+/** The In Progress transition that starts the fixer, keyed as a write of the status field so a human transition before it is sent drops it (B 7.3). */
+function inProgressRow(env: StepEnv, issueKey: string): OutboxItem {
+  return { ...outboxRow(env, 'transition', { issueKey, to: IN_PROGRESS }), batchKey: jiraFieldBatchKey(env.cursor.incidentId, 'status') };
+}
+
+// Claims (A 2.1) -----------------------------------------------------------------------------------
+
+function personOf(env: Pick<StepEnv, 'map'>, chatUserId: string): MapPerson | undefined {
+  return env.map.people.find((p) => p.slackId === chatUserId || p.teamsId === chatUserId);
+}
+
+/** `@handle` from the map, else `@` and the name the event carries, else `@` and the chat user id. */
+function personLabel(env: Pick<StepEnv, 'map'>, chatUserId: string, actor?: EventActor): string {
+  const name = personOf(env, chatUserId)?.handle ?? (actor?.id === chatUserId ? actor.name?.trim() : undefined);
+  return `@${name === undefined || name === '' ? chatUserId : name}`;
+}
+
+/**
+ * The create payload while an engineer holds the incident (A 2.1): labeled `human-claimed`, and the
+ * suggested assignee is the claimer (by the map's email; none when the map has no email for them).
+ */
+function withClaim(env: StepEnv, issue: SynthesizedIssue): SynthesizedIssue {
+  const hold = env.cursor.hold;
+  if (hold === undefined) return issue;
+  const { suggestedAssigneeEmail: _owner, ...rest } = issue;
+  const email = personOf(env, hold.claimerId)?.email;
+  return {
+    ...rest,
+    fields: { ...issue.fields, labels: [...new Set([...issue.fields.labels, LABEL_HUMAN_CLAIMED])] },
+    ...(email === undefined || email === '' ? {} : { suggestedAssigneeEmail: email }),
+  };
+}
+
+/** A comment on the incident's own issue, batched with the lifecycle comments (B 7.1). */
+function commentRow(env: Pick<StepEnv, 'deps' | 'cursor'>, issueKey: string, text: string): OutboxItem {
+  return { ...outboxRow(env, 'add-comment', { issueKey, text }), batchKey: jiraCommentBatchKey(env.cursor.incidentId) };
+}
+
+/** A 2.1: a reporter's claim is a comment on the ticket ("@pat is looking into it.") and holds nothing. */
+function reporterClaimRows(env: Pick<StepEnv, 'deps' | 'cursor' | 'map'>, issueKey: string, which: (seq: number) => boolean): OutboxItem[] {
+  return env.cursor.reporterClaims
+    .filter((c) => which(c.seq))
+    .map((c) => commentRow(env, issueKey, `${personLabel(env, c.claimerId, c.actor)} is looking into it.`));
+}
+
+/** The read-only scout's diagnosis (main 8.1) as a ticket comment, for the human who took the fix (A 2.1). */
+function diagnosisText(diagnosis: NonNullable<TriageResolutionPlan['diagnosis']>, claimer: string): string {
+  const head = `The agent's read-only scout looked at the code while ${claimer} is on this. Diagnosis, ${diagnosis.confidence} confidence:`;
+  if (diagnosis.files.length === 0) return `${head} no likely files found.`;
+  return [head, ...diagnosis.files.map((f) => `- ${f.path}: ${f.note}`)].join('\n');
+}
+
+function claimCard(issueKey: string, hold: ClaimHold): InteractiveCard {
+  return { kind: 'claimed', issueKey, claimerUserId: hold.claimerId };
+}
+
+/**
+ * Shows the claim card for `hold` (A 2.1): labels the issue `human-claimed` when the claim came before
+ * `filed` (the lifecycle rows label a claim after it), comments the scout's diagnosis, records the
+ * wait on the claimer (which marks the card posted), parks, and posts the card.
+ */
+async function postClaimCard(env: StepEnv, hold: ClaimHold, issueKey: string, events: NewEvent[], rows: OutboxItem[]): Promise<StepResult> {
+  const filed = must(env.cursor.filed, 'filed');
+  const diagnosis = (await plannedPlan(env)).diagnosis;
+  const extra: OutboxItem[] = [
+    ...(hold.seq < filed.seq ? [outboxRow(env, 'add-labels', { issueKey, labels: [LABEL_HUMAN_CLAIMED] })] : []),
+    ...(diagnosis === undefined ? [] : [commentRow(env, issueKey, diagnosisText(diagnosis, personLabel(env, hold.claimerId, hold.actor)))]),
+  ];
+  const waitingOn: WaitingOn = { kind: 'human', who: hold.claimerId };
+  await commit(env, [...events, newEvent(env, 'waiting-changed', { waitingOn })], async (tx) => {
+    for (const row of [...rows, ...extra]) await tx.enqueueOutbox(row);
+    return [];
+  });
+  return parkOn(env, claimCard(issueKey, hold), true);
+}
+
+/** Parks on the tap wait with the interactive timeout, then posts `card` when `post` (the order `awaitCard` keeps). */
+async function parkOn(env: StepEnv, card: InteractiveCard, post: boolean): Promise<StepResult> {
+  const timeoutAt = new Date(env.deps.clock().getTime() + tapTimeoutMs(env));
+  await env.deps.workflow.park(env.job.id, { kind: 'tap', eventId: env.cursor.incidentId }, timeoutAt);
+  env.delivery.timedOut = false;
+  if (post) await adapterFor(env)?.postInteractive(env.payload, card);
+  return 'park';
+}
+
+/**
+ * The claim card (A 2.1). `Let the agent take it` appends `let-agent-take` for the claimer (the
+ * tapper is the actor; `handleTap` lets only an engineer choose it) and the configured level resumes
+ * in the next phase. `Not a bug` appends `not-a-bug` and closes the filed issue as Won't Do. The card
+ * has no default: a timeout parks again without reposting, and the claim lasts until it is handed
+ * back or released (A 2.4).
+ */
+export async function claimCardStep(env: StepEnv, phase: Extract<Phase, { kind: 'claim-card' }>): Promise<StepResult> {
+  const { hold, posted, answer } = phase;
+  const issueKey = must(env.cursor.filed, 'filed').jiraKey;
+  if (posted === undefined) return postClaimCard(env, hold, issueKey, [], []);
+  if (answer === undefined) return parkOn(env, claimCard(issueKey, hold), !takeTimeout(env));
+  if (answer.payload.choice === 'dismiss') {
+    const notABug = newEvent(env, 'not-a-bug', { reason: `dismissed at the claim card by ${who(answer)}` }, decidedBy(env, answer));
+    await commit(env, [notABug], async (tx) => {
+      const close: TransitionRow = { issueKey, to: JIRA_DONE, resolution: WONT_DO_RESOLUTION };
+      await tx.enqueueOutbox({ ...outboxRow(env, 'transition', close), batchKey: jiraFieldBatchKey(env.cursor.incidentId, 'status') });
+      return [];
+    });
+    return 'continue';
+  }
+  await commit(env, [newEvent(env, 'let-agent-take', { claimerId: hold.claimerId }, decidedBy(env, answer))]);
+  return 'continue';
+}
+
+/**
+ * A hold ended after the after-filed step (`let-agent-take`, or `released` when the claim expired or
+ * was let go): the configured level resumes. Levels 2 and 3 move the issue to In Progress and post
+ * the informational fix preview; level 1 does the same when Let the agent take it ended the hold
+ * (an engineer's tap, which is the Fix it approval) or Fix it was tapped before the claim; otherwise
+ * the incident waits on the owner. A Stop since filing starts nothing. `deps.startFixer` starts the
+ * fixer too, since the issue may already be In Progress (a claim after the transition was sent), and
+ * a transition to the status it is in fires no webhook; a second start is refused by `fixer.run`.
+ */
+export async function claimEndedStep(env: StepEnv, phase: Extract<Phase, { kind: 'claim-ended' }>): Promise<StepResult> {
+  const { cursor } = env;
+  const issueKey = must(cursor.filed, 'filed').jiraKey;
+  const planned = must(cursor.planned, 'planned');
+  const owner = must(cursor.resolved, 'resolved').resolution.ownerId;
+  const level = cursor.level ?? planned.payload.autonomyLevel;
+  const stopped = cursor.stoppedAfterFiled !== undefined;
+  const fixer = !stopped && (level >= 2 || (level === 1 && (phase.ended.by === 'let-agent-take' || approvedFix(cursor))));
+  if (level >= 2 && fixer) await adapterFor(env)?.postInteractive(env.payload, { kind: 'fix-preview', plan: await plannedPlan(env) });
+  const waitingOn: WaitingOn | undefined = fixer ? undefined : { kind: 'human', ...(owner === undefined ? {} : { who: owner }) };
+  await commit(env, [newEvent(env, 'waiting-changed', waitingOn === undefined ? {} : { waitingOn })], async (tx) => {
+    if (fixer) await tx.enqueueOutbox(inProgressRow(env, issueKey));
+    return [];
+  });
+  if (fixer) await env.deps.startFixer?.(cursor.incidentId);
+  return 'continue';
+}
+
+/**
+ * A reporter's claim (seq `seq`) that arrived after the after-filed step: its comment on the ticket
+ * (A 2.1). Claims before that step are commented by it. Resolves false when there was nothing to write.
+ */
+export async function reporterClaimComment(env: Pick<StepEnv, 'deps' | 'map' | 'cursor'>, seq: number): Promise<boolean> {
+  const filed = env.cursor.filed;
+  const afterFiled = filed === undefined ? undefined : env.cursor.waitChanges.find((s) => s > filed.seq);
+  if (filed === undefined || afterFiled === undefined || seq < afterFiled) return false;
+  const rows = reporterClaimRows(env, filed.jiraKey, (s) => s === seq);
+  for (const row of rows) await env.deps.state.enqueueOutbox(row);
+  return rows.length > 0;
 }
 
 /**
@@ -799,5 +977,9 @@ export function runPhase(env: StepEnv, phase: Exclude<Phase, { kind: 'capture' |
       return fixPreviewStep(env, phase);
     case 'after-filed':
       return afterFiledStep(env);
+    case 'claim-card':
+      return claimCardStep(env, phase);
+    case 'claim-ended':
+      return claimEndedStep(env, phase);
   }
 }

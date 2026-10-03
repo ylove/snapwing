@@ -2,7 +2,8 @@
 // trigger reaction does. The transport (#147) hands every interactivity payload that is not the message
 // shortcut to `onAction`, after the request was authenticated and answered.
 //
-// - Card choices (scope, dedupe, clarify, and the level 1 fix preview) go to `orchestrator.handleTap`
+// - Card choices (scope, dedupe, clarify, the level 1 fix preview, and the claim card's `Let the
+//   agent take it` and `Not a bug`, A 2.1) go to `orchestrator.handleTap`
 //   with the tapper resolved through the workspace map. An accepted tap replaces the card's buttons
 //   with a line naming who chose what; a refused one gets an ephemeral reply.
 // - Authorization is `policy/authorize.ts` (main 16). A reporter tapping `Fix it` gets "I've asked
@@ -55,6 +56,7 @@ const BLOCK_CARDS: Readonly<Record<string, CardKind | 'status'>> = {
   dedupe_actions: 'dedupe',
   clarify_actions: 'clarify',
   triage_actions: 'fix-preview',
+  claim_actions: 'claimed',
   pr_actions: 'pr-ready',
   status_actions: 'status',
 };

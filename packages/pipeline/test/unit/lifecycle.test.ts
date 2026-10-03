@@ -49,6 +49,7 @@ const ARROWS: Row[] = [
   ['claimed', ev('released'), 'fixing'],
   ['claimed', ev('let-agent-take'), 'fixing'],
   ['claimed', ev('jira-transitioned'), 'human-fixing'],
+  ['claimed', ev('not-a-bug'), 'not-a-bug'], // the claim card's Not a bug (A 2.1)
   ['human-fixing', ev('pr-opened'), 'in-review'],
   ['human-fixing', ev('let-agent-take'), 'fixing'],
   ['fixing', ev('pr-opened'), 'in-review'],

@@ -156,6 +156,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     released: 'fixing',
     'let-agent-take': 'fixing',
     'pr-opened': 'in-review',
+    // A 2.1: the claim card's Not a bug.
+    'not-a-bug': 'not-a-bug',
     closed: 'closed',
   },
   'human-fixing': {
