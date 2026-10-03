@@ -14,6 +14,7 @@
 import type { IncidentEvent } from '../../../contracts/events.ts';
 import type { IncidentView, OutboxItem } from '../../../contracts/state.ts';
 import type { NotifyContext } from '../../../notify/policy.ts';
+import { githubRows } from './github.ts';
 import { jiraRows } from './jira.ts';
 import { notifyRows } from './notify.ts';
 import { statusRows } from './status.ts';
@@ -37,7 +38,7 @@ export interface IncidentChange {
 export type TargetRows = (event: IncidentEvent, change: IncidentChange) => OutboxItem[];
 
 /** Every target module, in the order their rows are enqueued. */
-const TARGETS: readonly TargetRows[] = [jiraRows, statusRows, notifyRows];
+const TARGETS: readonly TargetRows[] = [jiraRows, statusRows, notifyRows, githubRows];
 
 /** The outbox items `event` implies, given what it did to the incident row. */
 export function outboxFor(event: IncidentEvent, change: IncidentChange): OutboxItem[] {

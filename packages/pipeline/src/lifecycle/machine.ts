@@ -24,6 +24,8 @@
 //   `fixer-started` is the retry run after `review-failed` or `ci-red` (`fixing-retry`) or a restart after a
 //   crash (`fixing`).
 // - `escalated` is left by the next human or agent action (claim, fixer start, human PR, close).
+// - `fixer-started` from `deployed:staging` is the fixer re-enqueued after a reject on the staging
+//   check (A 1.3, signals/handler.ts): the incident is reopened and goes back to `fixing`.
 // - `review-failed` after the review passed (`ci`, `mergeable`, `held`) is a human's Request changes
 //   on the PR card (main 11.2, merge/actions.ts): it sends the PR back like a first review failure,
 //   and from `ci-retry` it escalates like a second one (a fixer start then leaves `escalated`).
@@ -223,6 +225,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
   },
   'deployed:staging': {
     verified: 'deployed:staging',
+    // A 1.3: a reject on the staging check reopens the incident and re-enqueues the fixer (#288).
+    'fixer-started': 'fixing',
     'deployed:production': 'deployed:production',
     reverted: 'reverted',
     closed: 'closed',

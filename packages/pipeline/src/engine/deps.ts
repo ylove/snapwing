@@ -110,6 +110,13 @@ export interface EngineDeps {
    * the engine's transition fires no webhook. Absent, only the transition starts it.
    */
   startFixer?: (incidentId: string) => Promise<unknown>;
+  /**
+   * Called once the incident's `captured` event commits. Compose points it at the signal handler's
+   * `adoptPendingSignals` (signals/handler.ts), which records reactions that landed on the anchor
+   * before the incident existed (A 1.4). Best effort: a failure is ignored, and the handler adopts
+   * them on the next signal on the anchor instead.
+   */
+  onCaptured?: (incidentId: string) => Promise<unknown>;
 }
 
 export const DEFAULT_TAP_TIMEOUT = 'PT24H';
