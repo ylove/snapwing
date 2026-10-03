@@ -62,6 +62,14 @@
 //                service `active monitoring` reads the log and evaluates both after every event that
 //                can change their facts (a priority, a surface, a close, monitoring starting or
 //                stopping, an outage step), and the monitor's stall timer evaluates the ladders.
+//   Chat seam    (#368, `server/chat.ts`) every outbound chat effect outside an adapter's inbound path and
+//                the status projectors (thread, channel, and person posts, mentions, the PR card, the
+//                text-signal cards, the mid-flight card, channel members, the GitHub link check) goes
+//                through the chat router, which picks the platform's `ChatSurface` by incident source
+//                (Slack's is `adapters/slack/chat-surface.ts`). Deps that carry one platform (`HumanDeps.
+//                chat`, the PR actions) are built per platform. Slack is optional: its secrets are
+//                required only when one of them is set (or its transport named), and with no chat
+//                platform at all startup fails naming the Slack group.
 //
 // GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
@@ -90,19 +98,18 @@ import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
 import { answerMidFlight, handleMidFlightClaim, registerMidFlightJobs, type MidFlightDeps, type MidFlightPorts } from '@snapwing/pipeline/fixer/claims.ts';
 import { registerDigestJobs } from '@snapwing/pipeline/notify/digest.ts';
 import { createHolds } from '@snapwing/pipeline/signals/holds.ts';
-import { recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { createUxFriction } from '@snapwing/pipeline/signals/ux-friction.ts';
 import { createReactionEscalation } from '@snapwing/pipeline/signals/score.ts';
 import type { LinkedIncidentRequest, TextSignalDeps } from '@snapwing/pipeline/signals/text.ts';
 import { createActiveMonitor, type PolledEventType } from '@snapwing/pipeline/monitor/active.ts';
-import { createEscalationLadders, type EscalationChat, type EscalationPost, type LadderChange } from '@snapwing/pipeline/monitor/ladder.ts';
+import { createEscalationLadders, type LadderChange } from '@snapwing/pipeline/monitor/ladder.ts';
 import { jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { adoptPendingSignals, type SignalDeps, type SignalEngine } from '@snapwing/pipeline/signals/handler.ts';
 import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
-import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
-import { createPrActions } from '@snapwing/pipeline/merge/actions.ts';
+import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import { createPrActions, type HumanPrActions } from '@snapwing/pipeline/merge/actions.ts';
 import { retryFixerAfterCiRed } from '@snapwing/pipeline/merge/ci.ts';
 import { requestHumanReview, type HumanDeps, type HumanReviewDeps, type PrReadyChat } from '@snapwing/pipeline/merge/human.ts';
 import { evaluateMerge, isMergeEvaluateData, startMergeEvaluate, type MergeDeps } from '@snapwing/pipeline/merge/job.ts';
@@ -115,7 +122,7 @@ import type { HarnessPort, WorkItemRef } from '@snapwing/pipeline/ports/harness.
 import type { ModelPort } from '@snapwing/pipeline/ports/model.ts';
 import type { HarnessChoice, RunnerPort } from '@snapwing/pipeline/ports/runner.ts';
 import { SecretNotFoundError, type SecretsPort } from '@snapwing/pipeline/ports/secrets.ts';
-import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
+import type { ChatPlatform, OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkflowPort } from '@snapwing/pipeline/ports/workflow.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import { createLocalRunner, harnessResolver, type ScratchSweeper } from '@snapwing/pipeline/providers/local/runner.ts';
@@ -128,15 +135,14 @@ import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
 import { createSlackAdapter, type SlackInbound } from '../adapters/slack/adapter.ts';
 import { createSlackAuthorOf } from '../adapters/slack/authorship.ts';
-import { buildMidFlightCard } from '../adapters/slack/cards/mid-flight.ts';
-import { CHANNEL_MEMBERS_REFRESH_MS, createSlackChannelMembers, observeChannelMembers } from '../adapters/slack/channel-members.ts';
+import { createSlackChatSurface, type SlackChatSurface } from '../adapters/slack/chat-surface.ts';
+import { CHANNEL_MEMBERS_REFRESH_MS, observeChannelMembers } from '../adapters/slack/channel-members.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
-import { createSlackPrReadyChat } from '../adapters/slack/pr-ready.ts';
 import { createSlackContextSource } from '../adapters/slack/reader.ts';
 import { createSlackHome } from '../adapters/slack/home.ts';
 import { createSlackStatusProjector } from '../adapters/slack/status-projector.ts';
 import { createSlackStatusQuery } from '../adapters/slack/status-query.ts';
-import { createSlackSignals, createSlackTextCards, observeSignals, type SlackSignalOutcome } from '../adapters/slack/signals.ts';
+import { createSlackSignals, observeSignals, type SlackSignalOutcome } from '../adapters/slack/signals.ts';
 import { SLACK_SHORTCUT_CALLBACK_ID } from '../adapters/slack/normalize.ts';
 import { createPagerDutyPager } from '../pager/pagerduty.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
@@ -164,6 +170,7 @@ import { createDockerRunner, type DockerModelProxy } from '../providers/docker/r
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
 import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
+import { createChatRouter, personByChatId, type ChatRouter, type ChatSurface } from './chat.ts';
 import { createConfigWatch, DEFAULT_INSTRUCTIONS_FILE, DEFAULT_PLAYBOOK_FILE } from './config-watch.ts';
 import type { Route } from './http.ts';
 import type { JobModule } from './worker.ts';
@@ -202,10 +209,17 @@ export const MONITOR_TRIGGERS: ReadonlySet<EventType> = new Set<EventType>([
   'user-side',
 ]);
 
-/** Secrets every `snapwing serve` needs (CONTEXT.md 6b). Model keys and per-provider secrets are added per config. */
+/**
+ * The Slack group (CONTEXT.md 6b), required together whenever Slack is configured: any of them set, or
+ * `SNAPWING_SLACK_TRANSPORT` set. Socket Mode also requires `SLACK_APP_TOKEN` (#368).
+ */
+export const SLACK_SECRETS: readonly string[] = Object.freeze(['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET']);
+
+/**
+ * Secrets every `snapwing serve` needs (CONTEXT.md 6b), whatever its chat platforms. Each configured
+ * platform adds its group (`SLACK_SECRETS`); model keys and per-provider secrets are added per config.
+ */
 export const REQUIRED_SECRETS: readonly string[] = Object.freeze([
-  'SLACK_BOT_TOKEN',
-  'SLACK_SIGNING_SECRET',
   'JIRA_BASE_URL',
   'JIRA_EMAIL',
   'JIRA_API_TOKEN',
@@ -237,10 +251,17 @@ const HARNESS_PROVIDER: Partial<Record<HarnessAdapter, ModelProxyProvider>> = { 
 /** Startup found secrets unset. The message names them; it never carries a value. */
 export class MissingSecretsError extends Error {
   override readonly name = 'MissingSecretsError';
-  constructor(readonly missing: readonly string[]) {
-    super(`missing secrets: ${missing.join(', ')} (set them in the env file or the provider's secret store; names in build/CONTEXT.md 6b)`);
+  /** `why`, when given, leads the message (no chat platform is configured). */
+  constructor(
+    readonly missing: readonly string[],
+    why?: string,
+  ) {
+    super(`${why === undefined ? '' : `${why}: `}missing secrets: ${missing.join(', ')} (set them in the env file or the provider's secret store; names in build/CONTEXT.md 6b)`);
   }
 }
+
+/** What startup says when no chat platform is configured: it names the Slack group, the one to set. */
+export const NO_CHAT_PLATFORM = 'no chat platform is configured (Slack needs its group of secrets)';
 
 export interface ComposeLog {
   info(line: string): void;
@@ -263,6 +284,11 @@ export interface ComposeOverrides {
   openSocket?: (url: string) => SocketLike;
   /** The Slack side of the PR card. Default `createSlackPrReadyChat`. */
   prReadyChat?: PrReadyChat;
+  /**
+   * Chat surfaces besides Slack's (the chat seam, #368), routed by incident source like Slack's. One of
+   * them counts as a configured chat platform, so Slack may then be left unconfigured.
+   */
+  chatSurfaces?: readonly ChatSurface[];
   /** Poll interval of both projectors, in milliseconds. */
   projectorPollMs?: number;
 }
@@ -293,8 +319,8 @@ export interface Composed {
   readonly workerServices?: readonly ComposedService[];
   /** Prometheus text appended to `/metrics` (projector pauses and parked rows, B 10). */
   metrics?(): Promise<string>;
-  /** The wired fixer and review deps, so tests can check what points at what. */
-  readonly deps?: { readonly fixer: FixerDeps; readonly review: ReviewDeps };
+  /** The wired fixer and review deps and the chat router, so tests can check what points at what. */
+  readonly deps?: { readonly fixer: FixerDeps; readonly review: ReviewDeps; readonly chat: ChatRouter };
 }
 
 export type ComposeFn = (deps: ComposeDeps) => Promise<Composed>;
@@ -526,7 +552,14 @@ export const compose: ComposeFn = async (deps) => {
   if (transportChoice !== undefined && transportChoice !== '' && transportChoice !== 'http' && transportChoice !== 'socket') {
     throw new Error(`SNAPWING_SLACK_TRANSPORT must be http or socket, not ${transportChoice}`);
   }
+  // Slack is configured when any of its secrets is set or its transport is named (#368); then the whole
+  // group is required. With no chat platform at all, startup names the Slack group.
+  const otherSurfaces = overrides.chatSurfaces ?? [];
+  const slackProbe = await readSecrets(deps.secrets, [], [...SLACK_SECRETS, 'SLACK_APP_TOKEN']);
+  const slackOn = slackProbe.size > 0 || (transportChoice !== undefined && transportChoice !== '');
+  if (!slackOn && otherSurfaces.length === 0) throw new MissingSecretsError(SLACK_SECRETS, NO_CHAT_PLATFORM);
   const required = [
+    ...(slackOn ? SLACK_SECRETS : []),
     ...REQUIRED_SECRETS,
     ...(overrides.model === undefined ? modelKeySecrets(config) : []),
     ...(transportChoice === 'socket' ? ['SLACK_APP_TOKEN'] : []),
@@ -557,7 +590,7 @@ export const compose: ComposeFn = async (deps) => {
   const workRoot = env['SNAPWING_WORKDIR_ROOT']?.trim() || join(tmpdir(), 'snapwing-work');
 
   // Platform clients.
-  const web = createSlackWeb({ token: secret('SLACK_BOT_TOKEN') });
+  const web: SlackWeb | undefined = slackOn ? createSlackWeb({ token: secret('SLACK_BOT_TOKEN') }) : undefined;
   const jira: JiraClient = createJiraClient({
     baseUrl: secret('JIRA_BASE_URL'),
     email: secret('JIRA_EMAIL'),
@@ -683,61 +716,98 @@ export const compose: ComposeFn = async (deps) => {
   const mergeDeps: MergeDeps = { workspaceId, state, workflow, github, merge: config.merge, map: getMap, clock, instructionsGate: { instructions: configWatch.instructions, model } };
 
   const oauth = createGitHubOAuth({ state, secrets: deps.secrets, workspaceId });
-  const humanDeps: HumanDeps = {
+  // The map as last read, for the synchronous lookups (a handle, a surface); refreshed on each use below.
+  let mapSnapshot: WorkspaceMap = await getMap();
+  const liveMap = async (): Promise<WorkspaceMap> => (mapSnapshot = await getMap());
+
+  // Slack, when configured. One `auth.test` at startup gives the bot user id and the workspace
+  // subdomain (the Conversation Link). Who wrote a message is shared by every inbound path that reads
+  // people's messages (#360): a person posting through an app carries `bot_id` and is still a person.
+  const slack = web === undefined ? undefined : await (async (slackWeb: SlackWeb) => {
+    const identity =
+      overrides.slackBotUserId !== undefined && overrides.slackWorkspaceDomain !== undefined ? undefined : await slackIdentity(secret('SLACK_BOT_TOKEN'));
+    const botUserId = overrides.slackBotUserId ?? identity?.userId ?? '';
+    const workspaceDomain = overrides.slackWorkspaceDomain ?? identity?.domain;
+    const authorOf = createSlackAuthorOf({
+      botUserId,
+      ...(identity?.botId === undefined ? {} : { botId: identity.botId }),
+      usersInfo: (user) => slackWeb.usersInfo(user),
+    });
+    const adapter = createSlackAdapter({
+      web: slackWeb,
+      signingSecret: secret('SLACK_SIGNING_SECRET'),
+      botUserId,
+      authorOf,
+      ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
+      getMap,
+      state,
+      onError: (e) => log.error(`slack: ${message(e)}`),
+      clock,
+    });
+    // Slack's outbound chat effects (#368): thread, channel, and direct posts, the cards, channel members.
+    const surface: SlackChatSurface = createSlackChatSurface({
+      web: slackWeb,
+      state,
+      cache,
+      getMap: liveMap,
+      identity: oauth,
+      ...(overrides.prReadyChat === undefined ? {} : { prReady: overrides.prReadyChat }),
+      log,
+    });
+    return { web: slackWeb, botUserId, workspaceDomain, authorOf, adapter, context: createSlackContextSource(slackWeb), surface };
+  })(web);
+
+  // The chat seam (#368): every outbound chat effect below goes through the router, which picks the
+  // surface by the incident's source (or by a channel's or a person's platform). Slack first: the default.
+  const chat: ChatRouter = createChatRouter({
+    surfaces: [...(slack === undefined ? [] : [slack.surface]), ...otherSurfaces],
+    state,
+    map: liveMap,
+    clock,
+    log,
+  });
+
+  // Deps that carry one chat platform (the map people's ids, the linked identities) are built per
+  // platform: the human review per incident, the PR actions per tap source.
+  const humanDepsFor = (platform: ChatPlatform): HumanDeps => ({
     workspaceId,
     state,
     workflow,
-    chat: 'slack',
+    chat: platform,
     github,
     codeowners: (repo) => createCodeownersResolver(auth, { repo: repoFullName(repo) }),
     identity: oauth,
     map: getMap,
     clock,
-  };
-  const humanReviewDeps: HumanReviewDeps = {
-    ...humanDeps,
-    chatOut: overrides.prReadyChat ?? createSlackPrReadyChat({ web, state, onError: (e) => log.error(`pr card record: ${message(e)}`) }),
+  });
+  const humanReviewFor = (platform: ChatPlatform): HumanReviewDeps => ({
+    ...humanDepsFor(platform),
+    chatOut: chat.prReady,
     cache,
     onError: (e) => log.error(`pr card link prompt: ${message(e)}`),
+  });
+  const prActionsByPlatform = new Map<ChatPlatform, HumanPrActions>();
+  const prActionsFor = (platform: ChatPlatform): HumanPrActions => {
+    let actions = prActionsByPlatform.get(platform);
+    if (actions === undefined) {
+      actions = createPrActions({
+        ...humanDepsFor(platform),
+        stopIncident: (input) => stopIncident(fixerDeps, input),
+        revert: (incidentId, actor, opts) => revert(mergeDeps, incidentId, actor, opts),
+      });
+      prActionsByPlatform.set(platform, actions);
+    }
+    return actions;
   };
-  const prActions = createPrActions({
-    ...humanDeps,
-    stopIncident: (input) => stopIncident(fixerDeps, input),
-    revert: (incidentId, actor, opts) => revert(mergeDeps, incidentId, actor, opts),
-  });
 
-  // Slack and the engine.
-  // One `auth.test` at startup gives the bot user id and the workspace subdomain (the Conversation Link).
-  const identity =
-    overrides.slackBotUserId !== undefined && overrides.slackWorkspaceDomain !== undefined ? undefined : await slackIdentity(secret('SLACK_BOT_TOKEN'));
-  const botUserId = overrides.slackBotUserId ?? identity?.userId ?? '';
-  const workspaceDomain = overrides.slackWorkspaceDomain ?? identity?.domain;
-  // Who wrote a message, shared by every inbound path that reads people's messages (#360): a person
-  // posting through an app carries `bot_id` and is still a person.
-  const authorOf = createSlackAuthorOf({
-    botUserId,
-    ...(identity?.botId === undefined ? {} : { botId: identity.botId }),
-    usersInfo: (user) => web.usersInfo(user),
-  });
-  const adapter = createSlackAdapter({
-    web,
-    signingSecret: secret('SLACK_SIGNING_SECRET'),
-    botUserId,
-    authorOf,
-    ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
-    getMap,
-    state,
-    onError: (e) => log.error(`slack: ${message(e)}`),
-    clock,
-  });
-  const slackContext = createSlackContextSource(web);
+  // The engine.
   const engineDeps: EngineDeps = {
     workspaceId,
     state,
     workflow,
     model,
-    adapters: new Map([['slack', adapter]]),
-    context: new Map([['slack', slackContext]]),
+    adapters: new Map(slack === undefined ? [] : [['slack', slack.adapter]]),
+    context: new Map(slack === undefined ? [] : [['slack', slack.context]]),
     jiraSearch: jiraSearch(jira),
     cache,
     map: getMap,
@@ -749,7 +819,7 @@ export const compose: ComposeFn = async (deps) => {
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
     status: createStatusSubscriber({ workspaceId, clock }),
     clock,
-    options: { loadImage: slackContext.loadImage, loadRecording: slackContext.loadRecording },
+    ...(slack === undefined ? {} : { options: { loadImage: slack.context.loadImage, loadRecording: slack.context.loadRecording } }),
     // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
     // A 1.4: reactions on the anchor before the incident existed count from its creation (#335).
@@ -763,33 +833,14 @@ export const compose: ComposeFn = async (deps) => {
   const phase4Jobs: JobModule[] = [];
   const phase4Crons: (() => Promise<void>)[] = [];
   const registering = registrar(workflow, phase4Jobs, phase4Crons);
-  // The map as last read, for the synchronous lookups (a handle, a surface); refreshed on each use below.
-  let mapSnapshot: WorkspaceMap = await getMap();
-  const liveMap = async (): Promise<WorkspaceMap> => (mapSnapshot = await getMap());
-  const personBySlackId = (userId: string): MapPerson | undefined => mapSnapshot.people.find((p) => p.slackId === userId);
-
-  /** Posts in the incident's Slack thread and records it (role `other`), so a reaction on it counts as activity. */
-  async function threadPost(incidentId: string, post: { text: string; blocks?: readonly unknown[] }): Promise<void> {
-    const incident = await state.getIncident(incidentId);
-    if (incident === null || incident.source !== 'slack' || incident.channelId === undefined) {
-      log.info(`thread post for incident ${incidentId} skipped: it has no Slack thread`);
-      return;
-    }
-    const posted = await web.postMessage({
-      channel: incident.channelId,
-      text: post.text,
-      ...(post.blocks === undefined ? {} : { blocks: [...post.blocks] }),
-      ...(incident.anchorId === undefined ? {} : { thread_ts: incident.anchorId }),
-    });
-    await recordBotMessage(state, incidentId, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'other' }, clock).catch((e: unknown) =>
-      log.error(`thread post record: ${message(e)}`),
-    );
-  }
+  // Thread posts (the mid-flight card and notes, the holds' nudges) go through `chat.threadPost`, which
+  // posts in the incident's thread on its platform and records the post (role `other`), so a reaction on
+  // it counts as activity.
 
   /** The claimer as the Jira assignee: the `update-fields` row #323 added, which the projector resolves by email. */
   async function assignClaimer(incidentId: string, claimerId: string): Promise<void> {
     const incident = await state.getIncident(incidentId);
-    const email = (await liveMap()).people.find((p) => p.slackId === claimerId)?.email;
+    const email = personByChatId(await liveMap(), claimerId)?.email;
     if (incident?.jiraKey === undefined || email === undefined) {
       log.info(`mid-flight: ${claimerId} not assigned on incident ${incidentId}: ${incident?.jiraKey === undefined ? 'no Jira issue yet' : 'no email in the map'}`);
       return;
@@ -811,11 +862,8 @@ export const compose: ComposeFn = async (deps) => {
   }
 
   const midFlightPorts: MidFlightPorts = {
-    postCard: (incidentId, card) => {
-      const built = buildMidFlightCard(incidentId, card, parseDuration(card.grace));
-      return threadPost(incidentId, { text: built.text, blocks: built.blocks });
-    },
-    notify: (incidentId, text) => threadPost(incidentId, { text }),
+    postCard: (incidentId, card) => chat.postMidFlightCard(incidentId, card),
+    notify: (incidentId, text) => chat.threadPost(incidentId, { text }),
     assign: assignClaimer,
   };
   const midFlightDeps: MidFlightDeps = {
@@ -837,13 +885,9 @@ export const compose: ComposeFn = async (deps) => {
     workflow: registering,
     clock,
     claims: configWatch.playbook().claims,
-    say: async (incidentId, said) => {
-      // The text names people as `@handle`; in Slack the one it addresses is a real mention.
-      const id = said.mentionUserId;
-      const text = id === undefined ? said.text : said.text.split(`@${personBySlackId(id)?.handle ?? id}`).join(`<@${id}>`);
-      await threadPost(incidentId, { text });
-    },
-    handleOf: (userId) => personBySlackId(userId)?.handle,
+    // The text names people as `@handle`; on the platform the one it addresses is a real mention.
+    say: (incidentId, said) => chat.threadPost(incidentId, said),
+    handleOf: (userId) => personByChatId(mapSnapshot, userId)?.handle,
     afterRelease: async (incidentId, seq, scope) => {
       if (scope === 'claim') await engine.handleClaim(incidentId, seq);
     },
@@ -882,14 +926,8 @@ export const compose: ComposeFn = async (deps) => {
   }
 
   // Digests: one cron job per playbook digest, posted to a channel (`#name`) or a person (`@handle`, an
-  // email, or a Slack id). A digest added or removed by a hot reload applies at the next restart.
-  const digestTarget = async (to: string): Promise<string> => {
-    const map = await liveMap();
-    const t = to.trim();
-    if (t.startsWith('#')) return map.channels.find((c) => c.name === t.slice(1))?.id ?? t;
-    const person = map.people.find((p) => (t.startsWith('@') ? p.handle === t.slice(1) : p.email === t));
-    return person?.slackId ?? t;
-  };
+  // email, or a chat user id) on its platform (`chat.postTo`). A digest added or removed by a hot reload
+  // applies at the next restart.
   try {
     await registerDigestJobs(
       {
@@ -897,9 +935,7 @@ export const compose: ComposeFn = async (deps) => {
         workflow: registering,
         clock,
         workspaceId,
-        post: async (to, text) => {
-          await web.postMessage({ channel: await digestTarget(to), text });
-        },
+        post: (to, text) => chat.postTo(to, text),
       },
       configWatch.playbook().notifications.digests,
     );
@@ -934,20 +970,14 @@ export const compose: ComposeFn = async (deps) => {
       });
       if (task.channelId === undefined) return;
       // The Task is queued; a failed post must not file it twice, so it is logged, not thrown.
-      await web
-        .postMessage({ channel: task.channelId, text: `${task.summary}. When several people hit the same thing, the product is inviting it: filed a ${surface.jira.project} Task labeled ${task.labels[0]}.` })
+      await chat
+        .channelPost(task.channelId, `${task.summary}. When several people hit the same thing, the product is inviting it: filed a ${surface.jira.project} Task labeled ${task.labels[0]}.`)
         .catch((e: unknown) => log.error(`ux friction post to ${task.channelId ?? ''}: ${message(e)}`));
     },
   });
 
-  // Channel members (A 4.4): kv `channel-members:{channel}` for the notification policy.
-  const channelMembers = createSlackChannelMembers({
-    web,
-    cache,
-    getMap: liveMap,
-    onSkip: (channel, error) => log.info(`channel members of ${channel} unknown (${error}): watchers there are mentioned in the thread`),
-    onError: (e) => log.error(`channel members: ${message(e)}`),
-  });
+  // Channel members (A 4.4): kv `channel-members:{channel}` for the notification policy, refreshed by
+  // every chat surface (Slack's also follows the membership events on its inbound path).
   const phase4WorkerServices: ComposedService[] = [
     {
       name: 'phase 4 schedules',
@@ -965,7 +995,7 @@ export const compose: ComposeFn = async (deps) => {
       },
       log,
     ),
-    every('channel members refresh', CHANNEL_MEMBERS_REFRESH_MS, () => channelMembers.refreshAll(), log),
+    every('channel members refresh', CHANNEL_MEMBERS_REFRESH_MS, () => chat.refreshChannelMembers(), log),
   ];
   // End of phase 4 wiring --------------------------------------------------------------------------
 
@@ -973,23 +1003,9 @@ export const compose: ComposeFn = async (deps) => {
   // The reaction ladder (A 1.4), text signals (A 3), the escalation ladders (A 6.2), and active
   // monitoring (A 4.5). Removals (A 1.6) are the signal handler's own (`planRemoval`).
 
-  /** A ladder step, a reaction ladder note, or a heartbeat: in the incident's thread or the step's channel. */
-  async function postEscalation(post: EscalationPost): Promise<void> {
-    const map = await liveMap();
-    const who = post.mention === undefined ? undefined : slackMention(map, post.mention);
-    const text = who === undefined ? post.text : `${who} ${post.text}`;
-    if (post.where.kind === 'channel') {
-      const named = post.where.channel.replace(/^#/, '');
-      await web.postMessage({ channel: map.channels.find((c) => c.name === named || c.id === named)?.id ?? post.where.channel, text });
-      return;
-    }
-    const posted = await web.postMessage({ channel: post.where.channel, text, ...(post.where.threadId === undefined ? {} : { thread_ts: post.where.threadId }) });
-    // Recorded, so a reaction on it resolves to the incident (best effort: the post is out).
-    await recordBotMessage(state, post.incidentId, { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'other' }, clock).catch((e: unknown) =>
-      log.error(`escalation post record: ${message(e)}`),
-    );
-  }
-  const escalationChat: EscalationChat = { post: postEscalation };
+  // A ladder step, a reaction ladder note, or a heartbeat: in the incident's thread (recorded, so a
+  // reaction on it resolves to the incident) or the step's channel, through the chat router.
+  const escalationChat = chat.escalation;
 
   /** Active monitoring then the ladders, which read `monitored` and the facts the monitor keeps. */
   async function evaluateMonitoring(incidentId: string): Promise<LadderChange[]> {
@@ -1073,7 +1089,7 @@ export const compose: ComposeFn = async (deps) => {
 
   /** A 3 scope change: the second issue captured as its own incident, as "Fix it from here" on that message. */
   async function fileLinked(request: LinkedIncidentRequest): Promise<{ incidentId: string } | undefined> {
-    if (request.platform !== 'slack' || request.channel === '') return undefined;
+    if (slack === undefined || request.platform !== 'slack' || request.channel === '') return undefined;
     const parent = await state.getIncident(request.parentIncidentId);
     const raw: SlackInbound = {
       transport: 'socket',
@@ -1086,7 +1102,7 @@ export const compose: ComposeFn = async (deps) => {
         message: { ts: request.messageId, text: request.text, ...(parent?.anchorId === undefined ? {} : { thread_ts: parent.anchorId }) },
       },
     };
-    const normalized = await adapter.normalizeResult(raw);
+    const normalized = await slack.adapter.normalizeResult(raw);
     if (normalized.kind !== 'incident') return undefined;
     await engine.handleInbound('slack', raw);
     return { incidentId: normalized.payload.eventId };
@@ -1098,7 +1114,8 @@ export const compose: ComposeFn = async (deps) => {
     model,
     clock,
     ports: {
-      ...createSlackTextCards({ web, state }),
+      // The resolution question and the scope card, on the incident's chat surface.
+      ...chat.textCards,
       fileLinked,
       // The handoff's taker as the Jira assignee (the #323 row, by the map's email).
       assign: assignClaimer,
@@ -1120,63 +1137,82 @@ export const compose: ComposeFn = async (deps) => {
     escalation: reactionEscalation,
     clock,
   };
-  const slackSignals = createSlackSignals({
-    deps: signalDeps,
-    getMap,
-    botUserId,
-    authorOf,
-    ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
-    githubLinked: (userId) => oauth.isLinked({ chat: 'slack', userId }),
-    web,
-    model,
-    standing: state,
-    // A 3 (#294, #348): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
-    text: textSignalDeps,
-    onOutcome: afterSignal,
-    onError: (e) => log.error(`slack signals: ${message(e)}`),
-  });
 
-  const interactivity = createSlackInteractivity({
-    web,
-    state,
-    workspaceId,
-    orchestrator: engine,
-    stopIncident: (input) => stopIncident(fixerDeps, input),
-    prActions,
-    midFlight: (input) => answerMidFlight(midFlightDeps, input),
-    getMap,
-    githubLinked: (userId) => oauth.isLinked({ chat: 'slack', userId }),
-    botUserId,
-    clock,
-  });
-  const slackStatusQuery = createSlackStatusQuery({ web, state, standing: state, workspaceId, getMap, botUserId, authorOf, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
-  const slackHome = createSlackHome({
-    web,
-    state,
-    workspaceId,
-    getMap,
-    identity: oauth,
-    pullRequest: (repo, number) => github(repo).getPullRequest(number),
-    clock,
-    onError: (e) => log.error(`slack home: ${message(e)}`),
-  });
-  const appToken = s.get('SLACK_APP_TOKEN');
-  const socket = transportChoice === 'socket' || ((transportChoice === undefined || transportChoice === '') && appToken !== undefined);
-  const slackError = (e: unknown): void => log.error(`slack: ${message(e)}`);
-  const transportBase = {
-    adapter: observeChannelMembers(observeSignals(observeReactionRemoval(adapter, interactivity, slackError), slackSignals, slackError), channelMembers, slackError),
-    handleInbound: (source: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(source, raw),
-    // The text-signal cards' taps (#348) are the Slack signals'; every other tap is the interactivity's.
-    onAction: async (payload: Parameters<typeof interactivity.onAction>[0]) => {
-      if (!(await slackSignals.onAction(payload))) await interactivity.onAction(payload);
-    },
-    status: slackStatusQuery,
-    home: slackHome,
-    onError: slackError,
-  };
-  const transport = socket
-    ? createSlackTransport({ ...transportBase, mode: 'socket', appToken: appToken ?? '', ...(overrides.openSocket === undefined ? {} : { openSocket: overrides.openSocket }) })
-    : createSlackTransport({ ...transportBase, mode: 'http' });
+  // Slack's inbound side, when Slack is configured: signals, taps, the status query, Home, and the
+  // transport. A tap's PR actions and the GitHub link check are Slack's (per tap source, #368).
+  const slackInbound =
+    slack === undefined
+      ? undefined
+      : (() => {
+          const { web: slackWeb, botUserId, workspaceDomain, authorOf, surface } = slack;
+          const slackSignals = createSlackSignals({
+            deps: signalDeps,
+            getMap,
+            botUserId,
+            authorOf,
+            ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
+            githubLinked: surface.githubLinked,
+            web: slackWeb,
+            model,
+            standing: state,
+            // A 3 (#294, #348): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
+            text: textSignalDeps,
+            onOutcome: afterSignal,
+            onError: (e) => log.error(`slack signals: ${message(e)}`),
+          });
+          const interactivity = createSlackInteractivity({
+            web: slackWeb,
+            state,
+            workspaceId,
+            orchestrator: engine,
+            stopIncident: (input) => stopIncident(fixerDeps, input),
+            prActions: prActionsFor('slack'),
+            midFlight: (input) => answerMidFlight(midFlightDeps, input),
+            getMap,
+            githubLinked: surface.githubLinked,
+            botUserId,
+            clock,
+          });
+          const slackStatusQuery = createSlackStatusQuery({
+            web: slackWeb,
+            state,
+            standing: state,
+            workspaceId,
+            getMap,
+            botUserId,
+            authorOf,
+            clock,
+            onError: (e) => log.error(`slack status query: ${message(e)}`),
+          });
+          const slackHome = createSlackHome({
+            web: slackWeb,
+            state,
+            workspaceId,
+            getMap,
+            identity: oauth,
+            pullRequest: (repo, number) => github(repo).getPullRequest(number),
+            clock,
+            onError: (e) => log.error(`slack home: ${message(e)}`),
+          });
+          const appToken = s.get('SLACK_APP_TOKEN');
+          const socket = transportChoice === 'socket' || ((transportChoice === undefined || transportChoice === '') && appToken !== undefined);
+          const slackError = (e: unknown): void => log.error(`slack: ${message(e)}`);
+          const transportBase = {
+            adapter: observeChannelMembers(observeSignals(observeReactionRemoval(slack.adapter, interactivity, slackError), slackSignals, slackError), surface.channelMembers, slackError),
+            handleInbound: (from: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(from, raw),
+            // The text-signal cards' taps (#348) are the Slack signals'; every other tap is the interactivity's.
+            onAction: async (payload: Parameters<typeof interactivity.onAction>[0]) => {
+              if (!(await slackSignals.onAction(payload))) await interactivity.onAction(payload);
+            },
+            status: slackStatusQuery,
+            home: slackHome,
+            onError: slackError,
+          };
+          const transport = socket
+            ? createSlackTransport({ ...transportBase, mode: 'socket', appToken: appToken ?? '', ...(overrides.openSocket === undefined ? {} : { openSocket: overrides.openSocket }) })
+            : createSlackTransport({ ...transportBase, mode: 'http' });
+          return { transport, signals: slackSignals, socket };
+        })();
 
   // Projectors.
   const pollIntervalMs = overrides.projectorPollMs;
@@ -1189,7 +1225,8 @@ export const compose: ComposeFn = async (deps) => {
     continueIncident: (incidentId) => engine.continueIncident(incidentId),
     customFieldIds,
     statusOverrides: config.jira.statuses,
-    loadScreenshot: screenshotLoader(web),
+    // Slack-hosted screenshots need the bot token; without Slack every screenshot is a plain GET.
+    ...(web === undefined ? {} : { loadScreenshot: screenshotLoader(web) }),
     now: clock,
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`jira projector: ${message(e)}`),
@@ -1203,16 +1240,19 @@ export const compose: ComposeFn = async (deps) => {
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`github projector: ${message(e)}`),
   });
-  const statusProjector = createSlackStatusProjector({
-    state,
-    web,
-    cache,
-    workspaceId,
-    getMap,
-    now: clock,
-    ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
-    onError: (e) => log.error(`slack status projector: ${message(e)}`),
-  });
+  const statusProjector =
+    web === undefined
+      ? undefined
+      : createSlackStatusProjector({
+          state,
+          web,
+          cache,
+          workspaceId,
+          getMap,
+          now: clock,
+          ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
+          onError: (e) => log.error(`slack status projector: ${message(e)}`),
+        });
 
   // Reconciler.
   const reconcileDeps: ReconcileDeps = {
@@ -1243,7 +1283,7 @@ export const compose: ComposeFn = async (deps) => {
 
   // Routes.
   const routes: Route[] = [
-    ...transport.routes,
+    ...(slackInbound?.transport.routes ?? []),
     { method: 'POST', path: JIRA_WEBHOOK_PATH, handler: createJiraWebhookRoute({
       fixer: fixerDeps,
       jira,
@@ -1298,7 +1338,8 @@ export const compose: ComposeFn = async (deps) => {
       const outcome = await evaluateMerge(mergeDeps, j.data);
       // The human path (main 11.2): after `review-passed` at levels 1 and 2, and after a level 3 `held`.
       // `requestHumanReview` decides from the log and posts each card once.
-      if (outcome.outcome !== 'merged') await requestHumanReview(humanReviewDeps, j.data.incidentId);
+      // The reviewers are named on the incident's chat platform; the card goes to its surface.
+      if (outcome.outcome !== 'merged') await requestHumanReview(humanReviewFor(chat.platformFor(await state.getIncident(j.data.incidentId))), j.data.incidentId);
     }),
     job('timer.revert', async (j) => {
       if (!isMergeEvaluateData(j.data)) throw new Error('timer.revert: malformed job data');
@@ -1320,7 +1361,15 @@ export const compose: ComposeFn = async (deps) => {
   // Both processes read the files, so each starts the watch (start and stop are idempotent).
   const configService: ComposedService = { name: 'playbook and instructions watch', start: () => configWatch.start(), stop: () => configWatch.stop() };
   const apiServices: ComposedService[] = [
-    { name: `slack ${socket ? 'socket mode' : 'http'} transport`, start: () => transport.start(), stop: () => transport.stop().then(() => slackSignals.idle()) },
+    ...(slackInbound === undefined
+      ? []
+      : [
+          {
+            name: `slack ${slackInbound.socket ? 'socket mode' : 'http'} transport`,
+            start: () => slackInbound.transport.start(),
+            stop: () => slackInbound.transport.stop().then(() => slackInbound.signals.idle()),
+          },
+        ]),
     configService,
   ];
   const workerServices: ComposedService[] = [
@@ -1341,13 +1390,14 @@ export const compose: ComposeFn = async (deps) => {
     { name: 'reconcile schedule', start: () => workflow.cron(RECONCILE_JOB, DEFAULT_RECONCILE_CRON), stop: () => Promise.resolve() },
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'github projector', start: async () => githubProjector.start(), stop: () => githubProjector.stop() },
-    { name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() },
+    ...(statusProjector === undefined ? [] : [{ name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() }]),
     ...phase4WorkerServices,
     ...monitorServices,
     configService,
   ];
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
-  log.info(`composed: slack ${socket ? 'socket mode' : 'http'}, runner ${config.runtime.provider}${proxied}, workspace ${workspaceId}`);
+  const chats = [...(slackInbound === undefined ? [] : [`slack ${slackInbound.socket ? 'socket mode' : 'http'}`]), ...otherSurfaces.map((x) => x.platform)];
+  log.info(`composed: ${chats.join(', ')}, runner ${config.runtime.provider}${proxied}, workspace ${workspaceId}`);
 
   return {
     routes,
@@ -1355,9 +1405,9 @@ export const compose: ComposeFn = async (deps) => {
     apiServices,
     workerServices,
     async metrics() {
-      return mergePrometheus([await jiraProjector.metrics(), await githubProjector.metrics(), await statusProjector.metrics()]);
+      return mergePrometheus([await jiraProjector.metrics(), await githubProjector.metrics(), ...(statusProjector === undefined ? [] : [await statusProjector.metrics()])]);
     },
-    deps: { fixer: fixerDeps, review: reviewDeps },
+    deps: { fixer: fixerDeps, review: reviewDeps, chat },
   };
 };
 
@@ -1389,17 +1439,6 @@ export function mergePrometheus(blocks: readonly string[]): string {
   }
   const lines = [...families.values()].flatMap((f) => [...f.meta, ...f.samples]);
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
-}
-
-/**
- * A person reference from a ladder step or the owner (a Slack user id, a map handle, or an email) as a
- * Slack mention; a reference the map does not know stays `@name`.
- */
-function slackMention(map: WorkspaceMap, ref: string): string {
-  const r = ref.trim().replace(/^@/, '');
-  const person = map.people.find((p) => p.slackId === r || p.handle === r || (p.email !== undefined && p.email === r));
-  if (person?.slackId !== undefined) return `<@${person.slackId}>`;
-  return /^[UW][A-Z0-9]{2,}$/.test(r) ? `<@${r}>` : `@${r}`;
 }
 
 /** The local runner reports for the fixer's work item, which is the incident (`fixer.run`). */
