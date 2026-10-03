@@ -13,6 +13,7 @@
 import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
 import type { Route } from '../../server/http.ts';
 import { parsedBodyOf, slackPayloadType, type SlackAdapter, type SlackInbound } from './adapter.ts';
+import type { SlackHome } from './home.ts';
 import type { SlackStatusQuery } from './status-query.ts';
 
 export const SLACK_EVENTS_PATH = '/slack/events';
@@ -47,7 +48,21 @@ export interface SlackDispatcherOptions {
    * never reach `handleInbound`. Absent, they are ignored or captured as before.
    */
   status?: SlackStatusQuery;
+  /**
+   * App Home (main 20.2, #297): `app_home_opened` publishes the user's Home view, and a tap in the view
+   * (after `onAction` ran) publishes it again so it shows the result. Absent, the event is ignored.
+   */
+  home?: SlackHome;
   onError?: (error: unknown) => void;
+}
+
+/** The user who tapped a button in their App Home, else undefined. */
+function homeTapUser(payload: SlackActionPayload): string | undefined {
+  const container = payload['container'];
+  const inView = typeof container === 'object' && container !== null && (container as Record<string, unknown>)['type'] === 'view';
+  const user = payload['user'];
+  const id = typeof user === 'object' && user !== null ? (user as Record<string, unknown>)['id'] : undefined;
+  return payload['type'] === 'block_actions' && inView && typeof id === 'string' && id !== '' ? id : undefined;
 }
 
 const empty = (status: number): SlackDispatchResult => ({ status, body: '' });
@@ -89,7 +104,18 @@ export function createSlackDispatcher(options: SlackDispatcherOptions): SlackDis
         };
       }
       if (ACTION_TYPES.has(type)) {
-        runAction(() => options.onAction(parsed as SlackActionPayload));
+        const payload = parsed as SlackActionPayload;
+        const home = options.home;
+        const homeUser = home === undefined ? undefined : homeTapUser(payload);
+        runAction(async () => {
+          await options.onAction(payload);
+          if (home !== undefined && homeUser !== undefined) await home.publishFor(homeUser);
+        });
+        return empty(200);
+      }
+      if (type === 'event_callback' && options.home?.intercepts(parsed) === true) {
+        const home = options.home;
+        runAction(() => home.handleEvent(parsed));
         return empty(200);
       }
       if (type === 'event_callback' && options.status?.intercepts(parsed) === true) {

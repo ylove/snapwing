@@ -7,7 +7,7 @@ display_information:
   background_color: "#1f2a44"
 features:
   app_home:
-    home_tab_enabled: false
+    home_tab_enabled: true
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   bot_user:
@@ -45,6 +45,7 @@ settings:
     bot_events:
       - message.im
       - app_mention
+      - app_home_opened
       - reaction_added
       - reaction_removed
       - file_shared

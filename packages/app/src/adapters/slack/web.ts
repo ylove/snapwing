@@ -162,6 +162,8 @@ export interface SlackWeb {
   postMessage(args: PostMessageArgs): Promise<{ channel: string; ts: string }>;
   updateMessage(args: UpdateMessageArgs): Promise<{ channel: string; ts: string }>;
   postEphemeral(args: PostEphemeralArgs): Promise<{ messageTs?: string }>;
+  /** `views.publish`: sets a user's App Home tab (`view` is `{ type: 'home', blocks }`). */
+  viewsPublish(args: { userId: string; view: { type: 'home'; blocks: readonly unknown[] } }): Promise<void>;
   pinsAdd(channel: string, timestamp: string): Promise<void>;
   reactionsAdd(channel: string, timestamp: string, name: string): Promise<void>;
   /** The reactions on one message, with the reactors, and the message Slack sends with them (text, ts, thread_ts, files). */
@@ -277,6 +279,9 @@ export function createSlackWeb(options: SlackWebOptions): SlackWeb {
       const r = await post('chat.postEphemeral', args);
       const ts = str(r['message_ts']);
       return ts === '' ? {} : { messageTs: ts };
+    },
+    async viewsPublish(args) {
+      await post('views.publish', { user_id: args.userId, view: args.view });
     },
     async pinsAdd(channel, timestamp) {
       await post('pins.add', { channel, timestamp });
