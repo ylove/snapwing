@@ -458,27 +458,31 @@ describe('bootstrap secrets', () => {
     GITHUB_INSTALLATION_ID: '987',
     GITHUB_WEBHOOK_SECRET: 'fake-webhook-secret',
     GITHUB_APP_SLUG: 'snapwing-test',
+    GITHUB_APP_CLIENT_ID: 'fake-client-id',
+    GITHUB_APP_CLIENT_SECRET: 'fake-client-secret',
   };
 
   it('sets the GH_ repository secrets with the value on stdin and never echoes it', async () => {
     await writeFile(join(root, '.env.live'), upsertEnv('', env));
     const result = await runSecrets(deps(), { repo: 'ylove/snapwing' });
-    expect(result.set).toEqual(['GH_APP_ID', 'GH_APP_PRIVATE_KEY', 'GH_INSTALLATION_ID', 'GH_WEBHOOK_SECRET', 'GH_APP_SLUG']);
+    expect(result.set).toEqual(['GH_APP_ID', 'GH_APP_PRIVATE_KEY', 'GH_INSTALLATION_ID', 'GH_WEBHOOK_SECRET', 'GH_APP_SLUG', 'GH_APP_CLIENT_ID', 'GH_APP_CLIENT_SECRET']);
     expect(ghCalls.map((c) => c.args)).toEqual([
       ['secret', 'set', 'GH_APP_ID', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_APP_PRIVATE_KEY', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_INSTALLATION_ID', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_WEBHOOK_SECRET', '--repo', 'ylove/snapwing'],
       ['secret', 'set', 'GH_APP_SLUG', '--repo', 'ylove/snapwing'],
+      ['secret', 'set', 'GH_APP_CLIENT_ID', '--repo', 'ylove/snapwing'],
+      ['secret', 'set', 'GH_APP_CLIENT_SECRET', '--repo', 'ylove/snapwing'],
     ]);
-    expect(ghCalls.map((c) => c.input)).toEqual(['424242', privateKey, '987', 'fake-webhook-secret', 'snapwing-test']);
+    expect(ghCalls.map((c) => c.input)).toEqual(['424242', privateKey, '987', 'fake-webhook-secret', 'snapwing-test', 'fake-client-id', 'fake-client-secret']);
     const visible = JSON.stringify(ghCalls.map((c) => c.args)) + logs.join('\n');
-    for (const v of ['424242', 'fake-webhook-secret', 'BEGIN']) expect(visible).not.toContain(v);
+    for (const v of ['424242', 'fake-webhook-secret', 'fake-client-id', 'fake-client-secret', 'BEGIN']) expect(visible).not.toContain(v);
   });
 
   it('sets nothing when a value is missing', async () => {
     await writeFile(join(root, '.env.live'), upsertEnv('', { GITHUB_APP_ID: '424242' }));
-    await expect(runSecrets(deps())).rejects.toThrow(/missing GITHUB_APP_PRIVATE_KEY, GITHUB_INSTALLATION_ID, GITHUB_WEBHOOK_SECRET, GITHUB_APP_SLUG/);
+    await expect(runSecrets(deps())).rejects.toThrow(/missing GITHUB_APP_PRIVATE_KEY, GITHUB_INSTALLATION_ID, GITHUB_WEBHOOK_SECRET, GITHUB_APP_SLUG, GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET/);
     expect(ghCalls).toEqual([]);
   });
 });
