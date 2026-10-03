@@ -159,9 +159,10 @@ describe('compose under snapwing serve', () => {
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     const log = run.out.join('\n');
     expect(log).toContain('composed: slack http, runner local');
-    // Seven phase 3 job types plus the phase 4 timers (#337): mid-flight, hold, claim nudge, claim expiry.
-    expect(log).toContain('worker polling (11 job types)');
-    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport', 'phase 4 schedules', 'ux friction scan', 'channel members refresh']) {
+    // Seven phase 3 job types plus the phase 4 timers (#337): mid-flight, hold, claim nudge, claim expiry;
+    // and (#348) the escalation ladder step, the monitor poll, heartbeat, and stall.
+    expect(log).toContain('worker polling (15 job types)');
+    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport', 'phase 4 schedules', 'ux friction scan', 'channel members refresh', 'active monitoring']) {
       expect(log).toContain(`${service} started`);
     }
 

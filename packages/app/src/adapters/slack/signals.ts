@@ -22,6 +22,16 @@
 //   before the lexicon, so "stop notifying me on web" never reads as a Stop. Only inside an incident's
 //   thread, like every message signal; "keep me posted" with no surface is the incident's `watch`.
 //
+// - Text signals beyond the intents (A 3, #294, wired in #348), when `text` is given: every thread reply
+//   a person posts (the standing watch aside) also goes to `handleTextSignal`, after the intent path,
+//   since one message can be both ("works now" is an `accept` and a resolution). A `claim` reaction the
+//   handler applied goes to `acceptHandoff` (the person a handoff named took it). The two cards are
+//   built here: the resolution question is ephemeral, shown only to the person who said it
+//   (`buildResolutionPrompt`, block `text_resolution:<messageId>`), and the scope-change card is posted
+//   in the thread (`buildScopeChangeCard`, block `scope_change:<messageId>`). `onAction` answers their
+//   taps (`answerResolution`, `answerScopeChange`) and resolves to false for any other payload, which
+//   the caller hands to the interactivity.
+//
 // The actor's role is the workspace map's (`people[].slackId`; unmapped is `unknown`), the deep link
 // is a permalink built from the workspace subdomain, and `githubLinked` comes from the OAuth store.
 // Slack redelivers an event it thinks was missed, so each `event_id` is handled once (a cache
@@ -39,10 +49,28 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { classifyLexicon, classifyReaction } from '@snapwing/pipeline/signals/classify.ts';
 import { handleSignal, type SignalDeps, type SignalInput, type SignalOutcome } from '@snapwing/pipeline/signals/handler.ts';
 import { classifyLlm, type SignalMessage } from '@snapwing/pipeline/signals/llm.ts';
+import type { PostedMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { applyStandingWatch, parseStandingWatch, resolveWatchTarget } from '@snapwing/pipeline/signals/standing.ts';
 import { resolveTarget } from '@snapwing/pipeline/signals/target.ts';
+import {
+  acceptHandoff,
+  answerResolution,
+  answerScopeChange,
+  classifyTextLexicon,
+  handleTextSignal,
+  type ResolutionChoice,
+  type ResolutionPrompt,
+  type ScopeChangeCard,
+  type ScopeChoice,
+  type TextMessage,
+  type TextSignalDeps,
+  type TextSignalOutcome,
+  type TextSignalPorts,
+} from '@snapwing/pipeline/signals/text.ts';
 import type { Playbook } from '@snapwing/pipeline/config/playbook.ts';
 import { parsedBodyOf, type SlackAdapter } from './adapter.ts';
+import { actions, context, esc, mention, section, type SlackMessage } from './cards/blocks.ts';
+import type { SlackActionPayload } from './transport.ts';
 import type { SlackWeb } from './web.ts';
 
 /** Events API event types this module reads. */
@@ -71,12 +99,17 @@ export interface SlackSignalsOptions {
   workspaceDomain?: string;
   /** The user has a linked GitHub identity (main 11.2). Absent: nobody is linked. */
   githubLinked?: (userId: string) => Promise<boolean>;
-  /** Thread context for the model pass, and the standing watch's ephemeral confirmation. */
-  web?: Pick<SlackWeb, 'conversationsReplies' | 'postEphemeral'>;
+  /**
+   * Thread context for the model pass, the standing watch's ephemeral confirmation, and the answers to
+   * the text-signal cards (`updateMessage` marks the scope-change card answered).
+   */
+  web?: Pick<SlackWeb, 'conversationsReplies' | 'postEphemeral'> & Partial<Pick<SlackWeb, 'updateMessage'>>;
   /** The LLM pass (A 1.2). Absent: a reply the lexicon misses is not a signal. */
   model?: ModelPort;
   /** Writes standing subscriptions (A 4.4). Absent: a surface watch in a thread is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
+  /** Text signals after filing (A 3, `signals/text.ts`). Absent: a thread reply is an intent signal only. */
+  text?: TextSignalDeps;
   /** Called with what each event did (logs, tests). */
   onOutcome?: (outcome: SlackSignalOutcome) => void;
   onError?: (error: unknown) => void;
@@ -96,12 +129,16 @@ export type SlackSignalIgnoreReason =
   | 'empty-message'
   | 'no-intent';
 
-export type SlackSignalOutcome =
+export type SlackSignalOutcome = (
   | { kind: 'ignored'; reason: SlackSignalIgnoreReason }
   /** A standing surface subscription asked for in a thread (A 4.4). */
   | { kind: 'standing'; changed: boolean }
   /** Classified and handed to `handleSignal`; `outcome` is what it did. */
-  | { kind: 'signal'; intent: Exclude<Intent, 'none'>; source: SignalInput['source']; outcome: SignalOutcome };
+  | { kind: 'signal'; intent: Exclude<Intent, 'none'>; source: SignalInput['source']; outcome: SignalOutcome }
+) & {
+  /** With `text`: what `handleTextSignal` did with a thread reply, or `acceptHandoff` with a claim reaction. */
+  text?: TextSignalOutcome;
+};
 
 export interface SlackSignals {
   /** True when the Events API body is an event this module reads (a reaction or a message). */
@@ -110,6 +147,11 @@ export interface SlackSignals {
   handleEvent(body: unknown): Promise<SlackSignalOutcome>;
   /** `handleEvent`, with the outcome passed to `onOutcome`. */
   onEvent(body: unknown): Promise<void>;
+  /**
+   * A tap on a text-signal card (the resolution question, the scope-change card). Resolves to false
+   * for any other payload, which then belongs to the interactivity; never throws (`onError`).
+   */
+  onAction(payload: SlackActionPayload): Promise<boolean>;
   /** Resolves when the `onEvent` calls started so far have settled (tests, shutdown). */
   idle(): Promise<void>;
 }
@@ -178,18 +220,29 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     const channelName = map.channels.find((c) => c.id === channel)?.name;
     const classified = classifyReaction((await playbook()).signals, 'slack', name, { channel: channelName === undefined ? channel : [channel, channelName] });
     if (classified.intent === 'none') return ignored('no-intent');
-    return hand({
+    const actor = actorOf(map, user);
+    const timestamp = isoFromTs(str(event['event_ts']) || ts);
+    const outcome = await hand({
       intent: classified.intent,
       confidence: classified.confidence,
       source: removed ? 'reaction-removed' : 'reaction',
       platform: 'slack',
-      actor: actorOf(map, user),
+      actor,
       target: { channel, messageId: ts },
       raw: name,
-      timestamp: isoFromTs(str(event['event_ts']) || ts),
+      timestamp,
       ...link(channel, ts),
       githubLinked: await linked(user),
     });
+    // A 3: a claim reaction anywhere on the incident takes a handoff that named the reactor.
+    const text = options.text;
+    if (text === undefined || removed || classified.intent !== 'claim' || outcome.kind !== 'signal' || !outcome.outcome.handled) return outcome;
+    const incidentId = outcome.outcome.incidentId;
+    const handoff = await acceptHandoff(text, { incidentId, actor, at: timestamp, via: 'reaction' }).catch((e: unknown) => {
+      onError(e);
+      return undefined;
+    });
+    return handoff === undefined ? outcome : { ...outcome, text: handoff };
   }
 
   /** The earlier messages of the thread, oldest first, for the model; empty when Slack cannot say. */
@@ -235,35 +288,68 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
       return { kind: 'standing', changed: outcome.changed };
     }
 
-    let classified: { intent: Intent; confidence: number } = { intent: 'none', confidence: 0 };
-    const lexicon = classifyLexicon(signals, text);
-    if (lexicon.intent !== 'none') {
-      classified = lexicon;
-    } else if (options.model !== undefined) {
-      // The model reads only replies in an active incident's thread (A 1.2).
+    // The earlier thread messages, read at most once for both model passes.
+    let earlier: Promise<SignalMessage[]> | undefined;
+    const thread = (): Promise<SignalMessage[]> => (earlier ??= threadContext(channel, threadTs, ts));
+    const actor = actorOf(map, user);
+
+    /** The thread's root is an open incident's (and, with `filed`, one with its own issue). */
+    const activeIncident = async (filed: boolean): Promise<boolean> => {
       const target = await resolveTarget(deps.state, ref);
       const incident = target === null ? null : await deps.state.getIncident(target.incidentId);
-      if (incident === null || isTerminalStatus(incident.status)) return ignored('no-intent');
-      const thread = await threadContext(channel, threadTs, ts);
-      const answer = await classifyLlm(signals, { id: ts, authorId: user, text, timestamp }, thread, options.model).catch((e: unknown) => {
-        onError(e);
-        return { intent: 'none' as const };
+      return incident !== null && !isTerminalStatus(incident.status) && (!filed || incident.jiraKey !== undefined);
+    };
+
+    const intentSignal = async (): Promise<SlackSignalOutcome> => {
+      let classified: { intent: Intent; confidence: number } = { intent: 'none', confidence: 0 };
+      const lexicon = classifyLexicon(signals, text);
+      if (lexicon.intent !== 'none') {
+        classified = lexicon;
+      } else if (options.model !== undefined) {
+        // The model reads only replies in an active incident's thread (A 1.2).
+        if (!(await activeIncident(false))) return ignored('no-intent');
+        const answer = await classifyLlm(signals, { id: ts, authorId: user, text, timestamp }, await thread(), options.model).catch((e: unknown) => {
+          onError(e);
+          return { intent: 'none' as const };
+        });
+        if (answer.intent !== 'none') classified = answer;
+      }
+      if (classified.intent === 'none') return ignored('no-intent');
+      return hand({
+        intent: classified.intent,
+        confidence: classified.confidence,
+        source: 'message',
+        platform: 'slack',
+        actor,
+        target: { channel, messageId: threadTs },
+        raw: text,
+        timestamp,
+        ...link(channel, ts, threadTs),
+        githubLinked: await linked(user),
       });
-      if (answer.intent !== 'none') classified = answer;
-    }
-    if (classified.intent === 'none') return ignored('no-intent');
-    return hand({
-      intent: classified.intent,
-      confidence: classified.confidence,
-      source: 'message',
-      platform: 'slack',
-      actor: actorOf(map, user),
-      target: { channel, messageId: threadTs },
-      raw: text,
-      timestamp,
-      ...link(channel, ts, threadTs),
-      githubLinked: await linked(user),
+    };
+
+    /** A 3: the thread is read only when the model will see the message and the incident takes text signals. */
+    const textSignal = async (textDeps: TextSignalDeps, message: TextMessage): Promise<TextSignalOutcome> => {
+      const modelReads = textDeps.model !== undefined && classifyTextLexicon({ signals }, message).kind === 'none';
+      const earlierMessages = modelReads && (await activeIncident(true)) ? await thread() : [];
+      return handleTextSignal(textDeps, {
+        platform: 'slack',
+        thread: { channel, rootId: threadTs },
+        message,
+        actor,
+        ...(earlierMessages.length === 0 ? {} : { context: earlierMessages }),
+      });
+    };
+
+    const outcome = await intentSignal();
+    const textDeps = options.text;
+    if (textDeps === undefined) return outcome;
+    const read = await textSignal(textDeps, { id: ts, authorId: user, text, timestamp }).catch((e: unknown) => {
+      onError(e);
+      return undefined;
     });
+    return read === undefined ? outcome : { ...outcome, text: read };
   }
 
   function observes(body: unknown): boolean {
@@ -283,11 +369,67 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     return reaction(event, type === 'reaction_removed');
   }
 
+  /** A tap on the resolution question or the scope-change card (see the file header). */
+  async function onAction(payload: SlackActionPayload): Promise<boolean> {
+    const action = rec((Array.isArray(payload['actions']) ? payload['actions'] : [])[0]);
+    const block = parseTextSignalBlock(str(action['block_id']));
+    if (block === undefined || options.text === undefined) return false;
+    try {
+      await answer(options.text, payload, action, block);
+    } catch (e) {
+      onError(e);
+    }
+    return true;
+  }
+
+  async function answer(textDeps: TextSignalDeps, payload: SlackActionPayload, action: Rec, block: TextSignalBlock): Promise<void> {
+    const userId = str(rec(payload['user'])['id']);
+    const incidentId = str(action['value']);
+    const actionId = str(action['action_id']);
+    if (userId === '' || incidentId === '') return;
+    const actor = actorOf(await options.getMap(), userId);
+    const at = deps.clock().toISOString();
+    const incident = await deps.state.getIncident(incidentId);
+    const container = rec(payload['container']);
+    const message = rec(payload['message']);
+    const channel = str(container['channel_id']) || str(rec(payload['channel'])['id']) || (incident?.channelId ?? '');
+    const reply = async (text: string): Promise<void> => {
+      if (channel === '') return;
+      await options.web?.postEphemeral({ channel, user: userId, text, ...(incident?.anchorId === undefined ? {} : { thread_ts: incident.anchorId }) }).catch(onError);
+    };
+
+    if (block.kind === 'resolution') {
+      const choice = RESOLUTION_ACTIONS.find((c) => c === actionId);
+      if (choice === undefined) return;
+      const outcome = await answerResolution(textDeps, { incidentId, messageId: block.messageId, actor, choice, at });
+      const key = incident?.jiraKey ?? 'the ticket';
+      await reply(outcome.handled ? (choice === 'close' ? `Closed ${key}.` : `Keeping ${key} open.`) : refusalText(outcome.reason));
+      return;
+    }
+    const choice = SCOPE_ACTIONS.find((c) => c === actionId);
+    if (choice === undefined) return;
+    const outcome = await answerScopeChange(textDeps, { incidentId, messageId: block.messageId, actor, choice, at });
+    if (!outcome.handled) {
+      await reply(refusalText(outcome.reason));
+      return;
+    }
+    // The card says who answered and loses its buttons.
+    const messageTs = str(container['message_ts']) || str(message['ts']);
+    const label = choice === 'yes' ? 'Yes, file it separately' : "It's the same bug";
+    const kept = (Array.isArray(message['blocks']) ? (message['blocks'] as unknown[]) : []).filter((b) => rec(b)['type'] !== 'actions');
+    if (channel !== '' && messageTs !== '' && options.web?.updateMessage !== undefined) {
+      await options.web
+        .updateMessage({ channel, ts: messageTs, text: `${mention(userId)} chose ${label}.`, blocks: [...kept, context(`${mention(userId)} chose *${esc(label)}*.`)] })
+        .catch(onError);
+    }
+  }
+
   const onOutcome = options.onOutcome ?? (() => undefined);
   const inFlight = new Set<Promise<void>>();
   return {
     observes,
     handleEvent,
+    onAction,
     onEvent(body) {
       const task = handleEvent(body)
         .then(onOutcome)
@@ -297,6 +439,108 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     },
     async idle() {
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
+    },
+  };
+}
+
+// Text-signal cards (A 3) -------------------------------------------------------------------------
+
+/** Block id prefix of the ephemeral resolution question (`text_resolution:<messageId>`). */
+export const RESOLUTION_BLOCK = 'text_resolution';
+/** Block id prefix of the scope-change card (`scope_change:<messageId>`). */
+export const SCOPE_CHANGE_BLOCK = 'scope_change';
+
+const RESOLUTION_ACTIONS: readonly ResolutionChoice[] = ['close', 'keep-open'];
+const SCOPE_ACTIONS: readonly ScopeChoice[] = ['yes', 'same-bug'];
+
+interface TextSignalBlock {
+  kind: 'resolution' | 'scope-change';
+  messageId: string;
+}
+
+/** The card and the message it is about, from a text-signal block id; undefined for any other block. */
+export function parseTextSignalBlock(blockId: string): TextSignalBlock | undefined {
+  const [prefix, messageId, ...rest] = blockId.split(':');
+  if (messageId === undefined || messageId === '' || rest.length > 0) return undefined;
+  if (prefix === RESOLUTION_BLOCK) return { kind: 'resolution', messageId };
+  if (prefix === SCOPE_CHANGE_BLOCK) return { kind: 'scope-change', messageId };
+  return undefined;
+}
+
+/** "Close WEB-1042 as Cannot Reproduce?" with **Close it** and **Keep it open**; only its asker sees it. */
+export function buildResolutionPrompt(incidentId: string, prompt: ResolutionPrompt): SlackMessage {
+  return {
+    text: prompt.text,
+    blocks: [
+      section(esc(prompt.text)),
+      actions(`${RESOLUTION_BLOCK}:${prompt.messageId}`, [
+        { label: 'Close it', actionId: 'close', value: incidentId, style: 'primary' },
+        { label: 'Keep it open', actionId: 'keep-open', value: incidentId },
+      ]),
+    ],
+  };
+}
+
+/** "Sounds like a second issue on the app. File it separately?" with **Yes** and **It's the same bug**. */
+export function buildScopeChangeCard(incidentId: string, card: ScopeChangeCard): SlackMessage {
+  return {
+    text: card.text,
+    blocks: [
+      section(esc(card.text)),
+      actions(
+        `${SCOPE_CHANGE_BLOCK}:${card.messageId}`,
+        card.choices.map((c) => ({ label: c.label, actionId: c.id, value: incidentId })),
+      ),
+    ],
+  };
+}
+
+const REFUSALS: Readonly<Partial<Record<string, string>>> = {
+  'not-allowed': 'Only the person it asked, the reporter, or an engineer can answer this.',
+  closed: 'This incident is already closed.',
+};
+
+function refusalText(reason: string): string {
+  return REFUSALS[reason] ?? 'This question already has an answer.';
+}
+
+/**
+ * The two Slack-side text-signal ports: the resolution question as an ephemeral message in the
+ * incident's thread, and the scope-change card posted there (`text.ts` records it as a bot message).
+ */
+export function createSlackTextCards(options: {
+  web: Pick<SlackWeb, 'postMessage' | 'postEphemeral'>;
+  state: Pick<StatePort, 'getIncident'>;
+}): Pick<TextSignalPorts, 'askResolution' | 'postScopeCard'> {
+  const threadOf = async (incidentId: string): Promise<{ channel: string; threadTs?: string } | undefined> => {
+    const incident = await options.state.getIncident(incidentId);
+    if (incident === null || incident.source !== 'slack' || incident.channelId === undefined) return undefined;
+    return { channel: incident.channelId, ...(incident.anchorId === undefined ? {} : { threadTs: incident.anchorId }) };
+  };
+  return {
+    async askResolution(incidentId, prompt) {
+      const where = await threadOf(incidentId);
+      if (where === undefined) return;
+      const built = buildResolutionPrompt(incidentId, prompt);
+      await options.web.postEphemeral({
+        channel: where.channel,
+        user: prompt.userId,
+        text: built.text,
+        blocks: built.blocks,
+        ...(where.threadTs === undefined ? {} : { thread_ts: where.threadTs }),
+      });
+    },
+    async postScopeCard(incidentId, card): Promise<PostedMessage | undefined> {
+      const where = await threadOf(incidentId);
+      if (where === undefined) return undefined;
+      const built = buildScopeChangeCard(incidentId, card);
+      const posted = await options.web.postMessage({
+        channel: where.channel,
+        text: built.text,
+        blocks: built.blocks,
+        ...(where.threadTs === undefined ? {} : { thread_ts: where.threadTs }),
+      });
+      return { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'other' };
     },
   };
 }
