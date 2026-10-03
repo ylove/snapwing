@@ -1,0 +1,15 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0SIGFIRE01",
+  "event_time": 1730000030,
+  "event": {
+    "type": "reaction_added",
+    "user": "U0FAKEPAT",
+    "reaction": "fire",
+    "item_user": "U0FAKEPAT",
+    "item": { "type": "message", "channel": "C0FAKEBUGS", "ts": "1730000000.000100" },
+    "event_ts": "1730000030.000100"
+  }
+}

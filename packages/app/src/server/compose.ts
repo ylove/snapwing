@@ -9,7 +9,10 @@
 //   Inbound      Slack transport (Socket Mode when SLACK_APP_TOKEN is set, HTTP routes otherwise;
 //                SNAPWING_SLACK_TRANSPORT=http|socket overrides), whose dispatcher calls the engine's
 //                `handleInbound` and hands taps to the Slack interactivity; `observeReactionRemoval`
-//                wraps the adapter so a removed trigger reaction reaches the interactivity too.
+//                wraps the adapter so a removed trigger reaction reaches the interactivity too, and
+//                `observeSignals` hands every reaction and channel thread reply to the Slack signals
+//                (`handleSignal`, A 1.2 to 1.4, #335). The engine's `onCaptured` adopts the reactions
+//                that landed on the anchor before the incident existed (`adoptPendingSignals`).
 //                `POST /webhooks/jira` (inbound sync, fixer trigger), `POST /webhooks/github` (bot
 //                login `${GITHUB_APP_SLUG}[bot]`; it starts `merge.evaluate` with the merge step's
 //                singleton key itself), the fixer API (`/fixer/:workItemId/...`, B 9), and the GitHub
@@ -63,6 +66,7 @@ import type { EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
+import { adoptPendingSignals, type SignalDeps } from '@snapwing/pipeline/signals/handler.ts';
 import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -97,6 +101,7 @@ import { createSlackContextSource } from '../adapters/slack/reader.ts';
 import { createSlackHome } from '../adapters/slack/home.ts';
 import { createSlackStatusProjector } from '../adapters/slack/status-projector.ts';
 import { createSlackStatusQuery } from '../adapters/slack/status-query.ts';
+import { createSlackSignals, observeSignals } from '../adapters/slack/signals.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
 import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
 import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
@@ -621,8 +626,33 @@ export const compose: ComposeFn = async (deps) => {
     options: { loadImage: slackContext.loadImage, loadRecording: slackContext.loadRecording },
     // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
+    // A 1.4: reactions on the anchor before the incident existed count from its creation (#335).
+    onCaptured: (incidentId) => adoptPendingSignals(signalDeps, incidentId),
   };
   const engine = new IncidentOrchestrator(engineDeps);
+  // Signals (A 1.2 to 1.4, #335): reactions and thread replies, applied by `handleSignal`.
+  const signalDeps: SignalDeps = {
+    workspaceId,
+    state,
+    cache,
+    playbook: configWatch.playbook,
+    map: getMap,
+    engine,
+    stopIncident: (input) => stopIncident(fixerDeps, input),
+    startFixer: (input) => startFixer(fixerDeps, input),
+    clock,
+  };
+  const slackSignals = createSlackSignals({
+    deps: signalDeps,
+    getMap,
+    botUserId,
+    ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
+    githubLinked: (userId) => oauth.isLinked({ chat: 'slack', userId }),
+    web,
+    model,
+    standing: state,
+    onError: (e) => log.error(`slack signals: ${message(e)}`),
+  });
 
   const interactivity = createSlackInteractivity({
     web,
@@ -651,7 +681,7 @@ export const compose: ComposeFn = async (deps) => {
   const socket = transportChoice === 'socket' || ((transportChoice === undefined || transportChoice === '') && appToken !== undefined);
   const slackError = (e: unknown): void => log.error(`slack: ${message(e)}`);
   const transportBase = {
-    adapter: observeReactionRemoval(adapter, interactivity, slackError),
+    adapter: observeSignals(observeReactionRemoval(adapter, interactivity, slackError), slackSignals, slackError),
     handleInbound: (source: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(source, raw),
     onAction: (payload: Parameters<typeof interactivity.onAction>[0]) => interactivity.onAction(payload),
     status: slackStatusQuery,
@@ -798,7 +828,7 @@ export const compose: ComposeFn = async (deps) => {
   // Both processes read the files, so each starts the watch (start and stop are idempotent).
   const configService: ComposedService = { name: 'playbook and instructions watch', start: () => configWatch.start(), stop: () => configWatch.stop() };
   const apiServices: ComposedService[] = [
-    { name: `slack ${socket ? 'socket mode' : 'http'} transport`, start: () => transport.start(), stop: () => transport.stop() },
+    { name: `slack ${socket ? 'socket mode' : 'http'} transport`, start: () => transport.start(), stop: () => transport.stop().then(() => slackSignals.idle()) },
     configService,
   ];
   const workerServices: ComposedService[] = [

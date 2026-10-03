@@ -1,0 +1,17 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0SIGREPLY1",
+  "event_time": 1730000090,
+  "event": {
+    "type": "message",
+    "channel": "C0FAKEBUGS",
+    "user": "U0FAKEDANA",
+    "text": "on it",
+    "ts": "1730000090.000100",
+    "thread_ts": "1730000000.000100",
+    "parent_user_id": "U0FAKEPAT",
+    "channel_type": "channel"
+  }
+}
