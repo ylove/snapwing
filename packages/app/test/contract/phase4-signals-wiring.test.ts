@@ -119,11 +119,12 @@ interface World {
   jira: JiraWorld;
 }
 
-async function world(options: { playbook?: string; reactionsGet?: boolean } = {}): Promise<World> {
+async function world(options: { playbook?: string; reactionsGet?: boolean; scopeCardDelayMs?: number } = {}): Promise<World> {
   const recording = parseScenario(RECORDING, JSON.parse(await readFile(join(DEMO_LEVELS, RECORDING), 'utf8')));
   const channel = recording.channel.id;
   const messages: Record<string, unknown>[] = recording.messages.map((m) => ({ type: 'message', ...m }));
-  const slack = slackWorld(server, channel, messages);
+  const scopeDelay = options.scopeCardDelayMs ?? 0;
+  const slack = slackWorld(server, channel, messages, { postReplyDelayMs: (body) => (blockIds(body).some((id) => id.startsWith(`${SCOPE_CHANGE_BLOCK}:`)) ? scopeDelay : 0) });
   const jira = new JiraWorld(() => undefined);
   const demoGitHub = new GitHubWorld(() => undefined);
   demoGitHub.addRepos(recording.github);
@@ -436,13 +437,6 @@ describe('signal side effects, escalation ladders, and active monitoring on the 
     expect(actionsBlock(scope, SCOPE_CHANGE_BLOCK)).toMatchObject({ block_id: `${SCOPE_CHANGE_BLOCK}:${said}` });
     expect(actionsBlock(scope, SCOPE_CHANGE_BLOCK).elements.map((b) => b.text.text)).toEqual(['Yes', "It's the same bug"]);
 
-    // The card goes out before its proposal is recorded (the `text-signal` carries the card's id), and a
-    // tap that lands in between finds nothing pending. A person cannot tap that fast; a test can, so it
-    // taps once the proposal is in the log.
-    await within(w, async () => {
-      const proposed = (await events(w, incidentId, 'text-signal')).filter((e) => e.payload.kind === 'scope-change' && e.payload.phase === 'proposed');
-      expect(proposed.map((e) => e.payload.cardMessageId)).toEqual([scope.ts]);
-    });
     await tap(w, scope, SCOPE_CHANGE_BLOCK, 'yes', reporter);
     // The second issue is its own incident, anchored on the message that described it.
     const linked = await within(w, async () => {
@@ -460,7 +454,32 @@ describe('signal side effects, escalation ladders, and active monitoring on the 
       const edit = w.slack.calls.find((c) => c.method === 'chat.update' && c.ts === scope.ts);
       expect(edit === undefined ? '' : messageText(edit.body)).toContain(`<@${reporter}> chose *Yes, file it separately*.`);
     });
+    const proposed = (await events(w, incidentId, 'text-signal')).filter((e) => e.payload.kind === 'scope-change' && e.payload.phase === 'proposed');
+    expect(proposed.map((e) => e.payload.cardMessageId)).toEqual([scope.ts]);
     // The tap was taken, never refused.
+    expect(ephemeralsTo(w, reporter).filter((t) => t.includes('already has an answer'))).toEqual([]);
+    clean(w);
+  }, 60_000);
+
+  it('A 3: a tap on the scope-change card that lands before its proposal is recorded waits for it (#354)', async () => {
+    // Slack's answer to the card's post is held 1.5 s, so the app records the proposal that much after
+    // the card is visible; the tap comes straight away.
+    const w = await world({ scopeCardDelayMs: 1500 });
+    const incidentId = await filedIncident(w);
+    const reporter = w.recording.reporter.id;
+    const said = await reply(w, 'Ev0SCOPE0354', reporter, 'also the footer is broken');
+    const scope = await card(w, SCOPE_CHANGE_BLOCK);
+    expect((await events(w, incidentId, 'text-signal')).filter((e) => e.payload.kind === 'scope-change')).toEqual([]);
+    await tap(w, scope, SCOPE_CHANGE_BLOCK, 'same-bug', reporter);
+    await within(w, async () => {
+      const phases = (await events(w, incidentId, 'text-signal')).filter((e) => e.payload.kind === 'scope-change' && e.payload.messageId === said).map((e) => e.payload.phase);
+      expect(phases).toEqual(['proposed', 'same']);
+    });
+    await within(w, () => {
+      const edit = w.slack.calls.find((c) => c.method === 'chat.update' && c.ts === scope.ts);
+      expect(edit === undefined ? '' : messageText(edit.body)).toContain(`<@${reporter}> chose *It's the same bug*.`);
+    });
+    // No refusal was posted.
     expect(ephemeralsTo(w, reporter).filter((t) => t.includes('already has an answer'))).toEqual([]);
     clean(w);
   }, 60_000);

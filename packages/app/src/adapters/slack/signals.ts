@@ -30,7 +30,11 @@
 //   (`buildResolutionPrompt`, block `text_resolution:<messageId>`), and the scope-change card is posted
 //   in the thread (`buildScopeChangeCard`, block `scope_change:<messageId>`). `onAction` answers their
 //   taps (`answerResolution`, `answerScopeChange`) and resolves to false for any other payload, which
-//   the caller hands to the interactivity.
+//   the caller hands to the interactivity. The scope card is posted before its proposal is recorded (the
+//   record carries the card's message id), so a tap can land first: `answerScopeChange` waits for the
+//   proposal for a bounded time (`TextSignalDeps.proposalWait`, #354) instead of refusing. The resolution
+//   question is recorded before it is shown, and the mid-flight and interactivity cards read no record
+//   on a tap, so only the scope card has the gap.
 //
 // The actor's role is the workspace map's (`people[].slackId`; unmapped is `unknown`), the deep link
 // is a permalink built from the workspace subdomain, and `githubLinked` comes from the OAuth store.

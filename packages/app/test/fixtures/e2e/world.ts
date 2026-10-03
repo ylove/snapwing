@@ -102,6 +102,12 @@ export interface SlackWorldOptions {
    * `missing_scope`, as it does for an app installed before `channels:read`, and nothing is written.
    */
   members?: readonly string[];
+  /**
+   * Milliseconds to hold the reply to a `chat.postMessage` whose body this picks (#354). The call is
+   * already in `calls`, so a test can tap the card while the app still waits for Slack's answer, the
+   * gap between a card going out and its record being written.
+   */
+  postReplyDelayMs?: (body: Record<string, unknown>) => number;
 }
 
 /** The Slack Web API methods the composed pieces call, over one channel's recorded messages. */
@@ -146,6 +152,8 @@ export function slackWorld(server: SetupServer, channel: string, messages: reado
       seq += 1;
       const ts = method === 'chat.update' ? String(body['ts']) : `1790900000.${String(seq).padStart(6, '0')}`;
       calls.push({ method, body, ts });
+      const hold = method === 'chat.postMessage' ? (options.postReplyDelayMs?.(body) ?? 0) : 0;
+      if (hold > 0) await new Promise<void>((resolve) => setTimeout(resolve, hold));
       if (method === 'chat.postMessage' || method === 'chat.update') return HttpResponse.json({ ok: true, channel: body['channel'], ts });
       if (method === 'chat.postEphemeral') return HttpResponse.json({ ok: true, message_ts: ts });
       if (method === 'pins.add' || method === 'conversations.join' || method === 'reactions.add') return HttpResponse.json({ ok: true });
