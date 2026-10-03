@@ -16,13 +16,14 @@ import * as m0002 from './0002-event-tx-order.ts';
 import * as m0003 from './0003-linked-identities.ts';
 import * as m0004 from './0004-incident-owner-ref.ts';
 import * as m0005 from './0005-bot-messages.ts';
+import * as m0006 from './0006-capture-tokens.ts';
 
 export interface StateMigration {
   readonly name: string;
   up(db: Kysely<unknown>, dialect: StateDialect): Promise<void>;
 }
 
-export const MIGRATIONS: readonly StateMigration[] = Object.freeze([m0001, m0002, m0003, m0004, m0005]);
+export const MIGRATIONS: readonly StateMigration[] = Object.freeze([m0001, m0002, m0003, m0004, m0005, m0006]);
 
 /** Kysely's bookkeeping tables, in the same schema as the state tables. */
 export const MIGRATION_TABLE = 'kysely_migration';

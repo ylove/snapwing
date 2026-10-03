@@ -96,7 +96,7 @@ describe('StatePort signatures (B 1)', () => {
     expectTypeOf<ReturnType<StatePort['append']>>().toEqualTypeOf<Promise<{ seq: number }>>();
   });
 
-  it('keeps the B 1 method set, plus the projector retry methods (#140), dropOutbox (#143), linked identities (#153), and standing subscriptions (#329)', () => {
+  it('keeps the B 1 method set, plus the projector retry methods (#140), dropOutbox (#143), linked identities (#153), standing subscriptions (#329), and capture tokens (#374)', () => {
     expectTypeOf<keyof StatePort>().toEqualTypeOf<
       | 'append' | 'read' | 'readSince'
       | 'getIncident' | 'findIncidents' | 'getClaims' | 'getSubscriptions' | 'subscribe' | 'unsubscribe'
@@ -104,6 +104,7 @@ describe('StatePort signatures (B 1)', () => {
       | 'seenWebhook' | 'enqueueOutbox' | 'drainOutbox' | 'ackOutbox' | 'deferOutbox' | 'parkOutbox' | 'listParkedOutbox' | 'dropOutbox'
       | 'putConfigVersion' | 'getConfigVersion'
       | 'linkIdentity' | 'getLinkedIdentity' | 'unlinkIdentity'
+      | 'issueCaptureToken' | 'verifyCaptureToken' | 'revokeCaptureToken' | 'listCaptureTokens'
       | 'transaction'
     >();
     expectTypeOf<Parameters<StatePort['drainOutbox']>[0]>().toEqualTypeOf<'jira' | 'github' | 'slack' | 'teams'>();

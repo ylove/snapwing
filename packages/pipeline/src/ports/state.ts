@@ -75,6 +75,43 @@ export interface LinkedIdentity extends LinkedIdentityKey {
 
 export type NewLinkedIdentity = Omit<LinkedIdentity, 'linkedAt' | 'updatedAt'>;
 
+/** What `issueCaptureToken` takes: whose token it is, and an optional label ("laptop", "ci"). */
+export interface NewCaptureToken {
+  workspaceId: string;
+  /** The map handle of the person the token identifies (main 15.3); the caller checks it is in the map. */
+  person: string;
+  label?: string;
+}
+
+/**
+ * A per-user capture token as listed (main 15.3, 15.4, ADR 0007): never the token or its hash. Times
+ * are ISO 8601.
+ */
+export interface CaptureTokenInfo {
+  /** ULID; what `revokeCaptureToken` takes. */
+  id: string;
+  workspaceId: string;
+  person: string;
+  label?: string;
+  issuedAt: string;
+  /** The last successful `verifyCaptureToken`; absent when never used. */
+  lastUsedAt?: string;
+  /** Absent while the token is live. */
+  revokedAt?: string;
+}
+
+/** What `issueCaptureToken` resolves to: the row plus the token, the only time the token exists in the clear. */
+export interface IssuedCaptureToken extends CaptureTokenInfo {
+  token: string;
+}
+
+/** Who a verified capture token identifies. */
+export interface VerifiedCaptureToken {
+  workspaceId: string;
+  person: string;
+  tokenId: string;
+}
+
 export interface StatePort {
   // Event log
 
@@ -187,6 +224,24 @@ export interface StatePort {
   getLinkedIdentity(key: LinkedIdentityKey): Promise<LinkedIdentity | null>;
   /** Removes the chat user's link; true when there was one. */
   unlinkIdentity(key: LinkedIdentityKey): Promise<boolean>;
+
+  // Capture tokens (main 15.3, 15.4, 16, ADR 0007). Not derived from events: rebuild keeps them.
+
+  /**
+   * Issues a per-user bearer token for Raycast and the CLI: `CAPTURE_TOKEN_PREFIX` (`swc_`, in
+   * `state/capture-tokens.ts`) plus 32 random bytes, base64url. Resolves to it once; the store keeps
+   * only its SHA-256 with the person, the label, and `issuedAt`, so the token cannot be shown again.
+   */
+  issueCaptureToken(token: NewCaptureToken): Promise<IssuedCaptureToken>;
+  /**
+   * Who `token` identifies, or null when it is unknown, revoked, or not a capture token. Compares the
+   * SHA-256 in constant time and stamps `lastUsedAt` on a match.
+   */
+  verifyCaptureToken(token: string): Promise<VerifiedCaptureToken | null>;
+  /** Revokes one token by id, leaving the person's others live; true when a live token was revoked. */
+  revokeCaptureToken(id: string): Promise<boolean>;
+  /** The workspace's tokens, revoked ones included, oldest first; never a token or its hash. */
+  listCaptureTokens(workspaceId: string): Promise<CaptureTokenInfo[]>;
 
   /**
    * Runs `fn` in one database transaction: commits when it resolves, rolls back and rejects when it
