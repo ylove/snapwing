@@ -2,6 +2,7 @@
 // through unvalidated, so every reading is checked here before it is attached to an attachment.
 
 import type { ImageReading } from '../../contracts/incident.ts';
+import { isUserSideIndicator } from '../../models/user-side.ts';
 
 const CHROME: readonly unknown[] = ['web', 'mobile', 'desktop', 'admin', 'unknown'];
 const ENVIRONMENTS: readonly unknown[] = ['production', 'staging', 'local', 'unknown'];
@@ -29,7 +30,9 @@ export function isImageReading(value: unknown): value is ImageReading {
     r['uiElements'].every((e) => typeof e === 'string') &&
     (r['environmentHint'] === undefined || ENVIRONMENTS.includes(r['environmentHint'])) &&
     typeof r['plainDescription'] === 'string' &&
-    typeof r['sensitive'] === 'boolean'
+    typeof r['sensitive'] === 'boolean' &&
+    (r['userSideIndicators'] === undefined ||
+      (Array.isArray(r['userSideIndicators']) && r['userSideIndicators'].every(isUserSideIndicator)))
   );
 }
 
@@ -41,18 +44,20 @@ export function unreadableReading(): ImageReading {
     uiElements: [],
     environmentHint: 'unknown',
     plainDescription: 'unknown',
+    userSideIndicators: [],
     // Fail closed: nobody has seen this image, so it is never echoed into a channel.
     sensitive: true,
   };
 }
 
 /**
- * The reading as it may be rendered for a channel. A `sensitive` reading loses `errorText` and
- * `uiElements`, which may carry the credential or personal data itself; everything else passes through.
+ * The reading as it may be rendered for a channel. A `sensitive` reading loses `errorText`,
+ * `userSideIndicators`, and `uiElements`, which may carry the credential or personal data itself; everything else passes through.
  * Returns a new object and never mutates its input.
  */
 export function redactReading(reading: ImageReading): ImageReading {
   if (!reading.sensitive) return reading;
-  const { errorText: _errorText, ...rest } = reading;
+  // Indicator evidence can quote an account name or address, so it goes too.
+  const { errorText: _errorText, userSideIndicators: _indicators, ...rest } = reading;
   return { ...rest, uiElements: [] };
 }

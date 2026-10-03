@@ -4,6 +4,7 @@
 // running `validate`; createModelRouter wraps it in withValidation. Provider failures map to
 // ModelRateLimitError, ModelAuthError, ModelUnavailableError; unparseable output is ModelOutputError.
 
+import { parseUserSideIndicators } from '../user-side.ts';
 import { GoogleGenAI } from '@google/genai';
 import type { GenerateContentResponse } from '@google/genai';
 import type { ModelProviderFactory } from '../router.ts';
@@ -219,6 +220,7 @@ function parseReadings(text: string, expected: number): ImageReading[] {
     const chrome = CHROME.find((c) => c === signals['chrome']);
     const errorText = optionalString(item['errorText']);
     const environmentHint = ENVIRONMENTS.find((e) => e === item['environmentHint']);
+    const userSideIndicators = parseUserSideIndicators(item['userSideIndicators']);
     return {
       ...(errorText === undefined ? {} : { errorText }),
       surfaceSignals: {
@@ -230,6 +232,7 @@ function parseReadings(text: string, expected: number): ImageReading[] {
       ...(environmentHint === undefined ? {} : { environmentHint }),
       plainDescription,
       sensitive,
+      ...(userSideIndicators === undefined ? {} : { userSideIndicators }),
     };
   });
 }
