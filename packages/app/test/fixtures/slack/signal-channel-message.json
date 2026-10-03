@@ -1,0 +1,15 @@
+{
+  "token": "xoxb-test",
+  "team_id": "T0001",
+  "type": "event_callback",
+  "event_id": "Ev0SIGCHAN01",
+  "event_time": 1730000100,
+  "event": {
+    "type": "message",
+    "channel": "C0FAKEBUGS",
+    "user": "U0FAKEPAT",
+    "text": "The invoice page 500s when I click Download, can someone fix this",
+    "ts": "1730000100.000100",
+    "channel_type": "channel"
+  }
+}
