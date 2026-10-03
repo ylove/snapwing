@@ -94,6 +94,7 @@ import { createSlackAdapter } from '../adapters/slack/adapter.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
 import { createSlackPrReadyChat } from '../adapters/slack/pr-ready.ts';
 import { createSlackContextSource } from '../adapters/slack/reader.ts';
+import { createSlackHome } from '../adapters/slack/home.ts';
 import { createSlackStatusProjector } from '../adapters/slack/status-projector.ts';
 import { createSlackStatusQuery } from '../adapters/slack/status-query.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
@@ -634,6 +635,16 @@ export const compose: ComposeFn = async (deps) => {
     clock,
   });
   const slackStatusQuery = createSlackStatusQuery({ web, state, workspaceId, getMap, botUserId, clock, onError: (e) => log.error(`slack status query: ${message(e)}`) });
+  const slackHome = createSlackHome({
+    web,
+    state,
+    workspaceId,
+    getMap,
+    identity: oauth,
+    pullRequest: (repo, number) => github(repo).getPullRequest(number),
+    clock,
+    onError: (e) => log.error(`slack home: ${message(e)}`),
+  });
   const appToken = s.get('SLACK_APP_TOKEN');
   const socket = transportChoice === 'socket' || ((transportChoice === undefined || transportChoice === '') && appToken !== undefined);
   const slackError = (e: unknown): void => log.error(`slack: ${message(e)}`);
@@ -642,6 +653,7 @@ export const compose: ComposeFn = async (deps) => {
     handleInbound: (source: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(source, raw),
     onAction: (payload: Parameters<typeof interactivity.onAction>[0]) => interactivity.onAction(payload),
     status: slackStatusQuery,
+    home: slackHome,
     onError: slackError,
   };
   const transport = socket

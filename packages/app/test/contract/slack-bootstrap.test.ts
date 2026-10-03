@@ -17,7 +17,7 @@ const ENV = { SLACK_CONFIG_TOKEN: 'xoxe-test', SLACK_BOT_TOKEN: 'xoxb-test', SLA
 interface Manifest {
   display_information: { name: string };
   features: {
-    app_home: { messages_tab_enabled: boolean };
+    app_home: { home_tab_enabled: boolean; messages_tab_enabled: boolean };
     slash_commands: { command: string }[];
     shortcuts: { type: string; name: string; callback_id: string }[];
   };
@@ -77,10 +77,11 @@ describe('manifest.yaml', () => {
         'reactions:write', 'users:read', 'users:read.email', 'files:read', 'im:history', 'im:write', 'pins:write',
       ].sort(),
     );
-    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'app_mention', 'reaction_added', 'reaction_removed', 'file_shared']);
+    expect(manifest.settings.event_subscriptions.bot_events).toEqual(['message.im', 'app_mention', 'app_home_opened', 'reaction_added', 'reaction_removed', 'file_shared']);
     expect(manifest.features.slash_commands).toEqual([expect.objectContaining({ command: '/snapwing-status' })]);
     expect(manifest.settings.interactivity.is_enabled).toBe(true);
     expect(manifest.settings.socket_mode_enabled).toBe(true);
+    expect(manifest.features.app_home.home_tab_enabled).toBe(true);
     expect(manifest.features.app_home.messages_tab_enabled).toBe(true);
   });
 });

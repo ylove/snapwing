@@ -150,6 +150,8 @@ interface Tap {
   blockId: string;
   label: string;
   channel: string;
+  /** The tap came from the App Home: no channel, no message to mark. */
+  fromHome?: true;
   /** The card message, when the tap came from a message (not an ephemeral or a modal). */
   messageTs?: string;
   threadTs?: string;
@@ -161,7 +163,9 @@ function parseTap(payload: SlackActionPayload): Tap | undefined {
   const container = rec(payload['container']);
   const message = rec(payload['message']);
   const userId = str(rec(payload['user'])['id']);
-  const channel = str(container['channel_id']) || str(rec(payload['channel'])['id']);
+  // A tap in the App Home (#297) has no channel: replies go to the user's DM with the app.
+  const fromHome = container['type'] === 'view' || rec(payload['view'])['type'] === 'home';
+  const channel = str(container['channel_id']) || str(rec(payload['channel'])['id']) || (fromHome ? userId : '');
   const incidentId = str(action['value']);
   const actionId = str(action['action_id']);
   if (userId === '' || channel === '' || incidentId === '' || actionId === '') return undefined;
@@ -174,6 +178,7 @@ function parseTap(payload: SlackActionPayload): Tap | undefined {
     blockId: str(action['block_id']),
     label: str(rec(action['text'])['text']) || actionId,
     channel,
+    ...(fromHome ? { fromHome: true as const } : {}),
     ...(messageTs === '' || container['is_ephemeral'] === true ? {} : { messageTs }),
     ...(threadTs === '' ? {} : { threadTs }),
     blocks: Array.isArray(message['blocks']) ? (message['blocks'] as unknown[]) : [],
@@ -218,6 +223,11 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
   const githubLinked = async (user: string): Promise<boolean> => (options.githubLinked === undefined ? false : await options.githubLinked(user));
 
   async function ephemeral(tap: Tap, text: string): Promise<void> {
+    // The Home has no channel to whisper in: the reply is a direct message from the app.
+    if (tap.fromHome === true) {
+      await web.postMessage({ channel: tap.userId, text });
+      return;
+    }
     await web.postEphemeral({ channel: tap.channel, user: tap.userId, text, ...(tap.threadTs === undefined ? {} : { thread_ts: tap.threadTs }) });
   }
 
@@ -405,7 +415,8 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
     if (slackPayloadType(payload) !== 'block_actions') return ignored('not-block-actions');
     const tap = parseTap(payload);
     if (tap === undefined) return ignored('malformed');
-    const card = BLOCK_CARDS[tap.blockId];
+    // The Home view gives each item's actions block `<card block id>:<incident id>` (block ids are unique per view).
+    const card = BLOCK_CARDS[tap.blockId.split(':')[0] ?? ''];
     if (card === undefined) return ignored('unknown-block');
     if (tap.actionId === 'open_pr') return ignored('link-button');
     const map = await options.getMap();
