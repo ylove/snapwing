@@ -3,7 +3,7 @@
 // normalizes, and calls `handleInbound`, so every request is answered inside Slack's 3 s budget; the
 // slow work is a queued job behind `handleInbound`, and the "On it" reply is posted after the answer.
 //
-// - HTTP: `POST /slack/events` and `POST /slack/interactivity` (a `Route` each; `await req.text()` is
+// - HTTP: `POST /slack/events`, `POST /slack/interactivity`, and `POST /slack/commands` (a `Route` each; `await req.text()` is
 //   the exact signed body). `url_verification` is answered with the challenge once the signature checks.
 // - Socket Mode: `apps.connections.open` with `SLACK_APP_TOKEN`, then a WebSocket; each envelope is
 //   acknowledged by id before it is dispatched.
@@ -13,9 +13,11 @@
 import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
 import type { Route } from '../../server/http.ts';
 import { parsedBodyOf, slackPayloadType, type SlackAdapter, type SlackInbound } from './adapter.ts';
+import type { SlackStatusQuery } from './status-query.ts';
 
 export const SLACK_EVENTS_PATH = '/slack/events';
 export const SLACK_INTERACTIVITY_PATH = '/slack/interactivity';
+export const SLACK_COMMANDS_PATH = '/slack/commands';
 
 /** Interactivity payload types that are not the message shortcut: taps, modal submits, other shortcuts. */
 const ACTION_TYPES: ReadonlySet<string> = new Set(['block_actions', 'view_submission', 'view_closed', 'interactive_message', 'shortcut']);
@@ -40,6 +42,11 @@ export interface SlackDispatcherOptions {
   handleInbound: (source: ChannelSource, raw: unknown) => Promise<unknown>;
   /** Button taps and other interactivity (the interactivity issue implements it). Not awaited by the answer. */
   onAction: (payload: SlackActionPayload) => Promise<void> | void;
+  /**
+   * Status pull (A 4.3, #296): mentions, status-shaped DMs, and `/status` are answered by this and
+   * never reach `handleInbound`. Absent, they are ignored or captured as before.
+   */
+  status?: SlackStatusQuery;
   onError?: (error: unknown) => void;
 }
 
@@ -50,9 +57,9 @@ export function createSlackDispatcher(options: SlackDispatcherOptions): SlackDis
   const onError = options.onError ?? (() => undefined);
   const inFlight = new Set<Promise<void>>();
 
-  function runAction(payload: SlackActionPayload): void {
+  function runAction(work: () => Promise<void> | void): void {
     const task = Promise.resolve()
-      .then(() => options.onAction(payload))
+      .then(work)
       .catch(onError)
       .finally(() => inFlight.delete(task));
     inFlight.add(task);
@@ -60,6 +67,14 @@ export function createSlackDispatcher(options: SlackDispatcherOptions): SlackDis
 
   return {
     async dispatch(raw) {
+      // A slash command is a form body (HTTP) or a bare payload (Socket Mode), not a JSON event.
+      const command = options.status?.commandOf(raw);
+      if (command !== undefined && options.status !== undefined) {
+        if (!(await adapter.authenticateRequest(raw))) return empty(401);
+        const status = options.status;
+        runAction(() => status.handleCommand(command));
+        return empty(200);
+      }
       const parsed = parsedBodyOf(raw);
       if (parsed === undefined || typeof parsed !== 'object' || parsed === null) return empty(400);
       if (!(await adapter.authenticateRequest(raw))) return empty(401);
@@ -74,7 +89,12 @@ export function createSlackDispatcher(options: SlackDispatcherOptions): SlackDis
         };
       }
       if (ACTION_TYPES.has(type)) {
-        runAction(parsed as SlackActionPayload);
+        runAction(() => options.onAction(parsed as SlackActionPayload));
+        return empty(200);
+      }
+      if (type === 'event_callback' && options.status?.intercepts(parsed) === true) {
+        const status = options.status;
+        runAction(() => status.handleEvent(parsed));
         return empty(200);
       }
       try {
@@ -105,6 +125,7 @@ export function createSlackRoutes(dispatcher: SlackDispatcher): Route[] {
   return [
     { method: 'POST', path: SLACK_EVENTS_PATH, handler },
     { method: 'POST', path: SLACK_INTERACTIVITY_PATH, handler },
+    { method: 'POST', path: SLACK_COMMANDS_PATH, handler },
   ];
 }
 
@@ -180,7 +201,7 @@ export function createSocketModeClient(options: SocketModeOptions): SocketModeCl
     const id = envelope['envelope_id'];
     // Acknowledge first: Slack redelivers an envelope that is not acknowledged within 3 s.
     if (typeof id === 'string') ws.send(JSON.stringify({ envelope_id: id }));
-    if (type !== 'events_api' && type !== 'interactive') return;
+    if (type !== 'events_api' && type !== 'interactive' && type !== 'slash_commands') return;
     void options.dispatcher.dispatch({ transport: 'socket', payload: envelope['payload'] }).catch(onError);
   }
 
