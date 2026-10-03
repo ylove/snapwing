@@ -11,6 +11,11 @@ export type JobName =
   | 'review.run'
   | 'merge.evaluate'
   | 'reconcile'
+  // A 4.6: one cron job per playbook digest, in order (see notify/digest.ts)
+  | 'digest.0'
+  | 'digest.1'
+  | 'digest.2'
+  | 'digest.3'
   // Durable timers, one per row of the B 5 table (see TIMER_JOBS)
   | 'timer.wait-timeout'
   | 'timer.claim-nudge'
@@ -30,6 +35,10 @@ export const JOB_NAMES: readonly JobName[] = [
   'review.run',
   'merge.evaluate',
   'reconcile',
+  'digest.0',
+  'digest.1',
+  'digest.2',
+  'digest.3',
   'timer.wait-timeout',
   'timer.claim-nudge',
   'timer.claim-expiry',
