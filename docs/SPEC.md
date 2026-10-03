@@ -831,7 +831,7 @@ Mocks prove the code paths; they do not prove the Jira custom field IDs are righ
 
 | Service | What | Notes |
 |---|---|---|
-| Atlassian | A free Jira Cloud site (Free plan, up to 10 users) with a project keyed `OAJ` | Service user with an API token for tests; OAuth 2.0 3LO is a v1.3 item. Workflow must expose Backlog → In Progress → Done transitions; the bootstrap verifies this. |
+| Atlassian | A free Jira Cloud site (Free plan, up to 10 users) with a project keyed `OAJ` | Service user with an API token for tests; OAuth 2.0 3LO is a v1.3 item. A company-managed project; its workflow needs a status in each category the logical targets map to (backlog to a "to do" status, in progress, in review when present, done), so the default Scrum workflow works unchanged and `snapwing.config.xml` can name a status per target; the bootstrap verifies this and prints the mapping. |
 | Slack | A dedicated dev workspace; the app created from `slack/manifest.yaml` | Socket Mode on for local runs. Two test users: one `engineer`, one `reporter`, mapped in a test workspace map. |
 | GitHub | A fixture repo `snapwing-fixture-web` with a seeded, reproducible bug and a test that fails until it is fixed; a `CODEOWNERS` file; branch protection mirroring production | A GitHub App installed on this repo only, with contents, pull requests, and checks permissions. |
 | Teams | Optional in the live tier; a Microsoft 365 developer tenant if exercised | Adapter is `DEMO_ONLY` until JWT validation is complete. |

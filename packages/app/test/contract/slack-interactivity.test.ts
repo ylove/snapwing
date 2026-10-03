@@ -432,7 +432,7 @@ describe('stop and dismiss at levels 2 and 3 (main 8.2, 10.4)', () => {
     expect((await state.getIncident(INC))?.status).toBe('not-a-bug');
     const rows = await state.drainOutbox('jira', 100);
     const transitions = rows.filter((r) => r.op === 'transition').map((r) => r.payload);
-    expect(transitions).toContainEqual({ issueKey: 'WEB-1042', to: 'Done', resolution: JIRA_RESOLUTION_WONT_DO });
+    expect(transitions).toContainEqual({ issueKey: 'WEB-1042', to: 'done', resolution: JIRA_RESOLUTION_WONT_DO });
     expect(taps).toEqual([]);
     expect(web.calls.update[0]?.text).toBe(`<@${REPORTER}> marked this *Not a bug*.`);
   });

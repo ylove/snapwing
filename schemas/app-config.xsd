@@ -53,6 +53,16 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <!-- Logical Jira lifecycle targets (#268); packages/pipeline/src/jira/statuses.ts. -->
+  <xs:simpleType name="JiraLogicalStatus">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="backlog"/>
+      <xs:enumeration value="in-progress"/>
+      <xs:enumeration value="in-review"/>
+      <xs:enumeration value="done"/>
+    </xs:restriction>
+  </xs:simpleType>
+
   <xs:simpleType name="NonEmptyToken">
     <xs:restriction base="xs:token">
       <xs:minLength value="1"/>
@@ -121,6 +131,27 @@
             <xs:attribute name="max-diff-lines" type="xs:positiveInteger" default="400"/>
             <xs:attribute name="revert-window" type="Duration" default="PT72H"/>
           </xs:complexType>
+        </xs:element>
+        <!-- Optional Jira settings (main 9.1, #268). Snapwing moves issues to logical targets and maps
+             each to the project's status by category: backlog to the first "new" status (Backlog
+             when present), in-progress to In Progress (else the first "indeterminate" one), in-review
+             to In Review when present (else where in-progress goes), done to Done (else the first
+             "done" one). A <status> names the project status for one target instead. -->
+        <xs:element name="jira" minOccurs="0">
+          <xs:complexType>
+            <xs:sequence>
+              <xs:element name="status" minOccurs="0" maxOccurs="unbounded">
+                <xs:complexType>
+                  <xs:attribute name="logical" type="JiraLogicalStatus" use="required"/>
+                  <xs:attribute name="name" type="NonEmptyToken" use="required"/>
+                </xs:complexType>
+              </xs:element>
+            </xs:sequence>
+          </xs:complexType>
+          <xs:unique name="OneStatusPerTarget">
+            <xs:selector xpath="c:status"/>
+            <xs:field xpath="@logical"/>
+          </xs:unique>
         </xs:element>
       </xs:sequence>
       <xs:attribute name="version" use="required">

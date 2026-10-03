@@ -19,7 +19,9 @@ const CF = 'com.atlassian.jira.plugin.system.customfieldtypes';
 interface FakeJira {
   fields: { id: string; name: string; custom: boolean; schema?: { type: string; custom: string } }[];
   screenFields: Record<number, string[]>;
-  statuses: string[];
+  statuses: { name: string; category: string }[];
+  /** `GET /project/OAJ`: `next-gen` is team-managed. */
+  style: 'classic' | 'next-gen';
   webhooks: { id: number; jqlFilter: string; events: string[]; url?: string }[];
   calls: string[];
   nextFieldId: number;
@@ -34,7 +36,14 @@ function fresh(): FakeJira {
   return {
     fields: [{ id: 'summary', name: 'Summary', custom: false }],
     screenFields: { 1: ['summary'], 2: ['summary'] },
-    statuses: ['Backlog', 'In Progress', 'Done'],
+    // Jira Cloud's default Scrum workflow, as the owner's site answers.
+    statuses: [
+      { name: 'To Do', category: 'new' },
+      { name: 'In Progress', category: 'indeterminate' },
+      { name: 'In Review', category: 'indeterminate' },
+      { name: 'Done', category: 'done' },
+    ],
+    style: 'classic',
     webhooks: [],
     calls: [],
     nextFieldId: 10042,
@@ -74,8 +83,17 @@ beforeEach(() => {
       jira.screenFields[Number(params['id'])]?.push(fieldId);
       return HttpResponse.json({ id: fieldId });
     }),
+    http.get(`${BASE}/rest/api/3/project/OAJ`, () =>
+      HttpResponse.json({ id: '10100', key: 'OAJ', name: 'Snapwing Test', style: jira.style, simplified: jira.style === 'next-gen' }),
+    ),
     http.get(`${BASE}/rest/api/3/project/OAJ/statuses`, () =>
-      HttpResponse.json([{ id: '1', name: 'Task', statuses: jira.statuses.map((name) => ({ name })) }]),
+      HttpResponse.json([
+        {
+          id: '1',
+          name: 'Task',
+          statuses: jira.statuses.map((s, i) => ({ id: String(10100 + i), name: s.name, statusCategory: { id: i, key: s.category } })),
+        },
+      ]),
     ),
     http.get(`${BASE}/rest/api/3/webhook`, () => HttpResponse.json({ isLast: true, values: jira.webhooks })),
     http.delete(`${BASE}/rest/api/3/webhook`, async ({ request }) => {
@@ -186,16 +204,65 @@ describe('re-run', () => {
   });
 });
 
-describe('workflow check', () => {
-  it('fails naming the missing transitions and exits non-zero in the report', async () => {
-    jira.statuses = ['Backlog', 'To Do'];
-    const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL) });
+describe('workflow check (#268)', () => {
+  const NO_CONFIG = '/nonexistent/snapwing.config.xml';
+
+  it('passes on a default Scrum project by category and prints the mapping', async () => {
+    const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL), configPath: NO_CONFIG });
+    expect(report.ok).toBe(true);
+    expect(report.lines).toContain('ok   workflow: backlog -> To Do, in-progress -> In Progress, in-review -> In Review, done -> Done');
+  });
+
+  it('maps a Backlog project without In Review, and takes the config override', async () => {
+    jira.statuses = [
+      { name: 'Backlog', category: 'new' },
+      { name: 'Selected for Development', category: 'new' },
+      { name: 'In Progress', category: 'indeterminate' },
+      { name: 'Done', category: 'done' },
+    ];
+    const example = readFileSync(new URL('../../../../examples/snapwing.config.example.xml', import.meta.url), 'utf8');
+    const configPath = join(mkdtempSync(join(tmpdir(), 'jira-bootstrap-')), 'snapwing.config.xml');
+    writeFileSync(configPath, example.replace('<jira/>', '<jira><status logical="backlog" name="Selected for Development"/></jira>'));
+    const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL), configPath });
+    expect(report.ok).toBe(true);
+    expect(report.lines).toContain(`ok   config: ${configPath} names the status for backlog`);
+    expect(report.lines).toContain(
+      'ok   workflow: backlog -> Selected for Development (from config), in-progress -> In Progress, in-review -> In Progress (no In Review status), done -> Done',
+    );
+  });
+
+  it('fails naming what cannot map and the project statuses, and exits non-zero in the report', async () => {
+    jira.statuses = [
+      { name: 'Backlog', category: 'new' },
+      { name: 'To Do', category: 'new' },
+    ];
+    const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL), configPath: NO_CONFIG });
     expect(report.ok).toBe(false);
     const line = report.lines.find((l) => l.startsWith('FAIL workflow'));
-    expect(line).toContain('In Progress');
-    expect(line).toContain('Done');
-    expect(line).not.toMatch(/missing[^;]*Backlog/);
+    expect(line).toContain('no status in category indeterminate for in-progress');
+    expect(line).toContain('no status in category done for done');
+    expect(line).toContain("OAJ's statuses: Backlog (new), To Do (new)");
+    expect(line).not.toContain('for backlog');
     expect(report.lines.at(-1)).toContain('FAIL');
+  });
+});
+
+describe('team-managed project (#268)', () => {
+  it('fails up front with one line asking for a company-managed project, before any field or screen call', async () => {
+    jira.style = 'next-gen';
+    const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL) });
+    expect(report.ok).toBe(false);
+    expect(report.lines.filter((l) => l.startsWith('FAIL'))).toEqual([
+      'FAIL project: OAJ is a team-managed project, which Snapwing cannot set up; create a company-managed project and set JIRA_PROJECT_KEY to its key',
+    ]);
+    expect(report.checks.map((c) => c.name)).toEqual(['credentials', 'project']);
+    expect(jira.calls).toEqual([]);
+  });
+
+  it('names JIRA_PROJECT_KEY when the project does not exist', async () => {
+    server.use(http.get(`${BASE}/rest/api/3/project/OAJ`, () => HttpResponse.json({ errorMessages: ['No project could be found with key'] }, { status: 404 })));
+    const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL) });
+    expect(report.lines).toContain('FAIL project: no project OAJ (check JIRA_PROJECT_KEY)');
   });
 });
 

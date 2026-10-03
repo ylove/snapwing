@@ -31,8 +31,19 @@ interface FakeIssue {
   resolution?: string;
 }
 
+type Workflow = { name: string; category: string }[];
+const wf = (...pairs: [string, string][]): Workflow => pairs.map(([name, category]) => ({ name, category }));
+/** The fake's default workflow, for projects a test does not set. */
+const DEFAULT_WORKFLOW = wf(['Backlog', 'new'], ['In Progress', 'indeterminate'], ['In Review', 'indeterminate'], ['Done', 'done']);
+/** Jira Cloud's default Scrum workflow (company-managed and team-managed alike, as the owner's site answers). */
+const SCRUM_WORKFLOW = wf(['To Do', 'new'], ['In Progress', 'indeterminate'], ['In Review', 'indeterminate'], ['Done', 'done']);
+/** The classic software workflow: two new statuses and no review column. */
+const CLASSIC_WORKFLOW = wf(['Backlog', 'new'], ['Selected for Development', 'new'], ['In Progress', 'indeterminate'], ['Done', 'done']);
+
 class FakeJira {
   issues = new Map<string, FakeIssue>();
+  /** Workflow per project key; DEFAULT_WORKFLOW otherwise. */
+  workflows = new Map<string, Workflow>();
   requests: string[] = [];
   /** Answers queued for the next matching calls, by `METHOD path-suffix`. */
   failures: { match: string; status: number; headers?: Record<string, string> }[] = [];
@@ -51,6 +62,10 @@ class FakeJira {
     if (i === -1) return undefined;
     const [f] = this.failures.splice(i, 1);
     return HttpResponse.json({ errorMessages: [`injected ${f!.status}`] }, { status: f!.status, ...(f!.headers === undefined ? {} : { headers: f!.headers }) });
+  }
+
+  workflow(issueKey: string): Workflow {
+    return this.workflows.get(issueKey.split('-')[0] ?? '') ?? DEFAULT_WORKFLOW;
   }
 
   issue(key: string): FakeIssue {
@@ -96,10 +111,29 @@ class FakeJira {
         for (const { add } of body.update?.labels ?? []) if (!issue.labels.includes(add)) issue.labels.push(add);
         return new HttpResponse(null, { status: 204 });
       }),
-      http.get(`${BASE}/rest/api/3/issue/:key/transitions`, ({ request }) => {
+      http.get(`${BASE}/rest/api/3/project/:key/statuses`, ({ request, params }) => {
         const injected = seen(request);
         if (injected) return injected;
-        const transitions = ['Backlog', 'In Progress', 'In Review', 'Done'].map((name, i) => ({ id: String(11 + i), name, to: { id: String(i + 1), name } }));
+        const workflow = this.workflows.get(String(params['key'])) ?? DEFAULT_WORKFLOW;
+        const statuses = workflow.map((s, i) => ({ id: String(10000 + i), name: s.name, statusCategory: { id: i, key: s.category } }));
+        // One entry per issue type, as Jira answers; the same statuses repeat.
+        return HttpResponse.json([{ id: '10001', name: 'Bug', statuses }, { id: '10002', name: 'Task', statuses }]);
+      }),
+      http.get(`${BASE}/rest/api/3/issue/:key`, ({ request, params }) => {
+        const injected = seen(request);
+        if (injected) return injected;
+        const issue = this.issues.get(String(params['key']));
+        if (issue === undefined) return missing(String(params['key']));
+        return HttpResponse.json({ id: issue.key, key: issue.key, self: `${BASE}/issue/${issue.key}`, fields: { status: { name: issue.status } } });
+      }),
+      http.get(`${BASE}/rest/api/3/issue/:key/transitions`, ({ request, params }) => {
+        const injected = seen(request);
+        if (injected) return injected;
+        const issue = this.issues.get(String(params['key']));
+        // Like Jira, no transition to the status the issue is already in.
+        const transitions = this.workflow(String(params['key']))
+          .map((s, i) => ({ id: String(11 + i), name: s.name, to: { id: String(i + 1), name: s.name } }))
+          .filter((t) => t.to.name !== issue?.status);
         return HttpResponse.json({ transitions });
       }),
       http.post(`${BASE}/rest/api/3/issue/:key/transitions`, async ({ request, params }) => {
@@ -113,7 +147,7 @@ class FakeJira {
           return HttpResponse.json({ errorMessages: [], errors: { resolution: "Field 'resolution' cannot be set. It is not on the appropriate screen, or unknown." } }, { status: 400 });
         }
         if (fields?.resolution !== undefined) issue.resolution = fields.resolution.name;
-        issue.status = ['Backlog', 'In Progress', 'In Review', 'Done'][Number(transition.id) - 11] ?? '?';
+        issue.status = this.workflow(issue.key)[Number(transition.id) - 11]?.name ?? '?';
         return new HttpResponse(null, { status: 204 });
       }),
       http.post(`${BASE}/rest/api/3/issue/:key/comment`, async ({ request, params }) => {
@@ -497,6 +531,105 @@ describe('transition resolution', () => {
     const report = await projector().drainOnce();
     expect(report.sent).toEqual([]);
     expect(jira.transitionBodies).toEqual([]);
+  });
+});
+
+describe('logical targets (#268)', () => {
+  const seed = (key: string, status: string): void => {
+    jira.issues.set(key, { key, fields: {}, labels: [], status, comments: [], attachments: [] });
+  };
+  const statusReads = (project: string): number => jira.requests.filter((r) => r === `GET /rest/api/3/project/${project}/statuses`).length;
+
+  it('maps each target on a default Scrum project by category, reading its statuses once', async () => {
+    jira.workflows.set('SCR', SCRUM_WORKFLOW);
+    seed('SCR-1', 'To Do');
+    seed('SCR-2', 'To Do');
+    const p = projector();
+    const seen: string[] = [];
+    for (const [key, to] of [
+      ['SCR-1', 'in-progress'],
+      ['SCR-1', 'in-review'],
+      ['SCR-2', 'in-progress'],
+      ['SCR-1', 'done'],
+      ['SCR-2', 'backlog'],
+    ] as const) {
+      const r = row('transition', { issueKey: key, to });
+      await enqueue(r);
+      expect((await p.drainOnce()).sent).toEqual([r.id]);
+      seen.push(`${key} ${jira.issue(key).status}`);
+    }
+    expect(seen).toEqual(['SCR-1 In Progress', 'SCR-1 In Review', 'SCR-2 In Progress', 'SCR-1 Done', 'SCR-2 To Do']);
+    expect(statusReads('SCR')).toBe(1);
+  });
+
+  it('works on a Backlog / Selected / In Progress / Done project, keeping a merged issue in progress without an In Review', async () => {
+    jira.workflows.set('CLS', CLASSIC_WORKFLOW);
+    seed('CLS-1', 'Backlog');
+    const p = projector();
+    const steps: [string, string][] = [];
+    for (const to of ['in-progress', 'in-review', 'done', 'backlog'] as const) {
+      const r = row('transition', { issueKey: 'CLS-1', to });
+      await enqueue(r);
+      expect((await p.drainOnce()).sent).toEqual([r.id]);
+      steps.push([to, jira.issue('CLS-1').status]);
+    }
+    expect(steps).toEqual([
+      ['in-progress', 'In Progress'],
+      ['in-review', 'In Progress'], // nowhere to go: already there, acked without a transition
+      ['done', 'Done'],
+      ['backlog', 'Backlog'],
+    ]);
+    expect(jira.transitionBodies).toHaveLength(3);
+  });
+
+  it('takes the config override over the category guess', async () => {
+    jira.workflows.set('CLS', CLASSIC_WORKFLOW);
+    seed('CLS-2', 'In Progress');
+    const r = row('transition', { issueKey: 'CLS-2', to: 'backlog' });
+    await enqueue(r);
+    expect((await projector({ statusOverrides: { backlog: 'Selected for Development' } }).drainOnce()).sent).toEqual([r.id]);
+    expect(jira.issue('CLS-2').status).toBe('Selected for Development');
+  });
+
+  it('parks a target the project has no status for, naming its statuses', async () => {
+    jira.workflows.set('ODD', wf(['Open', 'new'], ['Closed', 'done']));
+    seed('ODD-1', 'Open');
+    const r = row('transition', { issueKey: 'ODD-1', to: 'in-progress' });
+    const bad = row('transition', { issueKey: 'ODD-1', to: 'backlog' });
+    await enqueue(r, bad);
+
+    const report = await projector({ statusOverrides: { backlog: 'Triage' } }).drainOnce();
+
+    expect(report.parked).toEqual([r.id, bad.id]);
+    expect(jira.transitionBodies).toEqual([]);
+    const parked = await state.listParkedOutbox('jira', 10);
+    expect(parked.find((x) => x.id === r.id)?.lastError).toBe(
+      'cannot move ODD-1 to in-progress: in project ODD, no status in category indeterminate for in-progress; its statuses: Open (new), Closed (done); name one with <jira><status logical="in-progress" name="..."/></jira> in snapwing.config.xml',
+    );
+    expect(parked.find((x) => x.id === bad.id)?.lastError).toContain('the config names status "Triage" for backlog, which the project does not have');
+  });
+
+  it('reads the statuses again after a failed read', async () => {
+    jira.workflows.set('SCR', SCRUM_WORKFLOW);
+    seed('SCR-3', 'To Do');
+    jira.fail('GET /rest/api/3/project/SCR/statuses', 503);
+    const r = row('transition', { issueKey: 'SCR-3', to: 'in-progress' });
+    await enqueue(r);
+    const p = projector();
+    expect((await p.drainOnce()).deferred).toEqual([r.id]);
+    time = T0 + 1000;
+    expect((await p.drainOnce()).sent).toEqual([r.id]);
+    expect(jira.issue('SCR-3').status).toBe('In Progress');
+  });
+
+  it('parks a row whose target is not a lifecycle target', async () => {
+    const r = row('transition', { issueKey: 'WEB-7', to: 'Sideways' });
+    await enqueue(r);
+    expect((await projector().drainOnce()).parked).toEqual([r.id]);
+    expect((await state.listParkedOutbox('jira', 10)).find((x) => x.id === r.id)?.lastError).toBe(
+      `outbox row ${r.id} (transition): to must be a lifecycle target (backlog, in-progress, in-review, done), got "Sideways"`,
+    );
+    expect(jira.requests).toEqual([]);
   });
 });
 

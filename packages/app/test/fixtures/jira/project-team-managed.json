@@ -1,0 +1,12 @@
+{
+  "expand": "description,lead,issueTypes,url,projectKeys,permissions,insight",
+  "self": "https://example.atlassian.net/rest/api/3/project/10100",
+  "id": "10100",
+  "key": "OAJ",
+  "name": "Snapwing Test",
+  "projectTypeKey": "software",
+  "simplified": true,
+  "style": "next-gen",
+  "isPrivate": false,
+  "properties": {}
+}

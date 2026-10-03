@@ -20,14 +20,20 @@
 // (held with `deferOutbox` and no error, so it is not a failure); then every pending comment row
 // with that key created inside the window becomes one comment, one paragraph block per row.
 //
+// Transitions (#268). A row names a logical target; `statuses.ts` maps it to the project's status by
+// category (read once per project) and the config override, and the client finds the transition by
+// that status's name.
+//
 // Failures. HTTP 429 pauses the whole drain for `Retry-After` and leaves the row as it was: not
 // failed, no attempt counted (B 11). A payload that does not validate, a Jira 400, a missing issue,
-// and a missing transition are parked at once, since sending them again cannot succeed. Anything
+// a target the project has no status for, and a missing transition are parked at once, since
+// sending them again cannot succeed. Anything
 // else is deferred with a doubling delay and parked once `maxAttempts` sends have failed. Parked
 // rows and their errors are what `metrics()` reports for `/metrics`.
 
 import type { IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { isExpectedSeqConflict, type OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
+import type { JiraStatusOverrides } from '@snapwing/pipeline/jira/statuses.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { JiraNotFoundError, JiraRateLimitError, JiraTransitionNotFoundError, JiraValidationError, type JiraClient } from '../client/index.ts';
 import {
@@ -44,6 +50,7 @@ import {
 } from './ops.ts';
 import { requireCustomFieldIds } from './fields.ts';
 import { finalizePrompt } from './prompt.ts';
+import { createStatusResolver, JiraStatusMappingError } from './statuses.ts';
 
 export const DEFAULT_BATCH_SIZE = 50;
 export const DEFAULT_POLL_INTERVAL_MS = 1000;
@@ -69,6 +76,11 @@ export interface JiraProjectorOptions {
    * any of `Implementation Prompt`, `Conversation Link`, `Autonomy Level`, `Agent Status` has none.
    */
   customFieldIds: Readonly<Record<string, string>>;
+  /**
+   * The status a logical target maps to in place of the category guess, from `AppConfig.jira.statuses`
+   * (`<jira><status logical="backlog" name="..."/></jira>`, #268). Default none.
+   */
+  statusOverrides?: JiraStatusOverrides;
   /** Fetches a screenshot for upload; default a plain GET (`fetchScreenshot`). */
   loadScreenshot?: LoadScreenshot;
   /** Clock for holds, pauses, and backoff; use the store's clock. Default `() => new Date()`. */
@@ -117,6 +129,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   const { state, client, workspaceId } = options;
   const now = options.now ?? (() => new Date());
   const customFieldIds = requireCustomFieldIds(options.customFieldIds);
+  const statuses = createStatusResolver(client, options.statusOverrides ?? {});
   const loadScreenshot = options.loadScreenshot ?? fetchScreenshot;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -178,7 +191,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   async function sendComment(row: OutboxItem, op: AddCommentOp, rows: readonly OutboxItem[], consumed: Set<string>, report: DrainReport): Promise<Outcome> {
     const key = row.batchKey;
     if (key === undefined) {
-      await sendOp(client, op, customFieldIds);
+      await sendOp(client, op, customFieldIds, statuses);
       await state.ackOutbox([row.id]);
       return 'sent';
     }
@@ -201,7 +214,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
       if (parsed.op !== 'add-comment' || parsed.issueKey !== op.issueKey) continue;
       group.push({ row: other, text: parsed.text });
     }
-    await sendOp(client, { op: 'add-comment', issueKey: op.issueKey, text: group.map((g) => g.text).join('\n\n') }, customFieldIds);
+    await sendOp(client, { op: 'add-comment', issueKey: op.issueKey, text: group.map((g) => g.text).join('\n\n') }, customFieldIds, statuses);
     const ids = group.map((g) => g.row.id);
     await state.ackOutbox(ids);
     for (const id of ids) consumed.add(id);
@@ -210,7 +223,13 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   }
 
   function permanent(err: unknown): boolean {
-    return err instanceof OutboxValidationError || err instanceof JiraValidationError || err instanceof JiraNotFoundError || err instanceof JiraTransitionNotFoundError;
+    return (
+      err instanceof OutboxValidationError ||
+      err instanceof JiraValidationError ||
+      err instanceof JiraNotFoundError ||
+      err instanceof JiraTransitionNotFoundError ||
+      err instanceof JiraStatusMappingError
+    );
   }
 
   function message(err: unknown): string {
@@ -258,7 +277,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
         } else if (op.op === 'add-comment') {
           outcome = await sendComment(row, op, rows, consumed, report);
         } else {
-          await sendOp(client, op, customFieldIds);
+          await sendOp(client, op, customFieldIds, statuses);
           await state.ackOutbox([row.id]);
           outcome = 'sent';
         }

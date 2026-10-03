@@ -1,6 +1,7 @@
 // What the end to end contract test (#160) adds to the demo Jira world (`JiraWorld`, pnpm demo): the
-// agent's own account (`GET /myself`, which the inbound sync compares against), the workflow main 14.4
-// asks of the live site (Backlog, In Progress, Done), and the issue-updated webhook Jira sends on a
+// agent's own account (`GET /myself`, which the inbound sync compares against), a workflow (Backlog, In
+// Progress, Done, with the status categories the projector resolves logical targets by, #268), and the
+// issue-updated webhook Jira sends on a
 // transition. Deliveries are queued, not sent: the test releases them (`deliver`), as a real webhook
 // arrives some time after the transition, so each status row is on screen before the next stage runs.
 
@@ -10,10 +11,10 @@ import { JIRA_BASE, type JiraWorld } from '@snapwing/pipeline/demo/msw/jira.ts';
 const API = `${JIRA_BASE}/rest/api/3`;
 /** The account the agent's API token acts as; its own transitions come back as echoes. */
 export const AGENT_ACCOUNT = { accountId: 'snapwing-test-account', displayName: 'Snapwing (test)', emailAddress: 'demo-bot@example.com', active: true };
-export const WORKFLOW: readonly { id: string; name: string }[] = [
-  { id: '11', name: 'Backlog' },
-  { id: '21', name: 'In Progress' },
-  { id: '31', name: 'Done' },
+export const WORKFLOW: readonly { id: string; name: string; category: string }[] = [
+  { id: '11', name: 'Backlog', category: 'new' },
+  { id: '21', name: 'In Progress', category: 'indeterminate' },
+  { id: '31', name: 'Done', category: 'done' },
 ];
 const FIELD_IMPL_PROMPT = 'customfield_10050';
 
@@ -36,9 +37,12 @@ export class JiraWebhooks {
   handlers(): HttpHandler[] {
     return [
       http.get(`${API}/myself`, () => HttpResponse.json(AGENT_ACCOUNT)),
+      http.get(`${API}/project/:key/statuses`, () =>
+        HttpResponse.json([{ id: '10001', name: 'Bug', statuses: WORKFLOW.map((t) => ({ id: t.id, name: t.name, statusCategory: { key: t.category } })) }]),
+      ),
       http.get(`${API}/issue/:key/transitions`, ({ params }) => {
         if (!this.world.issues.has(String(params['key']))) return HttpResponse.json({ errorMessages: ['Issue does not exist'] }, { status: 404 });
-        return HttpResponse.json({ transitions: WORKFLOW.map((t) => ({ ...t, to: { name: t.name } })) });
+        return HttpResponse.json({ transitions: WORKFLOW.map((t) => ({ id: t.id, name: t.name, to: { name: t.name } })) });
       }),
       http.post(`${API}/issue/:key/transitions`, async ({ request, params }) => {
         const issue = this.world.issues.get(String(params['key']));

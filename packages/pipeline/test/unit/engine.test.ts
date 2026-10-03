@@ -406,7 +406,7 @@ describe('levels (main 14.1)', () => {
 
     await file(h, 'APP-102');
     const [transition] = await outbox();
-    expect(transition).toMatchObject({ op: 'transition', payload: { issueKey: 'APP-102', to: 'In Progress' } });
+    expect(transition).toMatchObject({ op: 'transition', payload: { issueKey: 'APP-102', to: 'in-progress' } });
     expect(await status(h)).toBe('filed');
   });
 
@@ -420,7 +420,7 @@ describe('levels (main 14.1)', () => {
 
     await file(h, 'APP-103');
     const [transition] = await outbox();
-    expect(transition).toMatchObject({ op: 'transition', payload: { issueKey: 'APP-103', to: 'In Progress' } });
+    expect(transition).toMatchObject({ op: 'transition', payload: { issueKey: 'APP-103', to: 'in-progress' } });
     expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview', 'fix-preview']);
     expect((await state.getIncident(h.payload.eventId))?.waitingOn).toBeUndefined();
 
@@ -444,7 +444,7 @@ describe('levels (main 14.1)', () => {
     expect(xml).toContain('mode="auto"');
 
     await file(h, 'APP-104');
-    expect(await outbox()).toMatchObject([{ op: 'transition', payload: { issueKey: 'APP-104', to: 'In Progress' } }]);
+    expect(await outbox()).toMatchObject([{ op: 'transition', payload: { issueKey: 'APP-104', to: 'in-progress' } }]);
     expect((await types(h)).slice(-2)).toEqual(['filed', 'waiting-changed']);
   });
 });
@@ -678,7 +678,7 @@ describe('Stop before filing (#192, main 15.1)', () => {
 
     expect((await types(h)).slice(-3)).toEqual(['filed', 'stopped', 'waiting-changed']);
     // The stop's own projection moves the issue back to Backlog; the engine queues no In Progress, so no fixer.
-    expect((await outbox()).filter((r) => r.op === 'transition').map((r) => r.payload.to)).toEqual(['Backlog']);
+    expect((await outbox()).filter((r) => r.op === 'transition').map((r) => r.payload.to)).toEqual(['backlog']);
     expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview']); // no fix preview
   });
 });

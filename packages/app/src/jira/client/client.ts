@@ -1,6 +1,7 @@
 // Jira Cloud REST v3 client over `fetch` (main 9.1, 14.4; B 7.1). Basic auth with an API token.
 // Only the projector calls this (CONTEXT 6, rule 2). Credentials never reach an error or a log.
 
+import type { JiraProjectStatus, JiraStatusCategory } from '@snapwing/pipeline/jira/statuses.ts';
 import type { SecretsPort } from '@snapwing/pipeline/ports/secrets.ts';
 import {
   JiraApiError,
@@ -18,6 +19,7 @@ import type {
   JiraIssue,
   JiraIssueRef,
   JiraMyself,
+  JiraProject,
   JiraSearchPage,
   JiraTransition,
   UploadAttachmentInput,
@@ -61,7 +63,15 @@ export interface JiraClient {
   registerWebhook(input: { url: string; webhooks: WebhookSpec[] }): Promise<WebhookRegistration[]>;
   /** The account the credentials act as; inbound sync ignores changes made by it. */
   myself(): Promise<JiraMyself>;
+  getProject(key: string): Promise<JiraProject>;
+  /**
+   * The project's workflow statuses with their categories (`GET /project/{key}/statuses`), across
+   * its issue types, each name once, in Jira's order. Logical targets resolve against these (#268).
+   */
+  projectStatuses(key: string): Promise<JiraProjectStatus[]>;
 }
+
+const CATEGORIES: readonly JiraStatusCategory[] = ['new', 'indeterminate', 'done', 'undefined'];
 
 /** The secret names of CONTEXT 6b. */
 export const JIRA_SECRET_NAMES = { baseUrl: 'JIRA_BASE_URL', email: 'JIRA_EMAIL', apiToken: 'JIRA_API_TOKEN' } as const;
@@ -225,5 +235,23 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
     },
 
     myself: () => json<JiraMyself>('GET', '/rest/api/3/myself'),
+
+    getProject: (key) => json<JiraProject>('GET', `/rest/api/3/project/${encodeURIComponent(key)}`),
+
+    async projectStatuses(key) {
+      const types = await json<unknown>('GET', `/rest/api/3/project/${encodeURIComponent(key)}/statuses`);
+      const out: JiraProjectStatus[] = [];
+      const seen = new Set<string>();
+      for (const type of Array.isArray(types) ? types.map(asRecord) : []) {
+        for (const status of Array.isArray(type['statuses']) ? type['statuses'].map(asRecord) : []) {
+          const name = status['name'];
+          if (typeof name !== 'string' || seen.has(name.toLowerCase())) continue;
+          seen.add(name.toLowerCase());
+          const category = CATEGORIES.find((c) => c === asRecord(status['statusCategory'])['key']) ?? 'undefined';
+          out.push({ name, category });
+        }
+      }
+      return out;
+    },
   };
 }

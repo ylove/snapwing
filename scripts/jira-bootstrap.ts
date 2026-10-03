@@ -1,9 +1,14 @@
 // `pnpm jira:bootstrap` (main 14.4, B 7.2): idempotent setup of the Jira project the live tier uses.
 //   default run (needs only JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY):
+//     0. refuse a team-managed project (`style: next-gen`) up front: its screens are not in the REST API
+//        (HTTP 400 "Screen with id ... does not exist"), so the run asks for a company-managed one
 //     1. find-or-create the custom fields Implementation Prompt, Conversation Link, Autonomy Level,
 //        Agent Status, and put them on the project's screens
 //     2. write their ids into .env.live (JIRA_FIELD_*), preserving every other line
-//     3. verify the Backlog, In Progress, and Done statuses exist; exit non-zero naming any missing
+//     3. map the logical lifecycle targets (backlog, in-progress, in-review, done) to the project's
+//        statuses by category, as the projector does (#268), with the <jira><status/></jira> overrides of
+//        snapwing.config.xml (`--config <path>`, default snapwing.config.xml, when it exists); print the
+//        mapping, or exit non-zero naming the project's statuses
 //   `pnpm jira:bootstrap webhook` (also needs SNAPWING_PUBLIC_URL): register the webhook at
 //     $SNAPWING_PUBLIC_URL/webhooks/jira for jira:issue_updated and comment_created, filtered to the project
 //   `--dry-run` prints the plan and writes nothing (no Jira writes, no .env.live write).
@@ -11,10 +16,17 @@
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { createJiraClientFromSecrets, type JiraClient, type JiraField } from '../packages/app/src/jira/client/index.ts';
+import { loadAppConfig } from '../packages/pipeline/src/config/app-config.ts';
+import {
+  describeJiraStatuses,
+  describeJiraStatusMapping,
+  resolveJiraStatuses,
+  type JiraStatusOverrides,
+} from '../packages/pipeline/src/jira/statuses.ts';
+import { createJiraClientFromSecrets, JiraNotFoundError, type JiraClient, type JiraField } from '../packages/app/src/jira/client/index.ts';
 
 export const REQUIRED_ENV = ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY'] as const;
-export const REQUIRED_STATUSES = ['Backlog', 'In Progress', 'Done'] as const;
+export const DEFAULT_CONFIG_PATH = 'snapwing.config.xml';
 export const WEBHOOK_EVENTS = ['jira:issue_updated', 'comment_created'] as const;
 export const WEBHOOK_PATH = '/webhooks/jira';
 const CF = 'com.atlassian.jira.plugin.system.customfieldtypes';
@@ -41,6 +53,8 @@ export interface BootstrapOptions {
   dryRun?: boolean;
   /** Path of the env file to update. Defaults to `.env.live`. */
   envFilePath?: string;
+  /** snapwing.config.xml, read for its `<jira>` status overrides when the file exists. Defaults to `snapwing.config.xml`. */
+  configPath?: string;
   /** Injected for tests; defaults to the global `fetch`. */
   fetch?: typeof fetch;
 }
@@ -157,7 +171,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
     opts.fetch ? { fetch: opts.fetch } : {},
   );
 
-  // The client does not cover screens, statuses, or webhook listing; these calls share its auth.
+  // The client does not cover screens or webhook listing; these calls share its auth.
   const authorization = `Basic ${Buffer.from(`${email}:${apiToken}`).toString('base64')}`;
   async function raw(method: string, path: string, body?: unknown): Promise<unknown> {
     let res: Response;
@@ -221,6 +235,18 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
     });
     return finish();
   }
+
+  // ---- project ----------------------------------------------------------------------------------
+  await run('project', async () => {
+    const project = await client.getProject(projectKey).catch((err: unknown) => {
+      throw err instanceof JiraNotFoundError ? new Error(`no project ${projectKey} (check JIRA_PROJECT_KEY)`) : err;
+    });
+    if (project.style === 'next-gen' || project.simplified === true) {
+      throw new Error(`${projectKey} is a team-managed project, which Snapwing cannot set up; create a company-managed project and set JIRA_PROJECT_KEY to its key`);
+    }
+    return `${projectKey} is company-managed`;
+  });
+  if (!checks.every((c) => c.ok)) return finish();
 
   // ---- fields ---------------------------------------------------------------------------------
   const ids: Record<string, string> = {};
@@ -305,19 +331,25 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
     return `wrote ${changed.map(([k]) => k).join(', ')}`;
   });
 
+  let overrides: JiraStatusOverrides = {};
+  const configPath = opts.configPath ?? DEFAULT_CONFIG_PATH;
+  if (existsSync(configPath)) {
+    await run('config', async () => {
+      overrides = loadAppConfig(readFileSync(configPath, 'utf8')).jira.statuses;
+      const named = Object.keys(overrides);
+      return named.length === 0 ? `${configPath} names no Jira status` : `${configPath} names the status for ${named.join(', ')}`;
+    });
+  }
+
   await run('workflow', async () => {
-    const statuses = await raw('GET', `/rest/api/3/project/${encodeURIComponent(projectKey)}/statuses`);
-    const names = new Set<string>();
-    for (const type of Array.isArray(statuses) ? (statuses as Record<string, unknown>[]) : []) {
-      for (const s of Array.isArray(type['statuses']) ? (type['statuses'] as Record<string, unknown>[]) : []) {
-        if (typeof s['name'] === 'string') names.add(s['name'].toLowerCase());
-      }
+    const statuses = await client.projectStatuses(projectKey);
+    const mapping = resolveJiraStatuses(statuses, overrides);
+    if (mapping.problems.length > 0) {
+      throw new Error(
+        `cannot map ${mapping.problems.join('; ')}; ${projectKey}'s statuses: ${describeJiraStatuses(statuses)}; add a status in Project settings, Workflow, or name one with <jira><status logical="..." name="..."/></jira> in ${configPath}`,
+      );
     }
-    const absent = REQUIRED_STATUSES.filter((s) => !names.has(s.toLowerCase()));
-    if (absent.length > 0) {
-      throw new Error(`workflow is missing ${absent.join(', ')}; add them in Project settings, Workflow (needs ${REQUIRED_STATUSES.join(', ')})`);
-    }
-    return `${REQUIRED_STATUSES.join(', ')} present`;
+    return describeJiraStatusMapping(mapping);
   });
 
   return finish();
@@ -327,13 +359,15 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
   const mode = args.includes('webhook') ? 'webhook' : 'fields';
+  const at = args.indexOf('--config');
+  const configPath = at === -1 ? undefined : args[at + 1];
   let fileEnv: Record<string, string> = {};
   try {
     fileEnv = parseEnvFile(readFileSync('.env.live', 'utf8'));
   } catch {
     // No .env.live: the missing-values line says what to add.
   }
-  const report = await runBootstrap({ env: { ...process.env, ...fileEnv }, mode, dryRun });
+  const report = await runBootstrap({ env: { ...process.env, ...fileEnv }, mode, dryRun, ...(configPath === undefined ? {} : { configPath }) });
   for (const line of report.lines) console.log(line);
   process.exitCode = report.ok ? 0 : 1;
 }

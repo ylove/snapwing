@@ -206,7 +206,7 @@ describe('inbound sync (B 7.3)', () => {
     await filed();
     await append(ev('escalated', { intent: 'escalate', step: 1, action: 'page', score: 0.9 }));
     const escalatedWrite = await pendingWrite('priority', 'update-fields', { issueKey: KEY, fields: { priority: { name: 'Highest' } } });
-    const statusWrite = await pendingWrite('status', 'transition', { issueKey: KEY, to: 'Done' });
+    const statusWrite = await pendingWrite('status', 'transition', { issueKey: KEY, to: 'done' });
     expect(await pendingIds()).toEqual(expect.arrayContaining([escalatedWrite, statusWrite]));
 
     await deliver(route(), fixture('issue-updated-priority'));
@@ -231,7 +231,7 @@ describe('inbound sync (B 7.3)', () => {
 
   it('a human transition appends jira-transitioned and drops the pending status write', async () => {
     await filed(0);
-    const write = await pendingWrite('status', 'transition', { issueKey: KEY, to: 'In Review' });
+    const write = await pendingWrite('status', 'transition', { issueKey: KEY, to: 'in-review' });
     const human = variant(fixture('issue-updated-in-progress'), { by: HUMAN });
     expect(await deliver(route(), human)).toEqual({ status: 200, outcome: 'processed' });
     expect((await jiraEvents()).map((e) => [e.type, e.actor?.role, e.payload])).toEqual([

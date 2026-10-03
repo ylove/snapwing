@@ -71,3 +71,13 @@ export interface JiraAttachment {
   size: number;
   mimeType?: string;
 }
+
+/** `GET /project/{key}`. A team-managed project answers `style: "next-gen"` and `simplified: true`. */
+export interface JiraProject {
+  id: string;
+  key: string;
+  name?: string;
+  /** `classic` (company-managed) or `next-gen` (team-managed). */
+  style?: string;
+  simplified?: boolean;
+}

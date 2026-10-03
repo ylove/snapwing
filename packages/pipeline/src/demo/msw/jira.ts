@@ -18,6 +18,7 @@ import { http, HttpResponse, type HttpHandler } from 'msw';
 import type { NewEvent } from '../../contracts/events.ts';
 import { isExpectedSeqConflict, type OutboxItem } from '../../contracts/state.ts';
 import type { JiraSearch, JiraSearchHit } from '../../dedupe/index.ts';
+import { resolveJiraStatus, toJiraLogicalStatus, type JiraProjectStatus, type JiraStatusCategory } from '../../jira/statuses.ts';
 import type { StatePort } from '../../ports/state.ts';
 import type { TraceSink } from './slack.ts';
 
@@ -54,10 +55,11 @@ const CUSTOM_FIELDS: readonly { id: string; name: string }[] = [
   { id: 'customfield_10053', name: 'Agent Status' },
 ];
 
-const TRANSITIONS: readonly { id: string; name: string }[] = [
-  { id: '11', name: 'To Do' },
-  { id: '21', name: 'In Progress' },
-  { id: '31', name: 'Done' },
+/** Jira Cloud's default workflow; `transition` rows name logical targets resolved against it (#268). */
+const TRANSITIONS: readonly { id: string; name: string; category: JiraStatusCategory }[] = [
+  { id: '11', name: 'To Do', category: 'new' },
+  { id: '21', name: 'In Progress', category: 'indeterminate' },
+  { id: '31', name: 'Done', category: 'done' },
 ];
 
 export class JiraWorld {
@@ -179,6 +181,12 @@ export function jiraHandlers(world: JiraWorld): HttpHandler[] {
       world.note(`PUT /issue/${issue.key} ${changes.join(', ')}`);
       return new HttpResponse(null, { status: 204 });
     }),
+    http.get(`${API}/project/:key/statuses`, ({ request }) => {
+      const denied = unauthorized(request);
+      if (denied !== undefined) return denied;
+      const statuses = TRANSITIONS.map((t) => ({ id: t.id, name: t.name, statusCategory: { key: t.category } }));
+      return HttpResponse.json([{ id: '10001', name: 'Bug', statuses }]);
+    }),
     http.get(`${API}/issue/:key/transitions`, ({ request, params }) => {
       const denied = unauthorized(request);
       if (denied !== undefined) return denied;
@@ -275,6 +283,22 @@ export class DemoOutboxDrainer {
     return rows.length;
   }
 
+  /** The project's status for a row's logical target, as the real projector resolves it (#268). */
+  private async statusFor(issueKey: string, target: unknown): Promise<string> {
+    const logical = toJiraLogicalStatus(target);
+    if (logical === undefined) throw new Error(`jira: ${JSON.stringify(target)} is not a lifecycle target`);
+    const types = await jira('GET', `/project/${issueKey.split('-')[0] ?? ''}/statuses`);
+    const statuses: JiraProjectStatus[] = (Array.isArray(types) ? types.map(asRecord) : []).flatMap((t) =>
+      (Array.isArray(t['statuses']) ? t['statuses'].map(asRecord) : []).map((s) => ({
+        name: str(s['name']),
+        category: str(asRecord(s['statusCategory'])['key']) as JiraStatusCategory,
+      })),
+    );
+    const resolved = resolveJiraStatus(logical, statuses);
+    if (!resolved.ok) throw new Error(`jira: ${issueKey}: ${resolved.problem}`);
+    return resolved.name;
+  }
+
   private async send(row: OutboxItem): Promise<void> {
     const p = row.payload;
     let sent: SentRow;
@@ -317,7 +341,7 @@ export class DemoOutboxDrainer {
       }
       case 'transition': {
         const issueKey = str(p['issueKey']);
-        const to = str(p['to']);
+        const to = await this.statusFor(issueKey, p['to']);
         const list = asRecord(await jira('GET', `/issue/${issueKey}/transitions`));
         const transitions = Array.isArray(list['transitions']) ? list['transitions'].map(asRecord) : [];
         const match = transitions.find((t) => t['name'] === to);

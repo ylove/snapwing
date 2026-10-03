@@ -9,10 +9,11 @@
 //   Before filing, `needs-clarification` and `prompt-failed` are in the create payload already, so
 //   only a filed incident gets them here (a `planned` after `filed` is a re-plan no step appends
 //   yet; it does not fit the status, and the label is still added, since the prompt did fail).
-// - Status (`transition`): `merged` to In Review, or to Done when autopilot merged (level 3, main
-//   11.3); `closed` to Done; `stopped` to Backlog; `reverted` back out of Done, to In Progress at level
-//   1 or above (the revert PR is agent work) and to Backlog at level 0 (main 11.3). Only when the event
-//   moved the status there.
+// - Status (`transition`): `merged` to in-review, or to done when autopilot merged (level 3, main
+//   11.3); `closed` to done; `stopped` to backlog; `reverted` back out of done, to in-progress at level
+//   1 or above (the revert PR is agent work) and to backlog at level 0 (main 11.3). Only when the event
+//   moved the status there. The target is logical (`jira/statuses.ts`, #268): the projector resolves
+//   it to the project's own status by category, so a To Do project and a Backlog project both work.
 // - `Autonomy Level` (`update-fields`): whenever the level changes after filing (`level-changed`, or
 //   a claim release that restores it).
 // - Comments (`add-comment`, batched per 7.1): a stop names who stopped it (main 4.6); a degradation
@@ -36,6 +37,7 @@
 import type { EventActor, IncidentEvent } from '../../../contracts/events.ts';
 import type { IncidentView, OutboxItem } from '../../../contracts/state.ts';
 import { BUDGET_EXCEEDED, FIXER_FAILED_REASON_PREFIX } from '../../../fixer/job.ts';
+import type { JiraLogicalStatus } from '../../../jira/statuses.ts';
 import { CUSTOM_FIELD_AUTONOMY_LEVEL, LABEL_NEEDS_CLARIFICATION, LABEL_PROMPT_FAILED } from '../../../jira/synthesis.ts';
 import type { IncidentChange } from './index.ts';
 import { rowsFor, type RowSpec } from './row.ts';
@@ -45,11 +47,14 @@ export const CUSTOM_FIELD_AGENT_STATUS = 'Agent Status';
 export const LABEL_HUMAN_CLAIMED = 'human-claimed';
 export const LABEL_FIXER_FAILED = 'fixer-failed';
 
-/** Jira workflow statuses B 7.2 transitions to (main 14.4: the workflow exposes Backlog, In Progress, Done). */
-export const JIRA_BACKLOG = 'Backlog';
-export const JIRA_IN_PROGRESS = 'In Progress';
-export const JIRA_IN_REVIEW = 'In Review';
-export const JIRA_DONE = 'Done';
+/**
+ * The logical targets B 7.2 transitions to (#268). A `transition` row carries one of these, never a
+ * status name; the projector maps it to the project's status by category (`jira/statuses.ts`).
+ */
+export const JIRA_BACKLOG: JiraLogicalStatus = 'backlog';
+export const JIRA_IN_PROGRESS: JiraLogicalStatus = 'in-progress';
+export const JIRA_IN_REVIEW: JiraLogicalStatus = 'in-review';
+export const JIRA_DONE: JiraLogicalStatus = 'done';
 
 /**
  * The fields agent writes name in `jiraFieldBatchKey`: the ones these rows write, plus `priority` and
@@ -95,10 +100,12 @@ export interface AddLabelsRow {
   labels: string[];
 }
 
-/** `transition`: the same shape as the engine's In Progress row. */
+/** `transition`: a logical target, the same shape as the engine's in-progress row. */
 export interface TransitionRow {
   issueKey: string;
-  to: string;
+  to: JiraLogicalStatus;
+  /** A resolution name sent with the transition, e.g. "Won't Do" (#193). */
+  resolution?: string;
 }
 
 /** `add-comment`: plain text, the same shape as the engine's comment row. */
@@ -141,7 +148,7 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
     const payload: UpdateFieldsRow = { issueKey, customFields: { [name]: value } };
     specs.push({ op: 'update-fields', payload: { ...payload }, batchKey: jiraFieldBatchKey(incidentId, name) });
   };
-  const transition = (to: string): void => {
+  const transition = (to: JiraLogicalStatus): void => {
     const payload: TransitionRow = { issueKey, to };
     specs.push({ op: 'transition', payload: { ...payload }, batchKey: jiraFieldBatchKey(incidentId, 'status') });
   };
@@ -210,7 +217,7 @@ export function jiraRows(event: IncidentEvent, change: IncidentChange): OutboxIt
     const by = event.actor === undefined ? 'Stopped' : `Stopped by ${actorLabel(event.actor)}`;
     const reason = clause(event.payload.reason ?? '');
     const why = reason === '' ? '' : `: ${reason}`;
-    comment(`${by}${why}. Ticket back in Backlog.`);
+    comment(`${by}${why}. Ticket back in the backlog.`);
   }
   return rowsFor(event, 'jira', specs);
 }

@@ -212,8 +212,8 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
 
   it('merged moves the issue to In Review below level 3 and to Done on autopilot; closed moves it to Done', () => {
     for (const [lvl, to] of [
-      [2, 'In Review'],
-      [3, 'Done'],
+      [2, 'in-review'],
+      [3, 'done'],
     ] as const) {
       const { s } = filed(lvl);
       toCi(s);
@@ -221,7 +221,7 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
       const merge: ReturnType<typeof shape>[] = [transition(to), status('merged · PR #418')];
       if (lvl === 3) merge.push(comment('Merged PR #418 (https://github.com/fake-org/web/pull/418) on autopilot. Ticket done.'));
       expect(s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: lvl })).map(shape)).toEqual(merge);
-      expect(s.push(draft('closed', {})).map(shape)).toEqual([transition('Done'), status('closed · PR #418')]);
+      expect(s.push(draft('closed', {})).map(shape)).toEqual([transition('done'), status('closed · PR #418')]);
     }
   });
 
@@ -245,9 +245,9 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
 
   it('reverted reopens the issue with a comment linking the revert PR', () => {
     for (const [lvl, to] of [
-      [3, 'In Progress'],
-      [2, 'In Progress'],
-      [0, 'Backlog'],
+      [3, 'in-progress'],
+      [2, 'in-progress'],
+      [0, 'backlog'],
     ] as const) {
       const { s } = filed(lvl);
       toCi(s);
@@ -267,7 +267,7 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
     s.push(draft('ci-green', { prNumber: 418, headSha: 'abc123' }));
     s.push(draft('merged', { prNumber: 418, mergeCommitSha: 'def456', levelAtMergeTime: 2 }));
     expect(s.push(draft('reverted', { prNumber: 418 })).map(shape)).toEqual([
-      transition('In Progress'),
+      transition('in-progress'),
       status('reverted · PR #418'),
       comment('A revert of PR #418 reopens this ticket.'),
     ]);
@@ -277,7 +277,7 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
   it('names a stopper or a degrader by display name when the event carries one, else by user id', () => {
     const named: EventActor = { ...DANA, name: 'Dana Fake' };
     const a = filed().s;
-    expect(a.push(draft('stopped', { reason: 'wrong repo' }, named)).map(shape)).toContainEqual(comment('Stopped by Dana Fake: wrong repo. Ticket back in Backlog.'));
+    expect(a.push(draft('stopped', { reason: 'wrong repo' }, named)).map(shape)).toContainEqual(comment('Stopped by Dana Fake: wrong repo. Ticket back in the backlog.'));
     const b = filed(3).s;
     expect(b.push(draft('level-changed', { from: 3, to: 2, reason: 'a gate failed' }, named)).map(shape)).toContainEqual(
       comment('Autonomy level lowered by Dana Fake from 3 to 2: a gate failed.'),
@@ -292,13 +292,13 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
     const { s } = filed();
     s.push(draft('fixer-started', { runId: 'run-1', harness: 'claude-code', attempt: 1 }));
     expect(s.push(draft('stopped', { reason: 'wrong repo' }, DANA)).map(shape)).toEqual([
-      transition('Backlog'),
+      transition('backlog'),
       status('stopped'),
-      comment(`Stopped by ${DANA.id}: wrong repo. Ticket back in Backlog.`),
+      comment(`Stopped by ${DANA.id}: wrong repo. Ticket back in the backlog.`),
     ]);
     expect(s.push(draft('stopped', {}))).toEqual([]); // already stopped: the status did not move
     expect(s.push(draft('fixer-started', { runId: 'run-2', harness: 'claude-code', attempt: 1 })).map(shape)).toEqual([status('fixing')]);
-    expect(s.push(draft('stopped', {})).map(shape)).toEqual([transition('Backlog'), status('stopped'), comment('Stopped. Ticket back in Backlog.')]);
+    expect(s.push(draft('stopped', {})).map(shape)).toEqual([transition('backlog'), status('stopped'), comment('Stopped. Ticket back in the backlog.')]);
   });
 
   it('writes Autonomy Level when the level changes after filing, with a comment when it went down', () => {
@@ -339,7 +339,7 @@ describe('outboxFor: Jira rows (B 7.2)', () => {
     ]);
     for (const r of [...rows, ...more]) {
       expect(r.op).not.toBe('create-issue');
-      expect(r.op === 'transition' && r.payload['to'] === 'In Progress').toBe(false);
+      expect(r.op === 'transition' && r.payload['to'] === 'in-progress').toBe(false);
     }
   });
 
@@ -406,9 +406,9 @@ describe(`outboxFor through append and rebuild (${TEST_DIALECT})`, () => {
     expect(rows.map(shape)).toEqual([
       status('filed'),
       status('fixing'),
-      transition('Backlog'),
+      transition('backlog'),
       status('stopped'),
-      comment(`Stopped by ${DANA.id}: wrong repo. Ticket back in Backlog.`),
+      comment(`Stopped by ${DANA.id}: wrong repo. Ticket back in the backlog.`),
     ]);
     expect(rows.every((r) => ULID.test(r.id))).toBe(true);
 

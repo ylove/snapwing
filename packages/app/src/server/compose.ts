@@ -638,6 +638,7 @@ export const compose: ComposeFn = async (deps) => {
     workspaceId,
     continueIncident: (incidentId) => engine.continueIncident(incidentId),
     customFieldIds,
+    statusOverrides: config.jira.statuses,
     loadScreenshot: screenshotLoader(web),
     now: clock,
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
