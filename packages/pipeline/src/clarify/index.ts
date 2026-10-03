@@ -31,6 +31,8 @@ export interface ClarifyEvidence {
   reportersInWindow?: number;
   /** Surfaces with an alert firing in the last hour. Exactly one distinct surface settles the surface gap. */
   activeAlertSurfaces?: readonly string[];
+  /** The A 1.4 reaction ladder suppressed the ask-back (signals/score.ts `escalationState`). */
+  escalated?: boolean;
 }
 
 /** Layer 1: what is still unknown once everything findable has been used. */
@@ -84,6 +86,7 @@ export async function maybeAsk(
     suppressWhenReportersAtLeast: policy?.suppressWhenReportersAtLeast ?? DEFAULT_SUPPRESS_REPORTERS,
     questionsAsked: evidence.questionsAsked ?? 0,
     reportersInWindow: evidence.reportersInWindow ?? 1,
+    ...(evidence.escalated === undefined ? {} : { escalated: evidence.escalated }),
     known: {
       surface: resolution.surfaceId !== undefined,
       component: resolution.componentId !== undefined,

@@ -46,7 +46,8 @@
 // of the surface weight from the playbook; window from the incident's `openedAt`). A signal after the
 // window is recorded but not counted. A removed reaction (`reaction-removed`) is recorded with the
 // same count and no attribution, so the projections take the reactor back out; its other reversals
-// are A 1.6 (#289).
+// are A 1.6 (#289). After a counted signal commits, `escalation.evaluate` (signals/score.ts, #290)
+// walks the reaction ladder; adoption evaluates once, after every stored signal is recorded.
 //
 // Before the incident exists (A 1.4 last paragraph): a reaction on a message with no incident is
 // stored in the cache under the message, one `setIfAbsent` slot per signal (so concurrent reactions
@@ -115,6 +116,8 @@ export interface SignalDeps {
   stopIncident: (input: StopInput) => Promise<StopOutcome>;
   /** `startFixer` from fixer/job.ts, bound to its workflow. */
   startFixer: (input: FixerRunData) => Promise<unknown>;
+  /** The A 1.4 reaction ladder (`createReactionEscalation`, signals/score.ts). Absent: no ladder runs. */
+  escalation?: { evaluate(incidentId: string): Promise<unknown> };
   clock: () => Date;
 }
 
@@ -198,9 +201,11 @@ export async function adoptPendingSignals(deps: SignalDeps, incidentId: string):
   const playbook = await playbookOf(deps);
   let applied = 0;
   for (const signal of latestPerPerson(stored)) {
-    const outcome = await applySignal(deps, playbook, signal, incidentId, 'anchor');
+    const outcome = await applySignal(deps, playbook, signal, incidentId, 'anchor', false);
     if (outcome.handled) applied++;
   }
+  // Every adopted reaction counts at once: the ladder jumps straight to the step they reach.
+  if (applied > 0) await escalate(deps, incidentId);
   return applied;
 }
 
@@ -216,7 +221,14 @@ interface Decision {
   drop?: string[];
 }
 
-async function applySignal(deps: SignalDeps, playbook: Playbook, signal: SignalInput, incidentId: string, role: TargetRole): Promise<SignalOutcome> {
+async function applySignal(
+  deps: SignalDeps,
+  playbook: Playbook,
+  signal: SignalInput,
+  incidentId: string,
+  role: TargetRole,
+  evaluate = true,
+): Promise<SignalOutcome> {
   const unknown = { handled: false, reason: 'unknown-incident' } as const;
   if ((await deps.state.getIncident(incidentId)) === null) return unknown;
   const actor = actorOf(signal.actor);
@@ -243,6 +255,7 @@ async function applySignal(deps: SignalDeps, playbook: Playbook, signal: SignalI
       });
       const first = seq - events.length + 1;
       await afterAppend(deps, signal, incident, decision, seq, reopenReview);
+      if (evaluate && count !== undefined && !removed) await escalate(deps, incidentId);
       return { handled: true, incidentId, role, effect: decision.effect, seq: first, appended: events.map((e) => e.type) };
     } catch (err) {
       if (!isExpectedSeqConflict(err) || attempt >= MAX_APPEND_ATTEMPTS) throw err;
@@ -374,6 +387,16 @@ async function afterAppend(deps: SignalDeps, signal: SignalInput, incident: Inci
   if (decision.effect === 'reopen' && review !== undefined && (incident.autonomyLevel ?? 0) >= 1) {
     const log = await deps.state.read(incident.id);
     await deps.startFixer({ incidentId: incident.id, attempt: nextAttempt(log), reviewArtifact: review });
+  }
+}
+
+/** The reaction ladder after a counted signal; best effort, since the signal is recorded already. */
+async function escalate(deps: SignalDeps, incidentId: string): Promise<void> {
+  if (deps.escalation === undefined) return;
+  try {
+    await deps.escalation.evaluate(incidentId);
+  } catch (err) {
+    console.warn(`signals: incident ${incidentId}: reaction escalation failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

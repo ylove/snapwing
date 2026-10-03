@@ -450,12 +450,33 @@ export interface StoppedPayload {
   reason?: string;
 }
 
-/** Spec silent. One escalation ladder step fired. Feeds `escalation_scores.step_reached`. */
+/**
+ * Spec silent. One step of the A 1.4 reaction ladder fired (signals/score.ts, #290). Feeds
+ * `escalation_scores.step_reached` and, with `priority`, `incidents.priority`. Never changes the
+ * lifecycle status (ADR 0018): the B 5 `escalated` status is reached by a failure, not by this event.
+ * The step's effects are frozen here when it fires, so rebuild and the ask-back gate never depend on
+ * the current playbook.
+ */
 export interface EscalatedPayload {
+  /** The intent of the signal that crossed the step (the ladder may count several). */
   intent: 'trigger' | 'escalate';
+  /** 1-based step of the ladder, in score order. */
   step: number;
+  /** `mention` when the step mentions the owner, else `post`; `page` is unused by the reaction ladder. */
   action: 'mention' | 'page' | 'post';
+  /** The ladder's score when the step fired. */
   score: number;
+  /** Unique people counted when it fired. */
+  reactors?: number;
+  /** The Jira priority name this step set; absent when it left the priority alone (never lower). */
+  priority?: string;
+  /** The step asks for a status note ("3 people are reporting this"). */
+  note?: boolean;
+  mentionOwner?: boolean;
+  /** The ask-back gate is suppressed from here on: it is an incident, not a question. */
+  suppressAskBack?: boolean;
+  /** Treated as an outage: the playbook's escalation ladders and active monitoring (A 4.5, 6.2). */
+  outage?: boolean;
 }
 
 /**

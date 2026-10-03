@@ -151,7 +151,7 @@ export interface UserSideCheck {
 }
 
 /** The counts the gate's budget and volume checks read (main 7.2). */
-export type CheckBudget = Pick<GateContext, 'maxQuestionsPerIncident' | 'suppressWhenReportersAtLeast' | 'questionsAsked' | 'reportersInWindow'>;
+export type CheckBudget = Pick<GateContext, 'maxQuestionsPerIncident' | 'suppressWhenReportersAtLeast' | 'questionsAsked' | 'reportersInWindow' | 'escalated'>;
 
 /**
  * The user-side check for this bundle, or undefined when `userSide check` is off or no indicator
