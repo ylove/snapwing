@@ -109,6 +109,10 @@ export interface CreatePersonalConversationArgs {
   serviceUrl: string;
   tenantId: string;
   aadObjectId: string;
+  /** The user's Teams id (`29:...`) from an inbound activity's `from.id`; preferred in `members[].id` when given. */
+  userId?: string;
+  /** The bot's app id for this call; defaults to the connector's `botId`. */
+  botId?: string;
 }
 
 export interface GetMemberArgs extends TeamsConversationRef {
@@ -268,11 +272,12 @@ export function createTeamsConnector(options: TeamsConnectorOptions): TeamsConne
     async createPersonalConversation(args) {
       const body: Record<string, unknown> = {
         isGroup: false,
-        members: [{ id: args.aadObjectId, aadObjectId: args.aadObjectId }],
+        members: [{ id: args.userId ?? args.aadObjectId, aadObjectId: args.aadObjectId }],
         tenantId: args.tenantId,
         channelData: { tenant: { id: args.tenantId } },
       };
-      if (options.botId !== undefined) body['bot'] = { id: options.botId };
+      const botId = args.botId ?? options.botId;
+      if (botId !== undefined) body['bot'] = { id: botId };
       const out = await call('createPersonalConversation', 'POST', `${base(args.serviceUrl)}conversations`, body);
       const record = asRecord(out);
       const result: TeamsPersonalConversation = { id: idOf('createPersonalConversation', record) };
