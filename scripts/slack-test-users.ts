@@ -1,8 +1,9 @@
 // `pnpm slack:test-users <reporter|engineer>` (main 14.4, 15.1): stores a Slack user token for one e2e test user.
+//   pnpm slack:test-users create-app [--force] creates the "Snapwing Test Driver" app (apps.manifest.create), writes .env.live
 //   pnpm slack:test-users reporter|engineer   user OAuth against the "Snapwing Test Driver" app, writes .env.live
 //   pnpm slack:test-users --check             verifies both stored tokens, changes nothing
 //   pnpm slack:test-users secrets             copies the test-user values into repository secrets with `gh`
-// Reads SLACK_TEST_DRIVER_CLIENT_ID / SLACK_TEST_DRIVER_CLIENT_SECRET / SLACK_TEST_CHANNEL from .env.live (then the
+// create-app reads SLACK_CONFIG_TOKEN. The rest reads SLACK_TEST_DRIVER_CLIENT_ID / SLACK_TEST_DRIVER_CLIENT_SECRET / SLACK_TEST_CHANNEL from .env.live (then the
 // process environment). Never prints a token or the client secret. Slack is only ever called through `deps.fetch`.
 
 import { execFile, spawn } from 'node:child_process';
@@ -13,6 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { upsertEnv } from './github-bootstrap.ts';
 import { parseEnvFile } from './slack-bootstrap.ts';
+import { parse as parseYaml } from 'yaml';
 
 export const ENV_FILE = '.env.live';
 export const DEFAULT_PORT = 53682;
@@ -34,7 +36,11 @@ export const SECRET_NAMES: readonly string[] = [
   ROLE_KEYS.engineer.id,
 ];
 
-export const USAGE = 'usage: pnpm slack:test-users <reporter|engineer> [--port N] [--no-open] | --check | secrets [--repo owner/name]';
+export const DRIVER_MANIFEST_PATH = new URL('../manifests/slack/test-driver.manifest.yaml', import.meta.url);
+export const CONFIG_TOKEN_HELP =
+  'Regenerate the configuration token: open https://api.slack.com/apps, under "Your App Configuration Tokens" click Generate Token for the test workspace, copy the Access Token into SLACK_CONFIG_TOKEN in .env.live (it expires after 12 hours), then rerun.';
+
+export const USAGE = 'usage: pnpm slack:test-users create-app [--force] | <reporter|engineer> [--port N] [--no-open] | --check | secrets [--repo owner/name]';
 
 export interface Deps {
   fetch: typeof fetch;
@@ -48,6 +54,8 @@ export interface Deps {
   apiBase?: string;
   /** Default `https://slack.com/oauth/v2/authorize`. */
   authorizeUrl?: string;
+  /** Default `manifests/slack/test-driver.manifest.yaml`. */
+  manifestPath?: string | URL;
 }
 
 export interface StoreOptions {
@@ -143,6 +151,68 @@ function inWorkspace(state: ChannelState, teamId: string): boolean {
 
 function otherRole(role: Role): Role {
   return role === 'reporter' ? 'engineer' : 'reporter';
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// create-app
+
+export interface CreateAppResult {
+  appId: string;
+  clientId: string;
+}
+
+export async function runCreateApp(d: Deps, options: { force?: boolean } = {}): Promise<CreateAppResult> {
+  d.log(`Needs ${ENV_FILE} with SLACK_CONFIG_TOKEN (Slack app configuration token); creates the "Snapwing Test Driver" app from its manifest.`);
+  const env = await mergedEnv(d);
+  const token = need(env, 'SLACK_CONFIG_TOKEN');
+  const existingId = env['SLACK_TEST_DRIVER_CLIENT_ID'] ?? '';
+  const existingSecret = env['SLACK_TEST_DRIVER_CLIENT_SECRET'] ?? '';
+  if ((existingId !== '' || existingSecret !== '') && options.force !== true) {
+    const appId = env['SLACK_TEST_DRIVER_APP_ID'] ?? '';
+    throw new Error(
+      `the driver app already exists (${appId === '' ? `client id ${existingId}` : `app id ${appId}`}); ${ENV_FILE} already has its client credentials. Pass --force to create another app and overwrite them (nothing was changed)`,
+    );
+  }
+  const secrets: string[] = [token, existingSecret];
+  const manifest: unknown = parseYaml(await readFile(d.manifestPath ?? DRIVER_MANIFEST_PATH, 'utf8'));
+  if (!isRecord(manifest)) throw new Error('the driver manifest is not a mapping');
+
+  const res = await d.fetch(`${apiBase(d)}/apps.manifest.create`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: `Bearer ${token}` },
+    body: new URLSearchParams({ manifest: JSON.stringify(manifest) }).toString(),
+  });
+  if (!res.ok) throw new Error(`apps.manifest.create returned HTTP ${res.status}`);
+  const body: unknown = await res.json();
+  if (!isRecord(body)) throw new Error('apps.manifest.create returned an unexpected body');
+  if (body['ok'] !== true) {
+    const code = typeof body['error'] === 'string' ? body['error'] : 'unknown';
+    const details = Array.isArray(body['errors'])
+      ? body['errors'].map((e: unknown) => (typeof e === 'string' ? e : JSON.stringify(e)))
+      : [];
+    const parts = [`apps.manifest.create failed: ${code}`, ...details.map((x) => `errors[]: ${x}`)];
+    if (code === 'invalid_auth' || code === 'token_expired') parts.push(CONFIG_TOKEN_HELP);
+    throw new Error(scrub(parts.join('; '), secrets));
+  }
+  const creds = body['credentials'];
+  const appId = body['app_id'];
+  const clientId = isRecord(creds) ? creds['client_id'] : undefined;
+  const clientSecret = isRecord(creds) ? creds['client_secret'] : undefined;
+  if (typeof appId !== 'string' || typeof clientId !== 'string' || typeof clientSecret !== 'string' || clientId === '' || clientSecret === '') {
+    throw new Error(`apps.manifest.create returned no client credentials${typeof appId === 'string' ? ` (the app was created: ${appId}; delete it at https://api.slack.com/apps)` : ''}`);
+  }
+  await writeFile(
+    join(d.root, ENV_FILE),
+    upsertEnv(await readEnvFile(d), {
+      SLACK_TEST_DRIVER_APP_ID: appId,
+      SLACK_TEST_DRIVER_CLIENT_ID: clientId,
+      SLACK_TEST_DRIVER_CLIENT_SECRET: clientSecret,
+    }),
+    { mode: 0o600 },
+  );
+  d.log(`Created the Snapwing Test Driver app (${appId}); stored SLACK_TEST_DRIVER_APP_ID, SLACK_TEST_DRIVER_CLIENT_ID, SLACK_TEST_DRIVER_CLIENT_SECRET in ${ENV_FILE}.`);
+  d.log('Next: set SLACK_TEST_CHANNEL in .env.live if needed, then sign in to Slack as the reporter and run `pnpm slack:test-users reporter`.');
+  return { appId, clientId };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -316,11 +386,12 @@ export async function runSecrets(d: Deps, repo: string = DEFAULT_SNAPWING_REPO):
 // cli
 
 export interface ParsedArgs {
-  command: 'store' | 'check' | 'secrets';
+  command: 'store' | 'check' | 'secrets' | 'create-app';
   role?: Role;
   repo?: string;
   port?: number;
   open: boolean;
+  force?: boolean;
 }
 
 export function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -334,6 +405,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
       return v;
     };
     if (arg === '--check') out.command = 'check';
+    else if (arg === '--force') out.force = true;
     else if (arg === '--no-open') out.open = false;
     else if (arg === '--port') out.port = Number(value());
     else if (arg === '--repo') out.repo = value();
@@ -342,6 +414,7 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
     else throw new Error(`unexpected argument ${arg}\n${USAGE}`);
   }
   if (out.command === 'check') return out;
+  if (positional === 'create-app') return { ...out, command: 'create-app' };
   if (positional === 'secrets') return { ...out, command: 'secrets' };
   if (positional === 'reporter' || positional === 'engineer') return { ...out, role: positional };
   throw new Error(USAGE);
@@ -382,6 +455,10 @@ export async function main(argv: readonly string[]): Promise<number> {
     const result = await runCheck(deps);
     for (const line of result.lines) console.log(line);
     return result.ok ? 0 : 1;
+  }
+  if (args.command === 'create-app') {
+    await runCreateApp(deps, { force: args.force === true });
+    return 0;
   }
   if (args.command === 'secrets') {
     await runSecrets(deps, args.repo);
