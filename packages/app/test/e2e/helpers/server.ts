@@ -9,6 +9,9 @@
 //     server a card tap as an `interactive` envelope (`tap`). Slack has no API to press a button for a
 //     user; the payload is built from the real card (slack.ts `blockActions`). The server acknowledges
 //     an injected envelope like any other; that one acknowledgement is not sent to Slack.
+//     `event` hands it an `events_api` envelope the same way, for a reaction by a person the run has no
+//     Slack account for (companion-a.test.ts, the escalation row). The wrapper also notes when each
+//     real envelope arrived (`received`), so a test can time the server's answer from that moment.
 
 import { EventEmitter } from 'node:events';
 import { writeFile } from 'node:fs/promises';
@@ -42,16 +45,45 @@ export interface RunningServer {
   lines: string[];
   /** Hands the server an interactivity payload over its Socket Mode connection. */
   tap(payload: Record<string, unknown>): void;
+  /** Hands the server an Events API payload (`event_callback`) over its Socket Mode connection. */
+  event(payload: Record<string, unknown>): void;
+  /** Envelopes Slack delivered (not injected ones), with `Date.now()` on arrival; the latest 500. */
+  received: ReceivedEnvelope[];
   /** SIGTERM: serve stops the API, drains the worker, closes the store. Resolves with its exit code. */
   stop(): Promise<number>;
 }
 
 const INJECTED = 'snapwing-e2e-';
+/** Received envelopes kept per server. */
+const RECEIVED_KEPT = 500;
+
+export interface ReceivedEnvelope {
+  at: number;
+  type: string;
+  payload: Record<string, unknown>;
+}
 
 /** The global WebSocket, plus a way to deliver an envelope as if Slack sent it. */
 class InjectableSocket implements SocketLike {
   private readonly listeners: ((event: { data: unknown }) => void)[] = [];
-  constructor(private readonly real: SocketLike) {}
+  constructor(
+    private readonly real: SocketLike,
+    private readonly onReceived: (envelope: ReceivedEnvelope) => void,
+  ) {
+    // Registered before the transport's own listener, so `at` is taken before the server handles it.
+    real.addEventListener('message', (event) => {
+      const at = Date.now();
+      try {
+        const envelope = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data)) as Record<string, unknown>;
+        const payload = envelope['payload'];
+        if (typeof envelope['type'] === 'string' && typeof payload === 'object' && payload !== null) {
+          this.onReceived({ at, type: envelope['type'], payload: payload as Record<string, unknown> });
+        }
+      } catch {
+        // Not JSON; the transport reports it.
+      }
+    });
+  }
   send(data: string): void {
     if (data.includes(`"envelope_id":"${INJECTED}`)) return;
     this.real.send(data);
@@ -80,6 +112,11 @@ export async function startServer(input: ServerInput): Promise<RunningServer> {
   let socket: InjectableSocket | undefined;
   let opened: OpenedState | undefined;
   let injected = 0;
+  const received: ReceivedEnvelope[] = [];
+  const onReceived = (envelope: ReceivedEnvelope): void => {
+    received.push(envelope);
+    if (received.length > RECEIVED_KEPT) received.shift();
+  };
 
   let ready!: (info: { url?: string }) => void;
   const readyP = new Promise<{ url?: string }>((r) => (ready = r));
@@ -99,7 +136,7 @@ export async function startServer(input: ServerInput): Promise<RunningServer> {
           secrets: overlaySecrets(deps.secrets, input.overlay),
           overrides: {
             openSocket: (url) => {
-              socket = new InjectableSocket(new WebSocket(url) as unknown as SocketLike);
+              socket = new InjectableSocket(new WebSocket(url) as unknown as SocketLike, onReceived);
               return socket;
             },
           },
@@ -115,10 +152,16 @@ export async function startServer(input: ServerInput): Promise<RunningServer> {
     url: started.url,
     state,
     lines,
+    received,
     tap(payload) {
       if (socket === undefined) throw new Error('no Socket Mode connection to deliver the tap on');
       injected += 1;
       socket.inject({ type: 'interactive', envelope_id: `${INJECTED}${injected}`, accepts_response_payload: false, payload });
+    },
+    event(payload) {
+      if (socket === undefined) throw new Error('no Socket Mode connection to deliver the event on');
+      injected += 1;
+      socket.inject({ type: 'events_api', envelope_id: `${INJECTED}${injected}`, accepts_response_payload: false, payload });
     },
     async stop() {
       signals.emit('SIGTERM');

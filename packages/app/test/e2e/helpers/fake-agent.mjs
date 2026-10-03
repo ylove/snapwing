@@ -8,7 +8,15 @@
 //   node fake-agent.mjs <world dir> <review wait seconds>
 //
 // SNAPWING_ROLE=fixer: the fix is the one the fixture's README names (`applyDiscount` divides the
-// percent by 1000 instead of 100).
+// percent by 1000 instead of 100). Two world files change what it does, for the Companion A rows
+// (companion-a.test.ts) that need a merge or a CI wait without touching the fixture's `main`:
+//   `<world dir>/pr-base`          the pull request's base branch (a `test/` branch the test made from
+//                                  `main`), instead of the request's `handoff/@base` or `main`;
+//   `<world dir>/regression-test`  when the request requires tests (`<tests required="true">`), also
+//                                  adds `test/discount.regression.test.ts` (node:test, no dependencies),
+//                                  which fails without the fix and passes with it, so the review's
+//                                  regression proof (SNAPWING_TEST_COMMAND) can prove the fix. A request
+//                                  that requires none gets no test file (it would be out of scope).
 // SNAPWING_ROLE=review (also used with the claude-code fixer, to keep live model calls to the fixer):
 // waits for `<world dir>/release-review` (the test writes it in teardown, so the status message stays
 // on the PR row while the test reads it) or the wait, then writes an `approve` verdict.
@@ -25,6 +33,16 @@ const repo = (process.env.SNAPWING_REPO ?? '').replace(/^(https:\/\/)?github\.co
 const workdir = process.env.SNAPWING_WORKDIR ?? process.cwd();
 const request = readFileSync(0, 'utf8');
 let phase = 'cloned';
+
+const REGRESSION_TEST = 'test/discount.regression.test.ts';
+const REGRESSION_TEST_SOURCE = `import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { applyDiscount } from '../src/cart.ts';
+
+test('a 10 percent coupon takes 2.00 off a 20.00 cart', () => {
+  assert.equal(applyDiscount(2000, 10), 1800);
+});
+`;
 
 function checkpoint(name, detail) {
   phase = name;
@@ -80,12 +98,19 @@ async function fix() {
   if (after === before) return finish({ outcome: 'failed', reason: 'the seeded bug is not where the fixture README says', attempts: 1 });
   writeFileSync(file, after);
   checkpoint('implemented', 'src/cart.ts');
-  checkpoint('tested', 'test/cart.test.ts covers it (not run by the scripted agent)');
-  git(['add', 'src/cart.ts']);
+  const withTest = existsSync(join(world, 'regression-test')) && /<tests\b[^>]*\brequired="true"/.test(request);
+  if (withTest) {
+    writeFileSync(join(workdir, REGRESSION_TEST), REGRESSION_TEST_SOURCE);
+    checkpoint('tested', `${REGRESSION_TEST} fails without the fix (not run by the scripted agent)`);
+  } else {
+    checkpoint('tested', 'test/cart.test.ts covers it (not run by the scripted agent)');
+  }
+  git(['add', 'src/cart.ts', ...(withTest ? [REGRESSION_TEST] : [])]);
   git(['commit', '--quiet', '-m', `${key}: apply the discount percent as a percentage`]);
   git(['push', '--quiet', 'origin', `HEAD:refs/heads/${branch}`]);
   checkpoint('pushed');
-  const base = /<handoff\b[^>]*\bbase="([^"]+)"/.exec(request)?.[1] ?? 'main';
+  const baseFile = join(world, 'pr-base');
+  const base = existsSync(baseFile) ? readFileSync(baseFile, 'utf8').trim() : (/<handoff\b[^>]*\bbase="([^"]+)"/.exec(request)?.[1] ?? 'main');
   let pr = await github('POST', `/repos/${repo}/pulls`, {
     title: `${key}: apply the discount percent as a percentage`,
     head: branch,

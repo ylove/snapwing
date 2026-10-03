@@ -6,6 +6,9 @@
 //
 // Safety: every post goes to SLACK_TEST_CHANNEL only and starts with `[snapwing-test]`; the engineer is
 // the workspace owner's own account and only reacts. `cleanupThread` deletes everything the run left.
+// One exception for the status pull (A 4.3, companion-a.test.ts): the reporter asks the bot in their
+// direct message with it (`openBotDm`, `reporterPostsIn`), where the question must come first (the
+// tag goes at its end) and `cleanupDm` deletes both sides afterwards.
 
 import { PREFIX } from './env.ts';
 
@@ -66,6 +69,23 @@ export interface SlackDriver {
   reporterPosts(text: string): Promise<string>;
   /** Reacts with `emoji` on `ts` as the engineer. */
   engineerReacts(ts: string, emoji: string): Promise<void>;
+  /** Reacts with `emoji` on `ts` as the reporter. */
+  reporterReacts(ts: string, emoji: string): Promise<void>;
+  /**
+   * Uploads `file` as the reporter and shares it in the test channel with `[snapwing-test] <text>` as
+   * its message; resolves once that message is in the channel, with its ts and the file id.
+   */
+  reporterUploads(text: string, file: { name: string; bytes: Uint8Array<ArrayBuffer>; title: string }): Promise<{ ts: string; fileId: string }>;
+  /** Deletes a file the reporter uploaded (already gone is fine). */
+  deleteReporterFile(fileId: string): Promise<void>;
+  /** The bot's direct message channel with `userId` (`conversations.open` with the bot token). */
+  openBotDm(userId: string): Promise<string>;
+  /** Posts `text` exactly as given in `channel` as the reporter (the caller tags it); returns its ts. */
+  reporterPostsIn(channel: string, text: string): Promise<string>;
+  /** Messages in `channel` newer than `oldest`, oldest first, read with the bot token. */
+  history(channel: string, oldest: string): Promise<SlackMessage[]>;
+  /** Deletes, in a DM, the bot's messages and the reporter's newer than `oldest`; returns what was left. */
+  cleanupDm(channel: string, oldest: string): Promise<string[]>;
   /** The anchor and every reply in its thread, read with the bot token. */
   thread(anchorTs: string): Promise<SlackMessage[]>;
   /** One message of the thread, or undefined once deleted. */
@@ -90,6 +110,74 @@ export function createSlackDriver(o: SlackDriverOptions): SlackDriver {
     },
     async engineerReacts(ts, emoji) {
       await slackCall(o.engineer.token, 'reactions.add', { channel: o.channel, timestamp: ts, name: emoji });
+    },
+    async reporterReacts(ts, emoji) {
+      await slackCall(o.reporter.token, 'reactions.add', { channel: o.channel, timestamp: ts, name: emoji });
+    },
+    async reporterUploads(text, file) {
+      // files.getUploadURLExternal, the bytes to the upload URL, then files.completeUploadExternal.
+      const slot = await slackCall(o.reporter.token, 'files.getUploadURLExternal', { filename: file.name, length: String(file.bytes.byteLength) });
+      const uploadUrl = String(slot['upload_url'] ?? '');
+      const fileId = String(slot['file_id'] ?? '');
+      if (uploadUrl === '' || fileId === '') throw new SlackApiError('files.getUploadURLExternal', 'no upload URL');
+      const put = await fetch(uploadUrl, { method: 'POST', body: file.bytes });
+      if (!put.ok) throw new SlackApiError('file upload', `http_${put.status}`);
+      await slackCall(o.reporter.token, 'files.completeUploadExternal', {
+        files: JSON.stringify([{ id: fileId, title: file.title }]),
+        channel_id: o.channel,
+        initial_comment: `${PREFIX} ${text}`,
+      });
+      // The share lands in the channel shortly after; its message is the anchor.
+      const deadline = Date.now() + 60_000;
+      for (;;) {
+        const body = await slackCall(o.botToken, 'conversations.history', { channel: o.channel, limit: '20' });
+        const found = ((body['messages'] as (SlackMessage & { files?: { id?: string }[] })[] | undefined) ?? []).find((m) => (m.files ?? []).some((f) => f.id === fileId));
+        if (found !== undefined) return { ts: found.ts, fileId };
+        if (Date.now() > deadline) throw new SlackApiError('files.completeUploadExternal', 'the shared file never appeared in the channel');
+        await new Promise((r) => setTimeout(r, 1_500));
+      }
+    },
+    async deleteReporterFile(fileId) {
+      await slackCall(o.reporter.token, 'files.delete', { file: fileId }).catch((e: unknown) => {
+        if (!(e instanceof SlackApiError && ['file_not_found', 'file_deleted'].includes(e.error))) throw e;
+      });
+    },
+    async openBotDm(userId) {
+      const body = await slackCall(o.botToken, 'conversations.open', { users: userId });
+      const id = (body['channel'] as Rec | undefined)?.['id'];
+      if (typeof id !== 'string' || id === '') throw new SlackApiError('conversations.open', 'no channel');
+      return id;
+    },
+    async reporterPostsIn(channel, text) {
+      const body = await slackCall(o.reporter.token, 'chat.postMessage', { channel, text });
+      return String(body['ts']);
+    },
+    async history(channel, oldest) {
+      const body = await slackCall(o.botToken, 'conversations.history', { channel, oldest, limit: '100' });
+      return [...((body['messages'] as SlackMessage[] | undefined) ?? [])].reverse();
+    },
+    async cleanupDm(channel, oldest) {
+      const failures: string[] = [];
+      const bot = await driver.botUserId();
+      let messages: SlackMessage[] = [];
+      try {
+        // Inclusive, so the reporter's question at `oldest` itself goes too.
+        const body = await slackCall(o.botToken, 'conversations.history', { channel, oldest, inclusive: 'true', limit: '100' });
+        messages = (body['messages'] as SlackMessage[] | undefined) ?? [];
+      } catch (e) {
+        if (!gone(e)) failures.push(`read DM ${channel}: ${String(e)}`);
+      }
+      for (const m of messages) {
+        const token = m.user === bot || m.bot_id !== undefined ? o.botToken : m.user === o.reporter.id ? o.reporter.token : undefined;
+        if (token === undefined) {
+          failures.push(`DM message ${m.ts} by another user was left in place`);
+          continue;
+        }
+        await slackCall(token, 'chat.delete', { channel, ts: m.ts }).catch((e: unknown) => {
+          if (!gone(e)) failures.push(`delete DM message ${m.ts}: ${String(e)}`);
+        });
+      }
+      return failures;
     },
     async thread(anchorTs) {
       const out: SlackMessage[] = [];
