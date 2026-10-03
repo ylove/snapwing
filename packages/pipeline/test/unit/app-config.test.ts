@@ -79,6 +79,17 @@ describe('loadAppConfig', () => {
     expect(() => loadAppConfig(example.replace(/<generic [^>]*\/>/, ''))).toThrow(/declares no <generic>/);
   });
 
+  it('reads an optional <model> temperature from 0 to 2, in the XSD and the loader (#275)', async () => {
+    const withTemp = (t: string) => example.replace('task="triage"', `task="triage" temperature="${t}"`);
+    expect(loadAppConfig(withTemp('0.2')).models.rows.find((r) => r.task === 'triage')).toMatchObject({ temperature: 0.2 });
+    expect(loadAppConfig(example).models.rows.find((r) => r.task === 'triage')).not.toHaveProperty('temperature');
+    expect((await validateAppConfig(withTemp('0'))).valid).toBe(true);
+    for (const bad of ['-1', '2.5', 'warm', '']) {
+      expect((await validateAppConfig(withTemp(bad))).valid, bad).toBe(false);
+      expect(() => loadAppConfig(withTemp(bad)), bad).toThrow(/temperature/);
+    }
+  });
+
   it('reads <jira> status overrides and defaults to none (#268)', async () => {
     expect(loadAppConfig(example).jira).toEqual({ statuses: {} });
     expect(loadAppConfig(example.replace('<jira/>', '')).jira).toEqual({ statuses: {} });

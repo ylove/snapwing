@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   anthropicProvider,
   createAnthropicModel,
+  MIN_THINKING_MAX_TOKENS,
+  ModelSchemaError,
+  acceptsSampling,
   mapAnthropicError,
   type AnthropicClientLike,
 } from '../../src/models/anthropic/index.ts';
@@ -10,6 +13,7 @@ import {
   ModelAuthError,
   ModelOutputError,
   ModelRateLimitError,
+  ModelRefusalError,
   ModelUnavailableError,
   ModelValidationError,
 } from '../../src/models/errors.ts';
@@ -27,6 +31,7 @@ function message(content: unknown[], extra: Record<string, unknown> = {}): Anthr
     content,
     stop_reason: 'end_turn',
     stop_sequence: null,
+    stop_details: null,
     usage: { input_tokens: 11, output_tokens: 7 },
     ...extra,
   } as unknown as Anthropic.Message;
@@ -64,72 +69,165 @@ const classifyRequest: ClassifyRequest<{ priority: string }> = {
   schema,
   validate: isPriority,
 };
-const toolUse = (name: string, input: unknown) => ({ type: 'tool_use', id: 'toolu_1', name, input });
+/** A structured-output reply as Opus 5.5 and Sonnet 5.5 send it: an (omitted) thinking block, then the JSON text. */
+const answer = (value: unknown, extra: Record<string, unknown> = {}) =>
+  message([{ type: 'thinking', thinking: '', signature: 'sig-test' }, { type: 'text', text: JSON.stringify(value) }], extra);
 
 describe('anthropic complete', () => {
-  it('sends system, prompt, per-task model, and joins text blocks', async () => {
+  it('sends temperature and the caller max_tokens to a model that takes sampling (Haiku 4.5)', async () => {
     const { client, calls } = fakeClient([message([{ type: 'text', text: 'hello ' }, { type: 'text', text: 'world' }])]);
-    const model = createAnthropicModel({ apiKey: FAKE_KEY, models, client });
+    const model = createAnthropicModel({ apiKey: FAKE_KEY, models: { ...models, triage: 'claude-haiku-4-5' }, client });
     const result = await model.complete({ task: 'triage', system: 'be brief', prompt: 'hi', temperature: 0.2, maxTokens: 50 });
     expect(calls).toEqual([
-      { model: 'claude-test-triage', max_tokens: 50, system: 'be brief', temperature: 0.2, messages: [{ role: 'user', content: 'hi' }] },
+      { model: 'claude-haiku-4-5', max_tokens: 50, system: 'be brief', temperature: 0.2, messages: [{ role: 'user', content: 'hi' }] },
     ]);
-    expect(result).toEqual({ text: 'hello world', model: 'anthropic/claude-test-triage', usage: { inputTokens: 11, outputTokens: 7 } });
+    expect(result).toEqual({ text: 'hello world', model: 'anthropic/claude-haiku-4-5', usage: { inputTokens: 11, outputTokens: 7 } });
   });
 
-  it('defaults max_tokens and omits temperature', async () => {
+  for (const name of ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-sonnet-5', 'claude-opus-4-8']) {
+    it(`sends no temperature or thinking to ${name} and keeps room for thinking`, async () => {
+      const { client, calls } = fakeClient([message([{ type: 'text', text: 'x' }])]);
+      const model = createAnthropicModel({ apiKey: FAKE_KEY, models: { ...models, triage: name }, client });
+      await model.complete({ task: 'triage', system: 's', prompt: 'p', temperature: 0, maxTokens: 1024 });
+      expect(calls[0]).not.toHaveProperty('temperature');
+      expect(calls[0]).not.toHaveProperty('thinking');
+      expect(calls[0]?.max_tokens).toBe(MIN_THINKING_MAX_TOKENS);
+    });
+  }
+
+  it('defaults max_tokens to 16000 and omits temperature', async () => {
     const { client, calls } = fakeClient([message([{ type: 'text', text: 'x' }])]);
     await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).complete({ task: 'clarify', system: 's', prompt: 'p' });
-    expect(calls[0]?.max_tokens).toBe(4096);
+    expect(calls[0]?.max_tokens).toBe(16000);
     expect(calls[0]).not.toHaveProperty('temperature');
     expect(calls[0]?.model).toBe(DEFAULT_MODELS.anthropic.clarify);
+  });
+
+  it('throws ModelRefusalError on a refusal', async () => {
+    const { client } = fakeClient([
+      message([{ type: 'text', text: 'partial' }], {
+        stop_reason: 'refusal',
+        stop_details: { type: 'refusal', category: 'cyber', explanation: 'declined' },
+      }),
+    ]);
+    const err = await createAnthropicModel({ apiKey: FAKE_KEY, models, client })
+      .complete({ task: 'triage', system: 's', prompt: 'p' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelRefusalError);
+    expect(err).toMatchObject({ category: 'cyber' });
+  });
+});
+
+describe('anthropic acceptsSampling', () => {
+  it('is true only for models that still take sampling parameters', () => {
+    const older = [
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-4-6',
+      'claude-opus-4-6',
+      'claude-sonnet-4-5',
+      'claude-opus-4-1',
+      'claude-sonnet-4-20250514',
+      'claude-3-7-sonnet-latest',
+    ];
+    for (const m of older) expect(acceptsSampling(m), m).toBe(true);
+    const newer = [
+      'claude-opus-5-5',
+      'claude-sonnet-5-5',
+      'claude-opus-5',
+      'claude-sonnet-5',
+      'claude-opus-4-8',
+      'claude-opus-4-7',
+      'claude-fable-5-1',
+      'claude-haiku-5',
+      'claude-test-triage',
+    ];
+    for (const m of newer) expect(acceptsSampling(m), m).toBe(false);
   });
 });
 
 describe('anthropic classify', () => {
-  it('forces a single tool whose input schema is the request schema and returns the parsed input', async () => {
-    const { client, calls } = fakeClient([message([toolUse('triage_result', { priority: 'p1' })])]);
+  it('sends the schema as output_config.format with no tools or tool_choice, and parses the text answer', async () => {
+    const { client, calls } = fakeClient([answer({ priority: 'p1' })]);
     const model = createAnthropicModel({ apiKey: FAKE_KEY, models, client });
     const result = await model.classify(classifyRequest);
-    expect(calls[0]?.tools).toEqual([{ name: 'triage_result', description: 'Answer using the triage_result schema.', input_schema: schema }]);
-    expect(calls[0]?.tool_choice).toEqual({ type: 'tool', name: 'triage_result' });
+    expect(calls[0]?.output_config).toEqual({ format: { type: 'json_schema', schema: { ...schema, additionalProperties: false } } });
+    expect(calls[0]).not.toHaveProperty('tools');
+    expect(calls[0]).not.toHaveProperty('tool_choice');
+    expect(calls[0]).not.toHaveProperty('thinking');
     expect(calls[0]?.messages).toEqual([{ role: 'user', content: '<ticket/>' }]);
     expect(result.value).toEqual({ priority: 'p1' });
     expect(result.model).toBe('anthropic/claude-test-triage');
   });
 
+  it('makes optional properties nullable on the wire and strips the nulls from the answer', async () => {
+    const { client, calls } = fakeClient([answer({ priority: 'p1', note: null })]);
+    const withNote: JsonSchema = { ...schema, properties: { ...schema.properties, note: { type: 'string', maxLength: 10 } } };
+    const result = await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).classify({ ...classifyRequest, schema: withNote });
+    expect(calls[0]?.output_config?.format?.schema).toEqual({
+      type: 'object',
+      properties: { priority: { type: 'string', enum: ['p1', 'p2'] }, note: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
+      required: ['priority', 'note'],
+      additionalProperties: false,
+    });
+    expect(result.value).toEqual({ priority: 'p1' });
+  });
+
   it('wraps a non-object schema in an object and unwraps the answer', async () => {
-    const { client, calls } = fakeClient([message([toolUse('labels', { value: ['a', 'b'] })])]);
+    const { client, calls } = fakeClient([answer({ value: ['a', 'b'] })]);
     const arraySchema: JsonSchema = { type: 'array', items: { type: 'string' } };
     const result = await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).classify({
       ...classifyRequest,
       schemaName: 'labels',
       schema: arraySchema,
     });
-    expect(calls[0]?.tools?.[0]).toMatchObject({
-      input_schema: { type: 'object', properties: { value: arraySchema }, required: ['value'] },
+    expect(calls[0]?.output_config?.format?.schema).toEqual({
+      type: 'object',
+      properties: { value: arraySchema },
+      required: ['value'],
+      additionalProperties: false,
     });
     expect(result.value).toEqual(['a', 'b']);
   });
 
-  it('sanitises the schema name into a legal tool name', async () => {
-    const { client, calls } = fakeClient([message([toolUse('triage_v1_result', { priority: 'p2' })])]);
-    await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).classify({ ...classifyRequest, schemaName: 'triage.v1 result' });
-    expect(calls[0]?.tool_choice).toEqual({ type: 'tool', name: 'triage_v1_result' });
+  it('throws ModelSchemaError before any call for a schema it cannot express', async () => {
+    const { client, calls } = fakeClient([]);
+    const open: JsonSchema = { type: 'object', properties: {}, additionalProperties: { type: 'string' } };
+    await expect(
+      createAnthropicModel({ apiKey: FAKE_KEY, models, client }).classify({ ...classifyRequest, schema: open }),
+    ).rejects.toBeInstanceOf(ModelSchemaError);
+    expect(calls).toHaveLength(0);
   });
 
-  it('throws ModelOutputError when the model returns no tool call', async () => {
+  it('throws ModelOutputError when the answer is not JSON', async () => {
     const { client } = fakeClient([message([{ type: 'text', text: 'I think p1' }])]);
     const err = await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).classify(classifyRequest).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ModelOutputError);
     expect((err as ModelOutputError).raw).toBe('I think p1');
   });
 
+  it('throws ModelOutputError for an answer cut off at max_tokens, without parsing it', async () => {
+    const { client } = fakeClient([message([{ type: 'text', text: '{"priority": "p' }], { stop_reason: 'max_tokens' })]);
+    const err = await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).classify(classifyRequest).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelOutputError);
+    expect((err as Error).message).toMatch(/max_tokens/);
+  });
+
+  it('throws ModelRefusalError on a refusal, and withValidation does not retry it', async () => {
+    const refusal = message([{ type: 'text', text: '{"priority":' }], {
+      stop_reason: 'refusal',
+      stop_details: { type: 'refusal', category: null, explanation: null },
+    });
+    const { client, calls } = fakeClient([refusal, answer({ priority: 'p1' })]);
+    const port = withValidation(createAnthropicModel({ apiKey: FAKE_KEY, models, client }));
+    const err = await port.classify(classifyRequest).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelRefusalError);
+    expect(err).toMatchObject({ category: null });
+    expect(calls).toHaveLength(1);
+  });
+
   it('is validated and retried once by withValidation', async () => {
-    const { client, calls } = fakeClient([
-      message([toolUse('triage_result', { priority: 7 })]),
-      message([toolUse('triage_result', { priority: 'p2' })]),
-    ]);
+    const { client, calls } = fakeClient([answer({ priority: 7 }), answer({ priority: 'p2' })]);
     const port = withValidation(createAnthropicModel({ apiKey: FAKE_KEY, models, client }));
     const result = await port.classify(classifyRequest);
     expect(result).toMatchObject({ value: { priority: 'p2' }, attempts: 2 });
@@ -137,7 +235,7 @@ describe('anthropic classify', () => {
   });
 
   it('surfaces ModelValidationError after two bad answers', async () => {
-    const { client } = fakeClient([message([toolUse('triage_result', {})]), message([toolUse('triage_result', {})])]);
+    const { client } = fakeClient([answer({}), answer({})]);
     const port = withValidation(createAnthropicModel({ apiKey: FAKE_KEY, models, client }));
     await expect(port.classify(classifyRequest)).rejects.toBeInstanceOf(ModelValidationError);
   });
@@ -162,9 +260,16 @@ describe('anthropic vision', () => {
     ],
   };
 
-  it('sends native base64 image blocks then the prompt, and parses ImageReadings in order', async () => {
-    const second = { surfaceSignals: {}, uiElements: [], plainDescription: 'a login page', sensitive: true };
-    const { client, calls } = fakeClient([message([toolUse('report_image_readings', { readings: [reading, second] })])]);
+  it('sends native base64 image blocks then the prompt with a structured format, and parses ImageReadings in order', async () => {
+    const second = {
+      errorText: null,
+      surfaceSignals: { urlBar: null, pageTitle: null, chrome: null },
+      uiElements: [],
+      environmentHint: null,
+      plainDescription: 'a login page',
+      sensitive: true,
+    };
+    const { client, calls } = fakeClient([answer({ readings: [reading, second] })]);
     const result = await createAnthropicModel({ apiKey: FAKE_KEY, models, client }).vision(request);
     expect(calls[0]?.messages).toEqual([
       {
@@ -176,18 +281,22 @@ describe('anthropic vision', () => {
         ],
       },
     ]);
-    expect(calls[0]?.tool_choice).toEqual({ type: 'tool', name: 'report_image_readings' });
-    expect(result.readings).toEqual([reading, second]);
+    expect(calls[0]).not.toHaveProperty('tool_choice');
+    expect(calls[0]).not.toHaveProperty('tools');
+    const sent = calls[0]?.output_config?.format;
+    expect(sent?.type).toBe('json_schema');
+    expect(JSON.stringify(sent?.schema)).toContain('"additionalProperties":false');
+    expect(result.readings).toEqual([reading, { surfaceSignals: {}, uiElements: [], plainDescription: 'a login page', sensitive: true }]);
   });
 
   it('throws ModelOutputError when the reading count differs from the image count', async () => {
-    const { client } = fakeClient([message([toolUse('report_image_readings', { readings: [reading] })])]);
+    const { client } = fakeClient([answer({ readings: [reading] })]);
     await expect(createAnthropicModel({ apiKey: FAKE_KEY, models, client }).vision(request)).rejects.toBeInstanceOf(ModelOutputError);
   });
 
   it('throws ModelOutputError for a malformed reading', async () => {
     const bad = { ...reading, sensitive: 'no' };
-    const { client } = fakeClient([message([toolUse('report_image_readings', { readings: [bad, bad] })])]);
+    const { client } = fakeClient([answer({ readings: [bad, bad] })]);
     await expect(createAnthropicModel({ apiKey: FAKE_KEY, models, client }).vision(request)).rejects.toThrow(/sensitive/);
   });
 });

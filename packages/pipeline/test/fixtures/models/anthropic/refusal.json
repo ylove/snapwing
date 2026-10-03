@@ -1,0 +1,28 @@
+{
+  "id": "msg_test_0001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "",
+      "signature": "synthetic-signature"
+    },
+    {
+      "type": "text",
+      "text": "{\"label\":"
+    }
+  ],
+  "stop_reason": "refusal",
+  "stop_sequence": null,
+  "stop_details": {
+    "type": "refusal",
+    "category": "cyber",
+    "explanation": "Synthetic contract refusal"
+  },
+  "usage": {
+    "input_tokens": 23,
+    "output_tokens": 11
+  }
+}

@@ -52,6 +52,33 @@ const SPEC_ROWS: ModelRow[] = [
   { task: 'review', provider: 'google', name: 'gemini-2.5-pro' },
 ];
 
+describe('sampling: a temperature only from the <model> row (#275)', () => {
+  function recording() {
+    const seen: Array<number | undefined> = [];
+    const factory = (route: ModelRoute): ModelBackend => ({
+      complete: (r) => (seen.push(r.temperature), Promise.resolve({ text: 'x', model: route.model })),
+      vision: (r) => (seen.push(r.temperature), Promise.resolve({ readings: [], model: route.model })),
+      classify: (r) => (seen.push(r.temperature), Promise.resolve({ value: { ok: true }, model: route.model })),
+    });
+    return { seen, providers: { anthropic: factory, openai: factory, google: factory } satisfies ModelProviders };
+  }
+  const rows: ModelRow[] = [{ task: 'triage', provider: 'openai', name: 'gpt-5' }, { task: 'clarify', provider: 'openai', name: 'gpt-4.1', temperature: 0.3 }];
+
+  it('drops the stage temperature when the row sets none, and sends the row value when it does', async () => {
+    const { seen, providers } = recording();
+    const router = createModelRouter({ defaultProvider: 'openai', rows }, providers, KEYS);
+    expect(router.routes.triage).not.toHaveProperty('temperature');
+    expect(router.routes.clarify.temperature).toBe(0.3);
+    await router.complete({ ...req('triage'), temperature: 0 });
+    await router.vision({ ...req('triage'), temperature: 0, images: [] });
+    await router.classify({ ...req('triage'), temperature: 0, schemaName: 's', schema: { type: 'object' }, validate: (v): v is unknown => v !== undefined });
+    await router.complete({ ...req('clarify'), temperature: 0 });
+    await router.complete(req('clarify'));
+    await router.complete({ ...req('segmentation'), temperature: 1 });
+    expect(seen).toEqual([undefined, undefined, undefined, 0.3, 0.3, undefined]);
+  });
+});
+
 describe('routing table: every task has a row (main 14.5 example)', () => {
   const config: ModelsConfig = { defaultProvider: 'anthropic', rows: SPEC_ROWS };
 
