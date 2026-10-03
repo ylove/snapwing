@@ -25,6 +25,8 @@ const STATE_INDEXES = [
   'incidents_workspace_id_status_idx',
   'incidents_workspace_id_surface_id_status_idx',
   'incidents_jira_key_idx',
+  'incidents_channel_id_anchor_id_idx',
+  'bot_messages_incident_id_idx',
   'outbox_target_done_at_next_attempt_idx',
   'jobs_name_state_start_after_idx',
   'jobs_singleton_key_idx',

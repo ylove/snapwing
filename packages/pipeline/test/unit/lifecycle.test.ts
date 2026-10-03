@@ -151,7 +151,7 @@ describe('lifecycle machine', () => {
     },
   );
 
-  it.each(['status-message-posted', 'waiting-changed', 'monitoring-started', 'monitoring-stopped', 'scope-changed', 'dedupe-decided', 'clarify-answered'] as const)(
+  it.each(['status-message-posted', 'waiting-changed', 'monitoring-started', 'monitoring-stopped', 'scope-changed', 'dedupe-decided', 'clarify-answered', 'bot-message-posted'] as const)(
     '%s is valid and status-preserving in every status',
     (type) => {
       for (const status of LIFECYCLE_STATUSES) {

@@ -83,6 +83,7 @@ afterEach(async () => {
   vi.mocked(applyProjections).mockClear();
   await ctx.db.deleteFrom('claims').execute();
   await ctx.db.deleteFrom('escalation_scores').execute();
+  await ctx.db.deleteFrom('bot_messages').execute();
   await ctx.db.deleteFrom('subscriptions').execute();
   await ctx.db.deleteFrom('incidents').execute();
   await ctx.db.deleteFrom('incident_events').execute();
@@ -162,7 +163,7 @@ async function appendAll(incidentId: string, events: NewEvent[]): Promise<void> 
 
 /**
  * Three incidents in interleaved appends: A is filed, claimed, held, watched, and escalated, with a
- * correction; B is filed and has a child work item C. Plus one standing surface subscription, which
+ * correction and a posted status message; B is filed and has a child work item C. Plus one standing surface subscription, which
  * no event writes and a rebuild must keep.
  */
 async function appendFixture(): Promise<void> {
@@ -178,6 +179,7 @@ async function appendFixture(): Promise<void> {
   await appendAll(INC_A, [
     ev('escalated', { intent: 'escalate', step: 2, action: 'page', score: 3.5 }, INC_A),
     ev('corrected', { correctsSeq: 3, fields: { componentId: 'payments' }, reason: 'wrong component' }, INC_A, { actor: DANA }),
+    ev('bot-message-posted', { platform: 'slack', channel: 'C-FAKE', messageId: '1727773299.000200', role: 'status' }, INC_A),
   ]);
   await ctx.db
     .insertInto('subscriptions')
@@ -197,14 +199,15 @@ describe(`rebuild (${TEST_DIALECT})`, () => {
     await appendFixture();
     const before = await snapshotProjections(state);
     const parsed = JSON.parse(before) as Record<string, unknown[]>;
-    expect(Object.keys(parsed)).toEqual(['claims', 'escalation_scores', 'incidents', 'subscriptions']);
+    expect(Object.keys(parsed)).toEqual(['bot_messages', 'claims', 'escalation_scores', 'incidents', 'subscriptions']);
+    expect(parsed.bot_messages).toHaveLength(1);
     expect(parsed.incidents).toHaveLength(3);
     expect(parsed.claims).toHaveLength(1);
     expect(parsed.subscriptions).toHaveLength(2);
     expect(parsed.escalation_scores).toHaveLength(1);
 
     const result = await rebuild(state, { all: true });
-    expect(result).toEqual({ incidents: 3, events: 21 });
+    expect(result).toEqual({ incidents: 3, events: 22 });
     const after = await snapshotProjections(state);
     expect(JSON.parse(after)).toEqual(parsed);
     expect(after).toBe(before);
@@ -218,7 +221,7 @@ describe(`rebuild (${TEST_DIALECT})`, () => {
     await rebuild(state, { all: true }, { batchSize: 1 });
     expect(await snapshotProjections(state)).toBe(before);
     const calls = vi.mocked(applyProjections).mock.calls.map(([, events]) => events);
-    expect(calls).toHaveLength(21);
+    expect(calls).toHaveLength(22);
     expect(calls.every((events) => events.length === 1)).toBe(true);
     const order = calls.map((events) => `${events[0]?.incidentId}#${events[0]?.seq}`);
     expect(order.indexOf(`${INC_B}#1`)).toBeLessThan(order.indexOf(`${CHILD}#1`));
@@ -235,6 +238,7 @@ describe(`rebuild (${TEST_DIALECT})`, () => {
     await ctx.db.updateTable('incidents').set({ status: 'closed', summary: 'drifted' }).where('id', '=', INC_A).execute();
     await ctx.db.deleteFrom('claims').execute();
     await ctx.db.updateTable('escalation_scores').set({ score: 99 }).execute();
+    await ctx.db.deleteFrom('bot_messages').execute();
     expect(await snapshotProjections(state)).not.toBe(before);
 
     await rebuild(state, { all: true });
@@ -258,7 +262,7 @@ describe(`rebuild (${TEST_DIALECT})`, () => {
   it('an incident with no events rebuilds to nothing', async () => {
     expect(await rebuild(state, { incidentId: '01JZ00000000000000000000Z9' })).toEqual({ incidents: 0, events: 0 });
     expect(await rebuild(state, { all: true })).toEqual({ incidents: 0, events: 0 });
-    expect(JSON.parse(await snapshotProjections(state))).toEqual({ incidents: [], claims: [], subscriptions: [], escalation_scores: [] });
+    expect(JSON.parse(await snapshotProjections(state))).toEqual({ incidents: [], claims: [], subscriptions: [], escalation_scores: [], bot_messages: [] });
   });
 
   it('replays corrected events and never edits the stored log', async () => {
@@ -341,16 +345,16 @@ describe(`rebuild and the outbox (${TEST_DIALECT})`, () => {
   it('#89: with outboxFor giving a row per event, a rebuild leaves the outbox table unchanged', async () => {
     await appendFixture();
     // Appends enqueue in their transaction: one row per event.
-    expect(await outboxRows()).toHaveLength(21);
+    expect(await outboxRows()).toHaveLength(22);
     // One row delivered and acked, one delivered and pruned, as the projector will leave them.
     await state.ackOutbox([`${INC_A}#0001`]);
     await ctx.db.deleteFrom('outbox').where('id', '=', `${INC_B}#0001`).execute();
     const before = await outboxRows();
-    expect(before).toHaveLength(20);
+    expect(before).toHaveLength(21);
     const projections = await snapshotProjections(state);
     vi.mocked(applyProjections).mockClear();
 
-    expect(await rebuild(state, { all: true })).toEqual({ incidents: 3, events: 21 });
+    expect(await rebuild(state, { all: true })).toEqual({ incidents: 3, events: 22 });
     expect(await outboxRows()).toEqual(before);
     expect(await rebuild(state, { incidentId: INC_B })).toEqual({ incidents: 1, events: 7 });
     expect(await outboxRows()).toEqual(before);
@@ -366,7 +370,7 @@ describe(`rebuild and the outbox (${TEST_DIALECT})`, () => {
     await rebuild(state, { all: true });
     await appendAll(INC_B, [ev('jira-assignee-changed', { jiraKey: 'WEB-2001', to: LEE }, INC_B)]);
     const rows = (await outboxRows()) as { id: string }[];
-    expect(rows).toHaveLength(22);
+    expect(rows).toHaveLength(23);
     expect(rows.map((r) => r.id)).toContain(`${INC_B}#0008`);
   });
 });

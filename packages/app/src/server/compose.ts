@@ -562,7 +562,7 @@ export const compose: ComposeFn = async (deps) => {
   };
   const humanReviewDeps: HumanReviewDeps = {
     ...humanDeps,
-    chatOut: overrides.prReadyChat ?? createSlackPrReadyChat({ web }),
+    chatOut: overrides.prReadyChat ?? createSlackPrReadyChat({ web, state, onError: (e) => log.error(`pr card record: ${message(e)}`) }),
     cache,
     onError: (e) => log.error(`pr card link prompt: ${message(e)}`),
   };
@@ -584,6 +584,7 @@ export const compose: ComposeFn = async (deps) => {
     botUserId,
     ...(workspaceDomain === undefined ? {} : { workspaceDomain }),
     getMap,
+    state,
     onError: (e) => log.error(`slack: ${message(e)}`),
     clock,
   });

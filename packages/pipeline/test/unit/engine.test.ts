@@ -25,6 +25,7 @@ import { withValidation } from '../../src/models/router.ts';
 import type { ClassifyRequest, ModelBackend } from '../../src/ports/model.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { createKvCache } from '../../src/providers/local/cache.ts';
+import { recordBotMessage, roleOfCard } from '../../src/signals/messages.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { ulid } from '../../src/util/ulid.ts';
 import { InProcessWorkflow } from '../../src/workflow/inprocess/index.ts';
@@ -62,6 +63,8 @@ class FakeAdapter implements IngestionAdapter<FakeRaw, { status: number }> {
   readonly channelSource = 'slack' as const;
   readonly cards: InteractiveCard[] = [];
   readonly statuses: StatusUpdate[] = [];
+  /** Runs after each card is kept, as a real adapter records what it posted (#287). */
+  record: ((payload: CanonicalIncidentPayload, card: InteractiveCard) => Promise<void>) | undefined;
   authenticateRequest(raw: FakeRaw): Promise<boolean> {
     return Promise.resolve(raw.signature === 'sig-test');
   }
@@ -71,9 +74,9 @@ class FakeAdapter implements IngestionAdapter<FakeRaw, { status: number }> {
   acknowledge(): Promise<{ status: number }> {
     return Promise.resolve({ status: 200 });
   }
-  postInteractive(_payload: CanonicalIncidentPayload, card: InteractiveCard): Promise<void> {
+  postInteractive(payload: CanonicalIncidentPayload, card: InteractiveCard): Promise<void> {
     this.cards.push(card);
-    return Promise.resolve();
+    return this.record?.(payload, card) ?? Promise.resolve();
   }
   postStatus(_payload: CanonicalIncidentPayload, status: StatusUpdate): Promise<void> {
     this.statuses.push(status);
@@ -429,6 +432,26 @@ describe('levels (main 14.1)', () => {
       accepted: false,
       reason: 'not-pending',
     });
+  });
+
+  it('level 2, an adapter that records its cards (#287): the after-filed step appends past the record and posts the fix preview once', async () => {
+    const h = setup({ level: 2 });
+    let n = 0;
+    h.adapter.record = async (payload, card) => {
+      n += 1;
+      await recordBotMessage(state, payload.eventId, { platform: 'slack', channel: CHANNEL, messageId: `1730000000.00000${n}`, role: roleOfCard(card.kind) });
+    };
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    await file(h, 'APP-104');
+
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview', 'fix-preview']);
+    const log = await events(h);
+    expect(log.flatMap((e) => (e.type === 'bot-message-posted' ? [e.payload.role] : []))).toEqual(['scope-preview', 'fix-preview']);
+    // The step's own append landed after the fix preview's record.
+    expect(log.slice(-2).map((e) => e.type)).toEqual(['bot-message-posted', 'waiting-changed']);
+    const [transition] = await outbox();
+    expect(transition).toMatchObject({ op: 'transition', payload: { issueKey: 'APP-104', to: 'in-progress' } });
   });
 
   it('level 3: same path as level 2, with an autopilot handoff in the implementation request', async () => {

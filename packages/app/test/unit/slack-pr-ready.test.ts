@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { buildPrReady } from '../../src/adapters/slack/cards/cards.ts';
 import { createSlackPrReadyChat } from '../../src/adapters/slack/pr-ready.ts';
 import type { PostEphemeralArgs, PostMessageArgs } from '../../src/adapters/slack/web.ts';
@@ -67,6 +68,28 @@ describe('createSlackPrReadyChat', () => {
     expect(json).toContain('"action_id":"open_pr"');
     expect(json).not.toContain('"action_id":"merge"');
     expect(json).toContain('<https://snapwing.example/auth/github/start?t=1|Link your GitHub account>');
+  });
+
+  it('with state, each posted card is recorded as a pr message; the ephemeral prompt is not (A 1.3, #287)', async () => {
+    const appended: NewEvent[] = [];
+    const errors: unknown[] = [];
+    const chat = createSlackPrReadyChat({
+      web: {
+        postMessage: (a) => Promise.resolve({ channel: a.channel, ts: '1759395700.000300' }),
+        postEphemeral: () => Promise.resolve({}),
+      },
+      state: {
+        read: () => Promise.resolve([{ workspaceId: 'W0FAKE', seq: 9 }] as unknown as IncidentEvent[]),
+        append: (_id, events, seq) => (appended.push(...events), Promise.resolve({ seq: seq + events.length })),
+      },
+      onError: (e) => errors.push(e),
+    });
+    await chat.postPrReady({ channel: 'C0WEBBUGS', threadId: '1759395600.000100' }, INC, CARD, { canMerge: true });
+    await chat.postLinkPrompt('U0WEBDEV1', { channel: 'C0WEBBUGS' }, INC, CARD, 'https://snapwing.example/link');
+    expect(appended.map((e) => [e.incidentId, e.type, e.payload])).toEqual([
+      [INC, 'bot-message-posted', { platform: 'slack', channel: 'C0WEBBUGS', messageId: '1759395700.000300', role: 'pr' }],
+    ]);
+    expect(errors).toEqual([]);
   });
 
   it('postLinkPrompt drops the thread in a direct message', async () => {

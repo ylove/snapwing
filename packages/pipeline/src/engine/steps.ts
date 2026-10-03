@@ -13,13 +13,14 @@ import type { InteractiveCard } from '../contracts/adapters.ts';
 import type { ArtifactRef, EventActor, EventPayloads, EventSource, EventType, NewEvent, WaitingOn } from '../contracts/events.ts';
 import type { CanonicalIncidentPayload, ChannelSource, ContextBundle, Resolution, TriageResolutionPlan } from '../contracts/incident.ts';
 import type { Job } from '../contracts/jobs.ts';
-import type { OutboxItem } from '../contracts/state.ts';
+import { isExpectedSeqConflict, type OutboxItem } from '../contracts/state.ts';
 import { dedupe, rememberIncident } from '../dedupe/index.ts';
 import type { JiraLogicalStatus } from '../jira/statuses.ts';
 import { LABEL_NEEDS_CLARIFICATION, LABEL_PROMPT_FAILED, synthesizeIssue, type SynthesisContext, type SynthesizedIssue } from '../jira/synthesis.ts';
 import type { MapPerson, WorkspaceMap } from '../map/types.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
+import { lastSeqPastBotRecords, RECORD_APPEND_TRIES } from '../signals/messages.ts';
 import { findSurface } from '../resolve/lookup.ts';
 import { JIRA_DONE, JIRA_IN_PROGRESS, LABEL_HUMAN_CLAIMED, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
@@ -131,6 +132,8 @@ function outboxRow(
 /**
  * Appends `events` after `cursor.lastSeq`. With `effects`, runs in one transaction: `effects` writes
  * artifacts and outbox rows on `tx` and returns events of its own, appended after `events`.
+ * A conflict with nothing but records of what the bot posted (a card the step just posted, the status
+ * message) appends after them: they are no decision's input (#287). Any other conflict throws.
  */
 async function commit(
   env: StepEnv,
@@ -139,14 +142,23 @@ async function commit(
 ): Promise<void> {
   const { state } = env.deps;
   const id = env.cursor.incidentId;
-  const { seq } =
-    effects === undefined
-      ? await state.append(id, [...events], env.cursor.lastSeq)
-      : await state.transaction(async (tx) => {
-          const more = await effects(tx);
-          return tx.append(id, [...events, ...more], env.cursor.lastSeq);
-        });
-  env.cursor.lastSeq = seq;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { seq } =
+        effects === undefined
+          ? await state.append(id, [...events], env.cursor.lastSeq)
+          : await state.transaction(async (tx) => {
+              const more = await effects(tx);
+              return tx.append(id, [...events, ...more], env.cursor.lastSeq);
+            });
+      env.cursor.lastSeq = seq;
+      return;
+    } catch (err) {
+      const past = isExpectedSeqConflict(err) && attempt < RECORD_APPEND_TRIES ? await lastSeqPastBotRecords(state, id, env.cursor.lastSeq) : undefined;
+      if (past === undefined) throw err;
+      env.cursor.lastSeq = past;
+    }
+  }
 }
 
 function agentName(env: StepEnv): string {
