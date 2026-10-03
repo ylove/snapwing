@@ -90,6 +90,18 @@ describe('loadAppConfig', () => {
     }
   });
 
+  it('reads <models refusal-fallback>, on by default, in the XSD and the loader (#281)', async () => {
+    const withMode = (m: string) => example.replace('<models ', `<models refusal-fallback="${m}" `);
+    expect(loadAppConfig(example).models.refusalFallback).toBe(true);
+    expect(loadAppConfig(withMode('on')).models.refusalFallback).toBe(true);
+    expect(loadAppConfig(withMode('off')).models.refusalFallback).toBe(false);
+    for (const ok of ['on', 'off']) expect(await validateAppConfig(withMode(ok)), ok).toEqual({ valid: true, errors: [] });
+    for (const bad of ['no', 'false', 'default', '']) {
+      expect((await validateAppConfig(withMode(bad))).valid, bad).toBe(false);
+      expect(() => loadAppConfig(withMode(bad)), bad).toThrow(/refusal-fallback/);
+    }
+  });
+
   it('reads <jira> status overrides and defaults to none (#268)', async () => {
     expect(loadAppConfig(example).jira).toEqual({ statuses: {} });
     expect(loadAppConfig(example.replace('<jira/>', '')).jira).toEqual({ statuses: {} });

@@ -76,6 +76,8 @@ export const DEFAULT_MODELS: Readonly<Record<ModelProvider, Readonly<Record<Mode
 export interface ModelsSelection {
   defaultProvider?: ModelProvider;
   rows: readonly ModelRow[];
+  /** `<models refusal-fallback>`: false turns server-side refusal fallback off for every route. Absent: on. */
+  refusalFallback?: boolean;
 }
 
 export type ModelEnv = Readonly<Record<string, string | undefined>>;
@@ -88,6 +90,11 @@ export interface ModelRoute {
   source: 'row' | 'default-provider' | 'env-key';
   /** The row's temperature. The router sends exactly this (or none) and ignores the request's own (#275). */
   temperature?: number;
+  /**
+   * False when the config turns server-side refusal fallback off (`<models refusal-fallback="off">`);
+   * absent means on. Adapters send it only to models that take it (Anthropic: `acceptsRefusalFallback`).
+   */
+  refusalFallback?: false;
 }
 
 /** Builds the adapter for one route. Vendor adapters read their key from `env` by PROVIDER_KEY_ENV. */
@@ -131,6 +138,7 @@ export function resolveModelRoutes(config: ModelsSelection, env: ModelEnv): Reco
   };
 
   const routes = {} as Record<ModelTask, ModelRoute>;
+  const refusal = config.refusalFallback === false ? { refusalFallback: false as const } : {};
   for (const task of MODEL_TASK_LIST) {
     const row = rows.get(task);
     if (row) {
@@ -140,10 +148,11 @@ export function resolveModelRoutes(config: ModelsSelection, env: ModelEnv): Reco
         model: row.name,
         source: 'row',
         ...(row.temperature === undefined ? {} : { temperature: row.temperature }),
+        ...refusal,
       };
     } else {
       const { provider, source } = fallbackProvider();
-      routes[task] = { task, provider, model: DEFAULT_MODELS[provider][task], source };
+      routes[task] = { task, provider, model: DEFAULT_MODELS[provider][task], source, ...refusal };
     }
   }
   return routes;

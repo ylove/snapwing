@@ -20,6 +20,8 @@ export interface ContractCase {
   assertRequests?: (count: number, scenario: Scenario) => void;
   assertVision?: () => void;
   live?: boolean;
+  /** Base64 PNG for the vision case; default `imageData` (1x1, which the Anthropic API refuses live). */
+  visionImage?: string;
 }
 
 /** Live mode shares the port assertions, with validator-driven retries instead of HTTP fault injection. */
@@ -35,7 +37,7 @@ export function modelPortContract(testCase: ContractCase) {
 
   it('vision returns one structured reading and sends inline image bytes', async () => {
     testCase.prepare?.('vision');
-    const result = await testCase.create().vision({ ...request, task: 'vision', prompt: '<request>Describe the image.</request>', images: [{ mimeType: 'image/png', data: imageData, ref: 'private-test-image-ref' }] });
+    const result = await testCase.create().vision({ ...request, task: 'vision', prompt: '<request>Describe the image.</request>', images: [{ mimeType: 'image/png', data: testCase.visionImage ?? imageData, ref: 'private-test-image-ref' }] });
     expect(result.readings).toHaveLength(1);
     expect(result.readings[0]).toMatchObject({ plainDescription: expect.any(String), sensitive: expect.any(Boolean), uiElements: expect.any(Array) });
     if (!testCase.live) expect(result.readings[0]).toMatchObject({ plainDescription: 'A white square.', sensitive: false, uiElements: [] });

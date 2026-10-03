@@ -1,8 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it } from 'vitest';
 import {
+  acceptsRefusalFallback,
   anthropicProvider,
   createAnthropicModel,
+  REFUSAL_FALLBACK_BETA,
   MIN_THINKING_MAX_TOKENS,
   ModelSchemaError,
   acceptsSampling,
@@ -37,20 +39,25 @@ function message(content: unknown[], extra: Record<string, unknown> = {}): Anthr
   } as unknown as Anthropic.Message;
 }
 
+/** Params as either endpoint received them; the beta endpoint adds `betas` and `fallbacks`. */
+type SentParams = Anthropic.MessageCreateParamsNonStreaming & { betas?: string[]; fallbacks?: unknown };
+
 function fakeClient(replies: Array<Anthropic.Message | Error>) {
-  const calls: Anthropic.MessageCreateParamsNonStreaming[] = [];
-  const client: AnthropicClientLike = {
-    messages: {
-      create: async (params) => {
-        calls.push(params);
-        const next = replies.shift();
-        if (next === undefined) throw new Error('no reply queued');
-        if (next instanceof Error) throw next;
-        return next;
-      },
-    },
+  const calls: SentParams[] = [];
+  const endpoints: Array<'messages' | 'beta'> = [];
+  const reply = (endpoint: 'messages' | 'beta') => async (params: SentParams): Promise<Anthropic.Message> => {
+    calls.push(params);
+    endpoints.push(endpoint);
+    const next = replies.shift();
+    if (next === undefined) throw new Error('no reply queued');
+    if (next instanceof Error) throw next;
+    return next;
   };
-  return { client, calls };
+  const client = {
+    messages: { create: reply('messages') },
+    beta: { messages: { create: reply('beta') } },
+  } as unknown as AnthropicClientLike;
+  return { client, calls, endpoints };
 }
 
 const models = { ...DEFAULT_MODELS.anthropic, triage: 'claude-test-triage' };
@@ -115,6 +122,64 @@ describe('anthropic complete', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ModelRefusalError);
     expect(err).toMatchObject({ category: 'cyber' });
+  });
+});
+
+describe('anthropic refusal fallback', () => {
+  it('acceptsRefusalFallback is true only for the models whose classifiers decline', () => {
+    for (const m of ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-5', 'claude-fable-5-1']) expect(acceptsRefusalFallback(m), m).toBe(true);
+    for (const m of ['claude-haiku-4-5', 'claude-sonnet-5', 'claude-opus-4-8', 'claude-mythos-5-1', 'claude-test-triage', 'claude-opus-5-5-x']) {
+      expect(acceptsRefusalFallback(m), m).toBe(false);
+    }
+  });
+
+  it('sends fallbacks "default" with the beta header to a model that takes it, by default', async () => {
+    const { client, calls, endpoints } = fakeClient([answer({ priority: 'p1' })]);
+    const model = createAnthropicModel({ apiKey: FAKE_KEY, models: { ...models, triage: 'claude-opus-5-5' }, client });
+    await model.classify(classifyRequest);
+    expect(endpoints).toEqual(['beta']);
+    expect(calls[0]).toMatchObject({ betas: [REFUSAL_FALLBACK_BETA], fallbacks: 'default', model: 'claude-opus-5-5' });
+  });
+
+  it('uses the plain endpoint without either field for other models, or when turned off', async () => {
+    const { client, calls, endpoints } = fakeClient([answer({ priority: 'p1' }), answer({ priority: 'p1' })]);
+    await createAnthropicModel({ apiKey: FAKE_KEY, models: { ...models, triage: 'claude-haiku-4-5' }, client }).classify(classifyRequest);
+    await createAnthropicModel({ apiKey: FAKE_KEY, models: { ...models, triage: 'claude-opus-5-5' }, refusalFallback: false, client }).classify(
+      classifyRequest,
+    );
+    expect(endpoints).toEqual(['messages', 'messages']);
+    for (const call of calls) {
+      expect(call).not.toHaveProperty('betas');
+      expect(call).not.toHaveProperty('fallbacks');
+    }
+  });
+
+  it('reads only the text after the last fallback block and names the serving model', async () => {
+    const reply = message(
+      [
+        { type: 'text', text: '{"prio' },
+        { type: 'fallback', from: { model: 'claude-opus-5-5' }, to: { model: 'claude-opus-4-8' }, trigger: { type: 'refusal', category: 'cyber' } },
+        { type: 'text', text: '{"priority":"p2"}' },
+      ],
+      {
+        model: 'claude-opus-4-8',
+        usage: {
+          input_tokens: 5,
+          output_tokens: 3,
+          iterations: [{ type: 'message', model: 'claude-opus-5-5' }, { type: 'fallback_message', model: 'claude-opus-4-8' }],
+        },
+      },
+    );
+    const { client } = fakeClient([reply]);
+    const result = await createAnthropicModel({ apiKey: FAKE_KEY, models: { ...models, triage: 'claude-opus-5-5' }, client }).classify(classifyRequest);
+    expect(result).toEqual({ value: { priority: 'p2' }, model: 'anthropic/claude-opus-4-8', usage: { inputTokens: 5, outputTokens: 3 } });
+  });
+
+  it('the router carries refusalFallback false to every route only when the config turns it off', () => {
+    const off = createModelRouter({ rows: [], refusalFallback: false }, { anthropic: anthropicProvider }, { ANTHROPIC_API_KEY: FAKE_KEY });
+    expect(Object.values(off.routes).every((r) => r.refusalFallback === false)).toBe(true);
+    const on = createModelRouter({ rows: [], refusalFallback: true }, { anthropic: anthropicProvider }, { ANTHROPIC_API_KEY: FAKE_KEY });
+    expect(Object.values(on.routes).some((r) => 'refusalFallback' in r)).toBe(false);
   });
 });
 
