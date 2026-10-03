@@ -11,7 +11,11 @@ export interface PagerTriggerInput {
   severity?: PagerSeverity;
   /** What raised the page, for example `snapwing`. */
   source?: string;
-  /** The playbook step's `pagerduty` value when it is itself an Events API v2 routing key; else the secret is used. */
+  /**
+   * The Events API v2 routing key. The ladder (#299) always passes one, read from the secrets port:
+   * `PAGERDUTY_ROUTING_KEY_<SERVICE>` for the step's `pagerduty` service id, else
+   * `PAGERDUTY_ROUTING_KEY`. The playbook's `pagerduty` value is a service id, never a key.
+   */
   routingKey?: string;
   /** A link back to the incident. */
   link?: { href: string; text?: string };

@@ -233,7 +233,11 @@
   <xs:complexType name="AfterType">
     <xs:attribute name="duration" type="DurationType" use="required"/>
     <xs:attribute name="mention" type="NonEmptyString" use="optional"/>
-    <xs:attribute name="pagerduty" type="NonEmptyString" use="optional"/>
+    <xs:attribute name="pagerduty" type="NonEmptyString" use="optional">
+      <xs:annotation>
+        <xs:documentation>A PagerDuty service id (for example P123ABC), shown in the escalation-ladder event and the status line. Never a routing key: routing keys are secrets and the playbook is readable config. The key comes from the secrets port, PAGERDUTY_ROUTING_KEY_&lt;SERVICEID&gt; when set, else PAGERDUTY_ROUTING_KEY; a step with neither skips paging and logs once, and its other actions still run.</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="channel" type="NonEmptyString" use="optional"/>
   </xs:complexType>
 

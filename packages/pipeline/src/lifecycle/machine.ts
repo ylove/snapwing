@@ -288,6 +288,8 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'clarify-answered',
   // A 1.3: a record of a message the bot posted, for target resolution.
   'bot-message-posted',
+  // A 6.2 escalation ladders (#299): mentions, posts, pages; never a status change (unlike `escalated`).
+  'escalation-ladder',
 ]);
 
 export interface TransitionResult {

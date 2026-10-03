@@ -89,7 +89,9 @@ export type EventType =
   | 'fixer-done'
   | 'fixer-failed'
   // A 1.3 target resolution: every message Snapwing posts, with its role
-  | 'bot-message-posted';
+  | 'bot-message-posted'
+  // A 6.2 escalation ladders (#299): started, each step, stopped. Not `escalated` (see the payload)
+  | 'escalation-ladder';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
 export const EVENT_TYPES = Object.freeze([
@@ -140,6 +142,7 @@ export const EVENT_TYPES = Object.freeze([
   'fixer-done',
   'fixer-failed',
   'bot-message-posted',
+  'escalation-ladder',
 ] as const satisfies readonly EventType[]);
 
 // Compile-time: EVENT_TYPES lists every member of EventType (the `satisfies` above rules out extras).
@@ -641,6 +644,41 @@ export interface BotMessagePostedPayload {
   messageId: string;
   role: BotMessageRole;
 }
+/**
+ * A 6.2, B 5 (`escalate:{incident}:{step}`): one playbook `<escalation>` ladder on one incident
+ * (`monitor/ladder.ts`, #299). `started` anchors the step times (each step fires at this event's
+ * `occurredAt` plus its `after`); `step` records what one `<after>` did; `stopped` ends the run, and
+ * a later `started` begins a new one. Never changes `incidents.status` and never feeds
+ * `escalation_scores`: that is `escalated`, the B 5 transition and the A 1.4 reaction ladder.
+ */
+export type EscalationLadderPayload =
+  | { phase: 'started'; ladder: string }
+  | {
+      phase: 'step';
+      ladder: string;
+      /** 1-based index of the `<after>` element. */
+      step: number;
+      /** The step's `duration`, ISO 8601. */
+      after: string;
+      /** The step's `mention` as configured: `owner` or `@<person>`. */
+      mention?: string;
+      /** The person reference mentioned; absent when `owner` named nobody. */
+      mentioned?: string;
+      /** The step's `channel`, posted to. */
+      channel?: string;
+      /** The step's `pagerduty` value: a PagerDuty service id, never a routing key. */
+      pagerduty?: string;
+      /** Present with `pagerduty`: false when the routing key was missing or the pager failed. */
+      paged?: boolean;
+      /** Present with `mention` or `channel`: false when the chat post failed. */
+      posted?: boolean;
+    }
+  | {
+      phase: 'stopped';
+      ladder: string;
+      /** `closed`: a terminal status. `no-longer-applies`: no `applyWhen` holds (downgraded, unstalled). `removed`: gone from the playbook. */
+      reason: 'closed' | 'no-longer-applies' | 'removed';
+    };
 
 /** The payload interface for each event type. */
 export interface EventPayloads {
@@ -691,6 +729,7 @@ export interface EventPayloads {
   'fixer-done': FixerDonePayload;
   'fixer-failed': FixerFailedPayload;
   'bot-message-posted': BotMessagePostedPayload;
+  'escalation-ladder': EscalationLadderPayload;
 }
 
 // Compile-time: EventPayloads has exactly one entry per EventType.
