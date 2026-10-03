@@ -1,7 +1,7 @@
 // Pure builders from an InteractiveCard to Block Kit JSON (main 5.5, 6.2, 7.2, 8.2, 11.2).
 // Every button carries `action_id` (an ApprovalAction or the card's choice) and `value` (the incident id).
 
-import type { InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { ClaimedCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TriageResolutionPlan } from '@snapwing/pipeline/contracts/incident.ts';
 import { actions, context, esc, mention, section, type ButtonSpec, type SlackBlock, type SlackMessage } from './blocks.ts';
 
@@ -103,6 +103,20 @@ export function buildFixPreview(
   return { text: `Diagnosis: ${plan.summary}`, blocks };
 }
 
+/** A 2.1: an engineer is on it, so the fix preview is replaced: `Let the agent take it`, `Not a bug`. */
+export function buildClaimed(incidentId: string, card: ClaimedCard): SlackMessage {
+  return {
+    text: `Filed as ${card.issueKey}, assigned to the engineer who is on it`,
+    blocks: [
+      section(`Filed as *${esc(card.issueKey)}* and assigned to ${mention(card.claimerUserId)}, since they're on it.`),
+      actions('claim_actions', [
+        { label: 'Let the agent take it', actionId: 'let-agent-take', value: incidentId, style: 'primary' },
+        { label: 'Not a bug', actionId: 'dismiss', value: incidentId },
+      ]),
+    ],
+  };
+}
+
 function plural(n: number, one: string): string {
   return `${n} ${one}${n === 1 ? '' : 's'}`;
 }
@@ -139,6 +153,8 @@ export function buildCard(incidentId: string, card: InteractiveCard, opts: CardO
       return buildClarify(incidentId, card);
     case 'fix-preview':
       return buildFixPreview(incidentId, card, opts);
+    case 'claimed':
+      return buildClaimed(incidentId, card);
     case 'pr-ready':
       return buildPrReady(incidentId, card, opts);
   }

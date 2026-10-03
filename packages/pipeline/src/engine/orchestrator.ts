@@ -33,6 +33,22 @@
 //                 level 1 after Fix it: waiting-changed {} [transition In Progress], status
 //                 level 2, 3: informational fix preview (Stop), waiting-changed {} [transition In
 //                   Progress], status
+//   claim (A 2.1, engine/claims.ts): an engineer's `claimed` before the first fixer start holds the
+//                 fixer at every level. The plan keeps the configured level; the create payload is
+//                   labeled human-claimed and suggests the claimer as assignee; at level 1 the fix
+//                   preview is skipped (or, already parked, woken by `handleClaim`) and the ticket is
+//                   filed ticket only. After filed, in place of the transition and the fix preview:
+//                   [add-labels human-claimed when claimed before filed] [add-comment with the
+//                   scout's diagnosis], waiting-changed { human: claimer }, claim card (Let the agent
+//                   take it, Not a bug; no default, a timeout parks again). A claim after the
+//                   after-filed step, still before the fixer starts, posts the same card then.
+//                 Let the agent take it (engineers only) appends let-agent-take; Not a bug appends
+//                   not-a-bug [transition done, Won't Do]. When the hold ends (let-agent-take, or
+//                   `released` for the holder) the configured level resumes: waiting-changed, and at
+//                   levels 2 and 3 (level 1 when let-agent-take ended it) [transition In Progress],
+//                   the informational fix preview at 2 and 3, and `deps.startFixer`. `fixer.run`
+//                   refuses to start while the hold lasts. A reporter's claim holds nothing: it is
+//                   [add-comment "@pat is looking into it."], after filed.
 //   early exit:   a resolution signal in the bundle appends resolution-signal with the bundle
 //                   (or with a Widen's correction) and stops as not-filed.
 //   stop:         a `stopped` appended before `filed` (a Stop on a card, or the trigger reaction removed
@@ -62,7 +78,7 @@ import { authorize, type DenyReason } from '../policy/authorize.ts';
 import { isTimedOut } from '../ports/workflow.ts';
 import { foldCursor, nextPhase, pendingCard, type CardKind, type Cursor, type PhaseOptions } from './cursor.ts';
 import { currentMap, idempotencyTtlSec, type EngineDeps } from './deps.ts';
-import { captureStep, newEvent, payloadOf, runPhase, type StepEnv } from './steps.ts';
+import { captureStep, newEvent, payloadOf, reporterClaimComment, runPhase, type StepEnv } from './steps.ts';
 
 export class UnsupportedChannelError extends Error {
   override readonly name = 'UnsupportedChannelError';
@@ -114,6 +130,7 @@ const CHOICES: { readonly [K in CardKind]?: readonly string[] } = {
   'scope-preview': ['looks-right', 'widen', 'narrow'],
   dedupe: ['link', 'create-anyway', 'not-related'],
   'fix-preview': ['approve_fix', 'ticket_only', 'dismiss'],
+  claimed: ['let-agent-take', 'dismiss'],
 };
 
 function validChoice(card: CardKind, choice: string): boolean {
@@ -160,6 +177,27 @@ export class IncidentOrchestrator {
   continueIncident(incidentId: string): Promise<{ jobId: string }> {
     const data: ProcessJobData = { incidentId };
     return this.deps.workflow.start('incident.process', data, { singletonKey: processJobKey(incidentId) });
+  }
+
+  /**
+   * A 2.1: whoever appends a claim event (`claimed`, a `comment` with intent `claim`, `let-agent-take`,
+   * or `released` with scope `claim`) calls this after the append commits, with the event's seq. A
+   * reporter's claim after the after-filed step gets its comment on the ticket here. The process job is
+   * woken only where the claim changes what it does next: a parked level 1 fix preview that a hold
+   * now replaces, a claim card to post on a filed incident whose job has ended, or a hold that ended
+   * while its claim card waited. Anywhere else the job picks the claim up from the log on its own.
+   */
+  async handleClaim(incidentId: string, seq: number): Promise<{ commented: boolean; woke: boolean }> {
+    const cursor = foldCursor(incidentId, await this.deps.state.read(incidentId));
+    if (cursor.captured === undefined) return { commented: false, woke: false };
+    const commented = await reporterClaimComment({ deps: this.deps, map: await currentMap(this.deps), cursor }, seq);
+    const phase = nextPhase(cursor, this.phaseOptions(cursor));
+    const wakes =
+      (phase.kind === 'fix-preview' && phase.held === true) || (phase.kind === 'claim-card' && phase.posted === undefined) || phase.kind === 'claim-ended';
+    if (!wakes) return { commented, woke: false };
+    const { resumed } = await this.deps.workflow.resume({ kind: 'tap', eventId: incidentId }, { claimSeq: seq });
+    if (resumed === 0) await this.continueIncident(incidentId);
+    return { commented, woke: true };
   }
 
   /** The `incident.process` handler. */
@@ -209,6 +247,10 @@ export class IncidentOrchestrator {
           { level: cursor.level ?? 1, fixerActive: false },
         );
         if (!decision.allowed) return { accepted: false, reason: decision.reason, ...(decision.askOwner === true ? { askOwner: true } : {}) };
+      }
+      // A 2.1: handing an engineer's claim back to the agent starts a fix, so it takes an engineer.
+      if (tap.card === 'claimed' && tap.choice === 'let-agent-take' && tap.actor.role !== 'engineer') {
+        return { accepted: false, reason: 'engineer-required' };
       }
       const tapped: TappedPayload = { eventId: tap.eventId, card: tap.card, choice: tap.choice };
       const source = payloadOf(cursor).source;

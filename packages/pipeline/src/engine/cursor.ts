@@ -21,6 +21,7 @@ import type {
 } from '../contracts/events.ts';
 import type { DedupeResult, Resolution } from '../contracts/incident.ts';
 import { INITIAL_STATUS, isTerminalStatus, nextStatus, type LifecycleStatus } from '../lifecycle/machine.ts';
+import { claimState, type ClaimHold, type EndedHold, type ReporterClaim } from './claims.ts';
 
 export type CardKind = InteractiveCard['kind'];
 
@@ -71,7 +72,15 @@ export interface Cursor {
   waitEnds: number[];
   /** Seqs of every `waiting-changed` event. */
   waitChanges: number[];
+  /** Every `waiting-changed` that set a wait on a person: its seq and who (`waitingOn.who`). */
+  humanWaits: { seq: number; who?: string }[];
   taps: Tap[];
+  /** A 2.1: the engineer's claim holding the fixer now (claims.ts). */
+  hold?: ClaimHold;
+  /** The latest hold that ended (`let-agent-take`, or `released` for the holder), with no hold since. */
+  holdEnded?: EndedHold;
+  /** Claims that hold nothing (a reporter's), in log order. */
+  reporterClaims: ReporterClaim[];
 }
 
 /** One ask-back round: the `clarified` question and how it ended. */
@@ -114,7 +123,7 @@ function correctedPayloads(events: readonly IncidentEvent[]): Map<number, Record
 
 export function foldCursor(incidentId: string, events: readonly IncidentEvent[]): Cursor {
   const corrected = correctedPayloads(events);
-  const cursor: Cursor = { incidentId, lastSeq: 0, clarified: [], waiting: false, waitEnds: [], waitChanges: [], taps: [] };
+  const cursor: Cursor = { incidentId, lastSeq: 0, clarified: [], waiting: false, waitEnds: [], waitChanges: [], humanWaits: [], taps: [], reporterClaims: [] };
   let status: LifecycleStatus | undefined;
   for (const raw of events) {
     cursor.lastSeq = raw.seq;
@@ -184,6 +193,7 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
       case 'waiting-changed': {
         cursor.waitChanges.push(e.seq);
         cursor.waiting = e.payload.waitingOn !== undefined;
+        if (e.payload.waitingOn?.kind === 'human') cursor.humanWaits.push({ seq: e.seq, ...(e.payload.waitingOn.who === undefined ? {} : { who: e.payload.waitingOn.who }) });
         if (e.payload.waitingOn !== undefined) break;
         cursor.waitEnds.push(e.seq);
         // A wait that ends with the last question still open is that question's timeout.
@@ -196,6 +206,10 @@ export function foldCursor(incidentId: string, events: readonly IncidentEvent[])
     }
   }
   if (status !== undefined) cursor.status = status;
+  const claims = claimState(events);
+  if (claims.hold !== undefined) cursor.hold = claims.hold;
+  if (claims.ended !== undefined) cursor.holdEnded = claims.ended;
+  cursor.reporterClaims = claims.reporterClaims;
   return cursor;
 }
 
@@ -215,9 +229,11 @@ export type Phase =
   | { kind: 'clarify' }
   | { kind: 'clarify-card'; answer?: Tap }
   | { kind: 'plan'; needsClarification: boolean }
-  | { kind: 'fix-preview'; answer?: Tap }
+  | { kind: 'fix-preview'; answer?: Tap; held?: true }
   | { kind: 'await-filed' }
   | { kind: 'after-filed' }
+  | { kind: 'claim-card'; hold: ClaimHold; posted?: number; answer?: Tap }
+  | { kind: 'claim-ended'; ended: EndedHold }
   | { kind: 'done' };
 
 export interface PhaseOptions {
@@ -259,12 +275,31 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
   if (filed === undefined) {
     if (cursor.level === 1 && !cursor.waitEnds.some((s) => s > planned.seq)) {
       const answer = answerAfter(cursor, 'fix-preview', planned.seq);
-      return answer === undefined ? { kind: 'fix-preview' } : { kind: 'fix-preview', answer };
+      if (answer !== undefined) return { kind: 'fix-preview', answer };
+      // A 2.1: an engineer's claim replaces the fix preview; the ticket is filed now, ticket only.
+      return cursor.hold === undefined ? { kind: 'fix-preview' } : { kind: 'fix-preview', held: true };
     }
     return { kind: 'await-filed' };
   }
   // After filing, the first `waiting-changed` says who the incident waits on; it marks this step done.
-  if (!cursor.waitChanges.some((s) => s > filed.seq)) return { kind: 'after-filed' };
+  const afterFiled = cursor.waitChanges.find((s) => s > filed.seq);
+  if (afterFiled === undefined) return { kind: 'after-filed' };
+
+  // A 2.1: a hold shows the claim card, once per hold; its `waiting-changed` on the claimer marks it
+  // posted. A Stop after filing posts no new one.
+  const { hold, holdEnded } = cursor;
+  if (hold !== undefined) {
+    const since = Math.max(hold.seq, filed.seq);
+    const posted = cursor.humanWaits.find((w) => w.seq > since && w.who === hold.claimerId)?.seq;
+    if (posted === undefined) return cursor.stoppedAfterFiled === undefined ? { kind: 'claim-card', hold } : { kind: 'done' };
+    const answer = answerAfter(cursor, 'claimed', posted);
+    return answer === undefined ? { kind: 'claim-card', hold, posted } : { kind: 'claim-card', hold, posted, answer };
+  }
+  // A hold that ended after the after-filed step: the configured level resumes, once (its
+  // `waiting-changed` marks it done).
+  if (holdEnded !== undefined && holdEnded.seq > afterFiled && !cursor.waitChanges.some((s) => s > holdEnded.seq)) {
+    return { kind: 'claim-ended', ended: holdEnded };
+  }
   return { kind: 'done' };
 }
 
@@ -278,7 +313,9 @@ export function pendingCard(phase: Phase): CardKind | undefined {
     case 'clarify-card':
       return phase.answer === undefined ? 'clarify' : undefined;
     case 'fix-preview':
-      return phase.answer === undefined ? 'fix-preview' : undefined;
+      return phase.answer === undefined && phase.held !== true ? 'fix-preview' : undefined;
+    case 'claim-card':
+      return phase.posted !== undefined && phase.answer === undefined ? 'claimed' : undefined;
     default:
       return undefined;
   }

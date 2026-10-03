@@ -6,7 +6,9 @@
 //                        In Progress webhook calls it (main 10.1), and the review job calls it with
 //                        attempt 2 and the review artifact (main 11.1).
 //   fixer.run            reads the log and refuses, appending nothing, when a `stopped` is newer
-//                        than the last `filed`, when a run is still going, or when this attempt
+//                        than the last `filed`, when an engineer's claim holds the fixer (A 2.1,
+//                        `claimHold` in engine/claims.ts: claimed before any fixer start and not yet
+//                        handed back or released), when a run is still going, or when this attempt
 //                        already ran since the last `filed`. Otherwise it loads the latest version of
 //                        the implementation request `planned` references, mints the run id, appends
 //                        `fixer-started { runId, harness, attempt }` (the refusals are decided again on
@@ -34,6 +36,7 @@
 import type { ArtifactRef, AutonomyLevel, EventActor, EventPayloads, EventSource, EventType, IncidentEvent, NewEvent } from '../contracts/events.ts';
 import { fixerRunKey, isFixerBudgetData, isFixerRunData, timerKey, type FixerBudgetData, type FixerRunData } from '../contracts/jobs.ts';
 import { isExpectedSeqConflict } from '../contracts/state.ts';
+import { claimHold } from '../engine/claims.ts';
 import type { FixerBudget, HarnessChoice, RunnerPort } from '../ports/runner.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
@@ -123,7 +126,7 @@ export type FixerRunOutcome =
   | { started: true; runId: string }
   | { started: false; reason: StartRefusal | 'not-filed' | 'no-request' | 'no-repo' | 'runner-failed' };
 
-type StartRefusal = 'stopped' | 'running' | 'attempt-done';
+type StartRefusal = 'stopped' | 'claimed' | 'running' | 'attempt-done';
 
 /** The `fixer.run` handler. */
 export async function runFixerJob(deps: FixerDeps, data: FixerRunData): Promise<FixerRunOutcome> {
@@ -372,6 +375,7 @@ function runEnd(events: readonly IncidentEvent[], runId: string): IncidentEvent 
 
 function refuseStart(log: readonly IncidentEvent[], attempt: number): StartRefusal | undefined {
   if (stoppedSinceFiled(log)) return 'stopped';
+  if (claimHold(log) !== undefined) return 'claimed';
   if (activeRun(log) !== undefined) return 'running';
   const since = lastSeqOf(log, 'filed');
   const ran = log.some((e) => e.seq > since && e.type === 'fixer-started' && e.payload.attempt === attempt);

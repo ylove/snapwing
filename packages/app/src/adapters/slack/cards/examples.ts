@@ -81,6 +81,7 @@ export function renderExamples(): Record<string, SlackMessage> {
     'fix-preview-level-1-reporter': buildCard(id, fixPreview(1), { viewer: 'reporter' }),
     'fix-preview-level-2': buildCard(id, fixPreview(2)),
     'fix-preview-level-3': buildCard(id, fixPreview(3)),
+    claimed: buildCard(id, { kind: 'claimed', issueKey: 'WEB-1042', claimerUserId: 'U0WEBDEV1' }),
     'pr-ready': buildCard(id, prReady, { canMerge: true }),
     'pr-ready-no-identity': buildCard(id, prReady),
     'status-filed': buildStatusMessage(id, makeStatusUpdate('filed', { issueKey: 'WEB-1042', ownerUserId: 'U0WEBDEV1' })),

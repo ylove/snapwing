@@ -95,6 +95,12 @@ export interface EngineDeps {
   evidence?: (payload: CanonicalIncidentPayload, resolution: Resolution) => Promise<ClarifyEvidence>;
   clock: () => Date;
   options?: EngineOptions;
+  /**
+   * Starts the incident's fixer (`startFixer` in fixer/job.ts, attempt 1). Called when a claim's hold
+   * ends and the configured level starts a fix (A 2.1): the issue may already be In Progress, where
+   * the engine's transition fires no webhook. Absent, only the transition starts it.
+   */
+  startFixer?: (incidentId: string) => Promise<unknown>;
 }
 
 export const DEFAULT_TAP_TIMEOUT = 'PT24H';

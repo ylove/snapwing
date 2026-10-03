@@ -57,6 +57,12 @@ describe('slack cards', () => {
     expect(JSON.stringify(examples['fix-preview-level-1']!.blocks[0])).not.toContain('Fixing now');
   });
 
+  it('claimed (A 2.1): filed and assigned to the claimer, Let the agent take it, Not a bug', () => {
+    expect(buttons(examples['claimed']!).map((b) => b.action_id)).toEqual(['let-agent-take', 'dismiss']);
+    const text = JSON.stringify(examples['claimed']!.blocks[0]);
+    expect(text).toContain('Filed as *WEB-1042* and assigned to <@U0WEBDEV1>');
+  });
+
   it('pr-ready: full set with a linked identity, Open PR only without', () => {
     expect(buttons(examples['pr-ready']!).map((b) => b.action_id)).toEqual(['open_pr', 'merge', 'request_changes', 'stop']);
     expect(buttons(examples['pr-ready-no-identity']!).map((b) => b.action_id)).toEqual(['open_pr']);

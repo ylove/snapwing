@@ -309,6 +309,8 @@ function renderCard(card: InteractiveCard): { text: string; level?: number } {
         level: plan.autonomyLevel,
       };
     }
+    case 'claimed':
+      return { text: `Filed as ${card.issueKey} and assigned to <@${card.claimerUserId}>, since they're on it. [Let the agent take it] [Not a bug]` };
     case 'pr-ready':
       return {
         text: `PR #${card.prNumber} is ready for ${card.issueKey} (review agent: ${card.reviewVerdict}, CI: ${card.ciState}). [Open PR] [Merge] [Request changes] [Stop]`,

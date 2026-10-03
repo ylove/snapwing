@@ -603,6 +603,8 @@ export const compose: ComposeFn = async (deps) => {
     status: createStatusSubscriber({ workspaceId, clock }),
     clock,
     options: { loadImage: slackContext.loadImage },
+    // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
+    startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
   };
   const engine = new IncidentOrchestrator(engineDeps);
 
