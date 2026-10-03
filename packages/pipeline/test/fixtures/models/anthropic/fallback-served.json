@@ -1,0 +1,52 @@
+{
+  "id": "msg_test_0002",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-4-8",
+  "content": [
+    {
+      "type": "fallback",
+      "from": {
+        "model": "claude-opus-5-5"
+      },
+      "to": {
+        "model": "claude-opus-4-8"
+      },
+      "trigger": {
+        "type": "refusal",
+        "category": "cyber"
+      }
+    },
+    {
+      "type": "text",
+      "text": "{\"label\":\"bug\"}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "stop_details": null,
+  "usage": {
+    "input_tokens": 29,
+    "output_tokens": 9,
+    "iterations": [
+      {
+        "type": "message",
+        "model": "claude-opus-5-5",
+        "input_tokens": 23,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": null
+      },
+      {
+        "type": "fallback_message",
+        "model": "claude-opus-4-8",
+        "input_tokens": 29,
+        "output_tokens": 9,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_creation": null
+      }
+    ]
+  }
+}

@@ -881,7 +881,7 @@ SNAPWING_PUBLIC_URL=https://<tunnel>.ngrok.app   # only needed for Jira and GitH
 
 Two more ports sit next to the five in 14.3 and the two in Companion B section 1. They keep the pipeline independent of any one model vendor and of any one coding agent.
 
-**ModelPort.** Every model call in the pipeline goes through one interface with three operations. Prompts stay XML-structured and provider-neutral; each provider adapter translates a structured-output request into its API's native mechanism (tool use or JSON schema output for Anthropic, `response_format` JSON schema for OpenAI, `responseSchema` for Google).
+**ModelPort.** Every model call in the pipeline goes through one interface with three operations. Prompts stay XML-structured and provider-neutral; each provider adapter translates a structured-output request into its API's native mechanism (structured outputs for Anthropic, `response_format` JSON schema for OpenAI, `responseSchema` for Google).
 
 ```typescript
 // src/ports/model.ts
@@ -900,11 +900,15 @@ export interface ClassifyRequest<T> extends CompletionRequest { schemaName: stri
 
 | Provider | Package | Structured output | Vision |
 |---|---|---|---|
-| `anthropic` | `@anthropic-ai/sdk` | Tool use with a single forced tool whose input schema is the request schema | Image content blocks |
+| `anthropic` | `@anthropic-ai/sdk` | Structured outputs: `output_config.format` carries the request schema (no forced tool; the current models reject one) | Image content blocks |
 | `openai` | `openai` | `response_format: { type: 'json_schema', strict: true }` | `image_url` content parts |
 | `google` | `@google/genai` | `responseMimeType: 'application/json'` plus `responseSchema` | Inline data parts |
 
 Provider and model are chosen per task in the `models` element of `snapwing.config.xml`. The default, written at onboarding, is whichever provider has a key, in the order anthropic, openai, google. A `classify` result that fails `validate` is retried once with the validation error appended, then surfaces as a typed error; it never reaches a stage unvalidated. Unit and contract tests use a recorded mock provider; live model calls happen only in the live and e2e tiers.
+
+A `<model>` row may set an optional `temperature` (0 to 2). It is sent only when the row sets it, and only to models that take sampling parameters; it is never a stage default, and a stage's own `temperature` is ignored, because several current models (gpt-5, Claude Opus 5.5, Claude Sonnet 5.5) reject any non-default value. A row without one leaves the model's default in place.
+
+Some models run safety classifiers that can decline a benign request. The `refusal-fallback` attribute on `<models>` (`on` or `off`, default `on`) controls server-side refusal fallback: where the model and platform support it, a declined request is re-run on the provider's fallback model inside the same call. For Anthropic this is `fallbacks: "default"` under the beta header `server-side-fallback-2026-07-01` on the Claude API, sent to Claude Opus 5.5, Claude Sonnet 5.5, Claude Opus 5, and Claude Fable 5.1 only, never to a model or platform that rejects it. The result's `model` names the model that served the answer, so the incident records a fallback. When every model in the chain declines, the call fails with a typed refusal error that is not retried.
 
 **HarnessPort.** The fixer (section 10) and the review agent (section 11.1) are coding agents, and which coding agent is a workspace choice.
 
@@ -937,7 +941,7 @@ The harness is chosen per workspace in the `harness` element. The RunnerPort (14
 ```xml
 <snapwing xmlns="urn:snapwing:config:v1" version="1">
   <runtime provider="local"/>
-  <models default-provider="anthropic">
+  <models default-provider="anthropic" refusal-fallback="on">
     <model task="triage"       provider="anthropic" name="claude-sonnet-5-5"/>
     <model task="segmentation" provider="anthropic" name="claude-haiku-4-5"/>
     <model task="vision"       provider="openai"    name="gpt-5"/>

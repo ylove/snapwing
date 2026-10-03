@@ -1,14 +1,16 @@
 // Live check for the default Anthropic models (#275): one small call each, through the router, so a
 // request shape the model rejects (forced tool_choice, disabled thinking, temperature) fails here.
-// Classify runs on Claude Opus 5.5 and vision on Claude Sonnet 5.5; both use structured outputs.
+// Classify runs on Claude Opus 5.5 and vision on Claude Sonnet 5.5; both use structured outputs, and both
+// go to the beta endpoint with `fallbacks: "default"` and `server-side-fallback-2026-07-01` (#281), so a
+// rejected fallback shape fails here too. Vision sends a 64x64 PNG (images.ts).
 // Reads ANTHROPIC_API_KEY from the environment, else from the `.env.live` at SNAPWING_ENV_LIVE or up the
 // tree; skips without it.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { crc32, deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { anthropicProvider } from '../../../src/models/anthropic/index.ts';
 import { createModelRouter, MODEL_TASK_LIST } from '../../../src/models/router.ts';
+import { whitePng } from './images.ts';
 
 function liveKey(): string | undefined {
   const fromEnv = process.env['ANTHROPIC_API_KEY'];
@@ -25,31 +27,6 @@ function liveKey(): string | undefined {
 }
 
 const key = liveKey();
-
-/** A 64x64 white RGB PNG as base64. The API refuses the contract suite's 1x1 image ("Could not process image"). */
-function whitePng(size = 64): string {
-  const chunk = (type: string, data: Buffer): Buffer => {
-    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(data.length);
-    const crc = Buffer.alloc(4);
-    crc.writeUInt32BE(crc32(body));
-    return Buffer.concat([len, body, crc]);
-  };
-  const header = Buffer.alloc(13);
-  header.writeUInt32BE(size, 0);
-  header.writeUInt32BE(size, 4);
-  header[8] = 8; // bit depth
-  header[9] = 2; // RGB
-  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(size * 3, 0xff)]);
-  const pixels = deflateSync(Buffer.concat(Array.from({ length: size }, () => row)));
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', header),
-    chunk('IDAT', pixels),
-    chunk('IEND', Buffer.alloc(0)),
-  ]).toString('base64');
-}
 
 function port(model: string) {
   return createModelRouter(

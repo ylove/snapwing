@@ -70,6 +70,13 @@
     </xs:restriction>
   </xs:simpleType>
 
+  <xs:simpleType name="OnOff">
+    <xs:restriction base="xs:token">
+      <xs:enumeration value="on"/>
+      <xs:enumeration value="off"/>
+    </xs:restriction>
+  </xs:simpleType>
+
   <xs:simpleType name="NonEmptyToken">
     <xs:restriction base="xs:token">
       <xs:minLength value="1"/>
@@ -100,6 +107,10 @@
               </xs:element>
             </xs:sequence>
             <xs:attribute name="default-provider" type="ModelProvider" use="required"/>
+            <!-- Server-side refusal fallback: a request a model's safety classifiers decline is re-run on the
+                 provider's fallback model in the same call, on the models and platforms that support it
+                 (Anthropic `fallbacks: "default"`, #281). On unless set to off. -->
+            <xs:attribute name="refusal-fallback" type="OnOff" default="on"/>
           </xs:complexType>
           <xs:unique name="OneModelPerTask">
             <xs:selector xpath="c:model"/>

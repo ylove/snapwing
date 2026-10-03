@@ -9,6 +9,16 @@
 // sampling parameters (`acceptsSampling`); on the rest a non-default value is a 400. Models that think get
 // at least MIN_THINKING_MAX_TOKENS, so thinking cannot use up the answer's budget.
 //
+// Refusal fallbacks: Claude Opus 5.5, Claude Sonnet 5.5, Claude Opus 5 and Claude Fable 5.1 run safety
+// classifiers that can decline a benign request (`stop_reason: "refusal"`). On those models, unless the
+// config turns it off (`<models refusal-fallback="off">`), the request goes to the beta endpoint with
+// `fallbacks: "default"` under the `server-side-fallback-2026-07-01` header, and the API re-runs a
+// declined request on the fallback model Anthropic picks for the refusal category, inside the same call.
+// Every other model gets the plain endpoint and neither field. This adapter only talks to the Claude API
+// (the first-party client); Bedrock, Vertex AI and Foundry reject the parameter and are not served here.
+// The answer's `model` names the model that served it (`fallback_message` in `usage.iterations`), and a
+// `stop_reason` of `refusal` on the final response means the whole chain declined: ModelRefusalError.
+//
 // The router applies withValidation, so `classify` here returns the parsed answer unvalidated.
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -43,9 +53,17 @@ export const DEFAULT_MAX_TOKENS = 16000;
 /** Floor for models that think on every request; a smaller caller limit would starve the answer. */
 export const MIN_THINKING_MAX_TOKENS = 16000;
 
-/** The one method of the SDK client this adapter uses; tests pass a fake. */
+/** Beta header for the `fallbacks: "default"` form (the array form uses `-2026-06-01`; mixing them is a 400). */
+export const REFUSAL_FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+
+/** The two methods of the SDK client this adapter uses; tests pass a fake. */
 export interface AnthropicClientLike {
   messages: { create(params: Anthropic.MessageCreateParamsNonStreaming): Promise<Anthropic.Message> };
+  beta: {
+    messages: {
+      create(params: Anthropic.Beta.Messages.MessageCreateParamsNonStreaming): Promise<Anthropic.Beta.Messages.BetaMessage>;
+    };
+  };
 }
 
 export interface AnthropicModelOptions {
@@ -53,6 +71,11 @@ export interface AnthropicModelOptions {
   /** Model name per task, for example `claude-haiku-4-5`. */
   models: Readonly<Record<ModelTask, string>>;
   baseURL?: string;
+  /**
+   * Server-side refusal fallback on the models that take it (`acceptsRefusalFallback`). Default true;
+   * `<models refusal-fallback="off">` sets it false.
+   */
+  refusalFallback?: boolean;
   /** Replaces the SDK client (tests). */
   client?: AnthropicClientLike;
 }
@@ -66,6 +89,26 @@ export function acceptsSampling(model: string): boolean {
   return /^claude-(?:3-|haiku-4-5(?:-\d{8})?$|(?:opus|sonnet)-4(?:-[0-6])?(?:-\d{8})?$)/.test(model);
 }
 
+/**
+ * True for the models that take `fallbacks: "default"`: the ones whose safety classifiers can decline a
+ * request. Claude Sonnet 5.5 takes only the `"default"` form, which is the only one this adapter sends.
+ * Haiku 4.5 and older models reject the parameter; an unknown model is treated as not taking it.
+ */
+export function acceptsRefusalFallback(model: string): boolean {
+  return /^claude-(?:opus-5-5|sonnet-5-5|opus-5|fable-5-1)$/.test(model);
+}
+
+/** The parts of a Messages API response the adapter reads, from either endpoint. */
+interface Reply {
+  /** The answer's text: the text blocks after the last `fallback` block. */
+  text: string;
+  stopReason: string | null;
+  stopDetails: { category: string | null; explanation: string | null } | null;
+  usage: ModelUsage;
+  /** The model that produced the answer: the requested one, or the fallback model that served it. */
+  servedBy: string;
+}
+
 export function createAnthropicModel(options: AnthropicModelOptions): ModelBackend {
   const client: AnthropicClientLike =
     options.client ??
@@ -77,21 +120,31 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
     return name;
   };
 
-  const send = async (params: Anthropic.MessageCreateParamsNonStreaming): Promise<Anthropic.Message> => {
-    let message: Anthropic.Message;
+  const fallback = options.refusalFallback ?? true;
+
+  const send = async (params: Anthropic.MessageCreateParamsNonStreaming): Promise<Reply> => {
+    let reply: Reply;
     try {
-      message = await client.messages.create(params);
+      reply =
+        fallback && acceptsRefusalFallback(params.model)
+          ? readReply(
+              await client.beta.messages.create({ ...params, betas: [REFUSAL_FALLBACK_BETA], fallbacks: 'default' }),
+              params.model,
+            )
+          : readReply(await client.messages.create(params), params.model);
     } catch (err) {
       throw mapAnthropicError(err);
     }
-    if (message.stop_reason === 'refusal') {
-      const category = message.stop_details?.category ?? null;
+    if (reply.stopReason === 'refusal') {
+      // With a fallback chain this is the last model's refusal: every model in the chain declined.
+      const category = reply.stopDetails?.category ?? null;
+      const by = reply.servedBy === params.model ? '' : ` and so did the fallback ${reply.servedBy}`;
       throw new ModelRefusalError(
-        `Anthropic declined the request (${category ?? 'no category'})${message.stop_details?.explanation ? `: ${message.stop_details.explanation}` : ''}`,
+        `Anthropic declined the request (${category ?? 'no category'})${by}${reply.stopDetails?.explanation ? `: ${reply.stopDetails.explanation}` : ''}`,
         category,
       );
     }
-    return message;
+    return reply;
   };
 
   const baseParams = (request: CompletionRequest, model: string) => {
@@ -108,7 +161,7 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
   const structured = async (
     params: Omit<Anthropic.MessageCreateParamsNonStreaming, 'output_config'>,
     schema: JsonSchema,
-  ): Promise<{ message: Anthropic.Message; value: unknown }> => {
+  ): Promise<{ message: Reply; value: unknown }> => {
     const message = await send({
       ...params,
       output_config: { format: { type: 'json_schema', schema: schema as unknown as Record<string, unknown> } },
@@ -123,7 +176,7 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
         ...baseParams(request, model),
         messages: [{ role: 'user', content: request.prompt }],
       });
-      return { text: textOf(message), ...meta(message, model) };
+      return { text: message.text, ...meta(message) };
     },
 
     async vision(request: VisionRequest): Promise<VisionResult> {
@@ -149,7 +202,7 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
         READINGS_STRUCTURED,
       );
       const readings = parseReadings(stripAddedNulls(value, READINGS_SCHEMA), request.images.length);
-      return { readings, ...meta(message, model) };
+      return { readings, ...meta(message) };
     },
 
     async classify(request: ClassifyRequest<unknown>): Promise<RawClassifyResult> {
@@ -165,11 +218,11 @@ export function createAnthropicModel(options: AnthropicModelOptions): ModelBacke
         schema,
       );
       const answer = stripAddedNulls(value, original);
-      if (!wrapped) return { value: answer, ...meta(message, model) };
+      if (!wrapped) return { value: answer, ...meta(message) };
       if (!isRecord(answer) || !('value' in answer)) {
         throw new ModelOutputError('structured answer has no "value" field', JSON.stringify(answer));
       }
-      return { value: answer['value'], ...meta(message, model) };
+      return { value: answer['value'], ...meta(message) };
     },
   };
 }
@@ -180,7 +233,11 @@ export const anthropicProvider: ModelProviderFactory = (route, env) => {
   if (apiKey === undefined || apiKey.trim() === '') {
     throw new ModelAuthError(`${PROVIDER_KEY_ENV.anthropic} is not set`);
   }
-  return createAnthropicModel({ apiKey, models: { ...DEFAULT_MODELS.anthropic, [route.task]: route.model } });
+  return createAnthropicModel({
+    apiKey,
+    models: { ...DEFAULT_MODELS.anthropic, [route.task]: route.model },
+    refusalFallback: route.refusalFallback !== false,
+  });
 };
 
 // ---- structured output ----
@@ -221,13 +278,13 @@ const READINGS_STRUCTURED = toStructuredSchema(READINGS_SCHEMA);
  * The structured answer: the JSON in the text blocks. A truncated answer (`max_tokens`, or the context
  * window filling up) is a ModelOutputError, so withValidation retries it once and then surfaces it.
  */
-function parseAnswer(message: Anthropic.Message): unknown {
-  const text = textOf(message);
-  if (message.stop_reason === 'max_tokens' || message.stop_reason === 'model_context_window_exceeded') {
-    throw new ModelOutputError(`Anthropic answer was cut off (stop_reason ${message.stop_reason})`, text);
+function parseAnswer(message: Reply): unknown {
+  const text = message.text;
+  if (message.stopReason === 'max_tokens' || message.stopReason === 'model_context_window_exceeded') {
+    throw new ModelOutputError(`Anthropic answer was cut off (stop_reason ${message.stopReason})`, text);
   }
   if (text.trim() === '') {
-    throw new ModelOutputError(`Anthropic returned no structured answer (stop_reason ${String(message.stop_reason)})`, text);
+    throw new ModelOutputError(`Anthropic returned no structured answer (stop_reason ${String(message.stopReason)})`, text);
   }
   try {
     return JSON.parse(text) as unknown;
@@ -236,8 +293,35 @@ function parseAnswer(message: Anthropic.Message): unknown {
   }
 }
 
-function textOf(message: Anthropic.Message): string {
-  return message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+/**
+ * Reads a response from either endpoint. Only text after the last `fallback` block is the answer: a
+ * non-streaming response omits a declined partial, and this keeps it that way if one ever appears.
+ * A `fallback_message` entry in `usage.iterations` means a fallback model served the turn (sticky turns
+ * carry no `fallback` block); its `model`, else the top-level `model`, is the serving model. `usage` is
+ * the top-level usage: the attempt that produced the answer.
+ */
+function readReply(message: Anthropic.Message | Anthropic.Beta.Messages.BetaMessage, requested: string): Reply {
+  const blocks: ReadonlyArray<{ type: string; text?: unknown }> = message.content;
+  const lastFallback = blocks.map((b) => b.type).lastIndexOf('fallback');
+  const text = blocks
+    .slice(lastFallback + 1)
+    .flatMap((b) => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : []))
+    .join('');
+  const iterations: ReadonlyArray<{ type: string; model?: unknown }> =
+    'iterations' in message.usage && Array.isArray(message.usage.iterations) ? message.usage.iterations : [];
+  const served = iterations.find((i) => i.type === 'fallback_message');
+  const servedBy =
+    served === undefined ? requested : typeof served.model === 'string' && served.model !== '' ? served.model : message.model;
+  return {
+    text,
+    stopReason: message.stop_reason,
+    stopDetails:
+      message.stop_details === null || message.stop_details === undefined
+        ? null
+        : { category: message.stop_details.category ?? null, explanation: message.stop_details.explanation ?? null },
+    usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens },
+    servedBy,
+  };
 }
 
 function parseReadings(input: unknown, expected: number): ImageReading[] {
@@ -297,11 +381,8 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
 
-function meta(message: Anthropic.Message, model: string): { model: string; usage: ModelUsage } {
-  return {
-    model: `anthropic/${model}`,
-    usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens },
-  };
+function meta(message: Reply): { model: string; usage: ModelUsage } {
+  return { model: `anthropic/${message.servedBy}`, usage: message.usage };
 }
 
 // ---- error mapping ----

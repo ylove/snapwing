@@ -14,6 +14,7 @@ export const RUNTIME_PROVIDERS = ['local', 'aws', 'gcp', 'docker'] as const;
 export const MODEL_PROVIDERS = ['anthropic', 'openai', 'google'] as const;
 export const MODEL_TASKS = ['triage', 'segmentation', 'vision', 'clarify', 'scout', 'review'] as const;
 export const HARNESS_ADAPTERS = ['claude-code', 'codex', 'gemini', 'generic'] as const;
+export const REFUSAL_FALLBACK_MODES = ['on', 'off'] as const;
 
 export type RuntimeProvider = (typeof RUNTIME_PROVIDERS)[number];
 export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
@@ -47,6 +48,12 @@ export interface ModelRow {
 export interface ModelsConfig {
   defaultProvider: ModelProvider;
   rows: ModelRow[];
+  /**
+   * `<models refusal-fallback="on|off">`, default on: a request a model's safety classifiers decline is
+   * re-run on the provider's fallback model inside the same call, where the model and platform support it
+   * (Anthropic's `fallbacks: "default"`). The loader always sets it; optional so literal configs need not.
+   */
+  refusalFallback?: boolean;
 }
 
 export interface GenericHarnessTemplate {
@@ -185,6 +192,7 @@ export function loadAppConfig(xml: string): AppConfig {
   const models: ModelsConfig = {
     defaultProvider: oneOf(MODEL_PROVIDERS, requiredAttr(modelsEl, 'default-provider'), 'default-provider'),
     rows,
+    refusalFallback: oneOf(REFUSAL_FALLBACK_MODES, (modelsEl.getAttribute('refusal-fallback') ?? 'on').trim(), 'refusal-fallback') === 'on',
   };
 
   const harnessEl = requiredChild(root, 'harness');
