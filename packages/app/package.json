@@ -16,7 +16,7 @@
     "test": "vitest run test/unit",
     "test:contract": "vitest run test/contract --passWithNoTests",
     "test:live": "vitest run test/live --passWithNoTests",
-    "test:e2e": "vitest run test/e2e --passWithNoTests",
+    "test:e2e": "vitest run test/e2e --passWithNoTests --no-file-parallelism",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {

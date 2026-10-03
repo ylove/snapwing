@@ -63,6 +63,17 @@ export function createJiraDriver(access: JiraAccess) {
     async issue(key: string): Promise<{ key: string; fields: Rec }> {
       return (await call('GET', `/rest/api/3/issue/${encodeURIComponent(key)}`)) as { key: string; fields: Rec };
     },
+    /** The issue's comments, oldest first, each body as plain text (`adfText`). */
+    async comments(key: string): Promise<{ text: string; created: string }[]> {
+      const page = (await call('GET', `/rest/api/3/issue/${encodeURIComponent(key)}/comment?maxResults=100&orderBy=created`)) as Rec;
+      const list = (page['comments'] as Rec[] | undefined) ?? [];
+      return list.map((c) => ({ text: adfText(c['body']), created: String(c['created'] ?? '') }));
+    },
+    /** The account the API token belongs to (`GET /myself`). */
+    async myself(): Promise<{ accountId: string }> {
+      const me = (await call('GET', '/rest/api/3/myself')) as Rec;
+      return { accountId: String(me['accountId'] ?? '') };
+    },
     /** Keys of issues matching `jql` (first page only; the tier makes a handful). */
     async search(jql: string, fields: string[]): Promise<{ key: string; fields: Rec }[]> {
       const page = (await call('POST', '/rest/api/3/search/jql', { jql, fields, maxResults: 50 })) as Rec;
@@ -90,6 +101,20 @@ export function createJiraDriver(access: JiraAccess) {
 }
 
 export type JiraDriver = ReturnType<typeof createJiraDriver>;
+
+/** The text of a Jira value: a string as is, an ADF document as its text nodes joined by newlines. */
+export function adfText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  const out: string[] = [];
+  const walk = (node: unknown): void => {
+    if (typeof node !== 'object' || node === null) return;
+    const n = node as { text?: unknown; content?: unknown };
+    if (typeof n.text === 'string') out.push(n.text);
+    if (Array.isArray(n.content)) for (const c of n.content) walk(c);
+  };
+  walk(value);
+  return out.join('\n');
+}
 
 /**
  * Test hygiene (main 14.4: "Live and e2e runs prefix every issue summary with `[snapwing-test]`"): the

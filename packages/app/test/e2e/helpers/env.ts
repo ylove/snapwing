@@ -57,16 +57,22 @@ export interface LiveEnv {
   projectKey: string;
 }
 
+/**
+ * SNAPWING_ENV_LIVE, else `.env.live` at the root of this checkout (the nearest directory up the tree
+ * with `pnpm-workspace.yaml`). Never a file above that root: a git worktree lives inside another
+ * checkout (`.claude/worktrees/...`), and that checkout's `.env.live` must not make the worktree's
+ * e2e run go live.
+ */
 export function findEnvFile(): string {
   const fromEnv = process.env.SNAPWING_ENV_LIVE;
   if (fromEnv !== undefined && fromEnv !== '') return resolve(fromEnv);
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, '.env.live');
-    if (existsSync(candidate)) return candidate;
-    dir = dirname(dir);
+  const start = dirname(fileURLToPath(import.meta.url));
+  for (let dir = start; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return join(dir, '.env.live');
+    if (dirname(dir) === dir) break;
   }
-  return join(dir, '.env.live');
+  // No workspace root above this file (it always has one in the repository): this package's root.
+  return resolve(start, '../../../.env.live');
 }
 
 async function optional(secrets: SecretsPort, name: string): Promise<string> {
