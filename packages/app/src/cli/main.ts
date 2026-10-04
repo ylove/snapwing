@@ -11,7 +11,9 @@ import { runServe } from '../server/serve.ts';
 import { defaultCaptureEnv, runLog, runSay, runShot, runStatus, runStop, type CaptureEnv } from './capture.ts';
 import { runConfig } from './config.ts';
 import { runLogin, runLogout } from './login.ts';
+import { runMap } from './map.ts';
 import { runState, type CliIo } from './state.ts';
+import { runToken } from './token.ts';
 
 /** What commands reach beyond `CliIo`. Tests pass their own; the real CLI builds the defaults lazily. */
 export interface CliDeps {
@@ -75,10 +77,21 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
     summary: 'stop the work on a ticket (engineers only)',
     run: (args, io, deps) => runStop(args, io, deps.capture()),
   },
+  map: {
+    label: 'map show|set-level|set-trigger',
+    summary: 'read and edit the workspace map (validated, written atomically)',
+    run: (args, io) => runMap(args, io),
+  },
+  token: {
+    label: 'token issue|list|revoke',
+    summary: 'issue, list, and revoke per-user capture tokens',
+    run: (args, io) => runToken(args, io),
+  },
 };
 
 function usage(): string {
-  const rows = Object.entries(COMMANDS).map(([name, c]) => `  ${(c.label ?? name).padEnd(15)} ${c.summary}`);
+  const width = Math.max(...Object.entries(COMMANDS).map(([name, c]) => (c.label ?? name).length));
+  const rows = Object.entries(COMMANDS).map(([name, c]) => `  ${(c.label ?? name).padEnd(width)} ${c.summary}`);
   return `Usage: snapwing <command> [args]\n\nCommands:\n${rows.join('\n')}\n\nEvery command takes --help.`;
 }
 
