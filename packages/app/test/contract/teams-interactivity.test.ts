@@ -3,7 +3,7 @@
 // MSW, over a real state store (SNAPWING_DB picks the dialect), the real `stopIncident` and
 // `answerMidFlight`; the orchestrator and the PR actions are recording fakes.
 
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import type { EventPayloads, EventType, IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';

@@ -2,7 +2,7 @@
 // Adaptive Card button does. Every button is an `Action.Execute` (Universal Actions, #372), so a tap
 // arrives as an `invoke` activity named `adaptiveCard/action` carrying the action's `verb` and `data`
 // (`{ incidentId }` plus what a Slack block id would carry). The transport (#390) authenticates it and
-// hands it to `onInvoke`, whose result is the invoke's HTTP answer.
+// hands it to `onAction`, whose card answers the invoke.
 //
 // The rules are Slack's, from `../shared/taps.ts`: card choices to `orchestrator.handleTap` with the
 // tapper resolved by AAD object id (`teamsId` in the map); a reporter's `Fix it` reposts the card in the
