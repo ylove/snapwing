@@ -1,0 +1,63 @@
+{
+  "name": "composeExtension/fetchTask",
+  "type": "invoke",
+  "timestamp": "2026-10-03T10:01:00.123Z",
+  "localTimestamp": "2026-10-03T06:01:00.123-04:00",
+  "id": "f:3c2a91d0-0000-4000-8000-000000000001",
+  "channelId": "msteams",
+  "serviceUrl": "https://smba.test/amer/",
+  "from": { "id": "29:1sam-engineer-teams-id", "name": "Sam Engineer", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000e001" },
+  "conversation": {
+    "isGroup": true,
+    "conversationType": "channel",
+    "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1",
+    "id": "19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2;messageid=1790000100123"
+  },
+  "recipient": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "entities": [{ "locale": "en-US", "country": "US", "platform": "Web", "timezone": "America/New_York", "type": "clientInfo" }],
+  "channelData": {
+    "channel": { "id": "19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2" },
+    "team": { "id": "19:general0a7e9d2b4c1a@thread.tacv2", "aadGroupId": "2b9e4c7d-0000-4000-8000-0000000000a1" },
+    "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" },
+    "source": { "name": "message" }
+  },
+  "value": {
+    "commandId": "fixItFromHere",
+    "commandContext": "message",
+    "requestId": "8d1f2e3a400040008000000000000001",
+    "context": { "theme": "default" },
+    "messagePayload": {
+      "id": "1790000100123",
+      "replyToId": null,
+      "createdDateTime": "2026-10-03T10:00:00.000Z",
+      "lastModifiedDateTime": null,
+      "deleted": false,
+      "subject": null,
+      "summary": null,
+      "importance": "normal",
+      "locale": "en-us",
+      "linkToMessage": "https://teams.microsoft.com/l/message/19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2/1790000100123?tenantId=7a0d5e6f-0000-4000-8000-0000000000c1&groupId=2b9e4c7d-0000-4000-8000-0000000000a1&parentMessageId=1790000100123&teamName=Web&channelName=web-bugs&createdTime=1790000100123",
+      "from": {
+        "user": { "id": "6f1c2a3b-0000-4000-8000-00000000a001", "displayName": "Rae Reporter", "userIdentityType": "aadUser" },
+        "application": null,
+        "device": null,
+        "conversation": null
+      },
+      "body": {
+        "contentType": "html",
+        "content": "<p>Checkout total shows NaN &amp; the pay button is gone <at id=\"0\">Sam Engineer</at></p><p><img src=\"https://graph.microsoft.com/v1.0/teams/2b9e4c7d-0000-4000-8000-0000000000a1/channels/19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2/messages/1790000100123/hostedContents/aWQ9eF8wLXd1cy1kMTAt/$value\" alt=\"image\" width=\"400\" height=\"250\"></p>"
+      },
+      "attachments": [],
+      "mentions": [
+        {
+          "id": 0,
+          "mentionText": "Sam Engineer",
+          "mentioned": { "user": { "id": "6f1c2a3b-0000-4000-8000-00000000e001", "displayName": "Sam Engineer", "userIdentityType": "aadUser" } }
+        }
+      ],
+      "reactions": [],
+      "policyViolation": null
+    }
+  },
+  "locale": "en-US"
+}

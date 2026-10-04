@@ -1,0 +1,35 @@
+{
+  "text": "Here is the screenshot",
+  "textFormat": "plain",
+  "type": "message",
+  "timestamp": "2026-10-03T11:07:00.000Z",
+  "id": "1790000200901",
+  "channelId": "msteams",
+  "serviceUrl": "https://smba.test/amer/",
+  "from": { "id": "29:1rae-reporter-teams-id", "name": "Rae Reporter", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000a001" },
+  "conversation": { "conversationType": "personal", "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1", "id": "a:1personal-chat-rae" },
+  "recipient": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "attachments": [
+    {
+      "contentType": "application/vnd.microsoft.teams.file.download.info",
+      "contentUrl": "https://contoso-my.sharepoint.com/personal/rae/Documents/Microsoft Teams Chat Files/reports-export.png",
+      "name": "reports-export.png",
+      "content": {
+        "downloadUrl": "https://contoso-my.sharepoint.com/personal/rae/_layouts/15/download.aspx?UniqueId=4e5f6a7b-0000-4000-8000-0000000000f1",
+        "uniqueId": "4e5f6a7b-0000-4000-8000-0000000000f1",
+        "fileType": "png"
+      }
+    },
+    {
+      "contentType": "application/vnd.microsoft.teams.file.download.info",
+      "contentUrl": "https://contoso-my.sharepoint.com/personal/rae/Documents/Microsoft Teams Chat Files/notes.pdf",
+      "name": "notes.pdf",
+      "content": {
+        "downloadUrl": "https://contoso-my.sharepoint.com/personal/rae/_layouts/15/download.aspx?UniqueId=4e5f6a7b-0000-4000-8000-0000000000f2",
+        "uniqueId": "4e5f6a7b-0000-4000-8000-0000000000f2",
+        "fileType": "pdf"
+      }
+    }
+  ],
+  "channelData": { "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" } }
+}
