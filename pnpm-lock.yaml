@@ -193,6 +193,9 @@ importers:
 
   packages/app:
     dependencies:
+      '@snapwing/capture-client':
+        specifier: workspace:*
+        version: link:../capture-client
       '@snapwing/pipeline':
         specifier: workspace:*
         version: link:../pipeline

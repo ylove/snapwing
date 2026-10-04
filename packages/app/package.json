@@ -20,6 +20,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@snapwing/capture-client": "workspace:*",
     "@snapwing/pipeline": "workspace:*"
   },
   "devDependencies": {
