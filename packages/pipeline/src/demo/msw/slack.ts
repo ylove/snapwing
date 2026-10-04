@@ -315,6 +315,10 @@ function renderCard(card: InteractiveCard): { text: string; level?: number } {
       return {
         text: `PR #${card.prNumber} is ready for ${card.issueKey} (review agent: ${card.reviewVerdict}, CI: ${card.ciState}). [Open PR] [Merge] [Request changes] [Stop]`,
       };
+    case 'file-confirm': {
+      const from = card.evidence === undefined ? '' : ` (from ${card.evidence})`;
+      return { text: `New. Looks like ${card.surfaceLabel}${from}. File it? [File it] [Not this surface] [Cancel]` };
+    }
   }
 }
 

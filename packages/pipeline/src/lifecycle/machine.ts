@@ -144,6 +144,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'not-a-bug': 'not-a-bug',
     // A 5.2: the reporter's user-side check fixed it, so nothing is filed.
     'user-side': 'not-filed',
+    // main 15.3, 15.4: a capture's lookup was cancelled or timed out, so nothing is filed (#377).
+    'capture-cancelled': 'not-filed',
   },
   planned: {
     filed: 'filed',

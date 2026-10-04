@@ -1,6 +1,7 @@
 // What the orchestrator runs on (main 14.1): every port and stage input it needs, as one `EngineDeps`
 // object, so tests pass fakes for each and #48 can drive the same engine end to end with MSW.
 
+import { createHash } from 'node:crypto';
 import type { ClarifyEvidence } from '../clarify/index.ts';
 import { defaultPlaybook, type Playbook } from '../config/playbook.ts';
 import type { ChatReader } from '../context/chat-reader.ts';
@@ -8,7 +9,7 @@ import type { Anchor, CollectPolicy } from '../context/collect.ts';
 import type { LoadImage, LoadRecording } from '../context/vision/index.ts';
 import type { IngestionAdapter } from '../contracts/adapters.ts';
 import type { NewEvent } from '../contracts/events.ts';
-import type { CanonicalIncidentPayload, ChannelSource, Resolution } from '../contracts/incident.ts';
+import type { CanonicalIncidentPayload, CaptureSource, ChannelSource, Resolution } from '../contracts/incident.ts';
 import type { OutboxItem } from '../contracts/state.ts';
 import type { JiraSearch } from '../dedupe/index.ts';
 import type { WorkspaceInstructions } from '../config/instructions.ts';
@@ -17,6 +18,7 @@ import type { CachePort } from '../ports/cache.ts';
 import type { ModelPort } from '../ports/model.ts';
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
+import type { RepoTrees } from '../resolve/paths.ts';
 import type { RepoReader } from '../triage/scout.ts';
 
 /** Any channel adapter. Adapter methods are declared as methods, so a typed adapter is assignable. */
@@ -78,7 +80,7 @@ export interface EngineOptions {
   loadRecording?: LoadRecording;
   /** ffmpeg binary and temp dir for recordings (tests). Limits come from the playbook. */
   recordingTools?: { ffmpeg?: string; env?: NodeJS.ProcessEnv; tmpDir?: string };
-  /** Idempotency window per channel in seconds (main 14.2). Default 24 h for Raycast, 7 days otherwise. */
+  /** Idempotency window per channel in seconds (main 14.2). Default 24 h for Raycast and the CLI, 7 days otherwise. */
   idempotencyTtlSec?: Partial<Record<ChannelSource, number>>;
   /** `createdBy` on artifacts the engine writes. Default `orchestrator`. */
   agentName?: string;
@@ -110,6 +112,12 @@ export interface EngineDeps {
    */
   playbook?: () => Playbook;
   instructions?: () => WorkspaceInstructions | undefined;
+  /**
+   * The repo trees the resolve step's file-path match reads (main 15.3, #375); absent skips that step.
+   * Compose gives a GitHub-backed one (`app/src/github/repo-trees.ts`); a local-checkout source plugs in
+   * the same way.
+   */
+  repoTrees?: RepoTrees;
   /** A read-only view of the resolved repo for the triage scout; absent means no scout. */
   repoReader?: (resolution: Resolution) => RepoReader | undefined;
   status?: StatusSubscriber;
@@ -135,12 +143,24 @@ export interface EngineDeps {
 export const DEFAULT_TAP_TIMEOUT = 'PT24H';
 export const DEFAULT_MAX_SCOPE_ROUNDS = 3;
 export const DEFAULT_AGENT_NAME = 'orchestrator';
-/** main 14.2: Raycast keys live 24 h; B 8 keeps other deliveries 7 days. */
+/**
+ * main 14.2: Raycast keys live 24 h, so the same stack trace sent after a regression next week is not
+ * dropped. The CLI's keys have the same shape and window (main 14.2 names only Raycast; #377). B 8
+ * keeps other deliveries 7 days.
+ */
 export const RAYCAST_IDEMPOTENCY_TTL_SEC = 24 * 60 * 60;
 export const DEFAULT_IDEMPOTENCY_TTL_SEC = 7 * 24 * 60 * 60;
 
 export function idempotencyTtlSec(deps: EngineDeps, source: ChannelSource): number {
-  return deps.options?.idempotencyTtlSec?.[source] ?? (source === 'raycast' ? RAYCAST_IDEMPOTENCY_TTL_SEC : DEFAULT_IDEMPOTENCY_TTL_SEC);
+  return deps.options?.idempotencyTtlSec?.[source] ?? (source === 'raycast' || source === 'cli' ? RAYCAST_IDEMPOTENCY_TTL_SEC : DEFAULT_IDEMPOTENCY_TTL_SEC);
+}
+
+/**
+ * main 14.2: a capture's idempotency key, `raycast-{sha256}` or `cli-{sha256}` of the text (UTF-8) or
+ * the image bytes, hex. The capture adapter's `normalizePayload` sets it.
+ */
+export function captureIdempotencyKey(source: CaptureSource, content: string | Uint8Array): string {
+  return `${source}-${createHash('sha256').update(content).digest('hex')}`;
 }
 
 export async function currentMap(deps: EngineDeps): Promise<WorkspaceMap> {

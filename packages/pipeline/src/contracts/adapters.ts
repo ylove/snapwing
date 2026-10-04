@@ -27,7 +27,33 @@ export type InteractiveCard =
   | { kind: 'clarify'; question: ClarifyQuestion }
   | { kind: 'fix-preview'; plan: TriageResolutionPlan; surface?: string; ownerUserId?: string }
   | ClaimedCard
-  | PrReadyCard;
+  | PrReadyCard
+  | FileConfirmCard;
+
+/**
+ * main 15.3, 15.4 (#377): a capture source's lookup when dedupe found nothing and the surface resolved:
+ * "New. Looks like the website (from src/cart/... in the trace). File it?" Choices `FILE_CONFIRM_CHOICES`:
+ * File it files, Not this surface asks the surface question, Cancel ends the capture unfiled. Only the
+ * capture adapter holds it for its client; chat adapters render it for exhaustiveness and never post it.
+ */
+export interface FileConfirmCard {
+  kind: 'file-confirm';
+  surfaceId: string;
+  /** The map label ("Website"). */
+  surfaceLabel: string;
+  /** What the inference matched, when it can say: the repo-relative path a `file-path` resolution found. */
+  evidence?: string;
+}
+
+/** The `file-confirm` card's choices, as `TapInput.choice`. */
+export const FILE_CONFIRM_CHOICES = ['file-it', 'not-this-surface', 'cancel'] as const;
+export type FileConfirmChoice = (typeof FILE_CONFIRM_CHOICES)[number];
+
+/**
+ * The choice that cancels a capture source's surface question (a `clarify` card whose options are the
+ * map's surface labels). Any capture card's timeout files nothing either (#377).
+ */
+export const CAPTURE_CANCEL_CHOICE = 'cancel';
 
 /**
  * A 2.1: replaces the fix preview when an engineer claimed the incident before the fixer started.

@@ -3,7 +3,7 @@
 // same transaction), and says whether the job continues, parks, or stops. A step never assumes it is
 // the first to get there: on `ExpectedSeqConflictError` the caller re-reads the log and decides again.
 
-import { applyAnswer } from '../clarify/answer.ts';
+import { applyAnswer, CLARIFY_CONFIDENCE } from '../clarify/answer.ts';
 import { DEFAULT_MAX_QUESTIONS, DEFAULT_SUPPRESS_REPORTERS } from '../clarify/gate.ts';
 import { findGap, maybeAsk, type ClarifyEvidence } from '../clarify/index.ts';
 import { fixedNote, readAnswer, ticketNote, userSideCheck, withEnvironment, type UserSideCheck } from '../clarify/user-side.ts';
@@ -11,9 +11,9 @@ import { collectWindow, DEFAULT_COLLECT_POLICY, widenPolicy, type Anchor, type C
 import { narrow, scopePreview } from '../context/scope-preview.ts';
 import { segment } from '../context/segment.ts';
 import { readImages } from '../context/vision/index.ts';
-import type { InteractiveCard } from '../contracts/adapters.ts';
-import type { ArtifactRef, EventActor, EventPayloads, EventSource, EventType, NewEvent, UserSideCheckRecord, WaitingOn } from '../contracts/events.ts';
-import type { CanonicalIncidentPayload, ChannelSource, ContextBundle, Resolution, TriageResolutionPlan } from '../contracts/incident.ts';
+import { CAPTURE_CANCEL_CHOICE, type FileConfirmCard, type InteractiveCard } from '../contracts/adapters.ts';
+import type { ArtifactRef, CaptureCancelledPayload, EventActor, EventPayloads, EventSource, EventType, NewEvent, UserSideCheckRecord, WaitingOn } from '../contracts/events.ts';
+import { isCaptureSource, type CanonicalIncidentPayload, type ChannelSource, type ClarifyQuestion, type ContextBundle, type Resolution, type TriageResolutionPlan } from '../contracts/incident.ts';
 import type { Job } from '../contracts/jobs.ts';
 import { isExpectedSeqConflict, type OutboxItem } from '../contracts/state.ts';
 import { dedupe, rememberIncident } from '../dedupe/index.ts';
@@ -24,7 +24,7 @@ import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { lastSeqPastBotRecords, RECORD_APPEND_TRIES } from '../signals/messages.ts';
 import { atLeastPriority, escalationState, type EscalationState } from '../signals/score.ts';
-import { findSurface } from '../resolve/lookup.ts';
+import { findSurface, ownerIdOf, probableOwner } from '../resolve/lookup.ts';
 import { JIRA_DONE, JIRA_IN_PROGRESS, LABEL_HUMAN_CLAIMED, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
 import { plan, toAdf } from '../triage/plan.ts';
 import { parseDuration } from '../util/duration.ts';
@@ -221,6 +221,7 @@ export function payloadOf(cursor: Cursor): CanonicalIncidentPayload {
       channelId: c.channelId,
       ...(c.threadId === undefined ? {} : { threadId: c.threadId }),
       ...(c.deepLink === undefined ? {} : { deepLink: c.deepLink }),
+      ...(c.surfaceHint === undefined ? {} : { surfaceHint: c.surfaceHint }),
       rawPayloadSnapshot: c.rawPayloadSnapshot ?? {},
     },
     timestamp: captured.occurredAt,
@@ -371,6 +372,7 @@ export async function captureStep(env: Omit<StepEnv, 'payload'>, initial: Canoni
       channelId: p.context.channelId,
       ...(p.context.threadId === undefined ? {} : { threadId: p.context.threadId }),
       ...(p.context.deepLink === undefined ? {} : { deepLink: p.context.deepLink }),
+      ...(p.context.surfaceHint === undefined ? {} : { surfaceHint: p.context.surfaceHint }),
       rawPayloadSnapshot: p.context.rawPayloadSnapshot,
     },
     { source: eventSource(p.source), actor: { id: p.reporter.id, role: p.reporter.role }, occurredAt: p.timestamp },
@@ -420,12 +422,42 @@ export async function scopeStep(env: StepEnv, phase: Extract<Phase, { kind: 'sco
   return awaitCard(env, { kind: 'scope-preview', summary }, env.payload.reporter.id);
 }
 
-/** main 4.4: the confidence stack. */
+/**
+ * main 4.4: the confidence stack, with the file-path step when `deps.repoTrees` is set (main 15.3). A
+ * capture's known surface hint (main 15.4, `--surface web`) skips it: the resolution is that surface,
+ * `resolvedBy: 'surface-hint'`.
+ */
 export async function resolveStep(env: StepEnv): Promise<StepResult> {
-  const bundle = await loadBundle(env);
-  const resolution = await resolve(env.payload, bundle, env.map, env.deps.model);
+  const { repoTrees } = env.deps;
+  const resolution =
+    hintedResolution(env.map, env.payload.context.surfaceHint) ??
+    (await resolve(env.payload, await loadBundle(env), env.map, env.deps.model, repoTrees === undefined ? {} : { repoTrees }));
   await commit(env, [newEvent(env, 'resolved', resolution)]);
   return 'continue';
+}
+
+function sameName(a: string, b: string): boolean {
+  return a.trim().replace(/\s+/g, ' ').toLowerCase() === b.trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+/**
+ * The resolution a surface hint names: the map surface whose id or label it is (case and spacing
+ * ignored), with its repo, Jira project, and probable owner. Undefined for no hint or an unknown one,
+ * which then resolves as usual. A person named it, so it is as strong as a clarify answer.
+ */
+export function hintedResolution(map: WorkspaceMap, hint: string | undefined): Resolution | undefined {
+  if (hint === undefined || hint.trim() === '') return undefined;
+  const surface = map.surfaces.find((s) => s.id === hint) ?? map.surfaces.find((s) => sameName(s.id, hint) || sameName(s.label, hint));
+  if (surface === undefined) return undefined;
+  const owner = probableOwner(map, surface.id);
+  return {
+    surfaceId: surface.id,
+    ...(owner === undefined ? {} : { ownerId: ownerIdOf(owner) }),
+    repo: surface.repo,
+    jiraProject: surface.jira.project,
+    resolvedBy: 'surface-hint',
+    confidence: CLARIFY_CONFIDENCE,
+  };
 }
 
 /** main 6: dedupe before create. Candidates leave the decision `pending-user` for the dedupe card. */
@@ -457,6 +489,8 @@ export async function dedupeCardStep(env: StepEnv, phase: Extract<Phase, { kind:
     // Nothing to link: the agent goes on as Create anyway.
     decided = newEvent(env, 'dedupe-decided', { decision: 'create-anyway' });
   } else if (takeTimeout(env)) {
+    // A capture has no thread where silence could go on: nothing is filed (#377).
+    if (isCaptureSource(env.payload.source)) return cancelCapture(env, 'dedupe');
     decided = newEvent(env, 'dedupe-decided', { decision: 'create-anyway', timedOut: true });
   } else {
     const card: InteractiveCard = { kind: 'dedupe', issueKey: top.issueKey, summary: top.summary, ...(top.assignee === undefined ? {} : { assignee: top.assignee }) };
@@ -582,7 +616,9 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
   const resolution = must(env.cursor.resolved, 'resolved').resolution;
   const answer = phase.answer;
   const check = last.payload.userSide;
+  const capture = isCaptureSource(env.payload.source);
   if (answer !== undefined && check !== undefined) return userSideAnswerStep(env, last.seq, check, answer);
+  if (capture && answer?.payload.choice === CAPTURE_CANCEL_CHOICE) return cancelCapture(env, 'clarify', answer);
   if (answer !== undefined) {
     const text = answer.payload.choice;
     const applied = applyAnswer(last.payload.asks, text, resolution, env.map);
@@ -598,7 +634,9 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
   }
   if (takeTimeout(env)) {
     // Appended even when no wait is recorded: this event is what closes the round.
-    await commit(env, [newEvent(env, 'waiting-changed', {})]);
+    const closed = newEvent(env, 'waiting-changed', {});
+    // A capture's surface question: silence files nothing (#377).
+    await commit(env, capture ? [closed, cancelled(env, 'clarify')] : [closed]);
     return 'continue';
   }
   // A repost after a crash, with the recorded options.
@@ -616,6 +654,71 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
     },
   };
   return awaitCard(env, card, waitFor);
+}
+
+// Capture sources (main 15.3, 15.4; #377) ------------------------------------------------------------
+
+/** `capture-cancelled`: Cancel by `tap`'s actor, or the card's timeout when there is no tap. */
+function cancelled(env: StepEnv, card: CaptureCancelledPayload['card'], tap?: Tap): NewEvent {
+  return newEvent(env, 'capture-cancelled', { card, ...(tap === undefined ? { timedOut: true } : {}) }, decidedBy(env, tap));
+}
+
+/** Ends a capture unfiled (terminal `not-filed`): no plan, no Jira row. */
+async function cancelCapture(env: StepEnv, card: CaptureCancelledPayload['card'], tap?: Tap): Promise<StepResult> {
+  await commit(env, [...ended(env), cancelled(env, card, tap)]);
+  return 'continue';
+}
+
+/** "New. Which surface?" with the map's surfaces as the choices (main 15.3). */
+export const SURFACE_QUESTION = 'New. Which surface?';
+
+/**
+ * A capture's surface question: a `clarify` round asking `surface`, its options every map surface's
+ * label, asked whatever the ask-back gate says (a capture has no thread to read). The answer
+ * re-resolves through `clarifyCardStep`; Cancel and a timeout end it unfiled. A map with no surfaces
+ * has nothing to ask, so it files to the fallback project.
+ */
+export async function surfaceQuestionStep(env: StepEnv): Promise<StepResult> {
+  const options = env.map.surfaces.map((s) => s.label);
+  if (options.length === 0) return planStep(env, true);
+  const question: ClarifyQuestion = { audience: 'reporter', text: SURFACE_QUESTION, options, asks: 'surface', gatePassed: true, gateFailures: [] };
+  const asked = newEvent(env, 'clarified', { audience: 'reporter', question: question.text, asks: 'surface', options, timedOut: false });
+  return awaitCard(env, { kind: 'clarify', question }, env.payload.reporter.id, [asked]);
+}
+
+function fileConfirmCard(env: StepEnv, resolution: Resolution & { surfaceId: string }): FileConfirmCard {
+  const evidence = resolution.evidence?.path;
+  return {
+    kind: 'file-confirm',
+    surfaceId: resolution.surfaceId,
+    surfaceLabel: findSurface(env.map, resolution.surfaceId)?.label ?? resolution.surfaceId,
+    ...(evidence === undefined ? {} : { evidence }),
+  };
+}
+
+/**
+ * A capture's lookup when dedupe found nothing and the surface resolved: "New. Looks like the website
+ * (from src/cart/... in the trace). File it?" File it goes on to the plan; Not this surface asks the
+ * surface question; Cancel or a timeout ends it unfiled.
+ */
+export async function fileConfirmStep(env: StepEnv, phase: Extract<Phase, { kind: 'file-confirm' }>): Promise<StepResult> {
+  const resolution = must(env.cursor.resolved, 'resolved').resolution;
+  const { surfaceId } = resolution;
+  if (surfaceId === undefined) throw new Error('engine: file-confirm needs a resolved surface');
+  const answer = phase.answer;
+  if (answer === undefined) {
+    if (takeTimeout(env)) return cancelCapture(env, 'file-confirm');
+    return awaitCard(env, fileConfirmCard(env, { ...resolution, surfaceId }), env.payload.reporter.id);
+  }
+  switch (answer.payload.choice) {
+    case 'file-it':
+      // `planned` changes the status, which ends the wait.
+      return planStep(env, false);
+    case 'not-this-surface':
+      return surfaceQuestionStep(env);
+    default:
+      return cancelCapture(env, 'file-confirm', answer);
+  }
 }
 
 function synthesisContext(env: StepEnv, resolution: Resolution, needsClarification: boolean): SynthesisContext {
@@ -1090,6 +1193,10 @@ export function runPhase(env: StepEnv, phase: Exclude<Phase, { kind: 'capture' |
       return dedupeStep(env);
     case 'dedupe-card':
       return dedupeCardStep(env, phase);
+    case 'file-confirm':
+      return fileConfirmStep(env, phase);
+    case 'surface-question':
+      return surfaceQuestionStep(env);
     case 'clarify':
       return clarifyStep(env);
     case 'clarify-card':
