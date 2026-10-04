@@ -21,7 +21,8 @@
     "test:contract": "vitest run test/contract --passWithNoTests",
     "test:live": "vitest run test/live --passWithNoTests",
     "test:e2e": "vitest run test/e2e --passWithNoTests --no-file-parallelism",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test:pack": "vitest run test/pack --no-file-parallelism"
   },
   "dependencies": {
     "@snapwing/capture-client": "workspace:*",

@@ -1,70 +1,27 @@
-// Packaging (#382, ADR 0021): `pnpm pack:cli` writes the pipeline and app tarballs, and `npx` runs
-// `snapwing` from them in an empty directory outside the repository, with nothing published. The npx
-// half needs npm and the registry (it installs the packages' dependencies), so it is skipped, with the
-// reason in its title, when npm is not on PATH. npm runs on a cache of its own under the OS temp
-// directory, shared by runs so later runs are quick, and the npx install this test makes is removed.
+// Packaging without the network (#382, ADR 0021): `assetPath` and `serverCodeRoot` resolution, and
+// the installed bin shim (`bin/snapwing.mjs`) passing its arguments and exit code through to `main`,
+// run from the monorepo against a temp working directory. Packing and `npx` from the tarballs need the
+// registry and live in the pack tier (`pnpm test:pack`, test/pack/pack.test.ts).
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { cp, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative, sep } from 'node:path';
+import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { serverTreeConflict, SNAPWING_ROOT } from '@snapwing/pipeline/harness/untrusted-host.ts';
+import { SNAPWING_ROOT } from '@snapwing/pipeline/harness/untrusted-host.ts';
 import { ASSET_ROOT, assetPath, INSTALLED_PACKAGE, serverCodeRoot } from '@snapwing/pipeline/util/assets.ts';
 import { USAGE } from '../../src/cli/main.ts';
 
 const REPO_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
-const PACK_SCRIPT = join(REPO_ROOT, 'scripts', 'pack-cli.mjs');
+const SHIM = fileURLToPath(new URL('../../bin/snapwing.mjs', import.meta.url));
 const EXAMPLE_MAP = join(REPO_ROOT, 'examples', 'workspace-context.example.xml');
-const NPM_CACHE = join(tmpdir(), 'snapwing-pack-test-npm-cache');
-
-function npmVersion(): string | undefined {
-  try {
-    return execFileSync('npm', ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    return undefined;
-  }
-}
-
-interface Run {
-  code: number;
-  stdout: string;
-  stderr: string;
-}
-
-function run(cmd: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv): Promise<Run> {
-  return new Promise((resolve) => {
-    execFile(cmd, args, { cwd, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
-      const code = error === null ? 0 : typeof error.code === 'number' ? error.code : 1;
-      resolve({ code, stdout, stderr });
-    });
-  });
-}
-
-/** The environment npm gets: none of pnpm's `npm_*` settings or the server's `SNAPWING_*` ones. */
-function npmEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (/^(npm_|pnpm_|snapwing_)/i.test(k) || k === 'NODE_OPTIONS' || k === 'INIT_CWD') continue;
-    env[k] = v;
-  }
-  return {
-    ...env,
-    npm_config_cache: NPM_CACHE,
-    npm_config_update_notifier: 'false',
-    npm_config_fund: 'false',
-    npm_config_audit: 'false',
-    npm_config_loglevel: 'error',
-    npm_config_prefer_offline: 'true',
-  };
-}
 
 describe('assetPath in the monorepo', () => {
   it('resolves schemas, manifests, and demo from the repository root', () => {
     expect(INSTALLED_PACKAGE).toBe(false);
-    expect(ASSET_ROOT).toBe(join(REPO_ROOT).replace(/[\\/]$/, ''));
+    expect(ASSET_ROOT).toBe(REPO_ROOT.replace(/[\\/]$/, ''));
     for (const asset of ['schemas/playbook.xsd', 'schemas/workspace-context.sch', 'manifests/github-app.json', 'demo/state/expected.json']) {
       expect(existsSync(assetPath(asset)), asset).toBe(true);
     }
@@ -78,106 +35,55 @@ describe('assetPath in the monorepo', () => {
 
   it('puts the server tree at the repository root here, and at the outermost node_modules parent when installed', () => {
     expect(join(SNAPWING_ROOT, sep)).toBe(REPO_ROOT);
-    const pkg = join(sep, 'home', 'u', '.npm', '_npx', 'abc', 'node_modules', '@snapwing', 'pipeline');
-    expect(serverCodeRoot(pkg, true)).toBe(join(sep, 'home', 'u', '.npm', '_npx', 'abc'));
-    const pnpmPkg = join(sep, 'srv', 'proj', 'node_modules', '.pnpm', '@snapwing+pipeline@0.0.0', 'node_modules', '@snapwing', 'pipeline');
-    expect(serverCodeRoot(pnpmPkg, true)).toBe(join(sep, 'srv', 'proj'));
+    const npx = join(sep, 'home', 'u', '.npm', '_npx', 'abc', 'node_modules', '@snapwing', 'pipeline');
+    expect(serverCodeRoot(npx, true)).toBe(join(sep, 'home', 'u', '.npm', '_npx', 'abc'));
+    const pnpm = join(sep, 'srv', 'proj', 'node_modules', '.pnpm', '@snapwing+pipeline@0.0.0', 'node_modules', '@snapwing', 'pipeline');
+    expect(serverCodeRoot(pnpm, true)).toBe(join(sep, 'srv', 'proj'));
     expect(serverCodeRoot(join(sep, 'opt', 'snapwing'), true)).toBe(join(sep, 'opt', 'snapwing'));
   });
 });
 
-const NPM = npmVersion();
-const title = NPM === undefined ? 'npx snapwing from packed tarballs (skipped: npm is not on PATH)' : 'npx snapwing from packed tarballs';
-
-describe.skipIf(NPM === undefined)(title, () => {
-  let root: string;
-  let empty: string;
-  let tarballs: { pipeline: string; app: string };
-  let env: NodeJS.ProcessEnv;
-
-  const npx = (...args: string[]): Promise<Run> =>
-    run('npx', ['--yes', '-p', tarballs.pipeline, '-p', tarballs.app, 'snapwing', ...args], empty, env);
+describe('bin/snapwing.mjs', () => {
+  let cwd: string;
 
   beforeAll(async () => {
-    root = await mkdtemp(join(tmpdir(), 'snapwing-pack-'));
-    empty = join(root, 'empty');
-    await mkdir(empty);
-    await cp(EXAMPLE_MAP, join(empty, 'workspace-context.example.xml'));
-    env = npmEnv();
-    const packed = await run('node', [PACK_SCRIPT, '--out', join(root, 'tarballs'), '--json'], REPO_ROOT, env);
-    expect(packed.stderr).toBe('');
-    expect(packed.code).toBe(0);
-    tarballs = JSON.parse(packed.stdout) as { pipeline: string; app: string };
-  }, 120_000);
-
-  afterAll(async () => {
-    // npx keeps each install under <cache>/_npx/<hash>; remove the ones pointing at this run's tarballs.
-    const npxDir = join(NPM_CACHE, '_npx');
-    for (const entry of await readdir(npxDir).catch(() => [] as string[])) {
-      const manifest = await readFile(join(npxDir, entry, 'package.json'), 'utf8').catch(() => '');
-      if (root !== undefined && manifest.includes(root)) await rm(join(npxDir, entry), { recursive: true, force: true });
-    }
-    if (root !== undefined) await rm(root, { recursive: true, force: true });
-  }, 120_000);
-
-  it('writes both tarballs outside the repository', () => {
-    for (const tgz of [tarballs.pipeline, tarballs.app]) {
-      expect(existsSync(tgz)).toBe(true);
-      expect(relative(REPO_ROOT, tgz).startsWith('..')).toBe(true);
-    }
-    expect(tarballs.pipeline).toMatch(/snapwing-pipeline-.*\.tgz$/);
-    expect(tarballs.app).toMatch(/snapwing-app-.*\.tgz$/);
+    cwd = await mkdtemp(join(tmpdir(), 'snapwing-shim-'));
+    await cp(EXAMPLE_MAP, join(cwd, 'map.xml'));
   });
 
-  it('prints the usage for --help, and for a bare snapwing with exit 1', async () => {
-    const help = await npx('--help');
-    expect(help.stderr).not.toMatch(/ERR!|npm error/);
+  afterAll(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  /** Runs the shim the way the installed `snapwing` does: plain node, the caller's directory. */
+  const shim = (...args: string[]): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const env: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) if (!/^snapwing_/i.test(k) && k !== 'NODE_OPTIONS') env[k] = v;
+    return new Promise((resolve) => {
+      execFile(process.execPath, [SHIM, ...args], { cwd, env, encoding: 'utf8' }, (error, stdout, stderr) => {
+        resolve({ code: error === null ? 0 : typeof error.code === 'number' ? error.code : 1, stdout, stderr });
+      });
+    });
+  };
+
+  it('prints the usage for --help with exit 0, and for a bare snapwing with exit 1', async () => {
+    const help = await shim('--help');
     expect(help.code).toBe(0);
     expect(help.stdout).toContain(USAGE);
-
-    const bare = await npx();
+    const bare = await shim();
     expect(bare.code).toBe(1);
     expect(bare.stdout).toContain(USAGE);
-  }, 600_000);
+  });
 
-  it('validates the example map with config check, the schemas coming from the installed package', async () => {
-    const check = await npx('config', 'check', '--map', 'workspace-context.example.xml');
-    expect(check.stdout).toContain('ok: workspace-context.example.xml');
-    expect(check.stdout).toContain('0 errors');
-    expect(check.code).toBe(0);
-  }, 600_000);
-
-  it('resolves assets and the server tree inside the installed packages', async () => {
-    const npxDir = join(NPM_CACHE, '_npx');
-    let install: string | undefined;
-    for (const entry of await readdir(npxDir)) {
-      const manifest = await readFile(join(npxDir, entry, 'package.json'), 'utf8').catch(() => '');
-      if (manifest.includes(tarballs.app)) install = join(npxDir, entry);
-    }
-    expect(install, 'the npx install of this run').toBeDefined();
-    const probe = `
-      import { register } from 'tsx/esm/api';
-      register({ tsconfig: false });
-      const { existsSync } = await import('node:fs');
-      const a = await import('@snapwing/pipeline/util/assets.ts');
-      const h = await import('@snapwing/pipeline/harness/untrusted-host.ts');
-      const assets = ['schemas/playbook.xsd', 'manifests/github-app.json', 'demo/state/expected.json'].map((p) => a.assetPath(p));
-      const app = (await import('node:path')).join(process.cwd(), 'node_modules', '@snapwing', 'app');
-      console.log(JSON.stringify({
-        installed: a.INSTALLED_PACKAGE,
-        assetRoot: a.ASSET_ROOT,
-        assetsExist: assets.every((p) => existsSync(p)),
-        root: h.SNAPWING_ROOT,
-        appConflict: h.serverTreeConflict(app, [h.SNAPWING_ROOT]) ?? null,
-      }));
-    `;
-    const out = await run('node', ['--input-type=module', '-e', probe], install as string, env);
-    expect(out.stderr).toBe('');
-    const result = JSON.parse(out.stdout) as { installed: boolean; assetRoot: string; assetsExist: boolean; root: string; appConflict: string | null };
-    expect(result.installed).toBe(true);
-    expect(result.assetRoot).toContain(join('node_modules', '@snapwing', 'pipeline'));
-    expect(result.assetsExist).toBe(true);
-    expect(serverTreeConflict(install as string, [result.root])).toBeDefined();
-    expect(result.appConflict).toMatch(/inside the server's own tree/);
-  }, 120_000);
+  it('passes arguments through: config check reads the map named relative to the working directory', async () => {
+    const ok = await shim('config', 'check', '--map', 'map.xml');
+    expect(ok.stdout).toContain('ok: map.xml');
+    expect(ok.code).toBe(0);
+    const missing = await shim('config', 'check', '--map', 'absent.xml');
+    expect(missing.stdout).toContain('error: absent.xml: no such file');
+    expect(missing.code).toBe(1);
+    const unknown = await shim('no-such-command');
+    expect(unknown.stderr).toContain('unknown command "no-such-command"');
+    expect(unknown.code).toBe(1);
+  });
 });
