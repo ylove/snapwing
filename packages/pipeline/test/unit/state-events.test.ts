@@ -8,7 +8,7 @@ import type { NewEvent } from '../../src/contracts/events.ts';
 import { ExpectedSeqConflictError, LOG_START, type IncidentEvent, type OpenedState } from '../../src/ports/state.ts';
 import type { StateContext } from '../../src/state/context.ts';
 import type { OpenStateHooks } from '../../src/state/db.ts';
-import { APPEND_LOCK_NAMESPACE, read as readIn } from '../../src/state/events.ts';
+import { APPEND_LOCK_NAMESPACE, pgWatermark, read as readIn } from '../../src/state/events.ts';
 import { upcasters } from '../../src/state/upcast.ts';
 import { applyProjections } from '../../src/state/projections/index.ts';
 import { StateStore } from '../../src/state/store.ts';
@@ -85,8 +85,9 @@ async function settle<T>(promises: Promise<T>[]): Promise<{ won: T[]; lost: unkn
 
 /**
  * Waits until `readSince` can return every committed event. On Postgres it withholds events at or
- * above the cluster's oldest in-flight transaction (ADR 0013), and other test files' transactions
- * count; on SQLite there is nothing to wait for.
+ * above the oldest in-flight transaction that can write this database (`pgWatermark`, ADR 0013);
+ * other test files' databases on the same server do not count (#424). On SQLite there is nothing to
+ * wait for.
  */
 async function logSettled(): Promise<void> {
   if (!(state1 instanceof StateStore) || state1.dialect !== 'postgres') {
@@ -95,7 +96,7 @@ async function logSettled(): Promise<void> {
   const deadline = Date.now() + 10_000;
   for (;;) {
     const { rows } = await sql<{ settled: boolean }>`
-      select coalesce(max(tx_order) < pg_snapshot_xmin(pg_current_snapshot())::text::bigint, true) as settled from incident_events
+      select coalesce(max(tx_order) < ${await pgWatermark(state1.ctx)}, true) as settled from incident_events
     `.execute(state1.ctx.db);
     if (rows[0]?.settled === true) {
       return;
@@ -548,6 +549,24 @@ describe('readSince', () => {
         gate.open();
         await first.catch(() => undefined);
       }
+    });
+
+    it('inside a caller transaction, readSince returns what committed before and withholds its own appends', async () => {
+      const state = await open();
+      await state.append(INC_C, [closed(INC_C, 'base')], 0);
+      await logSettled();
+      await state.transaction(async (tx) => {
+        expect(reasons((await tx.readSince(LOG_START, 10)).events)).toEqual(['base']);
+        await tx.append(INC_A, [closed(INC_A, 'mine')], 0);
+        // A later transaction commits, so the snapshot's xmax passes this one's id. Postgres leaves
+        // the transaction's own id out of the snapshot's in-flight list; the bound still stops below
+        // it, so an append that may yet roll back is never passed.
+        await state2.append(INC_B, [closed(INC_B, 'later')], 0);
+        expect(reasons((await tx.readSince(LOG_START, 10)).events)).toEqual(['base']);
+        expect(reasons(await tx.read(INC_A))).toEqual(['mine']);
+      });
+      await logSettled();
+      expect(reasons((await state.readSince(LOG_START, 10)).events)).toEqual(['base', 'mine', 'later']);
     });
 
     it('a transaction that wrote before a later append sorts first even though it appends after', async () => {
