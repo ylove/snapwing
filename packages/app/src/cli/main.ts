@@ -12,6 +12,7 @@ import { defaultCaptureEnv, runLog, runSay, runShot, runStatus, runStop, type Ca
 import { runConfig } from './config.ts';
 import { runLogin, runLogout } from './login.ts';
 import { runMap } from './map.ts';
+import { runOnboard } from './onboard.ts';
 import { runState, type CliIo } from './state.ts';
 import { runToken } from './token.ts';
 
@@ -86,6 +87,10 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
     label: 'token issue|list|revoke',
     summary: 'issue, list, and revoke per-user capture tokens',
     run: (args, io) => runToken(args, io),
+  },
+  onboard: {
+    summary: 'set Snapwing up by interview; picks up where it stopped',
+    run: (args, io) => runOnboard(args, io),
   },
 };
 
