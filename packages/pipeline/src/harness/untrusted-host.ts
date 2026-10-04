@@ -18,10 +18,13 @@ import { realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join, parse, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { serverCodeRoot } from '../util/assets.ts';
 
-/** The Snapwing checkout this code runs from (the repository root in a source checkout). */
-export const SNAPWING_ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
+/**
+ * The tree this code runs from: the repository root in a source checkout, or, installed from the packed
+ * tarballs, the directory holding the outermost `node_modules` (`serverCodeRoot`, ADR 0021).
+ */
+export const SNAPWING_ROOT = serverCodeRoot();
 
 export interface ScratchHome {
   /** Parent of `home` and `tmp`, for callers that keep more scratch state beside them. */

@@ -9,6 +9,12 @@
     ".": "./src/index.ts",
     "./*": "./src/*"
   },
+  "files": [
+    "src",
+    "schemas",
+    "manifests",
+    "demo"
+  ],
   "scripts": {
     "test": "vitest run test/unit",
     "test:contract": "vitest run test/contract --passWithNoTests",

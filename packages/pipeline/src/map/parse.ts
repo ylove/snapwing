@@ -2,9 +2,9 @@
 // Validation (XSD, then Schematron) always runs first, so the conversion below can rely on
 // the document's shape and only narrows `unknown` values; it does not re-check them.
 
-import { fileURLToPath } from 'node:url';
 import { XMLParser } from 'fast-xml-parser';
 import { validate, type SchemaPaths } from '../schemas/validate.ts';
+import { assetPath } from '../util/assets.ts';
 import {
   InvalidMapError,
   type AutonomyGate,
@@ -32,8 +32,8 @@ import {
 export { InvalidMapError } from './types.ts';
 
 export const WORKSPACE_SCHEMAS: SchemaPaths = {
-  xsd: fileURLToPath(new URL('../../../../schemas/workspace-context.xsd', import.meta.url)),
-  sch: fileURLToPath(new URL('../../../../schemas/workspace-context.sch', import.meta.url)),
+  xsd: assetPath('schemas/workspace-context.xsd'),
+  sch: assetPath('schemas/workspace-context.sch'),
 };
 
 /**

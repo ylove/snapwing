@@ -6,12 +6,16 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "snapwing": "./src/cli/main.ts"
+    "snapwing": "./bin/snapwing.mjs"
   },
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*"
   },
+  "files": [
+    "bin",
+    "src"
+  ],
   "scripts": {
     "test": "vitest run test/unit",
     "test:contract": "vitest run test/contract --passWithNoTests",
@@ -21,7 +25,8 @@
   },
   "dependencies": {
     "@snapwing/capture-client": "workspace:*",
-    "@snapwing/pipeline": "workspace:*"
+    "@snapwing/pipeline": "workspace:*",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",

@@ -2,16 +2,16 @@
 // Every element has a default, so an empty <playbook/> loads; `loadPlaybook` always returns a
 // complete Playbook or a list of typed errors, never a partial playbook.
 
-import { fileURLToPath } from 'node:url';
 import { parseXmlDocument, type Element } from 'slimdom';
 import type { JiraPriorityName, WorkspaceMap } from '../map/types.ts';
 import { validateSchematron, validateXsd, type ValidationError } from '../schemas/validate.ts';
+import { assetPath } from '../util/assets.ts';
 
 export const PLAYBOOK_NAMESPACE = 'urn:snapwing:playbook:v1';
 /** Namespace of the wrapper document the Schematron runs on (see schemas/playbook.sch). */
 export const PLAYBOOK_CHECK_NAMESPACE = 'urn:snapwing:playbook-check:v1';
-export const PLAYBOOK_XSD = fileURLToPath(new URL('../../../../schemas/playbook.xsd', import.meta.url));
-export const PLAYBOOK_SCH = fileURLToPath(new URL('../../../../schemas/playbook.sch', import.meta.url));
+export const PLAYBOOK_XSD = assetPath('schemas/playbook.xsd');
+export const PLAYBOOK_SCH = assetPath('schemas/playbook.sch');
 
 /** Rule name on an error that comes from the XSD (Schematron errors carry their assert id). */
 export const PLAYBOOK_XSD_RULE = 'xsd';
