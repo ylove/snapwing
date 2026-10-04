@@ -108,8 +108,17 @@ const server = setupServer(
     return m === undefined ? HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 }) : HttpResponse.json(m);
   }),
 );
-beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
-afterEach(() => server.resetHandlers());
+const unhandled: string[] = [];
+beforeAll(() => {
+  server.listen();
+  server.events.on('request:unhandled', ({ request }) => {
+    unhandled.push(`${request.method} ${request.url}`);
+  });
+});
+afterEach(() => {
+  server.resetHandlers();
+  expect(unhandled.splice(0)).toEqual([]);
+});
 afterAll(() => server.close());
 
 const subscriptions = createTeamsSubscriptions({
@@ -288,18 +297,17 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
       onOutcome: (o) => outcomes.push(o),
       onError,
     });
-    /** A notification body through the real clientState check, then the signals module. */
+    /** A notification body through the real clientState check, then the signals module as the transport (#390) calls it. */
     const notify = async (body: Record<string, unknown>): Promise<TeamsSignalOutcome[]> => {
       const verified = subscriptions.verifyNotification(body);
       expect(verified).toHaveLength(1);
-      const [n] = verified;
-      if (n === undefined) throw new Error('unverified');
-      await signals.onNotification(n);
+      await signals.onNotifications(verified);
       await signals.idle();
       return outcomes.at(-1) ?? [];
     };
+    /** A `messageReaction` goes straight to `onActivity`; a `message` only when `observes` takes it. */
     const activity = async (body: Record<string, unknown>): Promise<TeamsSignalOutcome[]> => {
-      expect(signals.observes(body)).toBe(true);
+      if (body['type'] === 'message') expect(signals.observes(body)).toBe(true);
       await signals.onActivity(body);
       await signals.idle();
       return outcomes.at(-1) ?? [];
@@ -494,6 +502,27 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     });
     expect(await w.notify(replyCreated('1790000100779'))).toEqual([{ kind: 'ignored', reason: 'mentions-bot' }]);
     expect(w.onError).not.toHaveBeenCalled();
+  });
+
+  it('a reply delivered as a Bot Framework activity (RSC) is the same signal, and its Graph notification then counts nothing', async () => {
+    await filed();
+    const w = setup();
+    const replied = fixture('reply-activity');
+
+    // What the transport's `message` path asks: only a person's channel thread reply is ours.
+    const { conversation: _c, channelData: _d, ...personal } = replied;
+    expect(w.signals.observes({ ...personal, conversation: { id: 'a:1personal-chat-sam', conversationType: 'personal' } })).toBe(false);
+    expect(w.signals.observes({ ...replied, conversation: { id: CHANNEL, conversationType: 'channel' }, replyToId: undefined })).toBe(false);
+    expect(w.signals.observes({ ...replied, from: { id: `28:${APP_ID}`, name: 'Snapwing' } })).toBe(false);
+    expect(w.signals.observes(fixture('message-reaction-activity'))).toBe(false);
+
+    now = new Date('2026-10-03T10:07:01.000Z');
+    expect(await w.activity(replied)).toMatchObject([
+      { kind: 'signal', intent: 'claim', source: 'message', outcome: { handled: true, role: 'anchor', effect: 'hold' } },
+    ]);
+    expect((await comments()).at(-1)).toMatchObject({ actor: { id: SAM }, occurredAt: '2026-10-03T10:07:00.000Z', payload: { raw: 'On it!', target: { messageId: ANCHOR } } });
+    expect(await w.notify(fixture('reply-created'))).toEqual([{ kind: 'ignored', reason: 'duplicate' }]);
+    expect((await comments()).filter((c) => c.payload.signalSource === 'message')).toHaveLength(1);
   });
 
   it('a standing watch in the thread is a subscription, confirmed through confirmStanding; the model reads what the lexicon misses', async () => {

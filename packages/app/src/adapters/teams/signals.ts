@@ -1,16 +1,19 @@
 // Teams signals (A 1.1 to 1.4, A 1.6, A 3; main 15.1, 15.2; #392): reactions and thread replies, the
 // Teams side of `adapters/slack/signals.ts`, handed to the same signal handler (`handleSignal`).
 //
-// Two sources, because Bot Framework reports a reaction only on a message the bot sent (main 15.2):
+// The transport (#390, `TeamsSignalsRoute`) calls `onNotifications`, `observes`, and `onActivity`. Two
+// sources, because Bot Framework reports a reaction only on a message the bot sent (main 15.2):
 //
 // - A Graph change notification on a channel message (`chatMessage`, #379's subscription), already
 //   authenticated by its `clientState` (`TeamsSubscriptions.verifyNotification`). The message is read
 //   from the notification when the caller decrypted its resource data, else fetched from Graph
 //   (`GET .../messages/{id}` or `.../replies/{id}`). An `updated` message has its `reactions` diffed
 //   against the last set seen; a `created` reply by a person is a thread reply (below).
-// - A Bot Framework `messageReaction` activity (`reactionsAdded`, `reactionsRemoved`) on one of the
-//   bot's own messages, already authenticated by the transport (#390). In reduced mode (no RSC grant, so
-//   no notifications, ADR 0005) these are the only reactions that count.
+// - Bot Framework activities, already authenticated by the transport: a `messageReaction`
+//   (`reactionsAdded`, `reactionsRemoved`) on one of the bot's own messages, and a person's channel
+//   thread reply (`observes`; RSC delivers every channel message to the bot). A reply that arrives both
+//   ways is read once (the activity id is the Graph message id). In reduced mode (no RSC grant, so no
+//   notifications, ADR 0005) reactions on the bot's own messages are the only ones that count.
 //
 // The last set seen lives in kv `teams-reactions:{messageId}` (JSON, 7-day TTL): one entry per person
 // and reaction name, with when it was added. Both sources apply their change to the same set and
@@ -153,15 +156,21 @@ export type TeamsSignalOutcome = (
   text?: TextSignalOutcome;
 };
 
+/**
+ * The module as the Teams transport (#390, `TeamsSignalsRoute`) calls it: `observes` and `onActivity` for
+ * Bot Framework activities, `onNotifications` for change notifications whose `clientState` matched.
+ */
 export interface TeamsSignals {
   /** One verified Graph change notification; `message` is its decrypted resource data, when there is one. */
   handleNotification(notification: VerifiedNotification, message?: GraphMessage): Promise<TeamsSignalOutcome[]>;
-  /** True for a Bot Framework activity this module reads (`messageReaction`). */
+  /** A batch of verified change notifications (lifecycle events skipped); one failing never drops the rest. */
+  handleNotifications(notifications: readonly VerifiedNotification[]): Promise<TeamsSignalOutcome[]>;
+  /** True for a `message` activity this module reads: a person's channel thread reply (RSC). */
   observes(activity: unknown): boolean;
-  /** One authenticated `messageReaction` activity. */
+  /** One authenticated activity: `messageReaction` (the bot's own messages), or a thread reply `observes` accepted. */
   handleActivity(activity: unknown): Promise<TeamsSignalOutcome[]>;
-  /** `handleNotification`, with the outcomes passed to `onOutcome`; failures go to `onError`. Not awaited by callers. */
-  onNotification(notification: VerifiedNotification, message?: GraphMessage): Promise<void>;
+  /** `handleNotifications`, with the outcomes passed to `onOutcome`; failures go to `onError`. */
+  onNotifications(notifications: readonly VerifiedNotification[]): Promise<void>;
   /** `handleActivity`, with the outcomes passed to `onOutcome`; failures go to `onError`. */
   onActivity(activity: unknown): Promise<void>;
   /** Resolves when the `on*` calls started so far have settled (tests, shutdown). */
@@ -469,7 +478,7 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
   /** The earlier messages of the thread, oldest first, for the model; empty when Graph cannot say. */
   async function threadContext(teamId: string, channelId: string, rootId: string, message: GraphMessage): Promise<SignalMessage[]> {
     const graph = options.graph;
-    if (graph === undefined) return [];
+    if (graph === undefined || teamId === '') return [];
     const before = Date.parse(message.createdDateTime);
     const [root, replies] = await Promise.all([
       graph.message(teamId, channelId, rootId).catch((e: unknown) => {
@@ -609,12 +618,82 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     return serial(id, () => diffMessage(site));
   }
 
+  async function handleNotifications(notifications: readonly VerifiedNotification[]): Promise<TeamsSignalOutcome[]> {
+    const out: TeamsSignalOutcome[] = [];
+    for (const n of notifications) {
+      // Lifecycle events go to the subscriptions (`handleLifecycle`), not here.
+      if (n.lifecycleEvent !== undefined) continue;
+      try {
+        out.push(...(await handleNotification(n)));
+      } catch (e) {
+        // One notification failing never drops the rest of the batch.
+        onError(e);
+      }
+    }
+    return out;
+  }
+
+  /** A person's channel thread reply as Bot Framework delivers it under the RSC grant. */
+  function threadReply(a: Rec): { teamChannel: string; rootId: string } | undefined {
+    if (str(a['type']) !== 'message') return undefined;
+    const from = rec(a['from']);
+    const fromId = str(from['id']);
+    if (str(from['aadObjectId']) === '' || fromId.startsWith('28:') || str(from['role']) === 'bot') return undefined;
+    const conversation = rec(a['conversation']);
+    const channelData = rec(a['channelData']);
+    const inChannel = str(conversation['conversationType']) === 'channel' || str(rec(channelData['channel'])['id']) !== '';
+    if (!inChannel) return undefined;
+    const split = splitConversationId(str(conversation['id']));
+    const id = str(a['id']);
+    const rootId = split.threadRootId ?? str(a['replyToId']);
+    if (id === '' || rootId === '' || rootId === id) return undefined;
+    return { teamChannel: str(rec(channelData['channel'])['id']) || split.channelId, rootId };
+  }
+
+  /**
+   * True for an activity the transport hands to the signals from its `message` path: a person's channel
+   * thread reply (RSC delivers every channel message to the bot). `messageReaction` activities are read
+   * too, without asking.
+   */
   function observes(activity: unknown): boolean {
-    return str(rec(activity)['type']) === 'messageReaction';
+    return threadReply(rec(activity)) !== undefined;
+  }
+
+  /** A thread reply activity, as the Graph message it is (the same id, so the two sources dedupe). */
+  async function replyActivity(a: Rec): Promise<TeamsSignalOutcome[]> {
+    const thread = threadReply(a);
+    if (thread === undefined) return [ignored('not-a-thread-reply')];
+    const from = rec(a['from']);
+    const channelData = rec(a['channelData']);
+    const map = await options.getMap();
+    const teamId = str(rec(channelData['team'])['aadGroupId']) || map.channels.find((c) => c.id === thread.teamChannel)?.teamId || '';
+    const mentions = (Array.isArray(a['entities']) ? (a['entities'] as unknown[]) : [])
+      .map(rec)
+      .filter((e) => str(e['type']) === 'mention')
+      .map((e) => rec(e['mentioned']));
+    const message: GraphMessage = {
+      id: str(a['id']),
+      replyToId: thread.rootId,
+      createdDateTime: iso(str(a['timestamp']), deps.clock()),
+      from: { user: { id: str(from['aadObjectId']), displayName: str(from['name']), userIdentityType: 'aadUser' } },
+      body: { contentType: 'html', content: str(a['text']) },
+      mentions: mentions.map((m, i) => {
+        const id = str(m['id']);
+        const isBot = id === botAppId || id === `28:${botAppId}`;
+        const aad = str(m['aadObjectId']);
+        return {
+          id: i,
+          mentionText: str(m['name']),
+          mentioned: isBot ? { application: { id: botAppId } } : aad === '' ? {} : { user: { id: aad } },
+        };
+      }),
+    };
+    return [await reply(teamId, thread.teamChannel, thread.rootId, message)];
   }
 
   async function handleActivity(activity: unknown): Promise<TeamsSignalOutcome[]> {
     const a = rec(activity);
+    if (str(a['type']) === 'message') return replyActivity(a);
     if (str(a['type']) !== 'messageReaction') return [ignored('not-a-reaction-activity')];
     const from = rec(a['from']);
     const fromId = str(from['id']);
@@ -677,9 +756,10 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
   };
   return {
     handleNotification,
+    handleNotifications,
     observes,
     handleActivity,
-    onNotification: (n, message) => track(handleNotification(n, message)),
+    onNotifications: (notifications) => track(handleNotifications(notifications)),
     onActivity: (activity) => track(handleActivity(activity)),
     async idle() {
       while (inFlight.size > 0) await Promise.allSettled([...inFlight]);
