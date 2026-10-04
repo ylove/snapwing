@@ -1,5 +1,5 @@
 // `snapwing metrics [--since 30d] [--json]` (main 20.3, B 10): what the log says about the window.
-// It reads the incidents' logs through the state store (the 1000 most recently updated) and folds them; nothing is written.
+// It pages the whole log through the state store and folds it; nothing is written.
 //
 // The window holds the incidents opened (`captured`, kind `incident`) at or after the cutoff; every
 // other figure counts those incidents' own events, so a merge in the window of an older incident is
@@ -17,7 +17,7 @@ import { parseArgs } from 'node:util';
 import type { IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import type { CliIo } from './state.ts';
-import { openStateFromEnv, readIncidentLogs } from './trace.ts';
+import { openStateFromEnv, readWholeLog } from './trace.ts';
 
 export const METRICS_USAGE = `Usage: snapwing metrics [--since 30d] [--json]
 
@@ -244,11 +244,7 @@ export async function runMetrics(args: readonly string[], io: CliIo, now: () => 
   let state: OpenedState | undefined;
   try {
     state = await openStateFromEnv(io.env);
-    const log = await readIncidentLogs(state);
-    if (log.truncated) {
-      io.stderr('snapwing metrics: more than 1000 incidents; counting the 1000 most recently updated');
-    }
-    const metrics = computeMetrics(log.events, since, current);
+    const metrics = computeMetrics(await readWholeLog(state), since, current);
     if (parsed.values.json) {
       io.stdout(JSON.stringify(metrics, null, 2));
     } else {

@@ -9,7 +9,7 @@
 // (`waiting-changed`, `bot-message-posted`, ...) are left out of the text and kept in `--json`.
 
 import { parseArgs } from 'node:util';
-import { stateOptionsFromEnv } from '@snapwing/pipeline/contracts/state.ts';
+import { LOG_START, stateOptionsFromEnv } from '@snapwing/pipeline/contracts/state.ts';
 import type { ContextBundle } from '@snapwing/pipeline/contracts/incident.ts';
 import type { ArtifactRef, IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { IncidentView } from '@snapwing/pipeline/contracts/state.ts';
@@ -35,22 +35,18 @@ export async function openStateFromEnv(env: CliIo['env']): Promise<OpenedState> 
   return openState(options);
 }
 
-/** The most incidents `findIncidents` returns (`FIND_INCIDENTS_MAX_LIMIT`). */
-const MAX_INCIDENTS = 1000;
-
-/**
- * The events of the most recently updated incidents (up to 1000), read per incident. `readSince`
- * would page the whole log, but on Postgres it withholds rows above the oldest open transaction in
- * the cluster, so a quiet-looking page can hide committed events; a per-incident `read` has no such
- * gate. `truncated` is true when more incidents exist than were read.
- */
-export async function readIncidentLogs(state: StatePort): Promise<{ events: IncidentEvent[]; truncated: boolean }> {
-  const incidents = await state.findIncidents({ kind: 'incident', limit: MAX_INCIDENTS });
+/** Every event in the log, in log order. */
+export async function readWholeLog(state: StatePort): Promise<IncidentEvent[]> {
   const events: IncidentEvent[] = [];
-  for (const incident of incidents) {
-    events.push(...(await state.read(incident.id)));
+  let cursor = LOG_START;
+  for (;;) {
+    const page = await state.readSince(cursor, 500);
+    if (page.events.length === 0) {
+      return events;
+    }
+    events.push(...page.events);
+    cursor = page.cursor;
   }
-  return { events, truncated: incidents.length >= MAX_INCIDENTS };
 }
 
 const JIRA_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
