@@ -243,6 +243,8 @@ export type Phase =
   | { kind: 'resolve' }
   | { kind: 'dedupe' }
   | { kind: 'dedupe-card'; answer?: Tap }
+  | { kind: 'file-confirm'; answer?: Tap }
+  | { kind: 'surface-question' }
   | { kind: 'clarify' }
   | { kind: 'clarify-card'; answer?: Tap }
   | { kind: 'plan'; needsClarification: boolean; userSide?: UserSideRound }
@@ -256,6 +258,11 @@ export type Phase =
 export interface PhaseOptions {
   /** A chat reader exists for this incident's channel, so the scope preview runs (main 5.5). */
   scopePreview: boolean;
+  /**
+   * The incident came from a capture source (Raycast, CLI; main 15.3, 15.4), so after dedupe it shows
+   * exactly one lookup card (`capturePhase`) in place of the ask-back. Default false.
+   */
+  capture?: boolean;
 }
 
 export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
@@ -278,6 +285,8 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
     const answer = answerAfter(cursor, 'dedupe', dedupe.seq);
     return answer === undefined ? { kind: 'dedupe-card' } : { kind: 'dedupe-card', answer };
   }
+
+  if (planned === undefined && options.capture === true) return capturePhase(cursor, dedupe, resolved.resolution);
 
   if (planned === undefined) {
     const last = cursor.clarified[cursor.clarified.length - 1];
@@ -324,6 +333,32 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
   return { kind: 'done' };
 }
 
+/**
+ * A capture source after dedupe (main 15.3, 15.4; #377). The first response is exactly one of: the
+ * dedupe card (handled above, with candidates), `file-confirm` when the surface resolved, or the surface
+ * question (a `clarify` round asking `surface`, its options the map's labels) when it did not. File it,
+ * a surface answer, or Create anyway with a resolved surface goes on to the plan; Not this surface, or
+ * Create anyway with none, asks the surface question. Cancel and every timeout append
+ * `capture-cancelled`, which is terminal, so `nextPhase` stops before reaching here again. There is no
+ * other ask-back: a capture has no thread to read.
+ */
+function capturePhase(cursor: Cursor, dedupe: NonNullable<Cursor['dedupe']>, resolution: Resolution): Phase {
+  const last = cursor.clarified[cursor.clarified.length - 1];
+  if (last !== undefined) {
+    if (!roundClosed(last)) {
+      const answer = answerAfter(cursor, 'clarify', last.seq);
+      return answer === undefined ? { kind: 'clarify-card' } : { kind: 'clarify-card', answer };
+    }
+    return { kind: 'plan', needsClarification: roundUnanswered(last) };
+  }
+  if (dedupe.decided !== undefined) {
+    return resolution.surfaceId === undefined ? { kind: 'surface-question' } : { kind: 'plan', needsClarification: false };
+  }
+  if (resolution.surfaceId === undefined) return { kind: 'surface-question' };
+  const answer = answerAfter(cursor, 'file-confirm', dedupe.seq);
+  return answer === undefined ? { kind: 'file-confirm' } : { kind: 'file-confirm', answer };
+}
+
 /** The card a phase is waiting on with no answer yet, which is the only card a tap may answer. */
 export function pendingCard(phase: Phase): CardKind | undefined {
   switch (phase.kind) {
@@ -331,6 +366,8 @@ export function pendingCard(phase: Phase): CardKind | undefined {
       return phase.answer === undefined ? 'scope-preview' : undefined;
     case 'dedupe-card':
       return phase.answer === undefined ? 'dedupe' : undefined;
+    case 'file-confirm':
+      return phase.answer === undefined ? 'file-confirm' : undefined;
     case 'clarify-card':
       return phase.answer === undefined ? 'clarify' : undefined;
     case 'fix-preview':

@@ -1,7 +1,7 @@
 // Pure builders from an InteractiveCard to Block Kit JSON (main 5.5, 6.2, 7.2, 8.2, 11.2).
 // Every button carries `action_id` (an ApprovalAction or the card's choice) and `value` (the incident id).
 
-import type { ClaimedCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { ClaimedCard, FileConfirmCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TriageResolutionPlan } from '@snapwing/pipeline/contracts/incident.ts';
 import { actions, context, esc, mention, section, type ButtonSpec, type SlackBlock, type SlackMessage } from './blocks.ts';
 
@@ -117,6 +117,26 @@ export function buildClaimed(incidentId: string, card: ClaimedCard): SlackMessag
   };
 }
 
+/**
+ * main 15.3 (#377): a capture's lookup, "New. Looks like Website (from src/cart/total.ts). File it?" The
+ * capture adapter holds it for the CLI or Raycast; it is never posted in Slack and renders here so every
+ * card kind has a builder.
+ */
+export function buildFileConfirm(incidentId: string, card: FileConfirmCard): SlackMessage {
+  const from = card.evidence === undefined ? '' : ` (from \`${card.evidence.replace(/`/g, "'")}\`)`;
+  return {
+    text: `New. Looks like ${card.surfaceLabel}. File it?`,
+    blocks: [
+      section(`New. Looks like *${esc(card.surfaceLabel)}*${from}. File it?`),
+      actions('file_confirm_actions', [
+        { label: 'File it', actionId: 'file-it', value: incidentId, style: 'primary' },
+        { label: 'Not this surface', actionId: 'not-this-surface', value: incidentId },
+        { label: 'Cancel', actionId: 'cancel', value: incidentId },
+      ]),
+    ],
+  };
+}
+
 function plural(n: number, one: string): string {
   return `${n} ${one}${n === 1 ? '' : 's'}`;
 }
@@ -157,5 +177,7 @@ export function buildCard(incidentId: string, card: InteractiveCard, opts: CardO
       return buildClaimed(incidentId, card);
     case 'pr-ready':
       return buildPrReady(incidentId, card, opts);
+    case 'file-confirm':
+      return buildFileConfirm(incidentId, card);
   }
 }

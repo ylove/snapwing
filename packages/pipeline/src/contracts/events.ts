@@ -96,7 +96,9 @@ export type EventType =
   // A 5.2: the reporter's user-side check answered That fixed it (no ticket)
   | 'user-side'
   // Text signals after filing (A 3, #294)
-  | 'text-signal';
+  | 'text-signal'
+  // main 15.3, 15.4: a capture source's lookup ended with nothing filed (#377)
+  | 'capture-cancelled';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
 export const EVENT_TYPES = Object.freeze([
@@ -150,6 +152,7 @@ export const EVENT_TYPES = Object.freeze([
   'escalation-ladder',
   'user-side',
   'text-signal',
+  'capture-cancelled',
 ] as const satisfies readonly EventType[]);
 
 // Compile-time: EVENT_TYPES lists every member of EventType (the `satisfies` above rules out extras).
@@ -247,6 +250,8 @@ export interface CapturedPayload {
   channelId: string;
   threadId?: string;
   deepLink?: string;
+  /** A capture source's named surface (`CanonicalIncidentPayload.context.surfaceHint`, #377). */
+  surfaceHint?: string;
   /** Removed by the nightly retention job after the window (B 4); readers must tolerate its absence. */
   rawPayloadSnapshot?: Record<string, unknown>;
 }
@@ -535,7 +540,18 @@ export interface RevertedPayload {
  * option text of a clarify answer. `(string & {})` keeps the literals in editor completion.
  */
  
-export type TappedChoice = ApprovalAction | 'looks-right' | 'widen' | 'narrow' | 'link' | 'create-anyway' | 'not-related' | (string & {});
+export type TappedChoice =
+  | ApprovalAction
+  | 'looks-right'
+  | 'widen'
+  | 'narrow'
+  | 'link'
+  | 'create-anyway'
+  | 'not-related'
+  | 'file-it'
+  | 'not-this-surface'
+  | 'cancel'
+  | (string & {});
 
 /**
  * B 5 awaitInteractive: the button handler records the tap as an event. It never changes the status;
@@ -784,6 +800,7 @@ export interface EventPayloads {
   'escalation-ladder': EscalationLadderPayload;
   'user-side': UserSidePayload;
   'text-signal': TextSignalPayload;
+  'capture-cancelled': CaptureCancelledPayload;
 }
 
 // Compile-time: EventPayloads has exactly one entry per EventType.
@@ -856,4 +873,15 @@ export interface TextSignalPayload {
   expiresAt?: string;
   /** How a handoff was taken: a `claim` reaction or a yes in the thread. */
   via?: 'reaction' | 'message';
+}
+
+/**
+ * main 15.3, 15.4 (#377): a capture source's (Raycast, CLI) lookup ended with nothing filed and no Jira
+ * row: Cancel on `card` (the actor is who tapped), or `timedOut` when nobody answered it, since a capture
+ * has no thread where silence could go on. Terminal: the incident ends `not-filed`.
+ */
+export interface CaptureCancelledPayload {
+  /** The card that was waiting: the dedupe card, `file-confirm`, or the surface question (`clarify`). */
+  card: 'dedupe' | 'file-confirm' | 'clarify';
+  timedOut?: boolean;
 }

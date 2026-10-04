@@ -59,9 +59,9 @@ type Shape = Readonly<Record<string, Kind | `${Kind}?`>>;
  * their discriminant separately.
  */
 const PAYLOAD_SHAPES = {
-  captured: { kind: 'string', idempotencyKey: 'string', source: 'string', reporter: 'object', anchorAuthor: 'object?', anchorText: 'string', channelId: 'string', anchorId: 'string?', threadId: 'string?', parentId: 'string?', deepLink: 'string?', rawPayloadSnapshot: 'object?' },
+  captured: { kind: 'string', idempotencyKey: 'string', source: 'string', reporter: 'object', anchorAuthor: 'object?', anchorText: 'string', channelId: 'string', anchorId: 'string?', threadId: 'string?', parentId: 'string?', deepLink: 'string?', surfaceHint: 'string?', rawPayloadSnapshot: 'object?' },
   'context-assembled': { bundle: 'object', includedCount: 'number', excludedCount: 'number' },
-  resolved: { resolvedBy: 'string', confidence: 'number', surfaceId: 'string?', componentId: 'string?', ownerId: 'string?', repo: 'string?', jiraProject: 'string?' },
+  resolved: { resolvedBy: 'string', confidence: 'number', surfaceId: 'string?', componentId: 'string?', ownerId: 'string?', repo: 'string?', jiraProject: 'string?', evidence: 'object?' },
   'dedupe-checked': { candidates: 'array', decision: 'string' },
   clarified: { audience: 'string', question: 'string', asks: 'string?', options: 'array?', userSide: 'object?', answer: 'string?', timedOut: 'boolean' },
   planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?', plan: 'object?', degraded: 'string?' },
@@ -109,6 +109,7 @@ const PAYLOAD_SHAPES = {
   'escalation-ladder': { phase: 'string', ladder: 'string', step: 'number?', after: 'string?', mention: 'string?', mentioned: 'string?', channel: 'string?', pagerduty: 'string?', paged: 'boolean?', posted: 'boolean?', reason: 'string?' },
   'user-side': { kind: 'string', evidence: 'string', questionSeq: 'number', surfaceId: 'string?' },
   'text-signal': { kind: 'string', messageId: 'string', phase: 'string?', text: 'string?', confidence: 'number?', env: 'string?', from: 'string?', priority: 'object?', resolution: 'string?', where: 'string?', cardMessageId: 'string?', linkedIncidentId: 'string?', to: 'string?', expiresAt: 'string?', via: 'string?' },
+  'capture-cancelled': { card: 'string', timedOut: 'boolean?' },
 } as const satisfies { readonly [K in EventType]: Shape };
 
 /** Closed value sets for the discriminants and enums a typo would silently break. */
@@ -117,7 +118,7 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
   held: { kind: ['environment', 'gate'] },
   'fixer-checkpoint': { phase: ['cloned', 'branched', 'implemented', 'tested', 'pushed', 'pr-opened'] },
   'review-failed': { verdict: ['request-changes', 'escalate'] },
-  tapped: { card: ['scope-preview', 'dedupe', 'clarify', 'fix-preview'] },
+  tapped: { card: ['scope-preview', 'dedupe', 'clarify', 'fix-preview', 'file-confirm'] },
   'dedupe-checked': { decision: ['none', 'link', 'create-anyway', 'pending-user'] },
   'scope-changed': { choice: ['widen', 'narrow'] },
   'dedupe-decided': { decision: ['link', 'create-anyway', 'not-related'] },
@@ -129,6 +130,7 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
     phase: ['asked', 'confirmed', 'declined', 'proposed', 'split', 'same', 'accepted'],
     via: ['reaction', 'message'],
   },
+  'capture-cancelled': { card: ['dedupe', 'file-confirm', 'clarify'] },
 };
 
 function kindOf(value: unknown): Kind | 'null' | 'other' {

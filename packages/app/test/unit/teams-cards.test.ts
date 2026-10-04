@@ -117,6 +117,13 @@ describe('teams cards', () => {
     }
   });
 
+  it('file-confirm (#377, never posted in Teams): File it, Not this surface, Cancel, with the evidence', () => {
+    const c = buildCard(ID, { kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website', evidence: 'src/cart/total.ts' });
+    expect(verbs(c)).toEqual(['file-it', 'not-this-surface', 'cancel']);
+    expect(bodyText(c)).toContain('New. Looks like **Website** (from src/cart/total.ts). File it?');
+    expect(bodyText(buildCard(ID, { kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website' }))).toContain('Looks like **Website**. File it?');
+  });
+
   it('escapes markdown and markup in free text', () => {
     const c = buildCard(ID, { kind: 'scope-preview', summary: 'a <at>Bob</at> & **b** _c_' });
     expect(c.body[0]?.text).toBe('a &lt;at&gt;Bob&lt;/at&gt; & \\*\\*b\\*\\* \\_c\\_');
