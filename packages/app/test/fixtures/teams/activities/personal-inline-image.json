@@ -1,0 +1,22 @@
+{
+  "text": "",
+  "textFormat": "plain",
+  "type": "message",
+  "timestamp": "2026-10-03T11:05:00.000Z",
+  "id": "1790000200789",
+  "channelId": "msteams",
+  "serviceUrl": "https://smba.test/amer/",
+  "from": { "id": "29:1rae-reporter-teams-id", "name": "Rae Reporter", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000a001" },
+  "conversation": { "conversationType": "personal", "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1", "id": "a:1personal-chat-rae" },
+  "recipient": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "attachments": [
+    { "contentType": "image/*", "contentUrl": "https://smba.test/amer/v3/attachments/0-eus-d4-1a2b3c/views/original" },
+    {
+      "contentType": "text/html",
+      "content": "<div><div>\n<div><span><img height=\"250\" src=\"https://smba.test/amer/v3/attachments/0-eus-d4-1a2b3c/views/original\" width=\"400\" id=\"x_0\" itemscope=\"\" itemtype=\"http://schema.skype.com/AMSImage\" style=\"vertical-align:bottom; width:400px; height:250px\"></span>\n\n</div>\n</div>\n</div>"
+    }
+  ],
+  "entities": [{ "locale": "en-US", "country": "US", "platform": "iOS", "type": "clientInfo" }],
+  "channelData": { "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" } },
+  "locale": "en-US"
+}

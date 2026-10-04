@@ -1,0 +1,21 @@
+{
+  "membersAdded": [{ "id": "28:00000000-0000-4000-8000-0000000000b0" }],
+  "type": "conversationUpdate",
+  "timestamp": "2026-10-03T09:00:00.000Z",
+  "id": "f:3c2a91d0-0000-4000-8000-000000000009",
+  "channelId": "msteams",
+  "serviceUrl": "https://smba.test/amer/",
+  "from": { "id": "29:1sam-engineer-teams-id", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000e001" },
+  "conversation": {
+    "isGroup": true,
+    "conversationType": "channel",
+    "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1",
+    "id": "19:general0a7e9d2b4c1a@thread.tacv2"
+  },
+  "recipient": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "channelData": {
+    "team": { "aadGroupId": "2b9e4c7d-0000-4000-8000-0000000000a1", "name": "Web", "id": "19:general0a7e9d2b4c1a@thread.tacv2" },
+    "eventType": "teamMemberAdded",
+    "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" }
+  }
+}
