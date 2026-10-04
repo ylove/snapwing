@@ -1,0 +1,735 @@
+// Teams interactivity (#391; main 8.2, 11.2, 15.2, 16; A 2.1, A 2.2; B 5). `adaptiveCard/action` invokes
+// as Teams sends them for taps on cards the #372 builders made and the remembering connector posted on
+// MSW, over a real state store (SNAPWING_DB picks the dialect), the real `stopIncident` and
+// `answerMidFlight`; the orchestrator and the PR actions are recording fakes.
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { http, HttpResponse } from 'msw';
+import { setupServer } from 'msw/node';
+import type { EventPayloads, EventType, IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
+import type { TapInput, TapOutcome } from '@snapwing/pipeline/engine/orchestrator.ts';
+import { answerMidFlight, type MidFlightDeps } from '@snapwing/pipeline/fixer/claims.ts';
+import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
+import { PrActionRefusedError } from '@snapwing/pipeline/merge/actions.ts';
+import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
+import type { StateStore } from '@snapwing/pipeline/state/store.ts';
+import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
+import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
+import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import { JIRA_RESOLUTION_WONT_DO } from '../../src/adapters/shared/taps.ts';
+import { cardActivity } from '../../src/adapters/teams/adapter.ts';
+import { buildCard, type TeamsCardInput } from '../../src/adapters/teams/cards/cards.ts';
+import type { AdaptiveCard, ExecuteAction } from '../../src/adapters/teams/cards/elements.ts';
+import { buildStatusCard, makeStatusUpdate } from '../../src/adapters/teams/cards/status.ts';
+import { createTeamsConnector, type TeamsConnector } from '../../src/adapters/teams/connector.ts';
+import {
+  createKvTeamsCardStore,
+  createTeamsInteractivity,
+  rememberTeamsCards,
+  teamsCardKey,
+  type PrActionInput,
+  type TeamsCardStore,
+  type TeamsInteractivity,
+} from '../../src/adapters/teams/interactivity.ts';
+
+const T0 = Date.parse('2026-10-03T09:00:00.000Z');
+const WS = '01K6WORKSPACE0000000000000';
+const INC = '01K6TEAMSTAP0000000000001';
+const UNKNOWN_INC = '01K6TEAMSTAP0000000000999';
+const APP_ID = '00000000-0000-4000-8000-0000000000b0';
+const CHANNEL = '19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2';
+const ROOT = '1790000100123';
+const THREAD = `${CHANNEL};messageid=${ROOT}`;
+const SERVICE_URL = 'https://smba.test/amer/';
+const V3 = 'https://smba.test/amer/v3';
+const RAE = '6f1c2a3b-0000-4000-8000-00000000a001'; // reporter
+const SAM = '6f1c2a3b-0000-4000-8000-00000000e001'; // engineer, primary owner of web
+const MO = '6f1c2a3b-0000-4000-8000-00000000e002'; // another engineer
+const STRANGER = '6f1c2a3b-0000-4000-8000-00000000f001';
+const RUN = 'run-1';
+
+const map: WorkspaceMap = {
+  org: 'Example',
+  updated: '2026-10-03T00:00:00Z',
+  surfaces: [],
+  channels: [{ id: CHANNEL, name: 'web-bugs', surface: 'web', platform: 'teams', teamId: '2b9e4c7d-0000-4000-8000-0000000000a1', triggerEmoji: [] }],
+  triggers: { messageActions: [{ label: 'Fix it from here' }], emoji: [{ slack: 'bug', teams: 'bug' }], directMessage: { images: true, text: true } },
+  vocabulary: [],
+  people: [
+    { teamsId: RAE, handle: 'rae', role: 'reporter', owns: [] },
+    { teamsId: SAM, handle: 'sam', role: 'engineer', owns: [{ surface: 'web', primary: true }] },
+    { teamsId: MO, handle: 'mo', role: 'engineer', owns: [] },
+    // A Slack-only engineer is never the Teams approver.
+    { slackId: 'U0WEBDEV1', handle: 'webDev1', role: 'engineer', owns: [{ surface: 'web', component: 'nav', primary: true }] },
+  ],
+  policies: { autonomy: { default: 1, levels: [], overrides: [] } },
+};
+
+// Bot Connector on MSW ------------------------------------------------------------------------------
+
+interface Seen {
+  method: string;
+  path: string;
+  body: Record<string, unknown>;
+}
+let seen: Seen[] = [];
+let nextId = 0;
+
+async function capture(request: Request): Promise<Record<string, unknown>> {
+  const body = (await request.json()) as Record<string, unknown>;
+  seen.push({ method: request.method, path: decodeURIComponent(new URL(request.url).pathname), body });
+  return body;
+}
+
+const server = setupServer(
+  http.post(`${V3}/conversations/:conversation/activities`, async ({ request }) => {
+    await capture(request);
+    return HttpResponse.json({ id: `17900009000${String(++nextId).padStart(2, '0')}` });
+  }),
+  http.post(`${V3}/conversations/:conversation/activities/:activityId`, async ({ request }) => {
+    await capture(request);
+    return HttpResponse.json({ id: `17900009000${String(++nextId).padStart(2, '0')}` });
+  }),
+  http.put(`${V3}/conversations/:conversation/activities/:activityId`, async ({ request, params }) => {
+    await capture(request);
+    return HttpResponse.json({ id: String(params['activityId']) });
+  }),
+);
+beforeAll(() => server.listen());
+afterAll(() => server.close());
+
+// World -----------------------------------------------------------------------------------------------
+
+/** The store's kv as the cache port (openState returns a StateStore). */
+const kvOf = (s: OpenedState) => createKvCache(s as unknown as StateStore);
+
+let tdb: TestDatabase;
+let state: OpenedState;
+let now: number;
+let taps: TapInput[];
+let tapOutcome: TapOutcome;
+let cancelled: string[];
+let assigned: string[];
+let prCalls: { action: string; input: PrActionInput }[];
+let prBehavior: (action: string) => Promise<void>;
+let linked: Set<string>;
+let store: TeamsCardStore;
+let connector: TeamsConnector;
+let ix: TeamsInteractivity;
+let outcomes: unknown[];
+let errors: unknown[];
+
+function make(over: { editAfterMs?: number } = {}): TeamsInteractivity {
+  const deps: MidFlightDeps = {
+    workspaceId: WS,
+    state,
+    workflow: new InProcessWorkflow(state),
+    runner: { runFixer: () => Promise.reject(new Error('not in this test')), cancel: (id) => (cancelled.push(id), Promise.resolve()) },
+    github: { markIncomplete: () => Promise.resolve(), closePr: () => Promise.resolve() },
+    config: { harness: { adapter: 'claude-code' } },
+    clock: () => new Date(now),
+    ports: {
+      postCard: () => Promise.resolve(),
+      notify: () => Promise.resolve(),
+      assign: (_incident, claimer) => (assigned.push(claimer), Promise.resolve()),
+    },
+  };
+  const record = (action: string) => async (input: PrActionInput) => {
+    prCalls.push({ action, input });
+    await prBehavior(action);
+  };
+  return createTeamsInteractivity({
+    connector,
+    cache: kvOf(state),
+    cardStore: store,
+    state,
+    workspaceId: WS,
+    orchestrator: {
+      // The real orchestrator refuses a tap on an incident it has no log for.
+      handleTap: async (tap) => {
+        if ((await state.getIncident(tap.eventId)) === null) return { accepted: false, reason: 'not-pending' };
+        taps.push(tap);
+        return tapOutcome;
+      },
+    },
+    stopIncident: (input) => stopIncident(deps, input),
+    prActions: { merge: record('merge'), requestChanges: record('request_changes'), revert: record('revert') },
+    midFlight: (input) => answerMidFlight(deps, input),
+    getMap: () => Promise.resolve(map),
+    githubLinked: (aad) => linked.has(aad),
+    clock: () => new Date(now),
+    onOutcome: (o) => outcomes.push(o),
+    onError: (e) => errors.push(e),
+    ...over,
+  });
+}
+
+beforeEach(async () => {
+  tdb = await createTestDatabase();
+  now = T0;
+  state = await tdb.open({ now: () => new Date(now) });
+  seen = [];
+  nextId = 0;
+  taps = [];
+  tapOutcome = { accepted: true, resumed: true };
+  cancelled = [];
+  assigned = [];
+  prCalls = [];
+  prBehavior = () => Promise.resolve();
+  linked = new Set();
+  outcomes = [];
+  errors = [];
+  store = createKvTeamsCardStore(kvOf(state));
+  connector = rememberTeamsCards(createTeamsConnector({ token: () => Promise.resolve('teams-test-token'), botId: APP_ID }), store);
+  ix = make();
+});
+
+afterEach(async () => {
+  server.resetHandlers();
+  await tdb.drop();
+});
+
+// Log ---------------------------------------------------------------------------------------------
+
+function ev<T extends EventType>(type: T, payload: EventPayloads[T], actor?: { id: string; role: 'engineer' | 'reporter' }): NewEvent<T> {
+  return {
+    workspaceId: WS,
+    incidentId: INC,
+    type,
+    v: 1,
+    source: 'agent',
+    occurredAt: new Date(now).toISOString(),
+    payload,
+    ...(actor === undefined ? {} : { actor }),
+  } as unknown as NewEvent<T>;
+}
+
+async function append(events: NewEvent[]): Promise<void> {
+  const last = (await state.read(INC)).at(-1)?.seq ?? 0;
+  await state.append(INC, events, last);
+}
+
+/** Captured from Rae's action command on web, planned at `level`. */
+async function seedPlanned(level: 0 | 1 | 2 | 3): Promise<void> {
+  await append([
+    ev('captured', {
+      kind: 'incident',
+      idempotencyKey: `teams-${CHANNEL}-${ROOT}-action`,
+      source: 'teams',
+      reporter: { id: RAE, name: 'Rae Reporter', role: 'reporter' },
+      anchorText: 'the total shows NaN after a promo code',
+      anchorId: ROOT,
+      channelId: CHANNEL,
+      rawPayloadSnapshot: { type: 'action-command' },
+    }),
+    ev('context-assembled', { bundle: { artifactId: '01K6BUNDLE00000000000000001', version: 1 }, includedCount: 2, excludedCount: 0 }),
+    ev('resolved', { surfaceId: 'web', componentId: 'cart', repo: 'github.com/acme/web', resolvedBy: 'channel-explicit', confidence: 0.9 }),
+    ev('dedupe-checked', { candidates: [], decision: 'none' }),
+    ev('planned', {
+      action: 'create_issue',
+      projectKey: 'WEB',
+      issueType: 'Bug',
+      summary: 'Cart total is NaN after a promo code',
+      priority: 'High',
+      labels: ['snapwing'],
+      autonomyLevel: level,
+      implementationRequest: { artifactId: '01K6REQUEST000000000000001', version: 1 },
+    }),
+  ]);
+}
+
+async function seedFixing(level: 1 | 2 | 3): Promise<void> {
+  await seedPlanned(level);
+  await append([ev('filed', { jiraKey: 'WEB-1042' }), ev('fixer-started', { runId: RUN, harness: 'claude-code', attempt: 1 })]);
+}
+
+async function seedPrOpen(level: 1 | 2 | 3): Promise<void> {
+  await seedFixing(level);
+  await append([
+    ev('fixer-done', { prNumber: 77, branch: 'fix/WEB-1042', summary: 'Recompute the total', testsAdded: [] }),
+    ev('pr-opened', { prNumber: 77, branch: 'fix/WEB-1042' }),
+  ]);
+}
+
+/** Filed at level 1 and claimed by Sam before any fixer: the claim card waits (A 2.1). */
+async function seedClaimed(): Promise<void> {
+  await seedPlanned(1);
+  await append([
+    ev('filed', { jiraKey: 'WEB-1042' }),
+    ev('waiting-changed', {}),
+    ev('claimed', { claimerId: SAM, expiresAt: new Date(T0 + 4 * 3_600_000).toISOString() }, { id: SAM, role: 'engineer' }),
+    ev('waiting-changed', { waitingOn: { kind: 'human', who: SAM } }),
+  ]);
+}
+
+async function types(): Promise<EventType[]> {
+  return (await state.read(INC)).map((e) => e.type);
+}
+
+async function lastOf<T extends EventType>(type: T): Promise<IncidentEvent<T> | undefined> {
+  return (await state.read(INC)).filter((e) => e.type === type).at(-1) as IncidentEvent<T> | undefined;
+}
+
+// Cards and invokes ---------------------------------------------------------------------------------
+
+const PEOPLE: Readonly<Record<string, string>> = { [RAE]: 'Rae Reporter', [SAM]: 'Sam Engineer', [MO]: 'Mo Engineer', [STRANGER]: 'Stranger Danger' };
+
+const scope: TeamsCardInput = { kind: 'scope-preview', summary: 'Reading 4 messages from the thread.' };
+const dedupe: TeamsCardInput = { kind: 'dedupe', issueKey: 'WEB-9', summary: 'Cart total wrong' };
+const clarify: TeamsCardInput = {
+  kind: 'clarify',
+  question: { audience: 'reporter', text: 'Which page?', options: ['Cart', 'Checkout'], asks: 'surface', gatePassed: true, gateFailures: [] },
+};
+function fixPreview(level: 1 | 2 | 3): TeamsCardInput {
+  return {
+    kind: 'fix-preview',
+    ownerUserId: SAM,
+    plan: {
+      action: 'create_issue',
+      projectKey: 'WEB',
+      issueType: 'Bug',
+      summary: 'Cart total is NaN after a promo code',
+      descriptionAdf: { type: 'doc', version: 1, content: [] },
+      priority: 'High',
+      labels: ['snapwing'],
+      autonomyLevel: level,
+    },
+  };
+}
+const claimed: TeamsCardInput = { kind: 'claimed', issueKey: 'WEB-1042', claimerUserId: SAM };
+const prReady: TeamsCardInput = {
+  kind: 'pr-ready',
+  prNumber: 77,
+  prUrl: 'https://github.com/acme/web/pull/77',
+  issueKey: 'WEB-1042',
+  reviewVerdict: 'approve',
+  ciState: 'green',
+  filesChanged: 1,
+  additions: 3,
+  deletions: 1,
+  reviewerUserIds: [SAM],
+};
+const midFlight: TeamsCardInput = {
+  kind: 'mid-flight',
+  issueKey: 'WEB-1042',
+  claimerUserId: SAM,
+  runId: RUN,
+  runAgeMs: 240_000,
+  branch: 'fix/WEB-1042',
+  choices: ['let-it-finish', 'stop-it'],
+  grace: 'PT10M',
+};
+
+function build(input: TeamsCardInput, incidentId = INC): AdaptiveCard {
+  return buildCard(incidentId, input, { canMerge: true });
+}
+
+/** Posts `card` in the incident's thread through the remembering connector; the card's activity id. */
+async function post(card: AdaptiveCard): Promise<string> {
+  const out = await connector.replyToActivity({ serviceUrl: SERVICE_URL, conversationId: CHANNEL, activityId: ROOT, threadRootId: ROOT }, cardActivity(card));
+  seen = [];
+  return out.id;
+}
+
+function executeAction(card: AdaptiveCard, verb: string): ExecuteAction {
+  const action = card.actions?.find((a): a is ExecuteAction => a.type === 'Action.Execute' && a.verb === verb);
+  if (action === undefined) throw new Error(`no ${verb} on the card`);
+  return action;
+}
+
+/** An `adaptiveCard/action` invoke as Teams sends it for a tap by `user` on the card in `replyToId`. */
+function invoke(user: string, action: Pick<ExecuteAction, 'verb' | 'data'> & { title?: string }, replyToId: string | undefined): Record<string, unknown> {
+  return {
+    name: 'adaptiveCard/action',
+    type: 'invoke',
+    timestamp: new Date(now).toISOString(),
+    id: 'f:invoke-0001',
+    channelId: 'msteams',
+    serviceUrl: SERVICE_URL,
+    from: { id: `29:${user}`, name: PEOPLE[user] ?? 'Someone', aadObjectId: user },
+    conversation: { isGroup: true, conversationType: 'channel', tenantId: '7a0d5e6f-0000-4000-8000-0000000000c1', id: THREAD },
+    recipient: { id: `28:${APP_ID}`, name: 'Snapwing' },
+    ...(replyToId === undefined ? {} : { replyToId }),
+    channelData: { channel: { id: CHANNEL }, tenant: { id: '7a0d5e6f-0000-4000-8000-0000000000c1' }, source: { name: 'message' } },
+    value: { action: { type: 'Action.Execute', ...(action.title === undefined ? {} : { title: action.title }), verb: action.verb, data: action.data }, trigger: 'manual' },
+  };
+}
+
+/** Posts the card, then taps `verb` on it as `user`. */
+async function tapOn(user: string, input: TeamsCardInput, verb: string) {
+  const card = build(input);
+  const id = await post(card);
+  const result = await ix.handleInvoke(invoke(user, executeAction(card, verb), id));
+  return { card, id, outcome: result.outcome, response: result.card };
+}
+
+/** The card the invoke is answered with (the transport, #390, puts it in the Universal Actions response). */
+function answeredCard(answer: AdaptiveCard | undefined): AdaptiveCard {
+  if (answer === undefined) throw new Error('answered with no card');
+  return answer;
+}
+
+const lastLine = (c: AdaptiveCard): string | undefined => c.body.at(-1)?.text;
+const mentioned = (c: AdaptiveCard): string[] => (c.msteams?.entities ?? []).map((e) => e.mentioned.id);
+
+// Card choices ------------------------------------------------------------------------------------
+
+describe('card choices go to handleTap with the tapper resolved by AAD object id', () => {
+  const cases: { input: TeamsCardInput; card: string; verb: string; label: string }[] = [
+    { input: scope, card: 'scope-preview', verb: 'looks-right', label: 'Looks right' },
+    { input: scope, card: 'scope-preview', verb: 'widen', label: 'Widen' },
+    { input: scope, card: 'scope-preview', verb: 'narrow', label: 'Narrow' },
+    { input: dedupe, card: 'dedupe', verb: 'link', label: 'Link this thread to WEB-9' },
+    { input: dedupe, card: 'dedupe', verb: 'create-anyway', label: 'Create new anyway' },
+    { input: dedupe, card: 'dedupe', verb: 'not-related', label: 'Not related' },
+    { input: clarify, card: 'clarify', verb: 'Checkout', label: 'Checkout' },
+    { input: fixPreview(1), card: 'fix-preview', verb: 'ticket_only', label: 'Ticket only' },
+    { input: fixPreview(1), card: 'fix-preview', verb: 'dismiss', label: 'Not a bug' },
+  ];
+
+  for (const c of cases) {
+    it(`${c.card}: ${c.verb}`, async () => {
+      await seedPlanned(1);
+      const { outcome, response, card, id } = await tapOn(RAE, c.input, c.verb);
+      expect(outcome).toEqual({ kind: 'tapped', card: c.card, choice: c.verb, outcome: { accepted: true, resumed: true } });
+      expect(taps).toEqual([{ eventId: INC, card: c.card, choice: c.verb, actor: { id: RAE, role: 'reporter' } }]);
+      // The answer is the card refreshed: its body, then who chose what in place of the buttons.
+      const refreshed = answeredCard(response);
+      expect(refreshed.actions).toBeUndefined();
+      expect(refreshed.body.slice(0, card.body.length)).toEqual(card.body);
+      expect(lastLine(refreshed)).toBe(`<at>rae</at> chose ${c.label}.`);
+      expect(mentioned(refreshed)).toContain(RAE);
+      // The remembered card is the refreshed one, and nothing was posted (Teams has no ephemeral).
+      expect(await store.get(THREAD, id)).toEqual(refreshed);
+      expect(seen).toEqual([]);
+    });
+  }
+
+  it('an engineer taps Fix it at level 1', async () => {
+    await seedPlanned(1);
+    const { outcome } = await tapOn(SAM, fixPreview(1), 'approve_fix');
+    expect(outcome).toMatchObject({ kind: 'tapped', card: 'fix-preview', choice: 'approve_fix' });
+    expect(taps).toEqual([{ eventId: INC, card: 'fix-preview', choice: 'approve_fix', actor: { id: SAM, role: 'engineer' } }]);
+  });
+
+  it('the claim card: Let the agent take it, and Not a bug while the claim card waits', async () => {
+    await seedClaimed();
+    expect((await tapOn(SAM, claimed, 'let-agent-take')).outcome).toMatchObject({ kind: 'tapped', card: 'claimed', choice: 'let-agent-take' });
+    expect((await tapOn(MO, claimed, 'dismiss')).outcome).toMatchObject({ kind: 'tapped', card: 'claimed', choice: 'dismiss' });
+    expect(taps.map((t) => [t.card, t.choice, t.actor.id])).toEqual([
+      ['claimed', 'let-agent-take', SAM],
+      ['claimed', 'dismiss', MO],
+    ]);
+  });
+
+  it('a person outside the map is an unknown role, named from the activity', async () => {
+    await seedPlanned(1);
+    const { response } = await tapOn(STRANGER, scope, 'looks-right');
+    expect(taps[0]?.actor).toEqual({ id: STRANGER, role: 'unknown' });
+    expect(lastLine(answeredCard(response))).toBe('<at>Stranger Danger</at> chose Looks right.');
+  });
+
+  it('a tap on a card that is no longer waiting answers with the same card and the reason; the buttons stay', async () => {
+    await seedPlanned(1);
+    tapOutcome = { accepted: false, reason: 'not-pending' };
+    const { outcome, response, card, id } = await tapOn(RAE, dedupe, 'create-anyway');
+    expect(outcome).toMatchObject({ kind: 'tapped', outcome: { accepted: false, reason: 'not-pending' } });
+    const answered = answeredCard(response);
+    expect(answered.actions).toEqual(card.actions);
+    expect(answered.body).toEqual([...card.body, expect.objectContaining({ text: 'This card already has an answer.' })]);
+    // The remembered card is still the original, so a second refusal shows one reason, not two.
+    expect(await store.get(THREAD, id)).toEqual(card);
+  });
+
+  it('without a remembered card: an accepted tap answers with the line alone, a refused one leaves the card', async () => {
+    await seedPlanned(1);
+    const card = build(scope);
+    const accepted = await ix.handleInvoke(invoke(RAE, { ...executeAction(card, 'looks-right'), title: 'Looks right' }, undefined));
+    expect(answeredCard(accepted.card).body.map((b) => b.text)).toEqual(['<at>rae</at> chose Looks right.']);
+    tapOutcome = { accepted: false, reason: 'not-pending' };
+    const refused = await ix.handleInvoke(invoke(RAE, executeAction(card, 'widen'), '1790000999999'));
+    expect(refused).toEqual({ outcome: expect.objectContaining({ kind: 'tapped', outcome: { accepted: false, reason: 'not-pending' } }) });
+  });
+});
+
+// Authorization -----------------------------------------------------------------------------------
+
+describe('authorization (main 8.2, 11.2, 16)', () => {
+  it("a reporter's Fix it reposts the card in the thread mentioning the owner, and says so on the card", async () => {
+    await seedPlanned(1);
+    const { outcome, response, card } = await tapOn(RAE, fixPreview(1), 'approve_fix');
+    expect(outcome).toEqual({ kind: 'denied', action: 'approve_fix', reason: 'engineer-required', askedOwner: SAM });
+    expect(taps).toEqual([]);
+    // The tapper's answer: the same card, buttons kept, with the line.
+    const answered = answeredCard(response);
+    expect(answered.actions).toEqual(card.actions);
+    expect(lastLine(answered)).toBe("I've asked <at>sam</at> to approve.");
+    expect(mentioned(answered)).toContain(SAM);
+    // The repost: a reply in the thread, led by the owner's mention, keeping the buttons.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.path).toBe(`/amer/v3/conversations/${THREAD}/activities/${ROOT}`);
+    const repost = (seen[0]?.body['attachments'] as { content: AdaptiveCard }[])[0]?.content;
+    expect(repost?.body[0]?.text).toBe('<at>sam</at>, <at>rae</at> asked for a fix. Tap Fix it to approve.');
+    expect(repost?.body.slice(1)).toEqual(card.body);
+    expect(repost?.actions).toEqual(card.actions);
+    expect(mentioned(repost as AdaptiveCard)).toEqual(expect.arrayContaining([SAM, RAE]));
+    // Recorded as the fix preview (A 1.3) and remembered, so Sam's tap on it is answered in place.
+    const posted = await lastOf('bot-message-posted');
+    expect(posted?.payload).toMatchObject({ platform: 'teams', channel: CHANNEL, role: 'fix-preview' });
+    const repostId = (posted?.payload as { messageId: string }).messageId;
+    expect(await store.get(THREAD, repostId)).toEqual(repost);
+    const bySam = await ix.handleInvoke(invoke(SAM, executeAction(card, 'approve_fix'), repostId));
+    expect(bySam.outcome).toMatchObject({ kind: 'tapped', choice: 'approve_fix' });
+    expect(lastLine(answeredCard(bySam.card))).toBe('<at>sam</at> chose Fix it.');
+  });
+
+  it('a merge without a Teams-linked GitHub identity is refused and never reaches the PR actions', async () => {
+    await seedPrOpen(2);
+    const { outcome, response, card } = await tapOn(SAM, prReady, 'merge');
+    expect(outcome).toEqual({ kind: 'denied', action: 'merge', reason: 'linked-identity-required' });
+    expect(prCalls).toEqual([]);
+    const answered = answeredCard(response);
+    expect(lastLine(answered)).toMatch(/Link your GitHub account/);
+    expect(answered.actions).toEqual(card.actions);
+  });
+
+  it('a linked engineer merges, requests changes, and reverts as themselves', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    expect((await tapOn(SAM, prReady, 'merge')).outcome).toEqual({ kind: 'pr-action', action: 'merge', incidentId: INC });
+    expect((await tapOn(SAM, prReady, 'request_changes')).outcome).toMatchObject({ kind: 'pr-action', action: 'request_changes' });
+    const status = buildStatusCard(INC, { ...makeStatusUpdate('merged', { issueKey: 'WEB-1042' }), actions: ['revert'] });
+    const statusId = await post(status);
+    const reverted = await ix.handleInvoke(invoke(SAM, executeAction(status, 'revert'), statusId));
+    expect(reverted.outcome).toMatchObject({ kind: 'pr-action', action: 'revert' });
+    const input = { incidentId: INC, actor: { id: SAM, role: 'engineer' }, prNumber: 77, repo: 'github.com/acme/web' };
+    expect(prCalls).toEqual([
+      { action: 'merge', input },
+      { action: 'request_changes', input },
+      { action: 'revert', input },
+    ]);
+    expect(lastLine(answeredCard(reverted.card))).toBe('<at>sam</at> reverted this.');
+  });
+
+  it('a merge GitHub refuses (the link went dead) leaves the buttons and links to relinking', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    prBehavior = () =>
+      Promise.reject(
+        new PrActionRefusedError({
+          done: false,
+          action: 'merge',
+          reason: 'not-linked',
+          message: 'Your GitHub link has expired.',
+          linkUrl: 'https://snapwing.test/auth/github/start',
+        }),
+      );
+    const { outcome, response, card } = await tapOn(SAM, prReady, 'merge');
+    expect(outcome).toEqual({ kind: 'pr-refused', action: 'merge', incidentId: INC, reason: 'not-linked' });
+    const answered = answeredCard(response);
+    expect(answered.actions).toEqual(card.actions);
+    expect(lastLine(answered)).toBe('Your GitHub link has expired. Link your GitHub account: https://snapwing.test/auth/github/start');
+  });
+
+  it('a reporter cannot request changes, even when linked', async () => {
+    await seedPrOpen(2);
+    linked.add(RAE);
+    expect((await tapOn(RAE, prReady, 'request_changes')).outcome).toEqual({ kind: 'denied', action: 'request_changes', reason: 'engineer-required' });
+    expect(prCalls).toEqual([]);
+  });
+});
+
+// Stop --------------------------------------------------------------------------------------------
+
+describe('stop and dismiss through stopIncident (main 8.2)', () => {
+  it('Stop on the level 3 fix preview: stopped by the tapper from Teams, the run cancelled', async () => {
+    await seedFixing(3);
+    const { outcome, response } = await tapOn(RAE, fixPreview(3), 'stop');
+    expect(outcome).toEqual({ kind: 'stopped', incidentId: INC, outcome: { stopped: true, cancelledRun: RUN } });
+    const stopped = await lastOf('stopped');
+    expect(stopped?.actor).toEqual({ id: RAE, role: 'reporter' });
+    expect(stopped?.source).toBe('teams');
+    expect(cancelled).toEqual([RUN]);
+    expect(taps).toEqual([]);
+    expect(lastLine(answeredCard(response))).toBe('<at>rae</at> stopped this.');
+  });
+
+  it("Not a bug at level 2 is a Stop plus a Won't Do close through the outbox", async () => {
+    await seedFixing(2);
+    const { outcome, response } = await tapOn(RAE, fixPreview(2), 'dismiss');
+    expect(outcome).toEqual({ kind: 'stopped', incidentId: INC, outcome: { stopped: true, cancelledRun: RUN }, wontDo: true });
+    expect((await types()).slice(-2)).toEqual(['stopped', 'not-a-bug']);
+    expect((await lastOf('not-a-bug'))?.source).toBe('teams');
+    const transitions = (await state.drainOutbox('jira', 100)).filter((r) => r.op === 'transition').map((r) => r.payload);
+    expect(transitions).toContainEqual({ issueKey: 'WEB-1042', to: 'done', resolution: JIRA_RESOLUTION_WONT_DO });
+    expect(lastLine(answeredCard(response))).toBe('<at>rae</at> marked this Not a bug.');
+  });
+
+  it('Stop on the status message at level 1 with nothing running is refused', async () => {
+    await seedPlanned(1);
+    const status = buildStatusCard(INC, { ...makeStatusUpdate('filed', { issueKey: 'WEB-1042' }), actions: ['stop'] });
+    const id = await post(status);
+    const { outcome, card: response } = await ix.handleInvoke(invoke(SAM, executeAction(status, 'stop'), id));
+    expect(outcome).toEqual({ kind: 'denied', action: 'stop', reason: 'nothing-to-stop' });
+    expect(await types()).not.toContain('stopped');
+    expect(lastLine(answeredCard(response))).toBe('Nothing is running for this incident yet.');
+  });
+});
+
+// Mid-flight --------------------------------------------------------------------------------------
+
+describe('the mid-flight card through answerMidFlight (A 2.2)', () => {
+  it('Let it finish', async () => {
+    await seedFixing(2);
+    const { outcome, response } = await tapOn(SAM, midFlight, 'let_it_finish');
+    expect(outcome).toEqual({ kind: 'mid-flight', incidentId: INC, answer: { accepted: true, choice: 'let-it-finish' } });
+    expect(lastLine(answeredCard(response))).toBe('<at>sam</at> chose Let it finish. The fixer keeps going.');
+    expect(cancelled).toEqual([]);
+  });
+
+  it("Stop it, I'll take over: the run stops and the claimer is assigned", async () => {
+    await seedFixing(2);
+    const { outcome, response } = await tapOn(SAM, midFlight, 'stop_it');
+    expect(outcome).toMatchObject({ kind: 'mid-flight', answer: { accepted: true, choice: 'stop-it', stop: { stopped: true } } });
+    expect(cancelled).toEqual([RUN]);
+    expect(assigned).toEqual([SAM]);
+    expect(lastLine(answeredCard(response))).toBe('<at>sam</at> stopped the fixer. The branch stays for <at>sam</at>, who has the ticket.');
+  });
+
+  it('a tap after the run ended is refused on the card', async () => {
+    await seedPrOpen(2);
+    const { outcome, response, card } = await tapOn(SAM, midFlight, 'stop_it');
+    expect(outcome).toEqual({ kind: 'mid-flight', incidentId: INC, answer: { accepted: false, reason: 'run-finished' } });
+    expect(cancelled).toEqual([]);
+    const answered = answeredCard(response);
+    expect(answered.actions).toEqual(card.actions);
+    expect(lastLine(answered)).toBe('That fixer run has already finished.');
+  });
+
+  it('a reporter cannot answer it', async () => {
+    await seedFixing(2);
+    expect((await tapOn(RAE, midFlight, 'stop_it')).outcome).toMatchObject({ answer: { accepted: false, reason: 'engineer-required' } });
+  });
+});
+
+// Unknown incidents and other invokes -----------------------------------------------------------
+
+describe('a tap on an unknown incident, and invokes that are not taps', () => {
+  it('Stop, a PR button, and a card choice on an incident with no log change nothing', async () => {
+    const stop = buildStatusCard(UNKNOWN_INC, { ...makeStatusUpdate('fixing', { issueKey: 'WEB-1' }), actions: ['stop'] });
+    const stopId = await post(stop);
+    const stopped = await ix.handleInvoke(invoke(SAM, executeAction(stop, 'stop'), stopId));
+    expect(stopped.outcome).toEqual({ kind: 'ignored', reason: 'unknown-incident' });
+    expect(lastLine(answeredCard(stopped.card))).toBe('This card already has an answer.');
+
+    linked.add(SAM);
+    const pr = build(prReady, UNKNOWN_INC);
+    const merged = await ix.handleInvoke(invoke(SAM, executeAction(pr, 'merge'), await post(pr)));
+    expect(merged.outcome).toEqual({ kind: 'ignored', reason: 'unknown-incident' });
+
+    const fix = build(fixPreview(1), UNKNOWN_INC);
+    const dismissed = await ix.handleInvoke(invoke(SAM, executeAction(fix, 'dismiss'), await post(fix)));
+    expect(dismissed.outcome).toEqual({ kind: 'tapped', card: 'fix-preview', choice: 'dismiss', outcome: { accepted: false, reason: 'not-pending' } });
+    expect(lastLine(answeredCard(dismissed.card))).toBe('This card already has an answer.');
+    expect(prCalls).toEqual([]);
+    expect(cancelled).toEqual([]);
+    expect(await state.read(UNKNOWN_INC)).toEqual([]);
+  });
+
+  it('ignores other activities, Action.Submit, malformed taps, and the text-signal cards', async () => {
+    expect((await ix.handleInvoke({ type: 'message', text: 'hi' })).outcome).toEqual({ kind: 'ignored', reason: 'not-a-card-action' });
+    const submit = invoke(SAM, { verb: 'stop', data: { incidentId: INC } }, undefined);
+    (submit['value'] as { action: { type: string } }).action.type = 'Action.Submit';
+    expect((await ix.handleInvoke(submit)).outcome).toEqual({ kind: 'ignored', reason: 'not-execute' });
+    expect((await ix.handleInvoke(invoke(SAM, { verb: 'stop', data: { incidentId: '' } }, undefined))).outcome).toEqual({ kind: 'ignored', reason: 'malformed' });
+    const resolution = buildCard(INC, {
+      kind: 'resolution',
+      userId: RAE,
+      issueKey: 'WEB-1042',
+      resolution: 'Cannot Reproduce',
+      messageId: '1790000100555',
+      text: 'Close WEB-1042 as Cannot Reproduce?',
+      choices: ['close', 'keep-open'],
+    });
+    const id = await post(resolution);
+    const out = await ix.handleInvoke(invoke(RAE, executeAction(resolution, 'close'), id));
+    expect(out.outcome).toEqual({ kind: 'ignored', reason: 'text-signal-card' });
+    expect(answeredCard(out.card)).toEqual(resolution);
+    expect(taps).toEqual([]);
+  });
+});
+
+// onAction, the transport's handler --------------------------------------------------------------
+
+describe('onAction, as the transport (#390) calls it', () => {
+  it('a fast tap resolves to its card, is reported to onOutcome, and edits nothing', async () => {
+    await seedPlanned(1);
+    const card = build(scope);
+    const id = await post(card);
+    const answer = await ix.onAction(invoke(RAE, executeAction(card, 'looks-right'), id));
+    expect(lastLine(answeredCard(answer))).toBe('<at>rae</at> chose Looks right.');
+    expect(outcomes).toEqual([expect.objectContaining({ kind: 'tapped', card: 'scope-preview' })]);
+    expect(seen).toEqual([]);
+  });
+
+  it('a slow merge also edits its card in place, since the transport answered "Working on it"', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    ix = make({ editAfterMs: 20 });
+    prBehavior = () => new Promise<void>((resolve) => setTimeout(resolve, 40));
+    const card = build(prReady);
+    const id = await post(card);
+    const answer = await ix.onAction(invoke(SAM, executeAction(card, 'merge'), id));
+    const put = seen.filter((s) => s.method === 'PUT');
+    expect(put).toHaveLength(1);
+    expect(put[0]?.path).toBe(`/amer/v3/conversations/${THREAD}/activities/${id}`);
+    const edited = (put[0]?.body['attachments'] as { content: AdaptiveCard }[])[0]?.content;
+    expect(edited).toEqual(answer);
+    expect(lastLine(answeredCard(answer))).toBe('<at>sam</at> merged this.');
+    expect(outcomes).toEqual([{ kind: 'pr-action', action: 'merge', incidentId: INC }]);
+    expect(errors).toEqual([]);
+  });
+
+  it('a slow refusal shows its reason in place and keeps the original card remembered', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    ix = make({ editAfterMs: 20 });
+    prBehavior = () =>
+      new Promise<void>((_resolve, reject) =>
+        setTimeout(() => reject(new PrActionRefusedError({ done: false, action: 'merge', reason: 'head-moved', message: 'The PR changed; look again.' })), 40),
+      );
+    const card = build(prReady);
+    const id = await post(card);
+    const answer = await ix.onAction(invoke(SAM, executeAction(card, 'merge'), id));
+    expect(lastLine(answeredCard(answer))).toBe('The PR changed; look again.');
+    expect(seen.filter((s) => s.method === 'PUT')).toHaveLength(1);
+    expect(await store.get(THREAD, id)).toEqual(card);
+  });
+
+  it("a tap whose work fails rejects, so the transport answers with its error", async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    prBehavior = () => Promise.reject(new Error('github is down'));
+    const card = build(prReady);
+    await expect(ix.onAction(invoke(SAM, executeAction(card, 'merge'), await post(card)))).rejects.toThrow('github is down');
+  });
+});
+
+// The remembering connector -----------------------------------------------------------------------
+
+describe('rememberTeamsCards', () => {
+  it('keeps posted cards with Action.Execute buttons and every card edited in place, by channel and activity', async () => {
+    const withButtons = build(scope);
+    const id = await post(withButtons);
+    expect(await store.get(CHANNEL, id)).toEqual(withButtons);
+    expect(await kvOf(state).get(teamsCardKey(THREAD, id))).not.toBeNull();
+
+    const plain = buildStatusCard(INC, makeStatusUpdate('filed', { issueKey: 'WEB-1042' }));
+    const plainId = await post(plain);
+    expect(await store.get(CHANNEL, plainId)).toBeUndefined();
+
+    await connector.updateActivity({ serviceUrl: SERVICE_URL, conversationId: THREAD, activityId: id }, cardActivity(plain));
+    expect(await store.get(CHANNEL, id)).toEqual(plain);
+  });
+});
