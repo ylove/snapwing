@@ -108,8 +108,21 @@ export interface StopResult {
   readonly stopped: boolean;
 }
 
+/**
+ * One chat platform in the health response (main 15.2: Teams reduced mode shows in `snapwing status`).
+ * `mode` is absent when the server does not say; an unknown value reads as absent.
+ */
+export interface PlatformHealth {
+  readonly id: string;
+  readonly ok: boolean;
+  readonly mode?: 'full' | 'reduced';
+  readonly detail?: string;
+}
+
+/** `GET /healthz`: the server, and each configured chat platform when it reports them. */
 export interface HealthResult {
   readonly ok: boolean;
+  readonly platforms?: readonly PlatformHealth[];
 }
 
 /** The routes, so the app and the client cannot drift. Keys go through encodeURIComponent. */
@@ -334,5 +347,26 @@ export function validateHealthResult(input: unknown): Validation<HealthResult> {
   if (!isRec(input)) return fail('health must be an object');
   const flag = input['ok'];
   if (typeof flag !== 'boolean') return fail('ok must be a boolean');
-  return ok({ ok: flag });
+  const raw = input['platforms'];
+  if (raw === undefined) return ok({ ok: flag });
+  if (!Array.isArray(raw)) return fail('platforms must be an array');
+  const platforms: PlatformHealth[] = [];
+  for (const [i, item] of (raw as readonly unknown[]).entries()) {
+    const at = `platforms[${i}].`;
+    if (!isRec(item)) return fail(`platforms[${i}] must be an object`);
+    const id = reqStr(item, 'id', at);
+    if (!id.ok) return id;
+    const up = item['ok'];
+    if (typeof up !== 'boolean') return fail(`${at}ok must be a boolean`);
+    const detail = optStr(item, 'detail', at);
+    if (!detail.ok) return detail;
+    const mode = item['mode'];
+    platforms.push({
+      id: id.value,
+      ok: up,
+      ...(mode === 'full' || mode === 'reduced' ? { mode } : {}),
+      ...(detail.value === undefined ? {} : { detail: detail.value }),
+    });
+  }
+  return ok({ ok: flag, platforms });
 }

@@ -13,14 +13,14 @@ export interface GitHubRepoTreesOptions {
   fetch?: typeof fetch;
   /** Default `https://api.github.com`. */
   apiBase?: string;
-  /** How long a read tree is reused. Default ten minutes. */
+  /** How long a read tree is reused. Default an hour. */
   ttlMs?: number;
   /** How long a failed read answers undefined before trying again. Default one minute. */
   failureTtlMs?: number;
   now?: () => number;
 }
 
-export const REPO_TREE_TTL_MS = 10 * 60 * 1000;
+export const REPO_TREE_TTL_MS = 60 * 60 * 1000;
 export const REPO_TREE_FAILURE_TTL_MS = 60 * 1000;
 
 interface Entry {
@@ -32,7 +32,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-export function createGitHubRepoTrees(auth: GitHubAuth, options: GitHubRepoTreesOptions = {}): RepoTrees {
+export function createRepoTrees(auth: GitHubAuth, options: GitHubRepoTreesOptions = {}): RepoTrees {
   const doFetch = options.fetch ?? fetch;
   const base = (options.apiBase ?? 'https://api.github.com').replace(/\/+$/, '');
   const ttl = options.ttlMs ?? REPO_TREE_TTL_MS;

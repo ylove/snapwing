@@ -111,7 +111,7 @@ describe('snapwing serve', () => {
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.text()).toBe('ok');
+    expect(await health.json()).toMatchObject({ ok: true });
     const metrics = await fetch(`${url}/metrics`);
     expect(metrics.status).toBe(200);
     expect(await metrics.text()).toContain('snapwing_jobs_parked 0');

@@ -191,8 +191,9 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
     let boundPort: number | undefined;
     if (received === undefined && runApi) {
       const metrics = composed.metrics?.bind(composed);
+      const health = composed.health?.bind(composed);
       api = createApiServer({
-        routes: [...opsRoutes({ state: () => state, ...(metrics === undefined ? {} : { metrics }) }), ...composed.routes],
+        routes: [...opsRoutes({ state: () => state, ...(metrics === undefined ? {} : { metrics }), ...(health === undefined ? {} : { health }) }), ...composed.routes],
         port,
         host,
         onError: (e, req) => io.stderr(`snapwing serve: ${req.method} ${req.path} failed: ${errorMessage(e)}`),

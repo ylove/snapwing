@@ -168,7 +168,7 @@ describe('compose under snapwing serve', () => {
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.text()).toBe('ok');
+    expect(await health.json()).toMatchObject({ ok: true });
 
     const metrics = await (await fetch(`${url}/metrics`)).text();
     expect(metrics).toContain('snapwing_jobs_parked 0');

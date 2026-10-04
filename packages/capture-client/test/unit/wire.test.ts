@@ -135,6 +135,28 @@ describe('small validators', () => {
     expect(validateHealthResult({ ok: true })).toEqual({ ok: true, value: { ok: true } });
     expect(validateHealthResult({ ok: 1 }).ok).toBe(false);
     expect(validateHealthResult('up').ok).toBe(false);
+    expect(
+      validateHealthResult({
+        ok: true,
+        platforms: [
+          { id: 'slack', ok: true, mode: 'full' },
+          { id: 'teams', ok: true, mode: 'reduced', detail: 'no RSC grant' },
+          { id: 'other', ok: false, mode: 'someday' },
+        ],
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        ok: true,
+        platforms: [
+          { id: 'slack', ok: true, mode: 'full' },
+          { id: 'teams', ok: true, mode: 'reduced', detail: 'no RSC grant' },
+          { id: 'other', ok: false },
+        ],
+      },
+    });
+    expect(validateHealthResult({ ok: true, platforms: {} }).ok).toBe(false);
+    expect(validateHealthResult({ ok: true, platforms: [{ id: 'slack' }] }).ok).toBe(false);
   });
 
   it('encodes keys in routes', () => {

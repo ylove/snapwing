@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ApprovalAction } from '../../src/contracts/incident.ts';
 import type { AutonomyLevelId, JiraPriorityName, MapAutonomy } from '../../src/map/types.ts';
 import { degrade, resolveAutonomy } from '../../src/policy/autonomy.ts';
-import { authorize, type AuthorizeActor, type DenyReason } from '../../src/policy/authorize.ts';
+import { authorize, authorizeStopCommand, type AuthorizeActor, type DenyReason } from '../../src/policy/authorize.ts';
 
 // The main 4.2 example overrides, plus a level 3 surface (mobile) and a component override
 // on a level 3 surface to exercise most-restrictive-wins.
@@ -131,5 +131,14 @@ describe('authorize', () => {
     expect(authorize('request_changes', reporter, { level: 2, fixerActive: false })).toMatchObject({ reason: 'engineer-required' });
     expect(authorize('revert', engineer, { level: 3, fixerActive: false })).toEqual({ allowed: true });
     expect(authorize('revert', reporter, { level: 3, fixerActive: false })).toMatchObject({ reason: 'linked-identity-required' });
+  });
+
+  it('the stop command (CLI, Raycast) is for engineers only, then follows the Stop button by level', () => {
+    expect(authorizeStopCommand(engineer, { level: 2, fixerActive: false })).toEqual({ allowed: true });
+    expect(authorizeStopCommand(unlinkedEngineer, { level: 1, fixerActive: true })).toEqual({ allowed: true });
+    expect(authorizeStopCommand(reporter, { level: 2, fixerActive: true })).toMatchObject({ allowed: false, reason: 'engineer-required' });
+    expect(authorizeStopCommand(stranger, { level: 3, fixerActive: true })).toMatchObject({ allowed: false, reason: 'engineer-required' });
+    expect(authorizeStopCommand(engineer, { level: 0, fixerActive: false })).toMatchObject({ allowed: false, reason: 'nothing-to-stop' });
+    expect(authorizeStopCommand(engineer, { level: 1, fixerActive: false })).toMatchObject({ allowed: false, reason: 'nothing-to-stop' });
   });
 });

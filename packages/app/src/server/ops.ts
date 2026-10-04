@@ -1,6 +1,9 @@
 // Operational routes every API process mounts (B 10):
 //
-//   GET /healthz   200 `ok` once the state store is open and migrated and answers a query; 503 before
+//   GET /healthz   JSON `{ ok: true, platforms? }` (capture-client's `HealthResult`, which `snapwing
+//                  status` reads, #385) once the state store is open and migrated and answers a query;
+//                  `platforms` is each configured chat platform as compose reports it (`health`).
+//                  503 `{ ok: false, detail }` before. Unauthenticated, like `/metrics`
 //   GET /metrics   Prometheus text format 0.0.4: outbox depth and oldest undrained row age per
 //                  target, the parked job count, and reconciler corrections in the last hour;
 //                  503 until the store is open
@@ -8,6 +11,7 @@
 // `openState` runs the migrations before it resolves, so "open" here means "open and migrated".
 // The store is passed as a getter so `snapwing serve` can listen before the store has opened.
 
+import type { HealthResult, PlatformHealth } from '@snapwing/capture-client/wire.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { OUTBOX_TARGETS } from '@snapwing/pipeline/contracts/state.ts';
 import { pingState, readStoreMetrics, type StoreMetrics } from '@snapwing/pipeline/state/metrics.ts';
@@ -18,6 +22,8 @@ export interface OpsRoutesOptions {
   readonly state: () => StatePort | undefined;
   /** More Prometheus text for `/metrics` (the composed projectors' pauses and parked rows). */
   readonly metrics?: () => Promise<string>;
+  /** Each configured chat platform for `/healthz` (compose's `health`). */
+  readonly health?: () => Promise<readonly PlatformHealth[]>;
 }
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
@@ -30,14 +36,16 @@ export function opsRoutes(options: OpsRoutesOptions): Route[] {
       handler: async () => {
         const state = options.state();
         if (state === undefined) {
-          return plain(503, 'state store not open');
+          return json(503, { ok: false, detail: 'state store not open' });
         }
         try {
           await pingState(state);
         } catch {
-          return plain(503, 'state store not answering');
+          return json(503, { ok: false, detail: 'state store not answering' });
         }
-        return plain(200, 'ok');
+        const platforms = (await options.health?.()) ?? [];
+        const body: HealthResult = { ok: true, ...(platforms.length === 0 ? {} : { platforms }) };
+        return json(200, body);
       },
     },
     {
@@ -77,6 +85,10 @@ export function renderMetrics(metrics: StoreMetrics): string {
 
 function round(seconds: number): string {
   return String(Math.round(seconds * 1000) / 1000);
+}
+
+function json(status: number, body: HealthResult & { detail?: string }): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json; charset=utf-8' } });
 }
 
 function plain(status: number, body: string): Response {
