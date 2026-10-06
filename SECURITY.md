@@ -10,8 +10,7 @@ Include what you found, where (a file and line, or a commit), and how to reprodu
 
 ## Scope
 
-- The code in this repository.
-- The design in [docs/SPEC.md](docs/SPEC.md), especially section 16 (security and guardrails) and how untrusted code is isolated.
+- The code in this repository, including how untrusted code (the coding agent's work) is isolated.
 
 ## Secrets
 
