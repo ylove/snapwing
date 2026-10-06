@@ -307,7 +307,7 @@ Recommendation: (a) for stage 1, and (b) as its own task when routing is schedul
 
 ### 5.5 Presentation on the ticket
 
-When the ticket is filed, the assessment (if it exists) adds one compact section to the description through the existing Jira outbox (B 7.1), revised in place on a new revision, with `recommended` always distinguished from `running` (in stage 1 the status is always `recommended`). If the ticket is filed before the assessment finishes (it is not, in the order above, but a late reassessment could be), the section is added by an `update-issue` outbox row.
+When the ticket is filed, the assessment (if it exists) adds one compact section to the description through the existing Jira outbox (B 7.1), revised in place on a new revision, with `recommended` always distinguished from `running` (in stage 1 the status is always `recommended`). If the ticket is filed before the assessment finishes (it is not, in the order above, but a late reassessment could be), the section is added by an `update-fields` outbox row (an existing `OutboxOp` in `contracts/state.ts`).
 
 ---
 
