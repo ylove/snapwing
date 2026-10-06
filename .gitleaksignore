@@ -1,2 +1,4 @@
 # Test fake, not a credential: a token-shaped placeholder in a #134 WIP commit, replaced in 2d3234b.
 f9aaad0d86fbd4e520482130a942296b268a6d31:packages/pipeline/test/unit/fixer-workdir.test.ts:github-app-token:19
+# Not a credential: the linkedin-client-id rule matches the type name LinkedIncidentRequest.
+40b2114bc20b9ef1fb7a11457761701dfaa47b8b:packages/app/src/server/compose.ts:linkedin-client-id:96
