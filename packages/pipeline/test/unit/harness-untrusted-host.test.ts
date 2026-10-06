@@ -76,7 +76,7 @@ describe('serverTreeConflict', () => {
 describe('serverTreeRoots', () => {
   it('is the Snapwing checkout and the server\'s working directory', () => {
     expect(realpathSync(SNAPWING_ROOT)).toBe(realpathSync(fileURLToPath(new URL('../../../../', import.meta.url))));
-    expect(existsSync(join(SNAPWING_ROOT, 'BUILDING.md'))).toBe(true);
+    expect(existsSync(join(SNAPWING_ROOT, 'pnpm-workspace.yaml'))).toBe(true);
     expect(serverTreeRoots('/srv/snapwing')).toEqual([SNAPWING_ROOT, '/srv/snapwing']);
   });
 

@@ -2,7 +2,7 @@
 // Every action is an `Action.Execute` whose `verb` is an ApprovalAction or the card's choice and whose
 // `data` is `{ incidentId }` plus the context a Slack block id carries. Mirrors `adapters/slack/cards`.
 
-import type { ClaimedCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { ClaimedCard, FileConfirmCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TriageResolutionPlan } from '@snapwing/pipeline/contracts/incident.ts';
 import type { MidFlightCard } from '@snapwing/pipeline/fixer/claims.ts';
 import type { ResolutionPrompt, ScopeChangeCard } from '@snapwing/pipeline/signals/text.ts';
@@ -135,6 +135,27 @@ export function buildClaimed(incidentId: string, c: ClaimedCard, opts: CommonOpt
   );
 }
 
+/**
+ * main 15.3 (#377): a capture's lookup, "New. Looks like Website (from src/cart/total.ts). File it?" The
+ * capture adapter holds it for the CLI or Raycast; it is never posted in Teams and renders here so every
+ * card kind has a builder.
+ */
+export function buildFileConfirm(incidentId: string, c: FileConfirmCard, opts: CommonOptions = {}): AdaptiveCard {
+  const parts: Part[] = [lit('New. Looks like **'), free(c.surfaceLabel), lit('**')];
+  if (c.evidence !== undefined) parts.push(lit(' (from '), free(c.evidence), lit(')'));
+  parts.push(lit('. File it?'));
+  return card(
+    `New. Looks like ${c.surfaceLabel}. File it?`,
+    [compose(parts, opts.mentions)],
+    actionSet(incidentId, [
+      { title: 'File it', verb: 'file-it', style: 'positive' },
+      { title: 'Not this surface', verb: 'not-this-surface' },
+      { title: 'Cancel', verb: 'cancel' },
+    ]),
+    opts,
+  );
+}
+
 function plural(n: number, one: string): string {
   return `${String(n)} ${one}${n === 1 ? '' : 's'}`;
 }
@@ -174,6 +195,8 @@ export function buildCard(incidentId: string, c: TeamsCardInput, opts: CardOptio
       return buildClaimed(incidentId, c, opts);
     case 'pr-ready':
       return buildPrReady(incidentId, c, opts);
+    case 'file-confirm':
+      return buildFileConfirm(incidentId, c, opts);
     case 'mid-flight':
       return buildMidFlightCard(incidentId, c, opts.graceMs ?? 600_000, opts);
     case 'scope-change':

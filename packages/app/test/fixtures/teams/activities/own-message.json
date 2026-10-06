@@ -1,0 +1,12 @@
+{
+  "text": "On it, pulling context",
+  "type": "message",
+  "timestamp": "2026-10-03T11:00:01.000Z",
+  "id": "1790000200457",
+  "channelId": "msteams",
+  "serviceUrl": "https://smba.test/amer/",
+  "from": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "conversation": { "conversationType": "personal", "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1", "id": "a:1personal-chat-rae" },
+  "recipient": { "id": "29:1rae-reporter-teams-id", "name": "Rae Reporter", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000a001" },
+  "channelData": { "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" } }
+}

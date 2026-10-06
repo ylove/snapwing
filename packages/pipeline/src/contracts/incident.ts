@@ -78,6 +78,16 @@ export interface ImageReading {
 
 export type ChannelSource = 'slack' | 'teams' | 'raycast' | 'cli' | 'alert_webhook';
 
+/**
+ * main 15.3, 15.4: the capture sources. They have no thread to read, so no scope preview, and their
+ * first response is a lookup (the dedupe card, `file-confirm`, or the surface question), never a ticket.
+ */
+export type CaptureSource = Extract<ChannelSource, 'raycast' | 'cli'>;
+
+export function isCaptureSource(source: ChannelSource): source is CaptureSource {
+  return source === 'raycast' || source === 'cli';
+}
+
 export interface ContextBundle {
   anchorId: string;
   included: SourceMessage[];
@@ -92,7 +102,8 @@ export interface Resolution {
   ownerId?: string;
   repo?: string;
   jiraProject?: string;
-  resolvedBy: 'mention' | 'channel-explicit' | 'file-path' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'clarify' | 'unresolved';
+  /** `surface-hint`: the capture named its surface (`--surface web`, #377), so nothing was inferred. */
+  resolvedBy: 'mention' | 'channel-explicit' | 'file-path' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'clarify' | 'surface-hint' | 'unresolved';
   confidence: number;              // 0..1
   /**
    * Spec silent (#375). What the step matched, when it can say: for `file-path`, the repo-relative
@@ -118,6 +129,12 @@ export interface CanonicalIncidentPayload {
     channelId: string;
     threadId?: string;
     deepLink?: string;
+    /**
+     * A capture source's named surface (the CLI's `--surface web`, main 15.4), as a map surface id or
+     * label. A known one skips inference and the surface question; dedupe still runs (#377). An
+     * unknown one is ignored.
+     */
+    surfaceHint?: string;
     rawPayloadSnapshot: Record<string, unknown>;
   };
   timestamp: string;

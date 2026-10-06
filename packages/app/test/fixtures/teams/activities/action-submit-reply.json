@@ -1,0 +1,52 @@
+{
+  "name": "composeExtension/submitAction",
+  "type": "invoke",
+  "timestamp": "2026-10-03T10:12:00.456Z",
+  "id": "f:3c2a91d0-0000-4000-8000-000000000002",
+  "channelId": "msteams",
+  "serviceUrl": "https://smba.test/amer/",
+  "from": { "id": "29:1rae-reporter-teams-id", "name": "Rae Reporter", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000a001" },
+  "conversation": {
+    "isGroup": true,
+    "conversationType": "channel",
+    "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1",
+    "id": "19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2;messageid=1790000100123"
+  },
+  "recipient": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "channelData": {
+    "channel": { "id": "19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2" },
+    "team": { "id": "19:general0a7e9d2b4c1a@thread.tacv2" },
+    "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" },
+    "source": { "name": "message" }
+  },
+  "value": {
+    "commandId": "fixItFromHere",
+    "commandContext": "message",
+    "botMessagePreviewAction": null,
+    "data": {},
+    "context": { "theme": "dark" },
+    "messagePayload": {
+      "id": "1790000100777",
+      "replyToId": "1790000100123",
+      "createdDateTime": "2026-10-03T10:11:30.000Z",
+      "deleted": false,
+      "importance": "normal",
+      "locale": "en-us",
+      "from": {
+        "user": { "id": "6f1c2a3b-0000-4000-8000-00000000a001", "displayName": "Rae Reporter", "userIdentityType": "aadUser" },
+        "application": null
+      },
+      "body": { "contentType": "html", "content": "<div>Still broken after a refresh, on Safari too.<br>Total is <b>NaN</b>.</div>" },
+      "attachments": [
+        {
+          "id": "1790000100778",
+          "contentType": "reference",
+          "contentUrl": "https://contoso.sharepoint.com/sites/Web/Shared Documents/web-bugs/safari-total.png",
+          "name": "safari-total.png"
+        }
+      ],
+      "mentions": [],
+      "reactions": []
+    }
+  }
+}

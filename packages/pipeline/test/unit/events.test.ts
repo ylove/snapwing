@@ -97,6 +97,7 @@ const SAMPLES = {
   'escalation-ladder': { phase: 'step', ladder: 'outage', step: 3, after: 'PT60M', pagerduty: 'PFAKE01', paged: true },
   'user-side': { kind: 'wrong-environment', evidence: 'URL bar shows staging.example.com', questionSeq: 5, surfaceId: 'web' },
   'text-signal': { kind: 'environment', messageId: '1730000000.000900', text: 'happening on prod too', confidence: 1, env: 'production', from: 'staging', priority: { from: 'Medium', to: 'High' } },
+  'capture-cancelled': { card: 'file-confirm' },
 } as const satisfies { readonly [K in EventType]: EventPayloads[K] };
 
 describe('EVENT_TYPES', () => {

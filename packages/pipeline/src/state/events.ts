@@ -24,15 +24,16 @@
 // commit order, and an append that commits after a reader passed its `recorded_at` would be skipped.
 // It pages on `tx_order`, the writing transaction, which append sets per dialect:
 // - Postgres: the column default, `pg_current_xact_id()` (one value per transaction, assigned at its
-//   first write). `readSince` returns only rows whose `tx_order` is below the xmin of its own
-//   snapshot, the oldest transaction still in flight anywhere in the cluster: every transaction
-//   below it has committed or rolled back, and every row that commits later has a `tx_order` at or
-//   above it, so a cursor never passes a row that is not yet visible.
+//   first write). `readSince` returns only rows whose `tx_order` is below a watermark taken from its
+//   own snapshot (`pgWatermark`, #424): the oldest transaction that snapshot sees in flight and that
+//   could write this database's log. Every transaction below it has committed or rolled back or
+//   belongs to another database on the server, and every row that commits later has a `tx_order` at
+//   or above it, so a cursor never passes a row that is not yet visible.
 // - SQLite: one writer at a time, so a reader only ever sees committed transactions in commit order.
 //   The first append in a transaction writes `max(tx_order) + 1` and later appends in the same
 //   transaction reuse it, matching Postgres's one value per transaction.
 
-import { sql, type Selectable } from 'kysely';
+import { sql, type RawBuilder, type Selectable } from 'kysely';
 import { isEventType, type EventActorRole, type EventSource } from '../contracts/events.ts';
 import { ExpectedSeqConflictError, type IncidentEvent, type NewEvent } from '../contracts/state.ts';
 import type { StateContext } from './context.ts';
@@ -132,7 +133,7 @@ export async function read(ctx: StateContext, incidentId: string, fromSeq = 1): 
 
 /**
  * See `StatePort.readSince`. Keyset pagination on `(tx_order, incident_id, seq)`, which is unique (the
- * primary key is `(incident_id, seq)`). On Postgres only rows below the snapshot's xmin are returned
+ * primary key is `(incident_id, seq)`). On Postgres only rows below `pgWatermark` are returned
  * (header, ADR 0013), so a page may stop short of rows that are already committed; they come on a
  * later call. The cursor is the last row's key, base64url-encoded JSON.
  */
@@ -145,7 +146,7 @@ export async function readSince(ctx: StateContext, cursor: string, limit: number
   let q = ctx.db.selectFrom('incident_events').selectAll();
   if (ctx.dialect === 'postgres') {
     // Evaluated in this statement, so against the same snapshot that decides which rows it sees.
-    q = q.where('tx_order', '<', sql<number>`pg_snapshot_xmin(pg_current_snapshot())::text::bigint`);
+    q = q.where('tx_order', '<', await pgWatermark(ctx));
   }
   if (after !== undefined) {
     q = q.where((eb) =>
@@ -165,6 +166,67 @@ export async function readSince(ctx: StateContext, cursor: string, limit: number
     events,
     cursor: last === undefined ? cursor : encodeCursor({ txOrder: ctx.codec.fromNumber(last.tx_order), incidentId: last.incident_id, seq: ctx.codec.fromNumber(last.seq) }),
   };
+}
+
+/**
+ * The Postgres `readSince` bound (ADR 0013, amended by #424), as an expression to evaluate in the
+ * statement that reads the log, so it comes from the snapshot that decides which rows are visible.
+ * It is the least of:
+ * - the snapshot's xmax: every transaction at or above it started after the snapshot;
+ * - each transaction the snapshot sees in flight (`pg_snapshot_xip`), unless `pg_stat_activity`
+ *   shows it running in another database on the server: only sessions connected to this database
+ *   can write its log, and a transaction's database never changes, so a long transaction elsewhere
+ *   (an analytics query, an idle session in another database) no longer holds the log back;
+ * - this transaction's own id, when it has one (Postgres leaves it out of `xip`).
+ * An in-flight id that cannot be placed (a prepared transaction, a backend whose row hides its
+ * database, a session that ended before the view was read) counts as this database's, which only
+ * withholds more. Rows below the result are final: committed and visible, rolled back, or never in
+ * this database.
+ *
+ * The activity view is read after the snapshot is taken, so a transaction it misses that is still in
+ * the snapshot's `xip` stays withheld. Inside a caller's transaction Postgres serves the view from a
+ * copy taken at its first read, so the copy is dropped first (`pg_stat_clear_snapshot`). When the
+ * role cannot read the view, the bound is the snapshot's xmin, the oldest transaction in flight
+ * anywhere on the server (the original rule). `xid` is 32 bits and `xid8` is 64; every id in one
+ * snapshot is within 2^31 of the others, so comparing the low 32 bits is exact.
+ */
+export async function pgWatermark(ctx: StateContext): Promise<RawBuilder<number>> {
+  if (!(await activityReadable(ctx))) {
+    return sql<number>`pg_snapshot_xmin(pg_current_snapshot())::text::bigint`;
+  }
+  if (ctx.db.isTransaction) {
+    await sql`select pg_stat_clear_snapshot()`.execute(ctx.db);
+  }
+  return sql<number>`(
+    select least(
+      pg_snapshot_xmax(s.snap)::text::bigint,
+      pg_current_xact_id_if_assigned()::text::bigint,
+      (select min(x::text::bigint) from pg_snapshot_xip(s.snap) as x
+        where not exists (
+          select 1 from pg_catalog.pg_stat_activity a
+           where a.datname <> current_database()
+             and a.backend_xid::text::bigint = x::text::bigint % 4294967296)))
+    from (select pg_current_snapshot() as snap) as s)`;
+}
+
+/** Per store (each store has its own codec): whether this role can read `pg_stat_activity`. */
+const activityReadableByStore = new WeakMap<object, boolean>();
+
+async function activityReadable(ctx: StateContext): Promise<boolean> {
+  const known = activityReadableByStore.get(ctx.codec);
+  if (known !== undefined) {
+    return known;
+  }
+  // The privilege functions never raise, so this is safe inside a caller's transaction. The view
+  // calls `pg_stat_get_activity` with the caller's rights, so both grants are needed.
+  const { rows } = await sql<{ readable: boolean }>`
+    select has_table_privilege('pg_catalog.pg_stat_activity', 'select')
+       and has_function_privilege('pg_catalog.pg_stat_get_activity(integer)', 'execute')
+       and has_function_privilege('pg_catalog.pg_stat_clear_snapshot()', 'execute') as readable
+  `.execute(ctx.db);
+  const readable = rows[0]?.readable === true;
+  activityReadableByStore.set(ctx.codec, readable);
+  return readable;
 }
 
 // Helpers -----------------------------------------------------------------------------------------

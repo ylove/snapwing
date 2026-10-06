@@ -158,6 +158,7 @@ import { createFixerGitHub } from '../github/fixer-github.ts';
 import { createGitHubOAuth } from '../github/oauth.ts';
 import { createGitHubProjector } from '../github/projector.ts';
 import { createGitHubRepoReader } from '../github/repo-reader.ts';
+import { createGitHubRepoTrees } from '../github/repo-trees.ts';
 import { repoFullName } from '../github/repo.ts';
 import { createJiraClient, jiraSearch, type JiraClient } from '../jira/client/index.ts';
 import { createJiraProjector } from '../jira/projector/drain.ts';
@@ -207,6 +208,7 @@ export const MONITOR_TRIGGERS: ReadonlySet<EventType> = new Set<EventType>([
   'linked-to-existing',
   'resolution-signal',
   'user-side',
+  'capture-cancelled',
 ]);
 
 /**
@@ -815,6 +817,8 @@ export const compose: ComposeFn = async (deps) => {
     // `deps.instructions?.()` in engine/steps.ts and pass it to plan, maybeAsk, and SynthesisContext.
     playbook: configWatch.playbook,
     instructions: configWatch.instructions,
+    // main 15.3 (#375, #377): file paths in pasted text resolve against the map repos' trees.
+    repoTrees: createGitHubRepoTrees(auth),
     repoReader: (resolution) => (resolution.repo === undefined || resolution.repo === '' ? undefined : createGitHubRepoReader(auth, { repo: repoFullName(resolution.repo) })),
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
     status: createStatusSubscriber({ workspaceId, clock }),
