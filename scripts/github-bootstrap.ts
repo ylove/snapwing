@@ -24,6 +24,7 @@ import type { Server } from 'node:http';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GitHubApiError, errorMessage, signAppJwt } from '../packages/app/src/github/auth.ts';
+import { upsertEnv } from '../packages/app/src/onboard/interview/env.ts';
 import { createEnvFileSecrets } from '../packages/pipeline/src/providers/local/secrets.ts';
 import { SecretNotFoundError } from '../packages/pipeline/src/ports/secrets.ts';
 
@@ -71,53 +72,9 @@ const webBase = (d: BootstrapDeps): string => (d.webBase ?? 'https://github.com'
 // ---------------------------------------------------------------------------------------------------------------------
 // .env.live editing
 
-function needsQuotes(value: string): boolean {
-  return !/^[A-Za-z0-9_./:@+=,-]*$/.test(value);
-}
-
-function formatEnvValue(value: string): string {
-  if (!needsQuotes(value)) return value;
-  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
-}
-
-/** End offset (exclusive, past the line's newline) of the definition that starts at `start`. */
-function definitionEnd(text: string, start: number, valueStart: number): number {
-  let i = valueStart;
-  while (text[i] === ' ' || text[i] === '\t') i += 1;
-  if (text[i] === '"') {
-    i += 1;
-    while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
-    i += 1;
-  }
-  const eol = text.indexOf('\n', Math.max(i, start));
-  return eol === -1 ? text.length : eol + 1;
-}
-
-/**
- * Sets `entries` in `.env`-dialect `text`, keeping every other line. A key already present is replaced in place (its
- * later duplicates dropped); a new key is appended. Multi-line double-quoted values (a PEM) are replaced whole.
- */
-export function upsertEnv(text: string, entries: Readonly<Record<string, string>>): string {
-  let out = text.replace(/\r\n?/g, '\n');
-  for (const [key, value] of Object.entries(entries)) {
-    const rendered = `${key}=${formatEnvValue(value)}\n`;
-    const re = new RegExp(`^(?:export\\s+)?${key}\\s*=`, 'gm');
-    let result = '';
-    let cursor = 0;
-    let replaced = false;
-    for (let m = re.exec(out); m !== null; m = re.exec(out)) {
-      const end = definitionEnd(out, m.index, m.index + m[0].length);
-      result += out.slice(cursor, m.index) + (replaced ? '' : rendered);
-      replaced = true;
-      cursor = end;
-      re.lastIndex = end;
-    }
-    result += out.slice(cursor);
-    if (!replaced) result = (result === '' || result.endsWith('\n') ? result : `${result}\n`) + rendered;
-    out = result;
-  }
-  return out;
-}
+// `upsertEnv` is onboarding's one `.env` writer (`packages/app/src/onboard/interview/env.ts`, #386), re-exported
+// here so the scripts and onboarding quote every value the same way.
+export { upsertEnv };
 
 async function readIfExists(path: string): Promise<string> {
   try {

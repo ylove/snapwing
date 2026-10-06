@@ -1,7 +1,7 @@
 name: live
 
 # Runs only on demand, and only when the repository secrets it needs are present.
-# Secret names are listed in build/CONTEXT.md section 6b.
+# The secret names are the `secrets.*` references below. Forks never receive them.
 on:
   workflow_dispatch:
 

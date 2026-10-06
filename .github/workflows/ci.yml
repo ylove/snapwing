@@ -9,15 +9,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-# Minutes are scarce (3,000 a month on GitHub Pro, and the October budget is nearly spent), and every job
-# is billed in whole minutes, so CI is two jobs at most:
-# - `checks` (always, about a minute): does the change touch code, prose lint (D9), gitleaks, and on a
-#   pull request the ports/CONTEXT rule (BUILDING.md section 7).
-# - `test` (pull requests that touch code): one job runs lint, both dialects, and `state rebuild --verify`
-#   in sequence, so setup and install are paid once. Merges are gated here.
-# A push to `main` (a squash merge) runs `checks` only. Trade-off (merge skew): two PRs green on their own
-# can break each other once both land; the orchestrator merges main into a stale branch and runs the
-# suite locally before merging it, and any break surfaces on the next PR's run.
+# The repository is public, so hosted minutes are free. CI is two jobs:
+# - `checks` (always, about a minute): does the change touch code, prose lint (D9), gitleaks.
+# - `test` (any change that touches code, on a pull request or a push to `main`): one job runs lint, both
+#   dialects, and `state rebuild --verify` in sequence, so setup and install are paid once. Merges are
+#   gated here, and the run on `main` catches two pull requests that are green alone but break together.
 jobs:
   checks:
     runs-on: ubuntu-latest
@@ -53,26 +49,14 @@ jobs:
           node-version: 24
       - name: Prose lint
         run: node scripts/lint-prose.mjs
-      # No secret is ever committed (build/CONTEXT.md 6b). Scans the history of the commit under test
+      # No secret is ever committed. Scans the history of the commit under test
       # (`--log-opts HEAD`), so a fake value on another branch does not fail this one.
       - name: gitleaks
         run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest detect --source /repo --redact --verbose --log-opts=HEAD
-      # BUILDING.md section 7: a PR that changes a port must touch build/CONTEXT.md.
-      - name: Ports changed without CONTEXT.md
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          changed=$(git diff --name-only "origin/${BASE_REF}...HEAD")
-          if echo "$changed" | grep -Eq '^packages/[^/]+/src/ports/' && ! echo "$changed" | grep -qx 'build/CONTEXT.md'; then
-            echo "::error::This PR changes packages/*/src/ports/** but not build/CONTEXT.md. Update CONTEXT.md (BUILDING.md section 7)."
-            exit 1
-          fi
-          echo "ok"
 
   test:
     needs: checks
-    if: github.event_name == 'pull_request' && needs.checks.outputs.code == 'true'
+    if: needs.checks.outputs.code == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
