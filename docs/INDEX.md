@@ -31,7 +31,7 @@ Maps spec sections to the package and directory that implements them, so an issu
 | main | 16 | pipeline/src/policy/authorize.ts |
 | main | 20.3 | console |
 | main | 20.4 | replay |
-| main | 21 | packages/* (boundaries in build/CONTEXT.md section 2) |
+| main | 21 | packages/* (boundaries in main 21.1) |
 | A | 1, 2, 3 | pipeline/src/signals |
 | A | 4 | app/src/status, pipeline/src/monitor |
 | A | 5 | pipeline/src/context/vision |
