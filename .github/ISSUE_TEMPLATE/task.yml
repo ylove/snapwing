@@ -1,0 +1,43 @@
+name: Task
+description: One build task, small enough for one pull request
+title: "[pkg] Short imperative title"
+labels: []
+body:
+  - type: input
+    id: spec
+    attributes:
+      label: spec
+      description: Spec sections this task implements, e.g. "main 5.4, A 3". See docs/INDEX.md.
+      placeholder: main 5.4, A 3
+    validations:
+      required: true
+  - type: textarea
+    id: touches
+    attributes:
+      label: touches
+      description: Paths this task expects to create or edit, comma separated. Must not overlap another task in progress.
+      placeholder: packages/pipeline/src/context/segmentation.ts, packages/pipeline/test/unit/segmentation.test.ts
+    validations:
+      required: true
+  - type: input
+    id: blockedBy
+    attributes:
+      label: blockedBy
+      description: Issue numbers that must merge first, or "none".
+      placeholder: "#12, #14"
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: acceptance
+      description: Checkboxes a test can assert.
+      value: |
+        - [ ] 
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: notes
+      description: Anything the implementer needs that the spec does not say.

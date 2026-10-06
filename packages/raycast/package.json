@@ -1,14 +1,60 @@
 {
-  "name": "@snapwing/raycast",
+  "name": "snapwing-raycast",
   "version": "0.0.0",
   "private": true,
-  "description": "The Raycast extension (selected text, screenshot).",
+  "title": "Snapwing",
+  "description": "Fix it from here: send selected text or a screenshot to Snapwing, which files a ticket or tells you it is already tracked.",
+  "icon": "command-icon.png",
+  "author": "snapwing",
   "license": "MIT",
+  "categories": ["Developer Tools", "Productivity"],
+  "platforms": ["macOS"],
   "type": "module",
+  "commands": [
+    {
+      "name": "fix-from-selection",
+      "title": "Fix from Selection",
+      "subtitle": "Snapwing",
+      "description": "Send the selected text (a stack trace, an error, a note) to Snapwing and see whether it is already tracked.",
+      "mode": "view"
+    },
+    {
+      "name": "send-screenshot",
+      "title": "Send Screenshot",
+      "subtitle": "Snapwing",
+      "description": "Send the newest macOS screenshot, or the image on the clipboard, to Snapwing.",
+      "mode": "view"
+    }
+  ],
+  "preferences": [
+    {
+      "name": "endpoint",
+      "type": "textfield",
+      "required": true,
+      "title": "Endpoint",
+      "description": "Your Snapwing server URL, such as https://snapwing.example.com or http://localhost:3000.",
+      "placeholder": "https://snapwing.example.com"
+    },
+    {
+      "name": "token",
+      "type": "password",
+      "required": true,
+      "title": "Token",
+      "description": "Your personal capture token (starts with swc_), issued at onboarding.",
+      "placeholder": "swc_..."
+    }
+  ],
+  "dependencies": {
+    "@raycast/api": "^2.6.2",
+    "@snapwing/capture-client": "workspace:*"
+  },
   "exports": {
     ".": "./src/index.ts"
   },
   "scripts": {
+    "dev": "ray develop",
+    "build": "ray build -e dist",
+    "lint:ray": "ray lint",
     "test": "vitest run test/unit",
     "test:contract": "vitest run test/contract --passWithNoTests",
     "test:live": "vitest run test/live --passWithNoTests",
@@ -17,6 +63,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
+    "@types/react": "19.0.10",
+    "react": "19.0.0",
     "typescript": "~6.0.3",
     "vitest": "^5.0.3"
   }
