@@ -28,7 +28,7 @@ coverage/
 npm-debug.log*
 pnpm-debug.log*
 
-# keys and credentials (never committed; see build/CONTEXT.md 6b)
+# keys and credentials (never committed)
 *.pem
 *.key
 *.p12
@@ -43,3 +43,7 @@ service-account*.json
 
 # agent worktrees
 .claude/worktrees/
+
+# maintainer-only symlinks to a private checkout (no trailing slash: git sees a symlink as a file)
+/build
+/BUILDING.md

@@ -1,0 +1,27 @@
+name: Bug report
+description: Something in Snapwing doesn't work as the docs or the README say
+title: "Bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Snapwing is in active development and not installable yet, so most bugs are found in the code or the docs. Never paste a token, a key, or a private message.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      description: A file and line, a command, or a doc section, if you know it.
+      placeholder: packages/pipeline/src/dedupe/index.ts:42
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The commit you were looking at (`git rev-parse --short HEAD`).
