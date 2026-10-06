@@ -1,7 +1,7 @@
 name: e2e
 
 # Runs only on demand, and only when the repository secrets it needs are present.
-# Secret names are listed in build/CONTEXT.md section 6b. The tier itself is
+# The secret names are the `secrets.*` references below. The tier itself is
 # packages/app/test/e2e/levels.test.ts (#162): it starts a Cloudflare quick tunnel
 # (no account), so the job installs cloudflared. Without the `claude` CLI on the
 # runner the fixer is the scripted agent (packages/app/test/e2e/helpers/fake-agent.mjs).
