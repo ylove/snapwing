@@ -105,7 +105,8 @@ describe('create and renew', () => {
     grantingGraph();
     const outs = await subs.ensureAll(['T1', 'T2', 'T1']);
     expect(outs.map((o) => o.kind)).toEqual(['created', 'created', 'active']);
-    expect(created.map((c) => c['resource'])).toEqual(['/teams/T1/channels/getAllMessages', '/teams/T2/channels/getAllMessages']);
+    // ensureAll runs the teams in parallel, so the requests arrive in either order.
+    expect(created.map((c) => String(c['resource'])).sort()).toEqual(['/teams/T1/channels/getAllMessages', '/teams/T2/channels/getAllMessages']);
   });
 
   it('leaves a fresh subscription alone and renews at 45 minutes', async () => {
