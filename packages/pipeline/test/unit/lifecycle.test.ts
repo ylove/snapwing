@@ -77,6 +77,12 @@ const ARROWS: Row[] = [
   ['fixing-retry', ev('fixer-failed'), 'escalated'],
   // Merge and deploy
   ['mergeable', ev('merged'), 'merged'],
+  // A person merges before the review agent or CI finishes (main 11.2)
+  ['in-review', ev('merged'), 'merged'],
+  ['in-review-retry', ev('merged'), 'merged'],
+  ['ci', ev('merged'), 'merged'],
+  ['ci-retry', ev('merged'), 'merged'],
+  ['held', ev('merged'), 'merged'],
   ['mergeable', gateHold, 'held'],
   ['held', ev('released', { scope: 'hold', env: 'staging', reason: 'requested' }), 'mergeable'],
   ['merged', ev('deployed:staging'), 'deployed:staging'],
