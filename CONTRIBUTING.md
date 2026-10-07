@@ -14,8 +14,7 @@ Until v2.0, the code moves too fast for an outside pull request to land cleanly,
 
 ## How the work is organized
 
-- Every task is an issue with the spec sections it implements, the files it may touch (`touches:`), what must merge first (`blockedBy:`), and acceptance checkboxes.
-- The spec is [docs/SPEC.md](docs/SPEC.md), with an index in [docs/INDEX.md](docs/INDEX.md).
+- Every task is an issue with the files it may touch (`touches:`), what must merge first (`blockedBy:`), and acceptance checkboxes.
 - A pull request closes one issue, adds the tests its `tier:*` labels ask for, and is squash-merged when CI is green.
 - Comments written by agents start with `:robot:` and say which agent wrote them.
 

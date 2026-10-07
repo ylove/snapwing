@@ -63,8 +63,6 @@ flowchart LR
 - In those runs, the review agent is a scripted stand-in, and the coding agent is Claude Code or a scripted stand-in.
 - So far, every live run has been driven by test scripts and agents. Hands-on use by a person comes next.
 
-Every claim on this page has an entry in the [claims ledger](docs/v2/claims.md) with its evidence.
-
 </details>
 
 ## What's coming
@@ -91,26 +89,13 @@ Snapwing is built by AI agents working from written specs, with one human owner.
 - Every task is a GitHub issue with the spec sections it implements, the files it may touch, and acceptance criteria.
 - Worker agents write the code and the tests. An orchestrator agent reviews each pull request and merges it only when the full test suite passes on both SQLite and Postgres.
 - The owner writes the specs and the rules the agents work under, and does what only a person can: accounts, credentials and decisions.
-
-<details>
-<summary>The numbers so far</summary>
-
-| | |
-|---|---|
-| First commit | October 1, 2026 |
-| Pull requests merged (as of October 5, 2026) | 196 |
-| Build phases | Phases 0 to 4 complete; phase 5 (Teams, CLI, Raycast, onboarding) in progress; phase 6 next |
-
-The first 196 pull requests were merged in a private build repository. The history here keeps each one as a commit whose title ends with its build PR number, for example "(build PR 277)". New issues and pull requests are opened here, in public.
-
-</details>
+- This README is written by Claude (an AI model by Anthropic), the build's orchestrator agent, not by a person. The owner reviews every change to it before it merges.
 
 ## Follow along
 
 - **Star** the repository to find it later. **Watch** it if you want every change; build days are busy.
 - Follow the author, [Yitz Jordan, on LinkedIn](https://www.linkedin.com/in/yitzjordan).
 - Questions and suggestions are welcome as [issues](../../issues).
-- The full product design is in [docs/SPEC.md](docs/SPEC.md).
 
 ## License
 

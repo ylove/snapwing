@@ -106,6 +106,12 @@ const statusQuestion = base('message', {
   text: '<at>Snapwing</at> where are we with this?',
   entities: [{ type: 'mention', mentioned: { id: BOT, name: 'Snapwing' }, text: '<at>Snapwing</at>' }],
 });
+const mentionOf = (text: string) =>
+  base('message', {
+    ...inChannel,
+    text: `<at>Snapwing</at> ${text}`,
+    entities: [{ type: 'mention', mentioned: { id: BOT, name: 'Snapwing' }, text: '<at>Snapwing</at>' }],
+  });
 const threadReply = base('message', { ...inChannel, text: 'on it' });
 const queueCommand = base('message', {
   text: 'queue',
@@ -230,7 +236,7 @@ function world(overrides: Partial<TeamsDispatcherOptions> = {}): World {
     return raw.transport === 'http' && (raw.activity as { type?: unknown }).type === 'invoke' ? adapter.acknowledge(raw, payload) : { status: 200 };
   });
   const status = {
-    intercepts: vi.fn((a: unknown) => textOf(a).includes('<at>Snapwing</at>')),
+    intercepts: vi.fn((a: unknown) => textOf(a).includes('<at>Snapwing</at>') && /where are we|status/i.test(textOf(a))),
     handle: vi.fn(() => Promise.resolve()),
   };
   const signals = {
@@ -240,7 +246,7 @@ function world(overrides: Partial<TeamsDispatcherOptions> = {}): World {
   };
   const queueCalls = { command: vi.fn(() => Promise.resolve()), install: vi.fn(() => Promise.resolve()) };
   const queue = teamsQueueRoutes({
-    isQueueCommand: (a) => textOf(a).trim() === 'queue',
+    isQueueCommand: (a) => textOf(a).replace(/<at>[^<]*<\/at>/g, '').trim() === 'queue',
     handleCommand: queueCalls.command,
     isInstall: (a) => (a as { type?: unknown }).type === 'installationUpdate' && !isChannel(a),
     handleInstall: queueCalls.install,
@@ -401,6 +407,23 @@ describe('message activities', () => {
     await w.transport.stop();
     expect(w.queue.command).toHaveBeenCalledTimes(1);
     expect(w.inbound).not.toHaveBeenCalled();
+  });
+
+  it('sends an @mention of the queue command in a channel to the queue, not the status pull', async () => {
+    const w = world();
+    expect((await post(w, mentionOf('queue'))).status).toBe(200);
+    await w.transport.stop();
+    expect(w.queue.command).toHaveBeenCalledTimes(1);
+    expect(w.status.handle).not.toHaveBeenCalled();
+    expect(w.signals.onActivity).not.toHaveBeenCalled();
+  });
+
+  it('sends an @mention that is not a status question to the signals, as Slack does', async () => {
+    const w = world();
+    expect((await post(w, mentionOf("I'll take this"))).status).toBe(200);
+    await w.transport.stop();
+    expect(w.status.handle).not.toHaveBeenCalled();
+    expect(w.signals.onActivity).toHaveBeenCalledTimes(1);
   });
 
   it('sends a channel thread reply (read under RSC) to the signals', async () => {

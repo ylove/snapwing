@@ -38,7 +38,13 @@ export interface IncidentChange {
 export type TargetRows = (event: IncidentEvent, change: IncidentChange) => OutboxItem[];
 
 /** Every target module, in the order their rows are enqueued. */
-const TARGETS: readonly TargetRows[] = [jiraRows, statusRows, notifyRows, githubRows];
+const TARGETS: readonly TargetRows[] = [
+  jiraRows,
+  statusRows,
+  notifyRows,
+  // The login was recorded on the event; projection never looks it up (rebuild stays pure).
+  (event, change) => githubRows(event, change, event.type === 'comment' && event.payload.actorGithubLogin !== undefined ? { githubLogin: event.payload.actorGithubLogin } : {}),
+];
 
 /** The outbox items `event` implies, given what it did to the incident row. */
 export function outboxFor(event: IncidentEvent, change: IncidentChange): OutboxItem[] {

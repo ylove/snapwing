@@ -7,7 +7,7 @@ body:
     id: spec
     attributes:
       label: spec
-      description: Spec sections this task implements, e.g. "main 5.4, A 3". See docs/INDEX.md.
+      description: Spec sections this task implements, e.g. "main 5.4, A 3" (maintainers fill this in).
       placeholder: main 5.4, A 3
     validations:
       required: true

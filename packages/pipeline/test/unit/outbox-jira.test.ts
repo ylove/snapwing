@@ -122,6 +122,16 @@ function toCi(s: Script): void {
 // Tests -------------------------------------------------------------------------------------------
 
 describe('outboxFor: Jira rows (B 7.2)', () => {
+  it('an attribution comment names the person as @ and their display name, byte for byte', () => {
+    const { s } = filed();
+    const verify = draft(
+      'comment',
+      { intent: 'accept', platform: 'slack', signalSource: 'message', confidence: 1, raw: 'works now', effect: 'verify', actorName: 'Dana Q', deepLink: 'https://x.test/p1', target: { role: 'staging-check', messageId: 'm1' } },
+      DANA,
+    );
+    expect(s.push(verify).map(shape)).toEqual([comment('@Dana Q verified on staging at 09:07 UTC: "works now" (https://x.test/p1)')]);
+  });
+
   it('writes nothing before the issue exists, then the first Agent Status line on filed', () => {
     const { s, rows } = filed();
     expect(rows.map(shape)).toEqual([status('filed')]);
