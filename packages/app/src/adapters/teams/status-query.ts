@@ -178,7 +178,8 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
   /** The answer as a message with one Adaptive Card; an engineer's answer to one incident carries Stop and Revert. */
   function messageFor(answer: StatusAnswer, map: WorkspaceMap): TeamsOutgoingActivity {
     const rendered = renderText(answer.text, mentionsFromMap(map.people));
-    const fallback = renderText(answer.text, () => undefined).text.replace(/\\([\\*_`[\]])/g, '$1');
+    // The card's own fallback keeps the escapes, so user markdown (a summary's link) is never live there.
+    const fallback = renderText(answer.text, () => undefined).text;
     const wanted: ActionSpec[] =
       answer.audience === 'engineer'
         ? answer.actions.flatMap((a): ActionSpec[] =>
@@ -187,7 +188,7 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
         : [];
     const actions = answer.incidentId === undefined || wanted.length === 0 ? [] : actionSet(answer.incidentId, wanted);
     const content = card(fallback, [rendered], actions);
-    return { type: 'message', text: fallback, attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content }] };
+    return { type: 'message', attachments: [{ contentType: ADAPTIVE_CARD_CONTENT_TYPE, content }] };
   }
 
   /** Whether the activity names this bot in its `entities` (a mention is an entity, not just the `<at>` text). */
@@ -241,6 +242,9 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
 
     // A channel or group chat: only a message that names the bot is a question.
     if (!mentionsBot(a)) return undefined;
+    // Only a status question or a bare key is ours; any other mention (`queue`, "I'll take this") falls through
+    // to the commands and the signals, as Slack's plain `message` event does.
+    if (!looksLikeStatusQuestion(text)) return undefined;
     if (conversationType === 'groupChat') return { ...base, channelId: conversationId, text, kind: 'mention' };
     const split = splitConversationId(conversationId);
     const channelId = str(rec(rec(a['channelData'])['channel'])['id']) || split.channelId;

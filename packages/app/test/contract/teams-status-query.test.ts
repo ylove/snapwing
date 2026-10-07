@@ -187,11 +187,16 @@ function chat(aad: string, text: string, opts: Opts = {}): Record<string, unknow
   };
 }
 
+/** What a person reads in an answer: the text of its card. */
+function cardText(message: Sent | undefined): string {
+  return (message?.body.attachments ?? []).flatMap((a) => a.content.body.map((b) => b.text)).join('\n');
+}
+
 async function answerTo(activity: Record<string, unknown>): Promise<string> {
   expect(teams.intercepts(activity)).toBe(true);
   await teams.handle(activity);
   expect(sent).toHaveLength(1);
-  return sent[0]?.body.text ?? '';
+  return cardText(sent[0]);
 }
 
 // Entry points ------------------------------------------------------------------------------------
@@ -222,7 +227,7 @@ describe('a mention in a thread', () => {
     const as = async (aad: string) => {
       sent.length = 0;
       await teams.handle(mention(aad, 'WEB-1042'));
-      return sent[0]?.body.text ?? '';
+      return cardText(sent[0]);
     };
     const engineer = await as(ENGINEER);
     const reporter = await as(REPORTER);
@@ -266,6 +271,25 @@ describe('a mention anywhere', () => {
     expect(text).toContain('WEB-1051');
     expect(text).toContain('WEB-1060');
     expect(text).toContain('?');
+  });
+
+  it('leaves a bot command and any non-status mention to the routes after it', () => {
+    expect(teams.intercepts(mention(REPORTER, 'queue'))).toBe(false);
+    expect(teams.intercepts(mention(REPORTER, "I'll take this", { root: NAV.anchor }))).toBe(false);
+    expect(teams.intercepts(mention(REPORTER, ''))).toBe(false);
+    expect(teams.intercepts(mention(REPORTER, 'status on the cart total'))).toBe(true);
+  });
+
+  it('shows the answer once, as a card, and keeps a summary link inert', async () => {
+    await seed(NAV, 'Broken [Reset password](https://evil.example) link', 'nav');
+    await teams.handle(mention(REPORTER, 'WEB-1042'));
+    expect(sent).toHaveLength(1);
+    const activity = sent[0]?.body;
+    expect(activity?.text).toBeUndefined();
+    expect(activity?.attachments).toHaveLength(1);
+    const json = JSON.stringify(activity);
+    expect(json).toContain('Reset password');
+    expect(json).not.toContain('[Reset password](https://evil.example)');
   });
 
   it('ignores a channel message that does not name the bot', () => {
