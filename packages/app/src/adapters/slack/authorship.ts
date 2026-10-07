@@ -15,8 +15,18 @@
 //
 // The inbound paths that read people's messages (the status query, direct-message capture, thread
 // replies as signals) share one `SlackAuthorOf`, so they agree on who is a person.
+//
+// Who a person is to the workspace, for the reactors who count toward a trigger (#170), in order:
+//
+//   external  `users.info` fails or was not given (fail closed), or its `team_id` is not the
+//             workspace's (someone from another organization in a Slack Connect channel).
+//   guest     `is_restricted` or `is_ultra_restricted` (a multi-channel or single-channel guest).
+//   member    anyone else.
+//
+// Both questions read one remembered `users.info` answer per user.
 
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { Membership } from '@snapwing/pipeline/policy/autonomy.ts';
 
 export type MessageAuthor = 'own' | 'bot' | 'person';
 
@@ -30,6 +40,16 @@ export interface SlackAuthorOf {
    * change it, else undefined (a person, or a `bot_id` the map or `users.info` must settle).
    */
   plainly(event: SlackEvent): 'own' | 'bot' | undefined;
+  /** Member, guest, or external, from `users.info` (see the file header). */
+  membership(user: string): Promise<Membership>;
+}
+
+/** The `users.info` fields authorship reads. */
+export interface SlackUserFacts {
+  is_bot?: boolean;
+  is_restricted?: boolean;
+  is_ultra_restricted?: boolean;
+  team_id?: string;
 }
 
 export interface SlackAuthorshipOptions {
@@ -37,11 +57,16 @@ export interface SlackAuthorshipOptions {
   botUserId: string;
   /** Snapwing's bot id (`auth.test` `bot_id`); absent: only the user id marks its own messages. */
   botId?: string;
-  /** `users.info` for a user the map does not name. Absent: such a user's message with `bot_id` is a bot's. */
-  usersInfo?: (user: string) => Promise<{ is_bot?: boolean }>;
+  /** The workspace's team id (`auth.test` `team_id`); a user with another is external. Absent: not compared. */
+  teamId?: string;
+  /**
+   * `users.info` for a user the map does not name, and for a trigger's reactors. Absent: such a user's
+   * message with `bot_id` is a bot's, and every reactor is external.
+   */
+  usersInfo?: (user: string) => Promise<SlackUserFacts>;
 }
 
-/** Remembered `users.info` answers; a user's bot flag does not change. */
+/** Remembered `users.info` answers; a user's bot flag, guest flags, and team do not change. */
 const MAX_REMEMBERED = 1000;
 
 function str(v: unknown): string {
@@ -49,25 +74,38 @@ function str(v: unknown): string {
 }
 
 export function createSlackAuthorOf(options: SlackAuthorshipOptions): SlackAuthorOf {
-  const known = new Map<string, Promise<boolean>>();
+  const known = new Map<string, Promise<SlackUserFacts | undefined>>();
 
-  function isBotUser(user: string): Promise<boolean> {
+  /** The user's `users.info` answer, or undefined when it failed or there is no lookup. */
+  function factsOf(user: string): Promise<SlackUserFacts | undefined> {
     const lookup = options.usersInfo;
-    if (lookup === undefined) return Promise.resolve(true);
+    if (lookup === undefined) return Promise.resolve(undefined);
     let answer = known.get(user);
     if (answer === undefined) {
       answer = lookup(user).then(
-        (u) => u.is_bot === true,
+        (u) => u,
         () => {
           // Not remembered: the next message asks again.
           known.delete(user);
-          return true;
+          return undefined;
         },
       );
       known.set(user, answer);
       if (known.size > MAX_REMEMBERED) known.delete(known.keys().next().value as string);
     }
     return answer;
+  }
+
+  async function isBotUser(user: string): Promise<boolean> {
+    const facts = await factsOf(user);
+    return facts === undefined || facts.is_bot === true;
+  }
+
+  async function membership(user: string): Promise<Membership> {
+    const facts = await factsOf(user);
+    if (facts === undefined) return 'external';
+    if (options.teamId !== undefined && options.teamId !== '' && facts.team_id !== options.teamId) return 'external';
+    return facts.is_restricted === true || facts.is_ultra_restricted === true ? 'guest' : 'member';
   }
 
   function plainly(event: SlackEvent): 'own' | 'bot' | undefined {
@@ -88,5 +126,5 @@ export function createSlackAuthorOf(options: SlackAuthorshipOptions): SlackAutho
     if (map.people.some((p) => p.slackId === user)) return 'person';
     return (await isBotUser(user)) ? 'bot' : 'person';
   };
-  return Object.assign(authorOf, { plainly });
+  return Object.assign(authorOf, { plainly, membership });
 }

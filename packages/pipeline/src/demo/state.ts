@@ -59,12 +59,12 @@ type Shape = Readonly<Record<string, Kind | `${Kind}?`>>;
  * their discriminant separately.
  */
 const PAYLOAD_SHAPES = {
-  captured: { kind: 'string', idempotencyKey: 'string', source: 'string', reporter: 'object', anchorAuthor: 'object?', anchorText: 'string', channelId: 'string', anchorId: 'string?', threadId: 'string?', parentId: 'string?', deepLink: 'string?', surfaceHint: 'string?', rawPayloadSnapshot: 'object?' },
+  captured: { kind: 'string', idempotencyKey: 'string', source: 'string', reporter: 'object', anchorAuthor: 'object?', levelCap: 'object?', anchorText: 'string', channelId: 'string', anchorId: 'string?', threadId: 'string?', parentId: 'string?', deepLink: 'string?', surfaceHint: 'string?', rawPayloadSnapshot: 'object?' },
   'context-assembled': { bundle: 'object', includedCount: 'number', excludedCount: 'number' },
   resolved: { resolvedBy: 'string', confidence: 'number', surfaceId: 'string?', componentId: 'string?', ownerId: 'string?', repo: 'string?', jiraProject: 'string?', evidence: 'object?' },
   'dedupe-checked': { candidates: 'array', decision: 'string' },
   clarified: { audience: 'string', question: 'string', asks: 'string?', options: 'array?', userSide: 'object?', answer: 'string?', timedOut: 'boolean' },
-  planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?', plan: 'object?', degraded: 'string?' },
+  planned: { action: 'string', projectKey: 'string', issueType: 'string', summary: 'string', priority: 'string', labels: 'array', autonomyLevel: 'number', linkTo: 'string?', componentId: 'string?', implementationRequest: 'object?', plan: 'object?', degraded: 'string?', capped: 'string?' },
   filed: { jiraKey: 'string' },
   claimed: { claimerId: 'string', expiresAt: 'string', claimerEmail: 'string?' },
   'fixer-started': { runId: 'string', harness: 'string', attempt: 'number' },

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ApprovalAction } from '../../src/contracts/incident.ts';
 import type { AutonomyLevelId, JiraPriorityName, MapAutonomy } from '../../src/map/types.ts';
-import { degrade, resolveAutonomy } from '../../src/policy/autonomy.ts';
+import { degrade, resolveAutonomy, triggerCap } from '../../src/policy/autonomy.ts';
 import { authorize, authorizeStopCommand, type AuthorizeActor, type DenyReason } from '../../src/policy/authorize.ts';
 
 // The main 4.2 example overrides, plus a level 3 surface (mobile) and a component override
@@ -56,6 +56,33 @@ describe('resolveAutonomy', () => {
   it('is order independent: the most restrictive match wins wherever it is listed', () => {
     const reversed = { policies: { autonomy: { ...autonomy, overrides: [...autonomy.overrides].reverse() } } };
     expect(resolveAutonomy({ surfaceId: 'mobile' }, { priority: 'Highest' }, reversed)).toBe(1);
+  });
+});
+
+describe('resolveAutonomy under a trigger cap (#170)', () => {
+  it('a guest-only trigger at level 2 resolves to 1', () => {
+    expect(resolveAutonomy({ surfaceId: 'web' }, { priority: 'Medium' }, map, triggerCap(['guest']))).toBe(1);
+  });
+
+  it('an external-only trigger at level 3 resolves to 1', () => {
+    expect(resolveAutonomy({ surfaceId: 'mobile' }, { priority: 'High' }, map, triggerCap(['external']))).toBe(1);
+  });
+
+  it('a member plus a guest at level 3 stays at 3', () => {
+    expect(triggerCap(['guest', 'member'])).toBeUndefined();
+    expect(resolveAutonomy({ surfaceId: 'mobile' }, { priority: 'High' }, map, triggerCap(['guest', 'member']))).toBe(3);
+  });
+
+  it('caps two guests, or a guest and an external user, at 1 with the reason', () => {
+    expect(triggerCap(['guest', 'guest'])).toEqual({ level: 1, reason: 'guest-trigger' });
+    expect(triggerCap(['guest', 'external'])).toEqual({ level: 1, reason: 'guest-trigger' });
+  });
+
+  it('never raises a lower level: the most restrictive rule still wins', () => {
+    const cap = triggerCap(['guest']);
+    expect(resolveAutonomy({ surfaceId: 'mobile', componentId: 'payments' }, { priority: 'Low' }, map, cap)).toBe(0);
+    expect(resolveAutonomy({ surfaceId: 'admin' }, { priority: 'Low' }, map, cap)).toBe(1);
+    expect(resolveAutonomy({ surfaceId: 'mobile' }, { priority: 'High' }, map, { level: 2 })).toBe(2);
   });
 });
 

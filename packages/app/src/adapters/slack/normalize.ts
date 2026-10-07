@@ -1,9 +1,13 @@
 // Slack payload normalization (main 15.1, 14.2): message shortcut, trigger emoji reactions, and direct
 // messages become a CanonicalIncidentPayload; everything else is a typed `ignored` result so the
 // transport can acknowledge it. Emoji configuration comes from the parsed workspace map.
+//
+// A trigger reaction with no workspace member among its counted reactors (only guests or people from
+// another organization) still files, with `levelCap` set so its level is at most 1 (#170).
 
-import type { CanonicalIncidentPayload, IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
+import type { CanonicalIncidentPayload, IncidentActor, LevelCap } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import { triggerCap, type Membership } from '@snapwing/pipeline/policy/autonomy.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
 
@@ -31,7 +35,8 @@ export interface SlackNormalizeContext {
   newEventId?: (nowMs: number) => string;
   /**
    * Who wrote a direct message or a reacted-to message (`authorship.ts`): a person posting through an
-   * app carries `bot_id` and is still a person. Default: the map and `botUserId` only.
+   * app carries `bot_id` and is still a person. Also whether a reactor is a member, a guest, or
+   * external (#170). Default: the map and `botUserId` only, so every reactor is external.
    */
   authorOf?: SlackAuthorOf;
 }
@@ -94,12 +99,28 @@ async function anchorAuthorOf(ctx: SlackNormalizeContext, message: Rec, broughtB
   return actor(ctx, user, '');
 }
 
+/**
+ * The cap the counted reactors put on the level (#170): none once one of them is a workspace member.
+ * The reactor who triggered it is asked first, the rest only until a member turns up.
+ */
+async function reactorCap(ctx: SlackNormalizeContext, reactors: ReadonlySet<string>): Promise<LevelCap | undefined> {
+  const authorOf = ctx.authorOf ?? createSlackAuthorOf({ botUserId: ctx.botUserId });
+  const seen: Membership[] = [];
+  for (const user of reactors) {
+    const membership = await authorOf.membership(user);
+    seen.push(membership);
+    if (membership === 'member') break;
+  }
+  return triggerCap(seen);
+}
+
 function build(
   ctx: SlackNormalizeContext,
   parts: {
     key: string;
     reporter: IncidentActor;
     anchorAuthor?: IncidentActor;
+    levelCap?: LevelCap;
     anchorText: string;
     channel: string;
     anchorTs: string;
@@ -119,6 +140,7 @@ function build(
     source: 'slack',
     reporter: parts.reporter,
     ...(parts.anchorAuthor === undefined ? {} : { anchorAuthor: parts.anchorAuthor }),
+    ...(parts.levelCap === undefined ? {} : { levelCap: parts.levelCap }),
     anchorText: parts.anchorText,
     context: {
       channelId: parts.channel,
@@ -193,6 +215,8 @@ async function reactionAdded(body: Rec, event: Rec, ctx: SlackNormalizeContext):
     for (const u of r.users) if (u !== ctx.botUserId) reactors.add(u);
   }
   if (reactors.size < min) return ignored('below-min-reactors');
+  // Guests and external users count toward `minReactors`; with no member among them the level is capped.
+  const levelCap = await reactorCap(ctx, reactors);
   const threadTs = got.threadTs ?? '';
   // The message as `reactions.get` sent it, else the event's `item_user` (no bot marks to read).
   const anchorAuthor = await anchorAuthorOf(ctx, got.author ?? { user: str(event['item_user']) }, userId);
@@ -202,6 +226,7 @@ async function reactionAdded(body: Rec, event: Rec, ctx: SlackNormalizeContext):
       key: `slack-${channel}-${ts}-${reaction}`,
       reporter: actor(ctx, userId, ''),
       ...(anchorAuthor === undefined ? {} : { anchorAuthor }),
+      ...(levelCap === undefined ? {} : { levelCap }),
       anchorText: got.text ?? '',
       channel,
       anchorTs: ts,

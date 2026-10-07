@@ -13,13 +13,14 @@ import { segment } from '../context/segment.ts';
 import { readImages } from '../context/vision/index.ts';
 import { CAPTURE_CANCEL_CHOICE, type FileConfirmCard, type InteractiveCard } from '../contracts/adapters.ts';
 import type { ArtifactRef, CaptureCancelledPayload, EventActor, EventPayloads, EventSource, EventType, NewEvent, UserSideCheckRecord, WaitingOn } from '../contracts/events.ts';
-import { isCaptureSource, type CanonicalIncidentPayload, type ChannelSource, type ClarifyQuestion, type ContextBundle, type Resolution, type TriageResolutionPlan } from '../contracts/incident.ts';
+import { isCaptureSource, type CanonicalIncidentPayload, type ChannelSource, type ClarifyQuestion, type ContextBundle, type LevelCap, type Resolution, type TriageResolutionPlan } from '../contracts/incident.ts';
 import type { Job } from '../contracts/jobs.ts';
 import { isExpectedSeqConflict, type OutboxItem } from '../contracts/state.ts';
 import { dedupe, rememberIncident } from '../dedupe/index.ts';
 import type { JiraLogicalStatus } from '../jira/statuses.ts';
 import { LABEL_NEEDS_CLARIFICATION, LABEL_PROMPT_FAILED, synthesizeIssue, type SynthesisContext, type SynthesizedIssue } from '../jira/synthesis.ts';
 import type { MapPerson, WorkspaceMap } from '../map/types.ts';
+import { resolveAutonomy } from '../policy/autonomy.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
 import { lastSeqPastBotRecords, RECORD_APPEND_TRIES } from '../signals/messages.ts';
@@ -216,6 +217,7 @@ export function payloadOf(cursor: Cursor): CanonicalIncidentPayload {
     source: c.source,
     reporter: c.reporter,
     ...(c.anchorAuthor === undefined ? {} : { anchorAuthor: c.anchorAuthor }),
+    ...(c.levelCap === undefined ? {} : { levelCap: c.levelCap }),
     anchorText: c.anchorText,
     context: {
       channelId: c.channelId,
@@ -367,6 +369,7 @@ export async function captureStep(env: Omit<StepEnv, 'payload'>, initial: Canoni
       source: p.source,
       reporter: p.reporter,
       ...(p.anchorAuthor === undefined ? {} : { anchorAuthor: p.anchorAuthor }),
+      ...(p.levelCap === undefined ? {} : { levelCap: p.levelCap }),
       anchorText: p.anchorText,
       anchorId: anchor.message.id,
       channelId: p.context.channelId,
@@ -827,6 +830,8 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
   // Unrouted: no repo for a fixer, so ticket only, and the description says why it is here.
   const routedPlan: TriageResolutionPlan =
     fallback === undefined ? labeled : { ...labeled, autonomyLevel: 0, descriptionAdf: withUnroutedNote(labeled.descriptionAdf, labeled.projectKey) };
+  // #170: the capture's cap, when it lowered the level (an unrouted plan is level 0 whatever the cap).
+  const capped = fallback === undefined ? cappedBy(env, routed, drafted)?.reason : undefined;
   const triaged = withEscalatedPriority(routedPlan, await reactionEscalation(env));
   const level = triaged.autonomyLevel;
   const issue = await synthesizeIssue(triaged, bundle, level, synthesisContext(env, resolution, clarify));
@@ -862,12 +867,24 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
         ...(ref === undefined ? {} : { implementationRequest: ref }),
         plan: planRef,
         ...(fallback === undefined ? {} : { degraded: 'unresolved-surface' as const }),
+        ...(capped === undefined ? {} : { capped }),
       }),
     ];
   });
   if (level !== 1 || held) return 'continue';
   env.cursor.waiting = false; // `planned` changed the status, which ends any wait
   return awaitCard(env, { kind: 'fix-preview', plan: triaged }, resolution.ownerId);
+}
+
+/**
+ * The capture's cap (#170), when it lowered the level policy alone resolves for this plan: `planned`
+ * records its reason as `capped`, so the filed status says why. A cap at or above that level is moot.
+ */
+function cappedBy(env: StepEnv, resolution: Resolution, drafted: TriageResolutionPlan): LevelCap | undefined {
+  const cap = env.payload.levelCap;
+  if (cap === undefined) return undefined;
+  const uncapped = resolveAutonomy(resolution, { priority: drafted.priority, ...(drafted.componentId === undefined ? {} : { componentId: drafted.componentId }) }, env.map);
+  return drafted.autonomyLevel < uncapped ? cap : undefined;
 }
 
 const PLAN_ACTIONS: readonly string[] = ['create_issue', 'link_existing', 'noop'];
@@ -961,6 +978,11 @@ export async function fixPreviewStep(env: StepEnv, phase: Extract<Phase, { kind:
   return 'continue';
 }
 
+/** Why a capped incident (#170) waited for an engineer, on its filed status, by `planned.capped`. */
+const CAPPED_NOTES: Record<LevelCap['reason'], string> = {
+  'guest-trigger': 'A guest or external user triggered it, so it needed an engineer to tap Fix it.',
+};
+
 function filedText(issueKey: string, owner: string | undefined, note?: string): string {
   const base = `Filed as ${issueKey}${owner === undefined ? '' : `, assigned to @${owner}`}.`;
   return note === undefined ? base : `${base} ${note}`;
@@ -1007,12 +1029,14 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
   const fixer = !stopped && (level >= 2 || (level === 1 && approvedFix(cursor)));
   const timedOut = level === 1 && answerAfter(cursor, 'fix-preview', planned.seq) === undefined;
   if (level >= 2 && !stopped) await adapterFor(env)?.postInteractive(env.payload, { kind: 'fix-preview', plan: await plannedPlan(env) });
-  const note =
+  const notes =
     planned.payload.degraded === 'unresolved-surface'
-      ? `I could not tell which product this is about, so it is in ${planned.payload.projectKey} for someone to route.`
-      : timedOut
-        ? `Nobody tapped Fix it within ${hours(tapTimeoutMs(env))}, so this is filed as ticket only.`
-        : undefined;
+      ? [`I could not tell which product this is about, so it is in ${planned.payload.projectKey} for someone to route.`]
+      : [
+          ...(planned.payload.capped === undefined ? [] : [CAPPED_NOTES[planned.payload.capped]]),
+          ...(timedOut ? [`Nobody tapped Fix it within ${hours(tapTimeoutMs(env))}, so this is filed as ticket only.`] : []),
+        ];
+  const note = notes.length === 0 ? undefined : notes.join(' ');
   const owner = resolution.ownerId;
   const subscription = await subscribeStatus(env, issueKey, filedText(issueKey, owner, note), note);
 

@@ -900,3 +900,54 @@ describe('unresolved surface (#115)', () => {
     expect((create?.payload as unknown as CreateRow).fields.project.key).toBe('ADM');
   });
 });
+
+describe('a trigger with no member among its reactors (#170)', () => {
+  const CAP = { level: 1, reason: 'guest-trigger' } as const;
+
+  it('keeps the cap on captured, plans level 1 on a level 2 surface, waits for Fix it, and the filed status says why', async () => {
+    const h = setup({ level: 2 });
+    h.payload.levelCap = CAP;
+    await inbound(h);
+    const [captured] = await events(h);
+    expect(captured?.type === 'captured' ? captured.payload.levelCap : undefined).toEqual(CAP);
+    // Every step after capture reads the payload back from `captured`.
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(eventOf(await events(h), 'planned')?.payload).toMatchObject({ autonomyLevel: 1, capped: 'guest-trigger' });
+    expect((await state.getIncident(h.payload.eventId))?.autonomyLevel).toBe(1);
+    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['scope-preview', 'fix-preview']);
+    expect(await outbox()).toEqual([]); // nothing reaches Jira before an engineer decides
+
+    await tap(h, 'fix-preview', 'approve_fix', ENGINEER);
+    await file(h, 'APP-170');
+    const [transition] = await outbox();
+    expect(transition).toMatchObject({ op: 'transition', payload: { issueKey: 'APP-170', to: 'in-progress' } });
+    expect(h.adapter.statuses.at(-1)?.text).toBe('Filed as APP-170, assigned to @mobDev. A guest or external user triggered it, so it needed an engineer to tap Fix it.');
+  });
+
+  it('says why before the timeout note when nobody taps Fix it (level 3 surface)', async () => {
+    const h = setup({ level: 3 });
+    h.payload.levelCap = CAP;
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(eventOf(await events(h), 'planned')?.payload).toMatchObject({ autonomyLevel: 1, capped: 'guest-trigger' });
+    now += DAY + 1;
+    await wf.drain(); // the fix preview times out: ticket only
+    await file(h, 'APP-171');
+    expect(await outbox()).toEqual([]); // ticket only: no transition
+    expect(h.adapter.statuses.at(-1)?.text).toBe(
+      'Filed as APP-171, assigned to @mobDev. A guest or external user triggered it, so it needed an engineer to tap Fix it. Nobody tapped Fix it within 24 hours, so this is filed as ticket only.',
+    );
+  });
+
+  it('a cap at or above the level policy gives changes nothing and is not recorded', async () => {
+    const h = setup({ level: 0 });
+    h.payload.levelCap = CAP;
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    const planned = eventOf(await events(h), 'planned');
+    expect(planned?.payload.autonomyLevel).toBe(0);
+    expect(planned?.payload.capped).toBeUndefined();
+    await file(h, 'APP-172');
+    expect(h.adapter.statuses.at(-1)?.text).toBe('Filed as APP-172, assigned to @mobDev.');
+  });
+});

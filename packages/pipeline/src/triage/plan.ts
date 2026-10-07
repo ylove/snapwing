@@ -172,7 +172,8 @@ export function toAdf(text: string): Record<string, unknown> {
 
 /**
  * Builds the plan for one incident. With a `repo`, the read-only scout runs first and its diagnosis
- * goes into the triage prompt and onto `plan.diagnosis`. `autonomyLevel` is `resolveAutonomy`, not model output.
+ * goes into the triage prompt and onto `plan.diagnosis`. `autonomyLevel` is `resolveAutonomy` under the
+ * payload's `levelCap`, not model output.
  * `instructions` (INSTRUCTIONS.md, A 6.3) goes into the triage system prompt; the scout does not get it.
  */
 export async function plan(
@@ -195,7 +196,7 @@ export async function plan(
   const { value: draft } = await model.classify(await buildTriageRequest(payload, bundle, resolution, dedupe, map, diagnosis, instructions));
 
   const componentId = draft.componentId ?? resolution.componentId;
-  const autonomyLevel = resolveAutonomy(resolution, { priority: draft.priority, ...(componentId === undefined ? {} : { componentId }) }, map);
+  const autonomyLevel = resolveAutonomy(resolution, { priority: draft.priority, ...(componentId === undefined ? {} : { componentId }) }, map, payload.levelCap);
 
   return {
     action: draft.action,

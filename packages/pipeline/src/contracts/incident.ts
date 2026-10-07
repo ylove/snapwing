@@ -113,6 +113,16 @@ export interface Resolution {
   evidence?: { path: string };
 }
 
+/**
+ * Spec silent (#170). A ceiling on an incident's autonomy level, set at capture. `guest-trigger`: no
+ * workspace member counted toward the trigger (only guests, or people from another organization as
+ * in Slack Connect, reacted), so an engineer's `Fix it` is needed to start the fixer.
+ */
+export interface LevelCap {
+  level: 0 | 1 | 2 | 3;
+  reason: 'guest-trigger';
+}
+
 export interface CanonicalIncidentPayload {
   eventId: string;                 // ULID
   idempotencyKey: string;
@@ -124,6 +134,8 @@ export interface CanonicalIncidentPayload {
    * (`IncidentView.reporterId`, the one asked to check staging, A 4.4) is this person when present.
    */
   anchorAuthor?: IncidentActor;
+  /** Spec silent (#170). The level never resolves above this; absent when nothing at capture caps it. */
+  levelCap?: LevelCap;
   anchorText: string;
   context: {
     channelId: string;
