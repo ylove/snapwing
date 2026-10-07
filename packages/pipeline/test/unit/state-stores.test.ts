@@ -369,6 +369,16 @@ describe('kv (cache-port fallback)', () => {
     expect(await store.kvGet('lock:y')).toBe(`w${winner}`);
   });
 
+  it('deletes a key, expired or not, and an absent one is fine', async () => {
+    await store.kvSet('image:1', 'bytes', 60);
+    await store.kvDelete('image:1');
+    expect(await store.kvGet('image:1')).toBeUndefined();
+    expect(await store.kvSetIfAbsent('image:1', 'again', 60)).toBe(true);
+    await store.kvDelete('image:1');
+    await store.kvDelete('image:1');
+    expect(await store.kvGet('image:1')).toBeUndefined();
+  });
+
   it('rejects a TTL that is not a positive number of seconds', async () => {
     await expect(store.kvSet('k', 'v', 0)).rejects.toBeInstanceOf(RangeError);
     await expect(store.kvSetIfAbsent('k', 'v', -1)).rejects.toBeInstanceOf(RangeError);

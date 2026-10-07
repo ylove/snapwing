@@ -62,6 +62,18 @@ export interface WhichSurfaceResponse {
   readonly choices: readonly Choice[];
 }
 
+/**
+ * A ticket ready to file where the agent may fix it on a tap: Fix it starts the fix as the ticket
+ * files, Ticket only files it alone. The server offers Fix it to engineers only.
+ */
+export interface FixPreviewResponse {
+  readonly kind: 'fix-preview';
+  readonly captureId: string;
+  /** The ticket's summary as it will be filed. */
+  readonly summary: string;
+  readonly choices: readonly Choice[];
+}
+
 export interface FiledResponse {
   readonly kind: 'filed';
   readonly captureId: string;
@@ -84,6 +96,7 @@ export type LookupResponse =
   | TrackedResponse
   | NewResponse
   | WhichSurfaceResponse
+  | FixPreviewResponse
   | FiledResponse
   | NotFiledResponse
   | PendingResponse;
@@ -108,8 +121,21 @@ export interface StopResult {
   readonly stopped: boolean;
 }
 
+/**
+ * One chat platform in the health response (main 15.2: Teams reduced mode shows in `snapwing status`).
+ * `mode` is absent when the server does not say; an unknown value reads as absent.
+ */
+export interface PlatformHealth {
+  readonly id: string;
+  readonly ok: boolean;
+  readonly mode?: 'full' | 'reduced';
+  readonly detail?: string;
+}
+
+/** `GET /healthz`: the server, and each configured chat platform when it reports them. */
 export interface HealthResult {
   readonly ok: boolean;
+  readonly platforms?: readonly PlatformHealth[];
 }
 
 /** The routes, so the app and the client cannot drift. Keys go through encodeURIComponent. */
@@ -270,6 +296,13 @@ export function validateLookupResponse(input: unknown): Validation<LookupRespons
       if (!choices.ok) return choices;
       return ok({ kind: 'which-surface', captureId: id, choices: choices.value });
     }
+    case 'fix-preview': {
+      const summary = reqStr(input, 'summary', '');
+      if (!summary.ok) return summary;
+      const choices = validateChoices(input['choices']);
+      if (!choices.ok) return choices;
+      return ok({ kind: 'fix-preview', captureId: id, summary: summary.value, choices: choices.value });
+    }
     case 'filed': {
       const issueKey = reqStr(input, 'issueKey', '');
       if (!issueKey.ok) return issueKey;
@@ -285,7 +318,7 @@ export function validateLookupResponse(input: unknown): Validation<LookupRespons
     case 'pending':
       return ok({ kind: 'pending', captureId: id });
     default:
-      return fail('kind must be one of tracked, new, which-surface, filed, not-filed, pending');
+      return fail('kind must be one of tracked, new, which-surface, fix-preview, filed, not-filed, pending');
   }
 }
 
@@ -334,5 +367,26 @@ export function validateHealthResult(input: unknown): Validation<HealthResult> {
   if (!isRec(input)) return fail('health must be an object');
   const flag = input['ok'];
   if (typeof flag !== 'boolean') return fail('ok must be a boolean');
-  return ok({ ok: flag });
+  const raw = input['platforms'];
+  if (raw === undefined) return ok({ ok: flag });
+  if (!Array.isArray(raw)) return fail('platforms must be an array');
+  const platforms: PlatformHealth[] = [];
+  for (const [i, item] of (raw as readonly unknown[]).entries()) {
+    const at = `platforms[${i}].`;
+    if (!isRec(item)) return fail(`platforms[${i}] must be an object`);
+    const id = reqStr(item, 'id', at);
+    if (!id.ok) return id;
+    const up = item['ok'];
+    if (typeof up !== 'boolean') return fail(`${at}ok must be a boolean`);
+    const detail = optStr(item, 'detail', at);
+    if (!detail.ok) return detail;
+    const mode = item['mode'];
+    platforms.push({
+      id: id.value,
+      ok: up,
+      ...(mode === 'full' || mode === 'reduced' ? { mode } : {}),
+      ...(detail.value === undefined ? {} : { detail: detail.value }),
+    });
+  }
+  return ok({ ok: flag, platforms });
 }

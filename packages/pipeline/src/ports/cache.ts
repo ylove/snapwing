@@ -9,4 +9,6 @@ export interface CachePort {
   set(k: string, v: string, ttlSec?: number): Promise<void>;
   /** Sets `k` only when absent or expired; true if this call set it. Atomic across callers. */
   setIfAbsent(k: string, v: string, ttlSec: number): Promise<boolean>;
+  /** Removes `k`, for a value that must not outlive its use (a TTL only hides it). Absent is fine. */
+  delete(k: string): Promise<void>;
 }

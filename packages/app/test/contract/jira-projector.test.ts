@@ -292,9 +292,16 @@ describe('create-issue', () => {
     const create = row('create-issue', createIssuePayload(), { incidentId });
     await enqueue(create);
 
-    const report = await projector().drainOnce();
+    const attached: unknown[] = [];
+    const report = await projector({
+      screenshotsAttached: async (refs) => {
+        attached.push({ refs, onIssue: [...jira.issue('WEB-1').attachments] });
+      },
+    }).drainOnce();
 
     expect(report.sent).toEqual([create.id]);
+    // Told once the upload is done, so whoever kept the bytes may drop them.
+    expect(attached).toEqual([{ refs: [{ url: `${SHOTS}/shots/cart-blank.png` }], onIssue: ['cart-blank.png'] }]);
     const issue = jira.issue('WEB-1');
     expect(issue.labels).toEqual(['snapwing', 'slack', 'web', incidentLabel(incidentId)]);
     expect(issue.fields['customfield_10040']).toEqual(promptToAdf('<implementation-request/>'));
@@ -307,6 +314,18 @@ describe('create-issue', () => {
     expect(await state.drainOutbox('jira', 10, WS)).toEqual([]);
     // Order of calls: search first, create, then the upload after the issue exists.
     expect(jira.requests).toEqual(['POST /rest/api/3/search/jql', 'POST /rest/api/3/issue', 'POST /rest/api/3/issue/WEB-1/attachments']);
+  });
+
+  it('acks the row when the screenshots-attached hook fails, and reports the failure', async () => {
+    const incidentId = ulid(time);
+    await state.append(incidentId, [waitingChanged(incidentId)], 0);
+    const create = row('create-issue', createIssuePayload(), { incidentId });
+    await enqueue(create);
+    const errors: unknown[] = [];
+    const report = await projector({ screenshotsAttached: () => Promise.reject(new Error('kv is down')), onError: (e) => errors.push(e) }).drainOnce();
+    expect(report.sent).toEqual([create.id]);
+    expect(errors).toEqual([new Error('kv is down')]);
+    expect(await state.drainOutbox('jira', 10, WS)).toEqual([]);
   });
 
   it('retries filed on an expectedSeq conflict from a fresh read', async () => {

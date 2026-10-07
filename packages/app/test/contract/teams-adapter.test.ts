@@ -64,6 +64,7 @@ function memoryCache(): CachePort & { data: Map<string, string> } {
       data.set(k, v);
       return Promise.resolve(true);
     },
+    delete: (k) => Promise.resolve(void data.delete(k)),
   };
 }
 

@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { GitHubAuth, InstallationTokenRequest } from '../../src/github/auth.ts';
-import { createGitHubRepoTrees, REPO_TREE_FAILURE_TTL_MS, REPO_TREE_TTL_MS } from '../../src/github/repo-trees.ts';
+import { createRepoTrees, REPO_TREE_FAILURE_TTL_MS, REPO_TREE_TTL_MS } from '../../src/github/repo-trees.ts';
 
 function fakeAuth(): GitHubAuth & { requests: InstallationTokenRequest[] } {
   const requests: InstallationTokenRequest[] = [];
@@ -44,11 +44,11 @@ const TREE = [
   { path: 'vendor/lib', type: 'commit' },
 ];
 
-describe('createGitHubRepoTrees', () => {
+describe('createRepoTrees', () => {
   it('reads the default branch tree of a map repo and keeps only file paths', async () => {
     const gh = fakeGitHub({ 'acme/web': { branch: 'main', tree: TREE } });
     const auth = fakeAuth();
-    const trees = createGitHubRepoTrees(auth, { fetch: gh.fetch, apiBase: 'https://api.example.test' });
+    const trees = createRepoTrees(auth, { fetch: gh.fetch, apiBase: 'https://api.example.test' });
     expect(await trees('github.com/acme/web')).toEqual(['src/cart/total.ts', 'README.md']);
     expect(gh.calls).toEqual(['/repos/acme/web', '/repos/acme/web/branches/main', '/repos/acme/web/git/trees/tree-sha-1?recursive=1']);
     expect(auth.requests.every((r) => r.repo === 'acme/web' && JSON.stringify(r.permissions) === '{"contents":"read"}')).toBe(true);
@@ -57,7 +57,7 @@ describe('createGitHubRepoTrees', () => {
   it('caches a tree per repo for the TTL, sharing a read in flight', async () => {
     let t = 0;
     const gh = fakeGitHub({ 'acme/web': { branch: 'trunk/v2', tree: TREE } });
-    const trees = createGitHubRepoTrees(fakeAuth(), { fetch: gh.fetch, apiBase: 'https://api.example.test', now: () => t });
+    const trees = createRepoTrees(fakeAuth(), { fetch: gh.fetch, apiBase: 'https://api.example.test', now: () => t });
     await Promise.all([trees('github.com/acme/web'), trees('acme/web')]);
     expect(gh.calls).toEqual(['/repos/acme/web', '/repos/acme/web/branches/trunk/v2', '/repos/acme/web/git/trees/tree-sha-1?recursive=1']);
     t += REPO_TREE_TTL_MS - 1;
@@ -71,7 +71,7 @@ describe('createGitHubRepoTrees', () => {
   it('answers undefined for a repo it cannot read, and retries after the failure TTL', async () => {
     let t = 0;
     const gh = fakeGitHub({ 'acme/private': 403 });
-    const trees = createGitHubRepoTrees(fakeAuth(), { fetch: gh.fetch, apiBase: 'https://api.example.test', now: () => t });
+    const trees = createRepoTrees(fakeAuth(), { fetch: gh.fetch, apiBase: 'https://api.example.test', now: () => t });
     expect(await trees('github.com/acme/private')).toBeUndefined();
     expect(await trees('github.com/acme/private')).toBeUndefined();
     expect(gh.calls).toHaveLength(1);

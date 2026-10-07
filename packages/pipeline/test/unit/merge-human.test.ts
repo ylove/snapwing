@@ -211,6 +211,10 @@ class MemoryCache implements CachePort {
     this.values.set(k, v);
     return Promise.resolve(true);
   }
+  delete(k: string): Promise<void> {
+    this.values.delete(k);
+    return Promise.resolve();
+  }
 }
 
 interface World {

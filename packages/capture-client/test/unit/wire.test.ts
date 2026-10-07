@@ -56,6 +56,7 @@ describe('validateLookupResponse', () => {
     { kind: 'new', captureId: 'c2', surface: { id: 'web', label: 'the website' }, evidence: 'src/cart/...', choices: [{ id: 'file', label: 'File it' }] },
     { kind: 'new', captureId: 'c2', surface: { id: 'web', label: 'the website' }, choices: [] },
     { kind: 'which-surface', captureId: 'c3', choices: [{ id: 'web', label: 'Website' }, { id: 'api', label: 'API' }] },
+    { kind: 'fix-preview', captureId: 'c7', summary: 'Cart total blank', choices: [{ id: 'approve_fix', label: 'Fix it' }, { id: 'ticket_only', label: 'Ticket only' }] },
     { kind: 'filed', captureId: 'c4', issueKey: 'WEB-1', url: 'http://x/WEB-1' },
     { kind: 'not-filed', captureId: 'c5', reason: 'Duplicate of WEB-2' },
     { kind: 'pending', captureId: 'c6' },
@@ -75,7 +76,7 @@ describe('validateLookupResponse', () => {
   it.each([
     ['not an object', null, 'response must be an object'],
     ['no captureId', { kind: 'pending' }, 'captureId must be a non-empty string'],
-    ['unknown kind', { kind: 'maybe', captureId: 'c' }, 'kind must be one of tracked, new, which-surface, filed, not-filed, pending'],
+    ['unknown kind', { kind: 'maybe', captureId: 'c' }, 'kind must be one of tracked, new, which-surface, fix-preview, filed, not-filed, pending'],
     ['tracked without key', { kind: 'tracked', captureId: 'c', summary: 's', status: 'o', url: 'u' }, 'issueKey must be a non-empty string'],
     ['tracked without summary', { kind: 'tracked', captureId: 'c', issueKey: 'K-1', status: 'o', url: 'u' }, 'summary must be a non-empty string'],
     ['tracked without status', { kind: 'tracked', captureId: 'c', issueKey: 'K-1', summary: 's', url: 'u' }, 'status must be a non-empty string'],
@@ -88,6 +89,8 @@ describe('validateLookupResponse', () => {
     ['new without choices', { kind: 'new', captureId: 'c', surface: { id: 'x', label: 'y' } }, 'choices must be an array'],
     ['which-surface bad choice', { kind: 'which-surface', captureId: 'c', choices: [{ id: 'a' }] }, 'choices[0].label must be a non-empty string'],
     ['which-surface non-object choice', { kind: 'which-surface', captureId: 'c', choices: ['a'] }, 'choices[0] must be an object'],
+    ['fix-preview without summary', { kind: 'fix-preview', captureId: 'c', choices: [] }, 'summary must be a non-empty string'],
+    ['fix-preview without choices', { kind: 'fix-preview', captureId: 'c', summary: 's' }, 'choices must be an array'],
     ['filed without key', { kind: 'filed', captureId: 'c', url: 'u' }, 'issueKey must be a non-empty string'],
     ['filed without url', { kind: 'filed', captureId: 'c', issueKey: 'K-1' }, 'url must be a non-empty string'],
     ['not-filed without reason', { kind: 'not-filed', captureId: 'c' }, 'reason must be a non-empty string'],
@@ -135,6 +138,28 @@ describe('small validators', () => {
     expect(validateHealthResult({ ok: true })).toEqual({ ok: true, value: { ok: true } });
     expect(validateHealthResult({ ok: 1 }).ok).toBe(false);
     expect(validateHealthResult('up').ok).toBe(false);
+    expect(
+      validateHealthResult({
+        ok: true,
+        platforms: [
+          { id: 'slack', ok: true, mode: 'full' },
+          { id: 'teams', ok: true, mode: 'reduced', detail: 'no RSC grant' },
+          { id: 'other', ok: false, mode: 'someday' },
+        ],
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        ok: true,
+        platforms: [
+          { id: 'slack', ok: true, mode: 'full' },
+          { id: 'teams', ok: true, mode: 'reduced', detail: 'no RSC grant' },
+          { id: 'other', ok: false },
+        ],
+      },
+    });
+    expect(validateHealthResult({ ok: true, platforms: {} }).ok).toBe(false);
+    expect(validateHealthResult({ ok: true, platforms: [{ id: 'slack' }] }).ok).toBe(false);
   });
 
   it('encodes keys in routes', () => {

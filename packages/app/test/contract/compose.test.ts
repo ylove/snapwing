@@ -162,13 +162,13 @@ describe('compose under snapwing serve', () => {
     // Seven phase 3 job types plus the phase 4 timers (#337): mid-flight, hold, claim nudge, claim expiry;
     // and (#348) the escalation ladder step, the monitor poll, heartbeat, and stall.
     expect(log).toContain('worker polling (15 job types)');
-    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport', 'phase 4 schedules', 'ux friction scan', 'channel members refresh', 'active monitoring']) {
+    for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport', 'phase 4 schedules', 'ux friction scan', 'channel members refresh', 'active monitoring', 'capture images']) {
       expect(log).toContain(`${service} started`);
     }
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
-    expect(await health.text()).toBe('ok');
+    expect(await health.json()).toMatchObject({ ok: true });
 
     const metrics = await (await fetch(`${url}/metrics`)).text();
     expect(metrics).toContain('snapwing_jobs_parked 0');

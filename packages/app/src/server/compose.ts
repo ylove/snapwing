@@ -62,6 +62,12 @@
 //                service `active monitoring` reads the log and evaluates both after every event that
 //                can change their facts (a priority, a surface, a close, monitoring starting or
 //                stopping, an outage step), and the monitor's stall timer evaluates the ladders.
+//   Capture API  (#385, the "Capture API" section; ADR 0022) Raycast and the CLI: the capture adapters
+//                (`cli`, `raycast`) and their context source in the engine, their images in the
+//                vision pass and on the Jira issue (deleted from kv once attached, or by the worker's
+//                `capture images` once a capture ends unfiled), and the bearer-token routes at
+//                capture-client's `CAPTURE_ROUTES`. `/healthz` reports each chat platform through
+//                `health()`.
 //   Chat seam    (#368, `server/chat.ts`) every outbound chat effect outside an adapter's inbound path and
 //                the status projectors (thread, channel, and person posts, mentions, the PR card, the
 //                text-signal cards, the mid-flight card, channel members, the GitHub link check) goes
@@ -91,7 +97,8 @@ import type { AppConfig, HarnessAdapter, HarnessConfig, ModelProvider } from '@s
 import type { EventType, IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { isFixerBudgetData, isFixerRunData, isReviewRunData, type JobName } from '@snapwing/pipeline/contracts/jobs.ts';
 import { LOG_START, StateNotFoundError, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
-import type { EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
+import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
+import type { AnyIngestionAdapter, EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
@@ -133,6 +140,18 @@ import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
+import type { PlatformHealth } from '@snapwing/capture-client/wire.ts';
+import {
+  CAPTURE_SOURCES,
+  CAPTURE_UNFILED_ENDS,
+  captureImageLoader,
+  captureScreenshotLoader,
+  createCaptureAdapter,
+  createCaptureContextSource,
+  dropCaptureImage,
+  releaseCaptureScreenshots,
+} from '../adapters/capture/adapter.ts';
+import { createCaptureRoutes } from '../adapters/capture/routes.ts';
 import { createSlackAdapter, type SlackInbound } from '../adapters/slack/adapter.ts';
 import { createSlackAuthorOf } from '../adapters/slack/authorship.ts';
 import { createSlackChatSurface, type SlackChatSurface } from '../adapters/slack/chat-surface.ts';
@@ -158,7 +177,7 @@ import { createFixerGitHub } from '../github/fixer-github.ts';
 import { createGitHubOAuth } from '../github/oauth.ts';
 import { createGitHubProjector } from '../github/projector.ts';
 import { createGitHubRepoReader } from '../github/repo-reader.ts';
-import { createGitHubRepoTrees } from '../github/repo-trees.ts';
+import { createRepoTrees } from '../github/repo-trees.ts';
 import { repoFullName } from '../github/repo.ts';
 import { createJiraClient, jiraSearch, type JiraClient } from '../jira/client/index.ts';
 import { createJiraProjector } from '../jira/projector/drain.ts';
@@ -190,6 +209,8 @@ export const UX_FRICTION_SCAN_MS = 15 * 60_000;
 export const MONITOR_TRIGGER_POLL_MS = 2_000;
 /** Where the worker keeps its place in the log for them (kv). */
 export const MONITOR_CURSOR_KEY = 'monitor:triggers-cursor';
+/** Where the worker keeps its place in the log for capture screenshots to delete (kv). */
+export const CAPTURE_IMAGES_CURSOR_KEY = 'capture:images-cursor';
 /**
  * Events after which active monitoring (A 4.5) and the escalation ladders (A 6.2) are evaluated: a
  * priority (`planned`, `escalated`, `jira-priority-changed`), a surface (`resolved`, `corrected`),
@@ -321,6 +342,8 @@ export interface Composed {
   readonly workerServices?: readonly ComposedService[];
   /** Prometheus text appended to `/metrics` (projector pauses and parked rows, B 10). */
   metrics?(): Promise<string>;
+  /** Each configured chat platform for `/healthz` (capture-client's `PlatformHealth`, #385). */
+  health?(): Promise<readonly PlatformHealth[]>;
   /** The wired fixer and review deps and the chat router, so tests can check what points at what. */
   readonly deps?: { readonly fixer: FixerDeps; readonly review: ReviewDeps; readonly chat: ChatRouter };
 }
@@ -802,14 +825,35 @@ export const compose: ComposeFn = async (deps) => {
     return actions;
   };
 
+  // Capture API (#385, main 15.3, 15.4; ADR 0022) ---------------------------------------------------
+  // Raycast and the CLI share one adapter shape (per source, for idempotency keys and metrics only), a
+  // context source that makes a screenshot the anchor's image, and the bearer-token routes. Their cards
+  // wait in kv for the client to read; their images live in kv until the Jira projector attaches them,
+  // or until the capture ends without a ticket (the worker's `capture images`).
+  const capture = {
+    adapters: CAPTURE_SOURCES.map((source) => [source, createCaptureAdapter(source, { cache, clock })] as const),
+    context: createCaptureContextSource(),
+    issueUrl: (key: string): string => `${secret('JIRA_BASE_URL').replace(/\/+$/, '')}/browse/${encodeURIComponent(key)}`,
+  };
+  const captureRoutes = createCaptureRoutes({
+    state,
+    cache,
+    workspaceId,
+    map: liveMap,
+    // Called per request, once the engine below exists.
+    engine: { handleInbound: (source, raw) => engine.handleInbound(source, raw), handleTap: (tap) => engine.handleTap(tap) },
+    stop: (input) => stopIncident(fixerDeps, input),
+    issueUrl: capture.issueUrl,
+  });
+
   // The engine.
   const engineDeps: EngineDeps = {
     workspaceId,
     state,
     workflow,
     model,
-    adapters: new Map(slack === undefined ? [] : [['slack', slack.adapter]]),
-    context: new Map(slack === undefined ? [] : [['slack', slack.context]]),
+    adapters: new Map<ChannelSource, AnyIngestionAdapter>([...(slack === undefined ? [] : [['slack', slack.adapter] as const]), ...capture.adapters]),
+    context: new Map([...(slack === undefined ? [] : [['slack', slack.context] as const]), ...CAPTURE_SOURCES.map((source) => [source, capture.context] as const)]),
     jiraSearch: jiraSearch(jira),
     cache,
     map: getMap,
@@ -818,12 +862,13 @@ export const compose: ComposeFn = async (deps) => {
     playbook: configWatch.playbook,
     instructions: configWatch.instructions,
     // main 15.3 (#375, #377): file paths in pasted text resolve against the map repos' trees.
-    repoTrees: createGitHubRepoTrees(auth),
+    repoTrees: createRepoTrees(auth),
     repoReader: (resolution) => (resolution.repo === undefined || resolution.repo === '' ? undefined : createGitHubRepoReader(auth, { repo: repoFullName(resolution.repo) })),
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
     status: createStatusSubscriber({ workspaceId, clock }),
     clock,
-    ...(slack === undefined ? {} : { options: { loadImage: slack.context.loadImage, loadRecording: slack.context.loadRecording } }),
+    // Capture screenshots come from kv (#385); every other image through the chat's own loader.
+    options: { loadImage: captureImageLoader(cache, slack?.context.loadImage), ...(slack === undefined ? {} : { loadRecording: slack.context.loadRecording }) },
     // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
     // A 1.4: reactions on the anchor before the incident existed count from its creation (#335).
@@ -1091,6 +1136,28 @@ export const compose: ComposeFn = async (deps) => {
   }
   const monitorServices: ComposedService[] = [every('active monitoring', overrides.projectorPollMs ?? MONITOR_TRIGGER_POLL_MS, monitorTriggers, log)];
 
+  // A capture that ends without a ticket of its own (adapter.ts) never reaches the Jira projector, so
+  // its screenshot is deleted here, when the log says it ended; nobody need look at the capture again.
+  let captureImagesCursor: string | undefined;
+  async function releaseUnfiledCaptureImages(): Promise<void> {
+    captureImagesCursor ??= (await cache.get(CAPTURE_IMAGES_CURSOR_KEY)) ?? LOG_START;
+    for (;;) {
+      const page = await state.readSince(captureImagesCursor, 200);
+      for (const e of page.events) {
+        if (!CAPTURE_UNFILED_ENDS.has(e.type)) continue;
+        // A ticket of its own (a Not a bug after filing) keeps its image until the projector attaches it.
+        const incident = await state.getIncident(e.incidentId);
+        if (incident?.jiraKey !== undefined && incident.status !== 'linked-to-existing') continue;
+        // Any incident's: deleting an image a chat incident never had is a no-op.
+        await dropCaptureImage(cache, e.incidentId);
+      }
+      const moved = page.cursor !== captureImagesCursor;
+      captureImagesCursor = page.cursor;
+      if (moved) await cache.set(CAPTURE_IMAGES_CURSOR_KEY, captureImagesCursor);
+      if (!moved || page.events.length === 0) return;
+    }
+  }
+
   /** A 3 scope change: the second issue captured as its own incident, as "Fix it from here" on that message. */
   async function fileLinked(request: LinkedIncidentRequest): Promise<{ incidentId: string } | undefined> {
     if (slack === undefined || request.platform !== 'slack' || request.channel === '') return undefined;
@@ -1229,8 +1296,11 @@ export const compose: ComposeFn = async (deps) => {
     continueIncident: (incidentId) => engine.continueIncident(incidentId),
     customFieldIds,
     statusOverrides: config.jira.statuses,
-    // Slack-hosted screenshots need the bot token; without Slack every screenshot is a plain GET.
-    ...(web === undefined ? {} : { loadScreenshot: screenshotLoader(web) }),
+    // Slack-hosted screenshots need the bot token; capture screenshots come from kv (#385); anything
+    // else is a plain GET.
+    loadScreenshot: captureScreenshotLoader(cache, web === undefined ? fetchScreenshot : screenshotLoader(web)),
+    // Attached, a capture screenshot lives on the issue only: its kv copy is deleted.
+    screenshotsAttached: releaseCaptureScreenshots(cache),
     now: clock,
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`jira projector: ${message(e)}`),
@@ -1319,6 +1389,7 @@ export const compose: ComposeFn = async (deps) => {
     ),
     ...(docker ? createModelProxyRoutes({ verify: modelTokenVerifier(fixerTokenKeys), providers: proxyProviders, clock }) : []),
     ...oauth.routes,
+    ...captureRoutes,
   ];
   if (!s.has('JIRA_WEBHOOK_SECRET')) log.info(`JIRA_WEBHOOK_SECRET is not set: ${JIRA_WEBHOOK_PATH} accepts unauthenticated deliveries`);
 
@@ -1397,6 +1468,7 @@ export const compose: ComposeFn = async (deps) => {
     ...(statusProjector === undefined ? [] : [{ name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() }]),
     ...phase4WorkerServices,
     ...monitorServices,
+    every('capture images', overrides.projectorPollMs ?? MONITOR_TRIGGER_POLL_MS, releaseUnfiledCaptureImages, log),
     configService,
   ];
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
@@ -1408,6 +1480,14 @@ export const compose: ComposeFn = async (deps) => {
     jobs,
     apiServices,
     workerServices,
+    health() {
+      // Configured means reachable here; Teams reports its reduced mode once compose wires it (#405).
+      const platforms: PlatformHealth[] = [
+        ...(slack === undefined ? [] : [{ id: 'slack', ok: true, mode: 'full' } as const]),
+        ...otherSurfaces.map((x) => ({ id: x.platform, ok: true })),
+      ];
+      return Promise.resolve(platforms);
+    },
     async metrics() {
       return mergePrometheus([await jiraProjector.metrics(), await githubProjector.metrics(), ...(statusProjector === undefined ? [] : [await statusProjector.metrics()])]);
     },

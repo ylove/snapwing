@@ -1,9 +1,10 @@
 // `kv` table: the cache-port fallback when Redis is absent (B 1, last paragraph; B 3): idempotency
 // keys and rate limits live in the database on small installs. Not part of StatePort; StateStore
-// exposes it as kvGet, kvSet, kvSetIfAbsent.
+// exposes it as kvGet, kvSet, kvSetIfAbsent, kvDelete.
 //
 // A row with `expires_at <= now` is expired: reads treat it as absent and `kvSetIfAbsent` may take
-// it over. Expired rows are not deleted here; a later set overwrites them.
+// it over. Expired rows are not deleted here; a later set overwrites them, and `kvDelete` removes one
+// whose value should not outlive its use.
 
 import type { StateContext } from './context.ts';
 
@@ -60,4 +61,9 @@ export async function kvSetIfAbsent(ctx: StateContext, k: string, v: string, ttl
     )
     .executeTakeFirst();
   return Number(result.numInsertedOrUpdatedRows ?? 0n) > 0;
+}
+
+/** Removes `k`, expired or not. Absent is fine. */
+export async function kvDelete(ctx: StateContext, k: string): Promise<void> {
+  await ctx.db.deleteFrom('kv').where('k', '=', k).execute();
 }

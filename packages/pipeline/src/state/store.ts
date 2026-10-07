@@ -192,6 +192,10 @@ export class StateStore implements StatePort {
     return kv.kvSetIfAbsent(this.ctx, k, v, ttlSec);
   }
 
+  kvDelete(k: string): Promise<void> {
+    return kv.kvDelete(this.ctx, k);
+  }
+
   // Transactions
 
   /** See `StatePort.transaction`. Inside `fn`, use `tx`, not this store (on SQLite this store would wait on `tx`'s connection). */

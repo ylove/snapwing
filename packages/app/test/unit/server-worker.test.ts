@@ -125,7 +125,7 @@ describe('ops routes', () => {
       current = state;
       const ok = await fetch(`${url}/healthz`);
       expect(ok.status).toBe(200);
-      expect(await ok.text()).toBe('ok');
+      expect(await ok.json()).toEqual({ ok: true });
     } finally {
       await api.stop();
     }

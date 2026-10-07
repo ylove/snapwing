@@ -76,3 +76,13 @@ export function authorize(action: ApprovalAction, actor: AuthorizeActor, ctx: Au
       return actor.kind === 'human' && actor.githubLinked ? ALLOW : deny('linked-identity-required');
   }
 }
+
+/**
+ * main 15.4, ADR 0022 (#385): Stop as a typed command (the capture API's `stop`, which the CLI and
+ * Raycast send with a ticket key) rather than the Stop button on the incident's own card or status
+ * message: engineers only, then the button's rule for the level.
+ */
+export function authorizeStopCommand(actor: AuthorizeActor, ctx: AuthorizeContext): AuthorizeDecision {
+  if (actor.kind !== 'human' || actor.role !== 'engineer') return deny('engineer-required');
+  return authorize('stop', actor, ctx);
+}

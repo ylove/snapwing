@@ -133,6 +133,17 @@ describe('responses', () => {
     expect(await choose(deps(), step, 'api')).toEqual({ kind: 'done', hud: 'Not filed. Dropped at your request.' });
   });
 
+  it('fix-preview: offers the choices the server sends and answers with one', async () => {
+    vi.mocked(getSelectedText).mockResolvedValue('boom');
+    json(200, { kind: 'fix-preview', captureId: 'c8', summary: 'Cart total blank', choices: [{ id: 'ticket_only', label: 'Ticket only' }] });
+    const step = await sendSelection(deps());
+    if (step.kind !== 'choose') throw new Error('expected choose');
+    expect(step.title).toBe('Ready to file: Cart total blank');
+    expect(step.choices).toEqual([{ id: 'ticket_only', label: 'Ticket only' }]);
+    json(200, { kind: 'filed', captureId: 'c8', issueKey: 'ADM-3', url: 'https://jira.example/ADM-3' });
+    expect(await choose(deps(), step, 'ticket_only')).toEqual({ kind: 'done', hud: 'Filed as ADM-3' });
+  });
+
   it('pending: polls until the response settles', async () => {
     vi.mocked(getSelectedText).mockResolvedValue('boom');
     json(200, { kind: 'pending', captureId: 'c5' });
