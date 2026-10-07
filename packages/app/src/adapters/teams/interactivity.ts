@@ -12,22 +12,29 @@
 // `data.claimerId`) through `answerMidFlight`.
 //
 // The card a tap belongs to comes from the verb: each card's verbs are its own, except `dismiss`, which
-// the fix preview and the claim card share (the incident's pending card decides), and a clarify card,
-// whose verbs are its options (any verb no other card uses). A tap whose data names a `messageId` is a
-// text-signal card's (A 3), which this module leaves to the signals.
+// the fix preview and the claim card share, and a clarify card, whose verbs are its options (any verb no
+// other card uses). `dismiss` is the claim card's when the tapped card (as remembered, below) has `Let
+// the agent take it`, else the fix preview's; only with no remembered card does the incident's pending
+// card decide. A card choice whose button the remembered card no longer has was already answered (an
+// accepted tap takes the buttons away) and is told "This card already has an answer", as on Slack. A tap
+// whose data names a `messageId` is a text-signal card's (A 3), which this module leaves to the signals.
 //
-// Teams has no ephemeral message, so the invoke answer carries the outcome: `onAction` resolves to the
-// card refreshed with who chose what in place of its buttons, or, for a refused tap, the same card with a
-// one-line reason, and the transport (#390, `TeamsInteractivity.onAction`) answers the invoke with it. An
-// invoke does not carry the card it came from, so `rememberTeamsCards` wraps the Bot Connector client and
-// keeps every card with an `Action.Execute` button it posts or edits in kv
+// Teams has no ephemeral message, and the card in an invoke answer updates only the tapper's view. So an
+// accepted tap edits its card in place for everyone (`updateActivity`, who chose what in place of the
+// buttons, as Slack's edited message) and answers the invoke with the same card. A refused tap answers
+// the invoke alone, with the same card and a one-line reason, and never touches the shared message. A
+// refusal that carries a GitHub link (`/auth/github/start?state=...`, single use and bound to the
+// tapper) never puts the link on a card: it goes to the tapper's personal chat with the bot as an
+// `Action.OpenUrl` button, and the reason on the card says so. The transport (#390,
+// `TeamsInteractivity.onAction`) answers the invoke with `onAction`'s card, or with "Working on it" past
+// its 4 s budget; an accepted tap's edit has landed either way.
+//
+// An invoke does not carry the card it came from, so `rememberTeamsCards` wraps the Bot Connector client
+// and keeps every card with an `Action.Execute` button it posts or edits in kv
 // `teams-card:{conversation}:{activityId}` (30 days); compose wraps the connector the adapter and the
 // chat surface post through. With no remembered card, an accepted tap answers with a card of the line
-// alone and a refused one with no card (the card stays as it was; the reason is lost).
-//
-// Teams waits 5 s for an invoke, and the transport answers "Working on it" past its 4 s budget. A tap
-// that took longer than `editAfterMs` (3 s) therefore also edits its card in place (`updateActivity`)
-// once it is done; an edit the answer made unnecessary is harmless.
+// alone and edits nothing (there is no card body to keep), and a refused one answers with no card (the
+// card stays as it was; the reason is lost).
 
 import type { CardKind } from '@snapwing/pipeline/engine/cursor.ts';
 import { foldCursor, nextPhase, pendingCard } from '@snapwing/pipeline/engine/cursor.ts';
@@ -43,6 +50,7 @@ import {
   askedOwnerText,
   askOwnerLead,
   createTapCore,
+  NOT_PENDING_TEXT,
   type ChatTap,
   type InteractivityOutcome,
   type LineFormat,
@@ -54,6 +62,7 @@ import { ADAPTIVE_CARD_CONTENT_TYPE, cardActivity } from './adapter.ts';
 import {
   assertLimits,
   card as buildCard,
+  esc,
   mentionsFromMap,
   refreshed,
   renderText,
@@ -70,8 +79,12 @@ export type { InteractivityOutcome, PrActionInput, PrActions } from '../shared/t
 
 /** The invoke `name` of a Universal Actions tap. */
 export const CARD_ACTION_INVOKE = 'adaptiveCard/action';
-/** A tap slower than this also edits its card in place: the transport may have answered without it. */
-export const EDIT_AFTER_MS = 3_000;
+/** The button, in the tapper's personal chat, that opens the GitHub link. */
+export const LINK_GITHUB_LABEL = 'Link your GitHub account';
+/** Said on a refused card when the GitHub link went to the tapper's personal chat. */
+export const LINK_SENT_TEXT = "I've sent you the link in our personal chat.";
+/** Said on a refused card when the tapper's personal chat could not be opened (no personal install). */
+export const LINK_NOT_SENT_TEXT = "I can't message you directly yet. Add Snapwing as a personal app in Teams, then tap again for the link.";
 /** Remembered cards outlive every button on them (the 72 h revert window, a status message's Stop). */
 export const TEAMS_CARD_TTL_SEC = 30 * 24 * 60 * 60;
 
@@ -158,8 +171,8 @@ export interface TeamsTapResult {
 }
 
 export interface TeamsInteractivityOptions {
-  /** The Bot Connector client, for the owner repost and a slow tap's edit in place. */
-  connector: Pick<TeamsConnector, 'sendToConversation' | 'replyToActivity' | 'updateActivity'>;
+  /** The Bot Connector client: the owner repost, an accepted tap's edit in place, the tapper's personal chat. */
+  connector: Pick<TeamsConnector, 'sendToConversation' | 'replyToActivity' | 'updateActivity' | 'createPersonalConversation'>;
   /** kv for the default card store. */
   cache: Pick<CachePort, 'get' | 'set'>;
   /** Default: kv `teams-card:{conversation}:{activityId}` over `cache`. */
@@ -179,11 +192,9 @@ export interface TeamsInteractivityOptions {
   /** True when the AAD object id has a linked GitHub identity (ADR 0007, chat `teams`). Default: nobody. */
   githubLinked?: (aadObjectId: string) => boolean | Promise<boolean>;
   clock?: () => Date;
-  /** A tap slower than this also edits its card in place. Default `EDIT_AFTER_MS`. */
-  editAfterMs?: number;
   /** Called with what each `onAction` did (logs, metrics). */
   onOutcome?: (outcome: InteractivityOutcome) => void;
-  /** Errors from best-effort work (the repost, remembering cards, a slow tap's edit). */
+  /** Errors from best-effort work (the repost, remembering cards, an accepted tap's edit, the personal chat). */
   onError?: (error: unknown) => void;
 }
 
@@ -192,13 +203,12 @@ export interface TeamsInteractivity {
   /** One invoke activity; resolves to what it did and the answer card. Rejects when the tap's work failed. */
   handleInvoke(activity: unknown): Promise<TeamsTapResult>;
   /**
-   * The transport's handler: the card the invoke is answered with (undefined leaves the tapped card), the
-   * outcome passed to `onOutcome`, and the card edited in place when the tap was slow. Rejects when the
-   * tap's work failed; the transport answers that with an error.
+   * The transport's handler: the card the invoke is answered with (undefined leaves the tapped card), with
+   * the outcome passed to `onOutcome`. Rejects when the tap's work failed; the transport answers that with
+   * an error.
    */
   onAction(activity: unknown): Promise<AdaptiveCard | undefined>;
 }
-
 
 type Rec = Record<string, unknown>;
 
@@ -218,9 +228,15 @@ interface Invoke {
   threadRootId?: string;
   /** The message the card is in. */
   cardActivityId?: string;
+  /** The card is in the tapper's personal chat with the bot. */
+  personal: boolean;
+  /** The tenant, for opening the tapper's personal chat. */
+  tenantId?: string;
   /** The tapper's AAD object id and display name. */
   userId: string;
   userName?: string;
+  /** The tapper's `29:` Teams id, preferred when opening their personal chat. */
+  teamsUserId?: string;
   verb: string;
   title?: string;
   data: Readonly<Record<string, string>>;
@@ -241,22 +257,29 @@ function parseInvoke(activity: unknown): Parsed {
   const verb = str(action['verb']);
   const incidentId = data['incidentId'] ?? '';
   const serviceUrl = str(a['serviceUrl']);
-  const conversationId = str(rec(a['conversation'])['id']);
+  const conversation = rec(a['conversation']);
+  const conversationId = str(conversation['id']);
   if (userId === '' || verb === '' || incidentId === '' || serviceUrl === '' || conversationId === '') return { ok: false, reason: 'malformed' };
   const split = splitConversationId(conversationId);
+  const channelData = rec(a['channelData']);
   const cardActivityId = str(a['replyToId']);
+  const tenantId = str(rec(channelData['tenant'])['id']) || str(conversation['tenantId']);
   const title = str(action['title']);
   const userName = str(from['name']);
+  const fromId = str(from['id']);
   return {
     ok: true,
     invoke: {
       serviceUrl,
       conversationId,
-      channelId: str(rec(rec(a['channelData'])['channel'])['id']) || split.channelId,
+      channelId: str(rec(channelData['channel'])['id']) || split.channelId,
       ...(split.threadRootId === undefined ? {} : { threadRootId: split.threadRootId }),
       ...(cardActivityId === '' ? {} : { cardActivityId }),
+      personal: str(conversation['conversationType']) === 'personal',
+      ...(tenantId === '' ? {} : { tenantId }),
       userId,
       ...(userName === '' ? {} : { userName }),
+      ...(fromId.startsWith('29:') ? { teamsUserId: fromId } : {}),
       verb,
       ...(title === '' ? {} : { title }),
       data,
@@ -284,8 +307,14 @@ const VERB_CARDS: Readonly<Record<string, CardKind>> = {
 /** The verbs the shared rules route before the card matters (status message, PR card, fix preview at levels 2 and 3). */
 const ROUTED_VERBS: ReadonlySet<string> = new Set(['stop', 'merge', 'request_changes', 'revert']);
 
-/** The shared tap lines as neutral text: mention tokens, rendered as `<at>` by `renderText`, and plain words. */
-const TEAMS_FORMAT: LineFormat = { who: mentionToken, bold: (text) => text };
+/** Free text made safe in neutral text: no angle brackets, so it can never forge a mention token or an `<at>` tag. */
+const noTokens = (text: string): string => text.replace(/[<>]/g, '');
+
+/**
+ * The shared tap lines as neutral text: mention tokens, rendered as `<at>` by `renderText`, and plain
+ * words. A label is free text (a clarify option may be model-written), so it loses its angle brackets.
+ */
+export const TEAMS_FORMAT: LineFormat = { who: mentionToken, bold: noTokens };
 
 /** Neutral text as plain text (a message answer, a card's fallback): a mention as `@name`. */
 function plainText(neutral: string, mentions: MentionFor): string {
@@ -331,7 +360,6 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
   const clock = options.clock ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const onOutcome = options.onOutcome ?? (() => undefined);
-  const editAfterMs = options.editAfterMs ?? EDIT_AFTER_MS;
   const cards = options.cardStore ?? createKvTeamsCardStore(options.cache);
   const core = createTapCore({
     platform: 'teams',
@@ -357,18 +385,26 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
     }
   }
 
-  /** `dismiss` is the claim card's while the incident waits on it (A 2.1), else the fix preview's. */
+  /** With no remembered card: `dismiss` is the claim card's while the incident waits on it (A 2.1), else the fix preview's. */
   async function dismissCard(incidentId: string): Promise<CardKind> {
     const cursor = foldCursor(incidentId, await state.read(incidentId));
     if (cursor.captured === undefined) return 'fix-preview';
     return pendingCard(nextPhase(cursor, { scopePreview: false })) === 'claimed' ? 'claimed' : 'fix-preview';
   }
 
-  async function cardFor(inv: Invoke): Promise<TapCard | 'text-signal'> {
+  /**
+   * The card the tap came from, by its verb and the remembered card's buttons. `answered`: a card choice
+   * whose button the remembered card no longer has, so the card was answered (or replaced) already.
+   */
+  async function cardFor(inv: Invoke, stored: AdaptiveCard | undefined): Promise<TapCard | 'text-signal' | 'answered'> {
     if (inv.data['runId'] !== undefined && inv.data['claimerId'] !== undefined) return 'mid-flight';
     if (inv.data['messageId'] !== undefined) return 'text-signal';
     if (ROUTED_VERBS.has(inv.verb)) return 'status';
-    if (inv.verb === 'dismiss') return dismissCard(inv.incidentId);
+    if (stored === undefined) return inv.verb === 'dismiss' ? dismissCard(inv.incidentId) : (VERB_CARDS[inv.verb] ?? 'clarify');
+    const verbs = new Set((stored.actions ?? []).flatMap((a) => (a.type === 'Action.Execute' ? [a.verb] : [])));
+    if (!verbs.has(inv.verb)) return 'answered';
+    // The claim card's `Not a bug` is a card choice; the fix preview's is a Stop at levels 2 and 3.
+    if (inv.verb === 'dismiss') return verbs.has('let-agent-take') ? 'claimed' : 'fix-preview';
     return VERB_CARDS[inv.verb] ?? 'clarify';
   }
 
@@ -388,21 +424,67 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
     await recordBotMessage(state, inv.incidentId, ref, clock).catch(onError);
   }
 
-  /** A refused tap: the same card with the reason. With no remembered card there is nothing to show it on. */
+  /**
+   * An accepted tap: the card with who chose what in place of its buttons, put in place for everyone (the
+   * invoke answer updates only the tapper's view) and remembered. With no remembered card there is no
+   * body to keep, so the shared message is left as it is and the answer is the line alone.
+   */
+  async function markCard(inv: Invoke, stored: AdaptiveCard | undefined, line: string, mentions: MentionFor): Promise<AdaptiveCard> {
+    const next = stored === undefined ? buildCard(plainText(line, mentions), [renderText(line, mentions)]) : refreshed(stored, line, { mentions });
+    const id = inv.cardActivityId;
+    if (id === undefined) return next;
+    await cards.set(inv.conversationId, id, next).catch(onError);
+    if (stored !== undefined) {
+      const ref = { serviceUrl: inv.serviceUrl, conversationId: inv.conversationId, activityId: id };
+      await connector.updateActivity(ref, cardActivity(next)).catch(onError);
+    }
+    return next;
+  }
+
+  /**
+   * The GitHub link, in the tapper's personal chat with the bot: `text` and an `Action.OpenUrl` button, so
+   * the single-use link is never escaped into card text or shown in the channel. False when the chat
+   * cannot be opened (Teams opens one only where the app is installed for the tapper).
+   */
+  async function sendLinkPrivately(inv: Invoke, text: string, linkUrl: string): Promise<boolean> {
+    try {
+      let to = { serviceUrl: inv.serviceUrl, conversationId: inv.conversationId };
+      if (!inv.personal) {
+        if (inv.tenantId === undefined) return false;
+        const chat = await connector.createPersonalConversation({
+          serviceUrl: inv.serviceUrl,
+          tenantId: inv.tenantId,
+          aadObjectId: inv.userId,
+          ...(inv.teamsUserId === undefined ? {} : { userId: inv.teamsUserId }),
+        });
+        to = { serviceUrl: chat.serviceUrl ?? inv.serviceUrl, conversationId: chat.id };
+      }
+      const prompt = buildCard(text, [textBlock(esc(text))], [{ type: 'Action.OpenUrl', title: LINK_GITHUB_LABEL, url: linkUrl }]);
+      await connector.sendToConversation(to, cardActivity(prompt));
+      return true;
+    } catch (err) {
+      onError(err);
+      return false;
+    }
+  }
+
+  /** A refused tap: the same card with the reason, for the tapper alone. With no remembered card there is nothing to show it on. */
   const refused = (stored: AdaptiveCard | undefined, line: string, mentions: MentionFor): AdaptiveCard | undefined =>
     stored === undefined ? undefined : withReason(stored, line, mentions);
 
   async function answer(inv: Invoke, stored: AdaptiveCard | undefined, reply: TapReply, mentions: MentionFor): Promise<AdaptiveCard | undefined> {
     switch (reply.kind) {
-      case 'mark': {
-        const next = stored === undefined ? buildCard(plainText(reply.line, mentions), [renderText(reply.line, mentions)]) : refreshed(stored, reply.line, { mentions });
-        if (inv.cardActivityId !== undefined) await cards.set(inv.conversationId, inv.cardActivityId, next).catch(onError);
-        return next;
-      }
+      case 'mark':
+        return markCard(inv, stored, reply.line, mentions);
       case 'refuse':
         return refused(stored, reply.text, mentions);
-      case 'refuse-pr':
-        return refused(stored, reply.linkUrl === undefined ? reply.message : `${reply.message} Link your GitHub account: ${reply.linkUrl}`, mentions);
+      case 'refuse-pr': {
+        // The PR actions' own words, which may quote GitHub: never a mention.
+        const message = noTokens(reply.message);
+        if (reply.linkUrl === undefined) return refused(stored, message, mentions);
+        const sent = await sendLinkPrivately(inv, message, reply.linkUrl);
+        return refused(stored, `${message} ${sent ? LINK_SENT_TEXT : LINK_NOT_SENT_TEXT}`, mentions);
+      }
       case 'ask-owner':
         if (reply.ownerId !== undefined && stored !== undefined) await repostForOwner(inv, stored, reply.ownerId, mentions).catch(onError);
         return refused(stored, askedOwnerText(TEAMS_FORMAT, reply.ownerId), mentions);
@@ -411,13 +493,14 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
     }
   }
 
-  /** A tap's result, with the invoke and, after a refusal shown on the card, the card to keep remembered. */
-  type Handled = TeamsTapResult & { inv?: Invoke; original?: AdaptiveCard };
-
-  async function handle(inv: Invoke): Promise<Handled> {
+  async function handle(inv: Invoke): Promise<TeamsTapResult> {
     const stored = await storedCard(inv);
-    const card = await cardFor(inv);
+    const card = await cardFor(inv, stored);
     if (card === 'text-signal') return { outcome: { kind: 'ignored', reason: 'text-signal-card' }, ...(stored === undefined ? {} : { card: stored }) };
+    if (card === 'answered') {
+      // As Slack's not-pending tap: the tapper is told, nothing else happens.
+      return { outcome: { kind: 'ignored', reason: 'card-answered' }, ...(stored === undefined ? {} : { card: withReason(stored, NOT_PENDING_TEXT) }) };
+    }
     const label = stored?.actions?.find((a) => a.type === 'Action.Execute' && a.verb === inv.verb)?.title ?? inv.title ?? inv.verb;
     const tap: ChatTap = {
       userId: inv.userId,
@@ -434,40 +517,21 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
     // The tapper may be outside the map; the activity names them.
     const mentions: MentionFor = (ref) => fromMap(ref) ?? (ref === inv.userId && inv.userName !== undefined ? { id: ref, name: inv.userName } : undefined);
     const answered = await answer(inv, stored, result.reply, mentions);
-    return {
-      outcome: result.outcome,
-      ...(answered === undefined ? {} : { card: answered }),
-      inv,
-      ...(result.reply.kind === 'mark' || stored === undefined ? {} : { original: stored }),
-    };
+    return { outcome: result.outcome, ...(answered === undefined ? {} : { card: answered }) };
   }
 
-  async function run(activity: unknown): Promise<Handled> {
+  async function handleInvoke(activity: unknown): Promise<TeamsTapResult> {
     const parsed = parseInvoke(activity);
     if (!parsed.ok) return { outcome: { kind: 'ignored', reason: parsed.reason } };
     return handle(parsed.invoke);
   }
 
-  /** A slow tap: the answer card put in place of the tapped one, then the original remembered again after a refusal. */
-  async function editInPlace(handled: Handled): Promise<void> {
-    const { inv, card, original } = handled;
-    const id = inv?.cardActivityId;
-    if (inv === undefined || id === undefined || card === undefined) return;
-    await connector.updateActivity({ serviceUrl: inv.serviceUrl, conversationId: inv.conversationId, activityId: id }, cardActivity(card));
-    if (original !== undefined) await cards.set(inv.conversationId, id, original);
-  }
-
   return {
-    async handleInvoke(activity) {
-      const { outcome, card } = await run(activity);
-      return { outcome, ...(card === undefined ? {} : { card }) };
-    },
+    handleInvoke,
     async onAction(activity) {
-      const started = Date.now();
-      const handled = await run(activity);
-      onOutcome(handled.outcome);
-      if (Date.now() - started >= editAfterMs) await editInPlace(handled).catch(onError);
-      return handled.card;
+      const { outcome, card } = await handleInvoke(activity);
+      onOutcome(outcome);
+      return card;
     },
   };
 }

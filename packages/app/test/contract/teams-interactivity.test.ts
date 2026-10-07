@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import type { EventPayloads, EventType, IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
+import { foldCursor, nextPhase, pendingCard } from '@snapwing/pipeline/engine/cursor.ts';
 import type { TapInput, TapOutcome } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { answerMidFlight, type MidFlightDeps } from '@snapwing/pipeline/fixer/claims.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
@@ -17,15 +18,18 @@ import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
-import { JIRA_RESOLUTION_WONT_DO } from '../../src/adapters/shared/taps.ts';
+import { JIRA_RESOLUTION_WONT_DO, NOT_PENDING_TEXT } from '../../src/adapters/shared/taps.ts';
 import { cardActivity } from '../../src/adapters/teams/adapter.ts';
 import { buildCard, type TeamsCardInput } from '../../src/adapters/teams/cards/cards.ts';
-import type { AdaptiveCard, ExecuteAction } from '../../src/adapters/teams/cards/elements.ts';
+import type { AdaptiveCard, ExecuteAction, OpenUrlAction } from '../../src/adapters/teams/cards/elements.ts';
 import { buildStatusCard, makeStatusUpdate } from '../../src/adapters/teams/cards/status.ts';
 import { createTeamsConnector, type TeamsConnector } from '../../src/adapters/teams/connector.ts';
 import {
   createKvTeamsCardStore,
   createTeamsInteractivity,
+  LINK_GITHUB_LABEL,
+  LINK_NOT_SENT_TEXT,
+  LINK_SENT_TEXT,
   rememberTeamsCards,
   teamsCardKey,
   type PrActionInput,
@@ -42,12 +46,18 @@ const CHANNEL = '19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2';
 const ROOT = '1790000100123';
 const THREAD = `${CHANNEL};messageid=${ROOT}`;
 const SERVICE_URL = 'https://smba.test/amer/';
+const TENANT = '7a0d5e6f-0000-4000-8000-0000000000c1';
 const V3 = 'https://smba.test/amer/v3';
 const RAE = '6f1c2a3b-0000-4000-8000-00000000a001'; // reporter
 const SAM = '6f1c2a3b-0000-4000-8000-00000000e001'; // engineer, primary owner of web
 const MO = '6f1c2a3b-0000-4000-8000-00000000e002'; // another engineer
 const STRANGER = '6f1c2a3b-0000-4000-8000-00000000f001';
 const RUN = 'run-1';
+/** A relink URL as `IdentityLinks.linkUrl` makes it: its single-use state has characters TextBlock escaping would mangle. */
+const LINK_URL = 'https://snapwing.test/auth/github/start?state=k3_Fh-9xQ_v2';
+/** The tapper's personal chat with the bot, as the Connector opens it. */
+const PERSONAL = 'a:1personal-chat-0001';
+const PERSONAL_PATH = `/amer/v3/conversations/${PERSONAL}/activities`;
 
 const map: WorkspaceMap = {
   org: 'Example',
@@ -83,6 +93,11 @@ async function capture(request: Request): Promise<Record<string, unknown>> {
 }
 
 const server = setupServer(
+  // createPersonalConversation: the tapper's personal chat with the bot.
+  http.post(`${V3}/conversations`, async ({ request }) => {
+    await capture(request);
+    return HttpResponse.json({ id: PERSONAL });
+  }),
   http.post(`${V3}/conversations/:conversation/activities`, async ({ request }) => {
     await capture(request);
     return HttpResponse.json({ id: `17900009000${String(++nextId).padStart(2, '0')}` });
@@ -109,6 +124,8 @@ let state: OpenedState;
 let now: number;
 let taps: TapInput[];
 let tapOutcome: TapOutcome;
+/** The fake orchestrator also refuses a card the incident is not waiting on, as the real one does. */
+let checkPending: boolean;
 let cancelled: string[];
 let assigned: string[];
 let prCalls: { action: string; input: PrActionInput }[];
@@ -120,7 +137,7 @@ let ix: TeamsInteractivity;
 let outcomes: unknown[];
 let errors: unknown[];
 
-function make(over: { editAfterMs?: number } = {}): TeamsInteractivity {
+function make(): TeamsInteractivity {
   const deps: MidFlightDeps = {
     workspaceId: WS,
     state,
@@ -149,6 +166,9 @@ function make(over: { editAfterMs?: number } = {}): TeamsInteractivity {
       // The real orchestrator refuses a tap on an incident it has no log for.
       handleTap: async (tap) => {
         if ((await state.getIncident(tap.eventId)) === null) return { accepted: false, reason: 'not-pending' };
+        if (checkPending && pendingCard(nextPhase(foldCursor(tap.eventId, await state.read(tap.eventId)), { scopePreview: false })) !== tap.card) {
+          return { accepted: false, reason: 'not-pending' };
+        }
         taps.push(tap);
         return tapOutcome;
       },
@@ -161,7 +181,6 @@ function make(over: { editAfterMs?: number } = {}): TeamsInteractivity {
     clock: () => new Date(now),
     onOutcome: (o) => outcomes.push(o),
     onError: (e) => errors.push(e),
-    ...over,
   });
 }
 
@@ -173,6 +192,7 @@ beforeEach(async () => {
   nextId = 0;
   taps = [];
   tapOutcome = { accepted: true, resumed: true };
+  checkPending = false;
   cancelled = [];
   assigned = [];
   prCalls = [];
@@ -252,9 +272,9 @@ async function seedPrOpen(level: 1 | 2 | 3): Promise<void> {
   ]);
 }
 
-/** Filed at level 1 and claimed by Sam before any fixer: the claim card waits (A 2.1). */
-async function seedClaimed(): Promise<void> {
-  await seedPlanned(1);
+/** Filed at `level` and claimed by Sam before any fixer: the claim card waits (A 2.1). */
+async function seedClaimed(level: 1 | 2 = 1): Promise<void> {
+  await seedPlanned(level);
   await append([
     ev('filed', { jiraKey: 'WEB-1042' }),
     ev('waiting-changed', {}),
@@ -348,10 +368,10 @@ function invoke(user: string, action: Pick<ExecuteAction, 'verb' | 'data'> & { t
     channelId: 'msteams',
     serviceUrl: SERVICE_URL,
     from: { id: `29:${user}`, name: PEOPLE[user] ?? 'Someone', aadObjectId: user },
-    conversation: { isGroup: true, conversationType: 'channel', tenantId: '7a0d5e6f-0000-4000-8000-0000000000c1', id: THREAD },
+    conversation: { isGroup: true, conversationType: 'channel', tenantId: TENANT, id: THREAD },
     recipient: { id: `28:${APP_ID}`, name: 'Snapwing' },
     ...(replyToId === undefined ? {} : { replyToId }),
-    channelData: { channel: { id: CHANNEL }, tenant: { id: '7a0d5e6f-0000-4000-8000-0000000000c1' }, source: { name: 'message' } },
+    channelData: { channel: { id: CHANNEL }, tenant: { id: TENANT }, source: { name: 'message' } },
     value: { action: { type: 'Action.Execute', ...(action.title === undefined ? {} : { title: action.title }), verb: action.verb, data: action.data }, trigger: 'manual' },
   };
 }
@@ -372,6 +392,27 @@ function answeredCard(answer: AdaptiveCard | undefined): AdaptiveCard {
 
 const lastLine = (c: AdaptiveCard): string | undefined => c.body.at(-1)?.text;
 const mentioned = (c: AdaptiveCard): string[] => (c.msteams?.entities ?? []).map((e) => e.mentioned.id);
+const cardIn = (s: Seen | undefined): AdaptiveCard | undefined => (s?.body['attachments'] as { content: AdaptiveCard }[] | undefined)?.[0]?.content;
+/** The path of the card message `id` in the incident's thread. */
+const cardPath = (id: string): string => `/amer/v3/conversations/${THREAD}/activities/${id}`;
+
+/** The edits in place (`updateActivity`) the Connector saw, as the cards they put up. */
+function edits(): { path: string; card: AdaptiveCard | undefined }[] {
+  return seen.filter((s) => s.method === 'PUT').map((s) => ({ path: s.path, card: cardIn(s) }));
+}
+
+/** `url` reached `user` in their personal chat as an `Action.OpenUrl` button, and no other request carried it. */
+function expectLinkSentPrivately(user: string, url: string): void {
+  const opened = seen.filter((s) => s.path === '/amer/v3/conversations');
+  expect(opened).toHaveLength(1);
+  expect(opened[0]?.body).toMatchObject({ isGroup: false, members: [{ id: `29:${user}`, aadObjectId: user }], tenantId: TENANT });
+  const sent = seen.filter((s) => s.path === PERSONAL_PATH);
+  expect(sent).toHaveLength(1);
+  const prompt = cardIn(sent[0]);
+  expect(prompt?.actions).toEqual([{ type: 'Action.OpenUrl', title: LINK_GITHUB_LABEL, url } satisfies OpenUrlAction]);
+  expect(JSON.stringify(prompt?.body)).not.toContain(url);
+  expect(seen.filter((s) => s.path !== PERSONAL_PATH && JSON.stringify(s.body).includes(url))).toEqual([]);
+}
 
 // Card choices ------------------------------------------------------------------------------------
 
@@ -400,9 +441,11 @@ describe('card choices go to handleTap with the tapper resolved by AAD object id
       expect(refreshed.body.slice(0, card.body.length)).toEqual(card.body);
       expect(lastLine(refreshed)).toBe(`<at>rae</at> chose ${c.label}.`);
       expect(mentioned(refreshed)).toContain(RAE);
-      // The remembered card is the refreshed one, and nothing was posted (Teams has no ephemeral).
+      // The answer updates only the tapper's view, so the message is also edited in place for everyone,
+      // and remembered as answered. Nothing is posted (Teams has no ephemeral).
       expect(await store.get(THREAD, id)).toEqual(refreshed);
-      expect(seen).toEqual([]);
+      expect(edits()).toEqual([{ path: cardPath(id), card: refreshed }]);
+      expect(seen.filter((s) => s.method !== 'PUT')).toEqual([]);
     });
   }
 
@@ -440,6 +483,8 @@ describe('card choices go to handleTap with the tapper resolved by AAD object id
     expect(answered.body).toEqual([...card.body, expect.objectContaining({ text: 'This card already has an answer.' })]);
     // The remembered card is still the original, so a second refusal shows one reason, not two.
     expect(await store.get(THREAD, id)).toEqual(card);
+    // The reason is the tapper's alone: the shared message is not edited.
+    expect(seen).toEqual([]);
   });
 
   it('without a remembered card: an accepted tap answers with the line alone, a refused one leaves the card', async () => {
@@ -450,6 +495,75 @@ describe('card choices go to handleTap with the tapper resolved by AAD object id
     tapOutcome = { accepted: false, reason: 'not-pending' };
     const refused = await ix.handleInvoke(invoke(RAE, executeAction(card, 'widen'), '1790000999999'));
     expect(refused).toEqual({ outcome: expect.objectContaining({ kind: 'tapped', outcome: { accepted: false, reason: 'not-pending' } }) });
+    // With no card body to keep, the shared message is left as it is.
+    expect(seen).toEqual([]);
+  });
+});
+
+// Not a bug, by the card tapped -------------------------------------------------------------------
+
+describe('Not a bug goes by the card tapped, not by what the incident waits on', () => {
+  /** Sam's `Let the agent take it` recorded, and the fixer it starts. */
+  const agentTookIt = (): Promise<void> =>
+    append([
+      ev('tapped', { eventId: INC, card: 'claimed', choice: 'let-agent-take' }, { id: SAM, role: 'engineer' }),
+      ev('fixer-started', { runId: RUN, harness: 'claude-code', attempt: 1 }),
+    ]);
+
+  async function expectNothingStopped(): Promise<void> {
+    expect(await types()).not.toContain('stopped');
+    expect(await types()).not.toContain('not-a-bug');
+    expect(cancelled).toEqual([]);
+    expect((await state.drainOutbox('jira', 100)).filter((r) => r.op === 'transition')).toEqual([]);
+  }
+
+  it("level 2: Rae's Not a bug on the claim card Sam answered is told the card has an answer, and Sam's fixer keeps going", async () => {
+    await seedClaimed(2);
+    const card = build(claimed);
+    const id = await post(card);
+    const bySam = await ix.handleInvoke(invoke(SAM, executeAction(card, 'let-agent-take'), id));
+    expect(bySam.outcome).toMatchObject({ kind: 'tapped', card: 'claimed', choice: 'let-agent-take' });
+    await agentTookIt();
+    seen = [];
+    // Rae still sees the buttons and taps Not a bug on the same card.
+    const byRae = await ix.handleInvoke(invoke(RAE, executeAction(card, 'dismiss'), id));
+    expect(byRae.outcome).toEqual({ kind: 'ignored', reason: 'card-answered' });
+    expect(lastLine(answeredCard(byRae.card))).toBe(NOT_PENDING_TEXT);
+    await expectNothingStopped();
+    expect(taps.map((t) => [t.card, t.choice, t.actor.id])).toEqual([['claimed', 'let-agent-take', SAM]]);
+    // Told to Rae alone: the shared message keeps Sam's answer.
+    expect(seen).toEqual([]);
+  });
+
+  it('level 2: the same tap while the remembered claim card still has its buttons is the claim card, no longer waiting', async () => {
+    checkPending = true;
+    await seedClaimed(2);
+    const card = build(claimed);
+    const id = await post(card);
+    // Sam's answer reached the incident without refreshing this card.
+    await agentTookIt();
+    const { outcome, card: response } = await ix.handleInvoke(invoke(RAE, executeAction(card, 'dismiss'), id));
+    expect(outcome).toEqual({ kind: 'tapped', card: 'claimed', choice: 'dismiss', outcome: { accepted: false, reason: 'not-pending' } });
+    expect(lastLine(answeredCard(response))).toBe(NOT_PENDING_TEXT);
+    await expectNothingStopped();
+    expect(seen).toEqual([]);
+  });
+
+  it("a stale fix preview's Not a bug does not answer the claim card that waits", async () => {
+    checkPending = true;
+    await seedClaimed();
+    const preview = build(fixPreview(1));
+    const previewId = await post(preview);
+    const claim = build(claimed);
+    const claimId = await post(claim);
+    const stale = await ix.handleInvoke(invoke(RAE, executeAction(preview, 'dismiss'), previewId));
+    expect(stale.outcome).toEqual({ kind: 'tapped', card: 'fix-preview', choice: 'dismiss', outcome: { accepted: false, reason: 'not-pending' } });
+    expect(lastLine(answeredCard(stale.card))).toBe(NOT_PENDING_TEXT);
+    expect(taps).toEqual([]);
+    // The claim card still takes its own answer.
+    const fresh = await ix.handleInvoke(invoke(MO, executeAction(claim, 'dismiss'), claimId));
+    expect(fresh.outcome).toEqual({ kind: 'tapped', card: 'claimed', choice: 'dismiss', outcome: { accepted: true, resumed: true } });
+    expect(taps.map((t) => [t.card, t.choice, t.actor.id])).toEqual([['claimed', 'dismiss', MO]]);
   });
 });
 
@@ -512,24 +626,36 @@ describe('authorization (main 8.2, 11.2, 16)', () => {
     expect(lastLine(answeredCard(reverted.card))).toBe('<at>sam</at> reverted this.');
   });
 
-  it('a merge GitHub refuses (the link went dead) leaves the buttons and links to relinking', async () => {
+  const linkExpired = () =>
+    new PrActionRefusedError({ done: false, action: 'merge', reason: 'not-linked', message: 'Your GitHub link has expired.', linkUrl: LINK_URL });
+
+  it("a merge GitHub refuses (the link went dead) leaves the buttons and sends the relink URL to the tapper's personal chat", async () => {
     await seedPrOpen(2);
     linked.add(SAM);
-    prBehavior = () =>
-      Promise.reject(
-        new PrActionRefusedError({
-          done: false,
-          action: 'merge',
-          reason: 'not-linked',
-          message: 'Your GitHub link has expired.',
-          linkUrl: 'https://snapwing.test/auth/github/start',
-        }),
-      );
-    const { outcome, response, card } = await tapOn(SAM, prReady, 'merge');
+    prBehavior = () => Promise.reject(linkExpired());
+    const { outcome, response, card, id } = await tapOn(SAM, prReady, 'merge');
     expect(outcome).toEqual({ kind: 'pr-refused', action: 'merge', incidentId: INC, reason: 'not-linked' });
     const answered = answeredCard(response);
     expect(answered.actions).toEqual(card.actions);
-    expect(lastLine(answered)).toBe('Your GitHub link has expired. Link your GitHub account: https://snapwing.test/auth/github/start');
+    expect(lastLine(answered)).toBe(`Your GitHub link has expired. ${LINK_SENT_TEXT}`);
+    // The URL is single use and bound to Sam: it is on no card, only behind a button in Sam's personal chat.
+    expect(JSON.stringify(answered)).not.toContain(LINK_URL);
+    expectLinkSentPrivately(SAM, LINK_URL);
+    expect(edits()).toEqual([]);
+    expect(await store.get(THREAD, id)).toEqual(card);
+  });
+
+  it('when the personal chat cannot be opened, the card says so and the relink URL goes nowhere', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    prBehavior = () => Promise.reject(linkExpired());
+    server.use(http.post(`${V3}/conversations`, () => HttpResponse.json({ error: { code: 'BotNotInConversationRoster' } }, { status: 403 })));
+    const { response } = await tapOn(SAM, prReady, 'merge');
+    const answered = answeredCard(response);
+    expect(lastLine(answered)).toBe(`Your GitHub link has expired. ${LINK_NOT_SENT_TEXT}`);
+    expect(JSON.stringify(answered)).not.toContain(LINK_URL);
+    expect(seen).toEqual([]);
+    expect(errors).toEqual([expect.any(Error)]);
   });
 
   it('a reporter cannot request changes, even when linked', async () => {
@@ -663,48 +789,64 @@ describe('a tap on an unknown incident, and invokes that are not taps', () => {
 // onAction, the transport's handler --------------------------------------------------------------
 
 describe('onAction, as the transport (#390) calls it', () => {
-  it('a fast tap resolves to its card, is reported to onOutcome, and edits nothing', async () => {
-    await seedPlanned(1);
-    const card = build(scope);
-    const id = await post(card);
-    const answer = await ix.onAction(invoke(RAE, executeAction(card, 'looks-right'), id));
-    expect(lastLine(answeredCard(answer))).toBe('<at>rae</at> chose Looks right.');
-    expect(outcomes).toEqual([expect.objectContaining({ kind: 'tapped', card: 'scope-preview' })]);
-    expect(seen).toEqual([]);
-  });
-
-  it('a slow merge also edits its card in place, since the transport answered "Working on it"', async () => {
+  it('an accepted tap edits the shared message for everyone, answers with the same card, and is reported to onOutcome', async () => {
     await seedPrOpen(2);
     linked.add(SAM);
-    ix = make({ editAfterMs: 20 });
-    prBehavior = () => new Promise<void>((resolve) => setTimeout(resolve, 40));
     const card = build(prReady);
     const id = await post(card);
     const answer = await ix.onAction(invoke(SAM, executeAction(card, 'merge'), id));
-    const put = seen.filter((s) => s.method === 'PUT');
-    expect(put).toHaveLength(1);
-    expect(put[0]?.path).toBe(`/amer/v3/conversations/${THREAD}/activities/${id}`);
-    const edited = (put[0]?.body['attachments'] as { content: AdaptiveCard }[])[0]?.content;
-    expect(edited).toEqual(answer);
     expect(lastLine(answeredCard(answer))).toBe('<at>sam</at> merged this.');
+    expect(answer?.actions).toBeUndefined();
+    // The answer updates only Sam's view; the edit is what everyone else sees, however fast the tap was.
+    expect(edits()).toEqual([{ path: cardPath(id), card: answer }]);
     expect(outcomes).toEqual([{ kind: 'pr-action', action: 'merge', incidentId: INC }]);
     expect(errors).toEqual([]);
   });
 
-  it('a slow refusal shows its reason in place and keeps the original card remembered', async () => {
+  it('a refusal answers the tapper alone and never edits the shared message', async () => {
     await seedPrOpen(2);
     linked.add(SAM);
-    ix = make({ editAfterMs: 20 });
-    prBehavior = () =>
-      new Promise<void>((_resolve, reject) =>
-        setTimeout(() => reject(new PrActionRefusedError({ done: false, action: 'merge', reason: 'head-moved', message: 'The PR changed; look again.' })), 40),
-      );
+    prBehavior = () => Promise.reject(new PrActionRefusedError({ done: false, action: 'merge', reason: 'head-moved', message: 'The PR changed; look again.' }));
     const card = build(prReady);
     const id = await post(card);
     const answer = await ix.onAction(invoke(SAM, executeAction(card, 'merge'), id));
     expect(lastLine(answeredCard(answer))).toBe('The PR changed; look again.');
-    expect(seen.filter((s) => s.method === 'PUT')).toHaveLength(1);
+    expect(answer?.actions).toEqual(card.actions);
+    expect(seen).toEqual([]);
     expect(await store.get(THREAD, id)).toEqual(card);
+  });
+
+  it('a slow refusal with a relink URL never puts it on the shared message; the tapper gets it privately', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    // Past the transport's budget the answer card may never be shown; the personal chat still is.
+    prBehavior = () =>
+      new Promise<void>((_resolve, reject) =>
+        setTimeout(
+          () => reject(new PrActionRefusedError({ done: false, action: 'merge', reason: 'not-linked', message: 'Your GitHub link has expired.', linkUrl: LINK_URL })),
+          40,
+        ),
+      );
+    const card = build(prReady);
+    const id = await post(card);
+    const answer = await ix.onAction(invoke(SAM, executeAction(card, 'merge'), id));
+    expect(edits()).toEqual([]);
+    expect(seen.filter((s) => s.path.startsWith(`/amer/v3/conversations/${CHANNEL}`))).toEqual([]);
+    expect(JSON.stringify(answer)).not.toContain(LINK_URL);
+    expectLinkSentPrivately(SAM, LINK_URL);
+    expect(await store.get(THREAD, id)).toEqual(card);
+    expect(outcomes).toEqual([{ kind: 'pr-refused', action: 'merge', incidentId: INC, reason: 'not-linked' }]);
+  });
+
+  it('an edit in place that fails does not fail the tap, and the card is still remembered as answered', async () => {
+    await seedPlanned(1);
+    server.use(http.put(`${V3}/conversations/:conversation/activities/:activityId`, () => HttpResponse.json({ error: { code: 'ServiceError' } }, { status: 500 })));
+    const card = build(scope);
+    const id = await post(card);
+    const answer = await ix.onAction(invoke(RAE, executeAction(card, 'looks-right'), id));
+    expect(lastLine(answeredCard(answer))).toBe('<at>rae</at> chose Looks right.');
+    expect(errors).toEqual([expect.any(Error)]);
+    expect(await store.get(THREAD, id)).toEqual(answer);
   });
 
   it("a tap whose work fails rejects, so the transport answers with its error", async () => {
