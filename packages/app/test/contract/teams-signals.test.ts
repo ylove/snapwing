@@ -123,7 +123,7 @@ afterAll(() => server.close());
 
 const subscriptions = createTeamsSubscriptions({
   graph: { createSubscription: () => Promise.reject(new Error('unused')), renewSubscription: () => Promise.reject(new Error('unused')) },
-  cache: { get: () => Promise.resolve(null), set: () => Promise.resolve(), setIfAbsent: () => Promise.resolve(true) },
+  cache: { get: () => Promise.resolve(null), set: () => Promise.resolve(), setIfAbsent: () => Promise.resolve(true), delete: () => Promise.resolve() },
   notificationUrl: 'https://snapwing.test/teams/notifications',
   lifecycleUrl: 'https://snapwing.test/teams/lifecycle',
   clientState: CLIENT_STATE,
