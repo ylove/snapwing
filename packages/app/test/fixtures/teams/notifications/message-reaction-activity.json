@@ -1,0 +1,24 @@
+{
+  "type": "messageReaction",
+  "id": "f:1790000100950",
+  "timestamp": "2026-10-03T10:09:00.000Z",
+  "localTimestamp": "2026-10-03T12:09:00.000+02:00",
+  "serviceUrl": "https://smba.trafficmanager.net/emea/",
+  "channelId": "msteams",
+  "from": { "id": "29:1sam-engineer-teams-id", "name": "Sam Engineer", "aadObjectId": "6f1c2a3b-0000-4000-8000-00000000e001" },
+  "conversation": {
+    "isGroup": true,
+    "conversationType": "channel",
+    "tenantId": "7a0d5e6f-0000-4000-8000-0000000000c1",
+    "id": "19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2;messageid=1790000100123"
+  },
+  "recipient": { "id": "28:00000000-0000-4000-8000-0000000000b0", "name": "Snapwing" },
+  "entities": [],
+  "channelData": {
+    "channel": { "id": "19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2" },
+    "team": { "id": "19:team-general@thread.tacv2", "aadGroupId": "2b9e4c7d-0000-4000-8000-0000000000a1" },
+    "tenant": { "id": "7a0d5e6f-0000-4000-8000-0000000000c1" }
+  },
+  "replyToId": "1790000100900",
+  "reactionsAdded": [{ "type": "like" }]
+}

@@ -1,0 +1,22 @@
+{
+  "id": "1790000100123",
+  "replyToId": null,
+  "etag": "1790000100123",
+  "messageType": "message",
+  "createdDateTime": "2026-10-03T10:00:00.000Z",
+  "lastModifiedDateTime": "2026-10-03T10:00:00.000Z",
+  "deletedDateTime": null,
+  "subject": null,
+  "importance": "normal",
+  "locale": "en-us",
+  "webUrl": "https://teams.microsoft.com/l/message/19%3A5f3c0a7e9d2b4c1a8e6f%40thread.tacv2/1790000100123?groupId=2b9e4c7d-0000-4000-8000-0000000000a1&tenantId=7a0d5e6f-0000-4000-8000-0000000000c1&createdTime=1790000100123&parentMessageId=1790000100123",
+  "from": {
+    "application": null,
+    "device": null,
+    "user": { "id": "6f1c2a3b-0000-4000-8000-00000000a001", "displayName": "Rae Reporter", "userIdentityType": "aadUser" }
+  },
+  "body": { "contentType": "html", "content": "<p>The coupon field rejects every code since this morning</p>" },
+  "attachments": [],
+  "mentions": [],
+  "reactions": []
+}

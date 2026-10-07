@@ -30,6 +30,7 @@
   "dependencies": {
     "@snapwing/capture-client": "workspace:*",
     "@snapwing/pipeline": "workspace:*",
+    "slimdom": "4.3.5",
     "tsx": "^4.23.15"
   },
   "devDependencies": {
