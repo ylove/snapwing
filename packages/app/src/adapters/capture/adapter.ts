@@ -15,16 +15,21 @@
 // What the adapter keeps in kv (B 1 fallback cache), each for `CAPTURE_TTL_SEC`:
 //   capture:{id}        { source, people, image? }: who sent it and the image's type
 //   capture-card:{id}   the card the engine posted last, exactly as posted
-//   capture-image:{id}  the image's bytes, base64, until the Jira projector has attached them
+//   capture-image:{id}  the image's bytes, base64, only until the capture is done with them
 // An image is the anchor message's one image attachment at `snapwing-capture://image/{id}/screenshot.<ext>`;
 // `captureImageLoader` reads it for the vision pass, as a DMed screenshot is read, and
-// `captureScreenshotLoader` for the Jira attachment. The image never enters the event log.
+// `captureScreenshotLoader` for the Jira attachment. A screenshot lives on the Jira issue only: the
+// image never enters the event log, and its kv row is deleted (a TTL only hides a row) once the Jira
+// projector has attached it (`releaseCaptureScreenshots`) or once the capture ends without a ticket of
+// its own (`CAPTURE_UNFILED_ENDS`, which the worker follows in the log). The TTL is the backstop for a
+// capture that does neither, such as an upload Jira kept refusing.
 
 import { Buffer } from 'node:buffer';
 import type { CaptureRequest } from '@snapwing/capture-client/wire.ts';
 import { loadDataUrlImage, type LoadImage } from '@snapwing/pipeline/context/vision/index.ts';
 import type { Anchor } from '@snapwing/pipeline/context/collect.ts';
 import type { IngestionAdapter, InteractiveCard, StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { EventType } from '@snapwing/pipeline/contracts/events.ts';
 import type { CanonicalIncidentPayload, CaptureSource, IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
 import { captureIdempotencyKey, RAYCAST_IDEMPOTENCY_TTL_SEC, type ContextSource } from '@snapwing/pipeline/engine/deps.ts';
 import { directAnchor } from '@snapwing/pipeline/engine/steps.ts';
@@ -136,6 +141,28 @@ export function captureImageLoader(cache: CachePort, fallback: LoadImage = loadD
     const mimeType = mimeTypeOfUrl(attachment.url);
     if (data === null || mimeType === undefined) return undefined;
     return { mimeType, data, ref: attachment.url };
+  };
+}
+
+/** Deletes a capture's image from kv; absent is fine. */
+export function dropCaptureImage(cache: CachePort, captureId: string): Promise<void> {
+  return cache.delete(imageKey(captureId));
+}
+
+/**
+ * The events that end a capture without a ticket of its own (Cancel or a timeout, a link to an existing
+ * issue, a plan that files nothing, the problem resolving itself): its image has nowhere to go, so the
+ * worker deletes it when one is appended to an incident with no Jira key of its own.
+ */
+export const CAPTURE_UNFILED_ENDS: ReadonlySet<EventType> = new Set<EventType>(['capture-cancelled', 'linked-to-existing', 'not-a-bug', 'resolution-signal', 'user-side']);
+
+/** The Jira projector's hook once a ticket's screenshots are attached: deletes the capture images among them. */
+export function releaseCaptureScreenshots(cache: CachePort): (refs: readonly ScreenshotRef[]) => Promise<void> {
+  return async (refs) => {
+    for (const ref of refs) {
+      const id = captureIdOfImageUrl(ref.url);
+      if (id !== undefined) await dropCaptureImage(cache, id);
+    }
   };
 }
 

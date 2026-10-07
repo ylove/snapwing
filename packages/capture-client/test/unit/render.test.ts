@@ -62,6 +62,20 @@ describe('renderChoices', () => {
     expect(formatRendered(r)).toBe('New. Which surface?\n1. Website\n2. API');
   });
 
+  it('renders a fix preview with the choices the server offers', () => {
+    const r = renderChoices({
+      kind: 'fix-preview',
+      captureId: 'c',
+      summary: 'Cart total is blank',
+      choices: [
+        { id: 'approve_fix', label: 'Fix it' },
+        { id: 'ticket_only', label: 'Ticket only' },
+      ],
+    });
+    expect(formatRendered(r)).toBe('Ready to file: Cart total is blank\n1. Fix it\n2. Ticket only');
+    expect(r.done).toBe(false);
+  });
+
   it('renders final and pending responses without choices', () => {
     expect(renderChoices({ kind: 'filed', captureId: 'c', issueKey: 'WEB-2', url: 'http://x/WEB-2' })).toEqual({
       lines: ['Filed as WEB-2.', 'http://x/WEB-2'],

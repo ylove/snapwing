@@ -60,6 +60,10 @@ const cache: CachePort = {
     cacheStore.set(k, { v, until: now + ttlSec * 1000 });
     return Promise.resolve(true);
   },
+  delete: (k) => {
+    cacheStore.delete(k);
+    return Promise.resolve();
+  },
 };
 
 function userSide(reporter: string, kind: UserSideKind, surfaceId: string | undefined, at = now): NewEvent<'user-side'> {

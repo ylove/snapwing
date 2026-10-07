@@ -1,9 +1,11 @@
 // The capture adapter's pieces (#385, ADR 0022): one capture per idempotency key, the screenshot as the
-// anchor's attachment and never in the payload, the image loaders, and the client's choice ids.
+// anchor's attachment and never in the payload, the image loaders and their release, the client's
+// choice ids by role, and the status loopback's assignee.
 
 import { describe, expect, it } from 'vitest';
 import type { CaptureRequest } from '@snapwing/capture-client/wire.ts';
 import type { InteractiveCard } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import {
@@ -15,8 +17,9 @@ import {
   createCaptureContextSource,
   readCaptureCard,
   readCaptureRecord,
+  releaseCaptureScreenshots,
 } from '../../src/adapters/capture/adapter.ts';
-import { surfaceChoices, tapChoice } from '../../src/adapters/capture/lookup.ts';
+import { fixPreviewChoices, personHandle, surfaceChoices, tapChoice, ticketStatus } from '../../src/adapters/capture/lookup.ts';
 
 function memoryCache(): CachePort {
   const values = new Map<string, string>();
@@ -30,6 +33,10 @@ function memoryCache(): CachePort {
       if (values.has(k)) return Promise.resolve(false);
       values.set(k, v);
       return Promise.resolve(true);
+    },
+    delete: (k) => {
+      values.delete(k);
+      return Promise.resolve();
     },
   };
 }
@@ -80,6 +87,11 @@ describe('createCaptureAdapter', () => {
     expect(await captureImageLoader(cache)({ kind: 'image', url: `data:image/png;base64,${PNG}` })).toMatchObject({ data: PNG });
     const upload = await captureScreenshotLoader(cache, () => Promise.reject(new Error('not this one')))({ url, filename: 'screenshot.png' });
     expect(upload).toEqual({ filename: 'screenshot.png', content: Buffer.from(PNG, 'base64'), contentType: 'image/png' });
+
+    // Attached, the image is deleted; another URL in the same row is left to its own loader.
+    await releaseCaptureScreenshots(cache)([{ url: 'https://files.slack.com/x.png' }, { url, filename: 'screenshot.png' }]);
+    expect(await captureImageLoader(cache)({ kind: 'image', url })).toBeUndefined();
+    await expect(captureScreenshotLoader(cache, () => Promise.reject(new Error('not this one')))({ url })).rejects.toThrow('no longer kept');
   });
 
   it('keeps the card the engine posts, by capture id', async () => {
@@ -105,18 +117,58 @@ describe('the client choices', () => {
       { id: 'admin', label: 'B2B Admin Portal' },
       { id: 'cancel', label: 'Cancel' },
     ]);
-    expect(tapChoice(question, 'admin', map)).toBe('B2B Admin Portal');
-    expect(tapChoice(question, 'Website', map)).toBe('Website');
-    expect(tapChoice(question, 'cancel', map)).toBe('cancel');
-    expect(tapChoice(question, 'mobile', map)).toBeUndefined();
+    expect(tapChoice(question, 'admin', map, 'reporter')).toBe('B2B Admin Portal');
+    expect(tapChoice(question, 'Website', map, 'reporter')).toBe('Website');
+    expect(tapChoice(question, 'cancel', map, 'reporter')).toBe('cancel');
+    expect(tapChoice(question, 'mobile', map, 'reporter')).toBeUndefined();
   });
 
   it('passes the file-confirm and dedupe choices through, and nothing else', () => {
     const confirm: InteractiveCard = { kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website' };
-    expect(tapChoice(confirm, 'not-this-surface', map)).toBe('not-this-surface');
-    expect(tapChoice(confirm, 'approve_fix', map)).toBeUndefined();
+    expect(tapChoice(confirm, 'not-this-surface', map, 'engineer')).toBe('not-this-surface');
+    expect(tapChoice(confirm, 'approve_fix', map, 'engineer')).toBeUndefined();
     const dedupe: InteractiveCard = { kind: 'dedupe', issueKey: 'WEB-830', summary: 'Cart total blank' };
-    expect(tapChoice(dedupe, 'create-anyway', map)).toBe('create-anyway');
-    expect(tapChoice(dedupe, 'open', map)).toBeUndefined();
+    expect(tapChoice(dedupe, 'create-anyway', map, 'engineer')).toBe('create-anyway');
+    expect(tapChoice(dedupe, 'open', map, 'engineer')).toBeUndefined();
+  });
+
+  it('offers Fix it on the fix preview to engineers only; Ticket only to anyone', () => {
+    const preview: InteractiveCard = {
+      kind: 'fix-preview',
+      plan: { action: 'create_issue', projectKey: 'ADM', issueType: 'Bug', summary: 'Export does nothing', descriptionAdf: {}, priority: 'Medium', labels: [], autonomyLevel: 1 },
+    };
+    expect(fixPreviewChoices('engineer')).toEqual([
+      { id: 'approve_fix', label: 'Fix it' },
+      { id: 'ticket_only', label: 'Ticket only' },
+    ]);
+    expect(fixPreviewChoices('reporter')).toEqual([{ id: 'ticket_only', label: 'Ticket only' }]);
+    expect(fixPreviewChoices('unknown')).toEqual([{ id: 'ticket_only', label: 'Ticket only' }]);
+    expect(tapChoice(preview, 'approve_fix', map, 'engineer')).toBe('approve_fix');
+    expect(tapChoice(preview, 'ticket_only', map, 'engineer')).toBe('ticket_only');
+    expect(tapChoice(preview, 'ticket_only', map, 'reporter')).toBe('ticket_only');
+    expect(tapChoice(preview, 'approve_fix', map, 'reporter')).toBeUndefined();
+    expect(tapChoice(preview, 'dismiss', map, 'engineer')).toBeUndefined();
+  });
+});
+
+describe('the status loopback', () => {
+  const map = { people: [DANA, SAM, { handle: 'mobDev', slackId: 'U0MOBDEV', role: 'engineer', owns: [] }] } as unknown as WorkspaceMap;
+  const incident = (fields: Partial<IncidentView>): IncidentView & { jiraKey: string } =>
+    ({ id: 'i1', workspaceId: 'w', status: 'filed', jiraKey: 'WEB-830', summary: 'Cart total blank', ...fields }) as IncidentView & { jiraKey: string };
+  const url = (key: string): string => `https://jira.example/browse/${key}`;
+
+  it('names a Jira assignee by their map handle, and none when the map does not know them', () => {
+    expect(personHandle(map, 'dana@example.com')).toBe('webDev');
+    expect(personHandle(map, 'U0MOBDEV')).toBe('mobDev');
+    expect(personHandle(map, 'SUPPORTLEAD')).toBe('supportLead');
+    expect(personHandle(map, '5b10ac8d82e05b22cc7d4ef5')).toBeUndefined();
+
+    expect(ticketStatus(incident({ assigneeId: 'dana@example.com', ownerRef: 'mobDev' }), map, url)).toMatchObject({ assignee: 'webDev' });
+    // A bare Jira account id says nothing to a reader: no assignee, not the raw id, and not the
+    // resolved owner either, since Jira says someone else has it.
+    const unknown = ticketStatus(incident({ assigneeId: '5b10ac8d82e05b22cc7d4ef5', ownerRef: 'webDev' }), map, url);
+    expect(unknown).toEqual({ issueKey: 'WEB-830', summary: 'Cart total blank', status: 'open', url: 'https://jira.example/browse/WEB-830' });
+    // Nobody assigned in Jira: the resolved owner.
+    expect(ticketStatus(incident({ ownerRef: 'webDev' }), map, url)).toMatchObject({ assignee: 'webDev' });
   });
 });

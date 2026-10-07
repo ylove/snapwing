@@ -11,8 +11,9 @@
 // retried from a fresh read; an incident already filed is left alone), rewrite the implementation
 // request's placeholder `@issue` to the real key and write the `Implementation Prompt` field
 // (prompt.ts, #113; `prompt-failed` when it no longer validates), call `continueIncident`,
-// upload the screenshots not yet attached, then ack. A crash anywhere in that sequence repeats it
-// without a second issue; `continueIncident` is a singleton job, so a second call is harmless.
+// upload the screenshots not yet attached, tell `screenshotsAttached`, then ack. A crash anywhere in
+// that sequence repeats it without a second issue; `continueIncident` is a singleton job, so a second
+// call is harmless.
 // Jira's search is eventually consistent, so a retry within seconds of a create can still miss the
 // label; the retry delay (1 s doubling) makes that unlikely, not impossible.
 //
@@ -48,6 +49,7 @@ import {
   type CreateIssueOp,
   type JiraOp,
   type LoadScreenshot,
+  type ScreenshotRef,
 } from './ops.ts';
 import { requireCustomFieldIds } from './fields.ts';
 import { finalizePrompt } from './prompt.ts';
@@ -84,6 +86,11 @@ export interface JiraProjectorOptions {
   statusOverrides?: JiraStatusOverrides;
   /** Fetches a screenshot for upload; default a plain GET (`fetchScreenshot`). */
   loadScreenshot?: LoadScreenshot;
+  /**
+   * Called once a created issue has every screenshot its row named, so whoever kept the bytes for the
+   * upload can drop them. Best effort: a failure goes to `onError` and never retries the row.
+   */
+  screenshotsAttached?: (refs: readonly ScreenshotRef[]) => Promise<void>;
   /** Clock for holds, pauses, and backoff; use the store's clock. Default `() => new Date()`. */
   now?: () => Date;
   batchSize?: number;
@@ -185,6 +192,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
     });
     await options.continueIncident(op.incidentId);
     await uploadScreenshots(client, found.key, op.screenshots, found.attached, loadScreenshot);
+    if (op.screenshots.length > 0) await options.screenshotsAttached?.(op.screenshots).catch((e: unknown) => options.onError?.(e));
     await state.ackOutbox([row.id]);
     return 'sent';
   }

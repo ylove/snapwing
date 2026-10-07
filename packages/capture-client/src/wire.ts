@@ -62,6 +62,18 @@ export interface WhichSurfaceResponse {
   readonly choices: readonly Choice[];
 }
 
+/**
+ * A ticket ready to file where the agent may fix it on a tap: Fix it starts the fix as the ticket
+ * files, Ticket only files it alone. The server offers Fix it to engineers only.
+ */
+export interface FixPreviewResponse {
+  readonly kind: 'fix-preview';
+  readonly captureId: string;
+  /** The ticket's summary as it will be filed. */
+  readonly summary: string;
+  readonly choices: readonly Choice[];
+}
+
 export interface FiledResponse {
   readonly kind: 'filed';
   readonly captureId: string;
@@ -84,6 +96,7 @@ export type LookupResponse =
   | TrackedResponse
   | NewResponse
   | WhichSurfaceResponse
+  | FixPreviewResponse
   | FiledResponse
   | NotFiledResponse
   | PendingResponse;
@@ -283,6 +296,13 @@ export function validateLookupResponse(input: unknown): Validation<LookupRespons
       if (!choices.ok) return choices;
       return ok({ kind: 'which-surface', captureId: id, choices: choices.value });
     }
+    case 'fix-preview': {
+      const summary = reqStr(input, 'summary', '');
+      if (!summary.ok) return summary;
+      const choices = validateChoices(input['choices']);
+      if (!choices.ok) return choices;
+      return ok({ kind: 'fix-preview', captureId: id, summary: summary.value, choices: choices.value });
+    }
     case 'filed': {
       const issueKey = reqStr(input, 'issueKey', '');
       if (!issueKey.ok) return issueKey;
@@ -298,7 +318,7 @@ export function validateLookupResponse(input: unknown): Validation<LookupRespons
     case 'pending':
       return ok({ kind: 'pending', captureId: id });
     default:
-      return fail('kind must be one of tracked, new, which-surface, filed, not-filed, pending');
+      return fail('kind must be one of tracked, new, which-surface, fix-preview, filed, not-filed, pending');
   }
 }
 

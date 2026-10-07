@@ -83,7 +83,8 @@ export function stepFor(response: LookupResponse): Step {
       return { kind: 'failed', message: 'Snapwing is still working on it. Try again in a minute.' };
     case 'tracked':
     case 'new':
-    case 'which-surface': {
+    case 'which-surface':
+    case 'fix-preview': {
       const rendered = renderChoices(response);
       return {
         kind: 'choose',

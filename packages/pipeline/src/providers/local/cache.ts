@@ -6,7 +6,7 @@ import type { CachePort } from '../../ports/cache.ts';
 import type { StateStore } from '../../state/store.ts';
 
 /** The part of the state store the cache needs. `openState` returns a `StateStore`. */
-export type KvStore = Pick<StateStore, 'kvGet' | 'kvSet' | 'kvSetIfAbsent'>;
+export type KvStore = Pick<StateStore, 'kvGet' | 'kvSet' | 'kvSetIfAbsent' | 'kvDelete'>;
 
 /**
  * A CachePort over `store`'s `kv` table. TTLs are seconds greater than 0 (fractions allowed);
@@ -22,6 +22,9 @@ export function createKvCache(store: KvStore): CachePort {
     },
     setIfAbsent(k, v, ttlSec) {
       return store.kvSetIfAbsent(k, v, ttlSec);
+    },
+    delete(k) {
+      return store.kvDelete(k);
     },
   };
 }

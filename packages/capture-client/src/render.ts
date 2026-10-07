@@ -44,6 +44,8 @@ export function renderChoices(response: LookupResponse): RenderedChoices {
     }
     case 'which-surface':
       return { lines: ['New. Which surface?'], choices: numbered(response.choices), done: false };
+    case 'fix-preview':
+      return { lines: [`Ready to file: ${response.summary}`], choices: numbered(response.choices), done: false };
     case 'filed':
       return { lines: [`Filed as ${response.issueKey}.`, response.url], choices: [], done: true };
     case 'not-filed':

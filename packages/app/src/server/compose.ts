@@ -64,8 +64,10 @@
 //                stopping, an outage step), and the monitor's stall timer evaluates the ladders.
 //   Capture API  (#385, the "Capture API" section; ADR 0022) Raycast and the CLI: the capture adapters
 //                (`cli`, `raycast`) and their context source in the engine, their images in the
-//                vision pass and on the Jira issue, and the bearer-token routes at capture-client's
-//                `CAPTURE_ROUTES`. `/healthz` reports each chat platform through `health()`.
+//                vision pass and on the Jira issue (deleted from kv once attached, or by the worker's
+//                `capture images` once a capture ends unfiled), and the bearer-token routes at
+//                capture-client's `CAPTURE_ROUTES`. `/healthz` reports each chat platform through
+//                `health()`.
 //   Chat seam    (#368, `server/chat.ts`) every outbound chat effect outside an adapter's inbound path and
 //                the status projectors (thread, channel, and person posts, mentions, the PR card, the
 //                text-signal cards, the mid-flight card, channel members, the GitHub link check) goes
@@ -139,7 +141,16 @@ import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts';
 import type { PlatformHealth } from '@snapwing/capture-client/wire.ts';
-import { CAPTURE_SOURCES, captureImageLoader, captureScreenshotLoader, createCaptureAdapter, createCaptureContextSource } from '../adapters/capture/adapter.ts';
+import {
+  CAPTURE_SOURCES,
+  CAPTURE_UNFILED_ENDS,
+  captureImageLoader,
+  captureScreenshotLoader,
+  createCaptureAdapter,
+  createCaptureContextSource,
+  dropCaptureImage,
+  releaseCaptureScreenshots,
+} from '../adapters/capture/adapter.ts';
 import { createCaptureRoutes } from '../adapters/capture/routes.ts';
 import { createSlackAdapter, type SlackInbound } from '../adapters/slack/adapter.ts';
 import { createSlackAuthorOf } from '../adapters/slack/authorship.ts';
@@ -198,6 +209,8 @@ export const UX_FRICTION_SCAN_MS = 15 * 60_000;
 export const MONITOR_TRIGGER_POLL_MS = 2_000;
 /** Where the worker keeps its place in the log for them (kv). */
 export const MONITOR_CURSOR_KEY = 'monitor:triggers-cursor';
+/** Where the worker keeps its place in the log for capture screenshots to delete (kv). */
+export const CAPTURE_IMAGES_CURSOR_KEY = 'capture:images-cursor';
 /**
  * Events after which active monitoring (A 4.5) and the escalation ladders (A 6.2) are evaluated: a
  * priority (`planned`, `escalated`, `jira-priority-changed`), a surface (`resolved`, `corrected`),
@@ -815,7 +828,8 @@ export const compose: ComposeFn = async (deps) => {
   // Capture API (#385, main 15.3, 15.4; ADR 0022) ---------------------------------------------------
   // Raycast and the CLI share one adapter shape (per source, for idempotency keys and metrics only), a
   // context source that makes a screenshot the anchor's image, and the bearer-token routes. Their cards
-  // wait in kv for the client to read; their images live in kv until the Jira projector attaches them.
+  // wait in kv for the client to read; their images live in kv until the Jira projector attaches them,
+  // or until the capture ends without a ticket (the worker's `capture images`).
   const capture = {
     adapters: CAPTURE_SOURCES.map((source) => [source, createCaptureAdapter(source, { cache, clock })] as const),
     context: createCaptureContextSource(),
@@ -1122,6 +1136,28 @@ export const compose: ComposeFn = async (deps) => {
   }
   const monitorServices: ComposedService[] = [every('active monitoring', overrides.projectorPollMs ?? MONITOR_TRIGGER_POLL_MS, monitorTriggers, log)];
 
+  // A capture that ends without a ticket of its own (adapter.ts) never reaches the Jira projector, so
+  // its screenshot is deleted here, when the log says it ended; nobody need look at the capture again.
+  let captureImagesCursor: string | undefined;
+  async function releaseUnfiledCaptureImages(): Promise<void> {
+    captureImagesCursor ??= (await cache.get(CAPTURE_IMAGES_CURSOR_KEY)) ?? LOG_START;
+    for (;;) {
+      const page = await state.readSince(captureImagesCursor, 200);
+      for (const e of page.events) {
+        if (!CAPTURE_UNFILED_ENDS.has(e.type)) continue;
+        // A ticket of its own (a Not a bug after filing) keeps its image until the projector attaches it.
+        const incident = await state.getIncident(e.incidentId);
+        if (incident?.jiraKey !== undefined && incident.status !== 'linked-to-existing') continue;
+        // Any incident's: deleting an image a chat incident never had is a no-op.
+        await dropCaptureImage(cache, e.incidentId);
+      }
+      const moved = page.cursor !== captureImagesCursor;
+      captureImagesCursor = page.cursor;
+      if (moved) await cache.set(CAPTURE_IMAGES_CURSOR_KEY, captureImagesCursor);
+      if (!moved || page.events.length === 0) return;
+    }
+  }
+
   /** A 3 scope change: the second issue captured as its own incident, as "Fix it from here" on that message. */
   async function fileLinked(request: LinkedIncidentRequest): Promise<{ incidentId: string } | undefined> {
     if (slack === undefined || request.platform !== 'slack' || request.channel === '') return undefined;
@@ -1263,6 +1299,8 @@ export const compose: ComposeFn = async (deps) => {
     // Slack-hosted screenshots need the bot token; capture screenshots come from kv (#385); anything
     // else is a plain GET.
     loadScreenshot: captureScreenshotLoader(cache, web === undefined ? fetchScreenshot : screenshotLoader(web)),
+    // Attached, a capture screenshot lives on the issue only: its kv copy is deleted.
+    screenshotsAttached: releaseCaptureScreenshots(cache),
     now: clock,
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`jira projector: ${message(e)}`),
@@ -1430,6 +1468,7 @@ export const compose: ComposeFn = async (deps) => {
     ...(statusProjector === undefined ? [] : [{ name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() }]),
     ...phase4WorkerServices,
     ...monitorServices,
+    every('capture images', overrides.projectorPollMs ?? MONITOR_TRIGGER_POLL_MS, releaseUnfiledCaptureImages, log),
     configService,
   ];
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';

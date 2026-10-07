@@ -1,25 +1,29 @@
 // A capture's lookup-first response (main 15.3, 15.4; ADR 0022), read from the engine's log, the
 // incidents row, and the card the capture adapter kept in kv. The engine's cards map to the wire's
-// kinds (#377, journal 2026-10-03-capture-lookup):
+// kinds (#377):
 //
 //   dedupe card                         tracked        (the client adds Open it and Not now itself)
 //   file-confirm                        new            choices File it, Not this surface, Cancel
 //   clarify asking `surface`            which-surface  one choice per map surface (its id), then Cancel
+//   fix-preview (level 1, pre-filing)   fix-preview    Fix it and Ticket only for an engineer, Ticket
+//                                                      only for anyone else (only engineers start a fix)
 //   an issue filed                      filed
 //   capture-cancelled, or another end   not-filed      with the reason
 //   anything else                       pending        (the engine is working, or a card is on its way)
 //
 // A kept card counts only while the engine still waits on a card of that kind (`pendingCard`, the
 // check `handleTap` makes), so an answered card is never shown again; until the next one is posted
-// the capture is `pending`.
+// the capture is `pending`. The choices can depend on who looks (the fix preview's), so a lookup takes
+// the caller's map role.
 
 import type { Choice, LookupResponse, TicketStatus } from '@snapwing/capture-client/wire.ts';
 import { CAPTURE_CANCEL_CHOICE, FILE_CONFIRM_CHOICES, type FileConfirmChoice, type InteractiveCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
+import type { ApprovalAction } from '@snapwing/pipeline/contracts/incident.ts';
 import type { IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import { foldCursor, nextPhase, pendingCard, type CardKind } from '@snapwing/pipeline/engine/cursor.ts';
 import { isTerminalStatus, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
-import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { MapActorRole, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { repoFullName } from '../../github/repo.ts';
@@ -36,12 +40,21 @@ export interface LookupDeps {
 /** What a capture waits on, with the card behind it when one is pending. */
 export interface CaptureLookup {
   readonly response: LookupResponse;
-  /** The engine's card the response shows; set only for tracked, new, and which-surface. */
+  /** The engine's card the response shows; set only for tracked, new, which-surface, and fix-preview. */
   readonly card?: { readonly kind: CardKind; readonly card: InteractiveCard };
 }
 
 const FILE_CONFIRM_LABELS: Readonly<Record<FileConfirmChoice, string>> = { 'file-it': 'File it', 'not-this-surface': 'Not this surface', cancel: 'Cancel' };
 export const CANCEL_CHOICE: Choice = { id: CAPTURE_CANCEL_CHOICE, label: 'Cancel' };
+
+/** The fix preview's choices, by the engine's tap choices (the Slack card's `Fix it` and `Ticket only`). */
+const FIX_IT = { id: 'approve_fix', label: 'Fix it' } as const satisfies Choice & { id: ApprovalAction };
+const TICKET_ONLY = { id: 'ticket_only', label: 'Ticket only' } as const satisfies Choice & { id: ApprovalAction };
+
+/** Fix it starts a fixer, so only an engineer is offered it; anyone may file the ticket only. */
+export function fixPreviewChoices(role: MapActorRole): Choice[] {
+  return role === 'engineer' ? [FIX_IT, TICKET_ONLY] : [TICKET_ONLY];
+}
 
 /** The surface question's choices: each option as its map surface (id and label), then Cancel. */
 export function surfaceChoices(options: readonly string[], map: WorkspaceMap): Choice[] {
@@ -64,7 +77,8 @@ function notFiledReason(incident: IncidentView, log: readonly IncidentEvent[]): 
   return 'Nothing to file.';
 }
 
-export async function lookupCapture(deps: LookupDeps, captureId: string): Promise<CaptureLookup> {
+/** The capture's lookup as `role` (the caller's map role) sees it. */
+export async function lookupCapture(deps: LookupDeps, captureId: string, role: MapActorRole): Promise<CaptureLookup> {
   const pending: CaptureLookup = { response: { kind: 'pending', captureId } };
   const incident = await deps.state.getIncident(captureId);
   if (incident === null) return pending;
@@ -79,11 +93,11 @@ export async function lookupCapture(deps: LookupDeps, captureId: string): Promis
   const waiting = pendingCard(nextPhase(foldCursor(captureId, log), { scopePreview: false, capture: true }));
   const card = waiting === undefined ? undefined : await readCaptureCard(deps.cache, captureId);
   if (waiting === undefined || card === undefined || card.kind !== waiting) return pending;
-  const response = await responseFor(deps, captureId, card);
+  const response = await responseFor(deps, captureId, card, role);
   return response === undefined ? pending : { response, card: { kind: waiting, card } };
 }
 
-async function responseFor(deps: LookupDeps, captureId: string, card: InteractiveCard): Promise<LookupResponse | undefined> {
+async function responseFor(deps: LookupDeps, captureId: string, card: InteractiveCard, role: MapActorRole): Promise<LookupResponse | undefined> {
   switch (card.kind) {
     case 'dedupe':
       return {
@@ -108,13 +122,19 @@ async function responseFor(deps: LookupDeps, captureId: string, card: Interactiv
       if (card.question.asks !== 'surface') return undefined;
       return { kind: 'which-surface', captureId, choices: surfaceChoices(card.question.options ?? [], await deps.map()) };
     }
+    case 'fix-preview':
+      return { kind: 'fix-preview', captureId, summary: card.plan.summary === '' ? 'the new ticket' : card.plan.summary, choices: fixPreviewChoices(role) };
     default:
       return undefined;
   }
 }
 
-/** The engine's tap choice for a client's `choiceId` on the card a capture shows, or undefined when it offers none such. */
-export function tapChoice(card: InteractiveCard, choiceId: string, map: WorkspaceMap): string | undefined {
+/**
+ * The engine's tap choice for a client's `choiceId` on the card a capture shows, or undefined when it
+ * offers none such to `role` (the caller's map role): a reporter's Fix it is refused here, as it is
+ * never offered.
+ */
+export function tapChoice(card: InteractiveCard, choiceId: string, map: WorkspaceMap, role: MapActorRole): string | undefined {
   switch (card.kind) {
     case 'dedupe':
       // The client opens the ticket itself; a client may still link the report, or file anyway.
@@ -125,6 +145,8 @@ export function tapChoice(card: InteractiveCard, choiceId: string, map: Workspac
       if (choiceId === CAPTURE_CANCEL_CHOICE) return choiceId;
       return surfaceChoices(card.question.options ?? [], map).find((c) => c.id === choiceId || c.label === choiceId)?.label;
     }
+    case 'fix-preview':
+      return fixPreviewChoices(role).some((c) => c.id === choiceId) ? choiceId : undefined;
     default:
       return undefined;
   }
@@ -164,9 +186,23 @@ const STATUS_WORDS: Readonly<Record<LifecycleStatus, string>> = {
 const PR_MERGED: ReadonlySet<LifecycleStatus> = new Set<LifecycleStatus>(['merged', 'deployed:staging', 'deployed:production', 'reverted']);
 const PR_CLOSED: ReadonlySet<LifecycleStatus> = new Set<LifecycleStatus>(['stopped', 'closed', 'not-a-bug']);
 
-/** The incident behind a Jira key as the wire's `TicketStatus`; `who` names the assignee, else the resolved owner. */
-export function ticketStatus(incident: IncidentView & { jiraKey: string }, issueUrl: (key: string) => string): TicketStatus {
-  const who = incident.assigneeId ?? incident.ownerRef;
+/**
+ * The map handle of the person `ref` names (a handle, an email, or a chat user id), or undefined when
+ * no one in the map matches, as for a Jira account id.
+ */
+export function personHandle(map: WorkspaceMap, ref: string): string | undefined {
+  const want = ref.trim().toLowerCase();
+  if (want === '') return undefined;
+  return map.people.find((p) => [p.handle, p.email, p.slackId, p.teamsId].some((id) => id !== undefined && id.toLowerCase() === want))?.handle;
+}
+
+/**
+ * The incident behind a Jira key as the wire's `TicketStatus`. `assignee` is the Jira assignee when it
+ * is someone in the map (the row may hold a bare Jira account id, which says nothing to a reader, so
+ * then there is none), else the resolved owner.
+ */
+export function ticketStatus(incident: IncidentView & { jiraKey: string }, map: WorkspaceMap, issueUrl: (key: string) => string): TicketStatus {
+  const who = incident.assigneeId === undefined ? incident.ownerRef : personHandle(map, incident.assigneeId);
   const pr =
     incident.prNumber === undefined || incident.repo === undefined
       ? undefined

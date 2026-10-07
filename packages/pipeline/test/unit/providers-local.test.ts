@@ -219,6 +219,14 @@ describe('local cache (state kv)', () => {
     expect(await c.get('lock:x')).toBe('d');
   });
 
+  it('deletes a key', async () => {
+    const c = cache();
+    await c.set('image:a', 'bytes', 60);
+    await c.delete('image:a');
+    expect(await c.get('image:a')).toBeNull();
+    await c.delete('image:absent');
+  });
+
   it('rejects a non-positive TTL', async () => {
     await expect(cache().setIfAbsent('lock:y', 'v', 0)).rejects.toBeInstanceOf(RangeError);
   });

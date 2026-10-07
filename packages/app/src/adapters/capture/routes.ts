@@ -5,9 +5,12 @@
 //                                  its first card or files, waiting at most `waitMs`, else `pending`
 //   GET  /capture/:id              the capture's lookup now (poll after `pending`)
 //   POST /capture/:id/answer       `{ choiceId }` on the card shown, as `engine.handleTap`; answers with
-//                                  the next lookup, waiting the same way
+//                                  the next lookup, waiting the same way. Only a choice the card offers
+//                                  this caller counts (a reporter is never offered Fix it)
 //   GET  /issues/:key/status       the ticket's status loopback (`TicketStatus`)
 //   POST /issues/:key/stop         Stop, engineers only (`authorizeStopCommand`): 403 for anyone else
+//
+// A key names the incident whose ticket it is, never a report linked to that ticket later.
 //
 // Every one of them needs `Authorization: Bearer <token>`. The token is verified with
 // `verifyCaptureToken` (unknown, revoked, or malformed is null) and its person must be a handle in the
@@ -20,7 +23,7 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
-import { isTerminalStatus, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
+import { isTerminalStatus, LIFECYCLE_STATUSES, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { authorizeStopCommand } from '@snapwing/pipeline/policy/authorize.ts';
 import type { Route } from '../../server/http.ts';
@@ -48,6 +51,12 @@ export const CAPTURE_WAIT_MS = 8_000;
 const POLL_MS = 100;
 /** Statuses where a fixer run or its PR is active (the Stop button's `fixerActive`). */
 const FIXER_ACTIVE: ReadonlySet<LifecycleStatus> = new Set<LifecycleStatus>(['fixing', 'fixing-retry', 'in-review', 'in-review-retry', 'ci', 'ci-retry', 'mergeable', 'held']);
+/**
+ * Every status but `linked-to-existing`: a report linked to an existing issue carries that issue's key
+ * without owning it, so it never answers for the key. The same rule as `hasOwnIssue` in the pipeline's
+ * `status/loopback.ts`.
+ */
+const OWNS_ITS_KEY: readonly LifecycleStatus[] = LIFECYCLE_STATUSES.filter((s) => s !== 'linked-to-existing');
 
 /** A route path with `:name` for each parameter of a `CAPTURE_ROUTES` builder. */
 function pattern(build: (value: string) => string, name: string): string {
@@ -81,11 +90,11 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
     return (await options.map()).people.find((p) => p.handle.toLowerCase() === handle);
   }
 
-  /** The capture's lookup once it is not pending, or `pending` after `waitMs`. */
-  async function settle(captureId: string): Promise<LookupResponse> {
+  /** The capture's lookup, as `person` sees it, once it is not pending, or `pending` after `waitMs`. */
+  async function settle(captureId: string, person: MapPerson): Promise<LookupResponse> {
     const deadline = Date.now() + waitMs;
     for (;;) {
-      const { response } = await lookupCapture(lookupDeps, captureId);
+      const { response } = await lookupCapture(lookupDeps, captureId, person.role);
       if (response.kind !== 'pending' || Date.now() >= deadline) return response;
       await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, Math.max(0, deadline - Date.now()))));
     }
@@ -105,8 +114,9 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
     }
   }
 
+  /** The incident that owns the Jira key: never a report linked to it, which may be newer. */
   async function incidentByKey(key: string) {
-    const [incident] = await state.findIncidents({ workspaceId: options.workspaceId, jiraKey: key.trim().toUpperCase(), limit: 1 });
+    const [incident] = await state.findIncidents({ workspaceId: options.workspaceId, jiraKey: key.trim().toUpperCase(), status: OWNS_ITS_KEY, limit: 1 });
     return incident?.jiraKey === undefined ? undefined : { ...incident, jiraKey: incident.jiraKey };
   }
 
@@ -126,7 +136,7 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         const inbound: CaptureInbound = { request, person };
         const ack = await engine.handleInbound(request.source, inbound);
         if (!isCaptureAck(ack)) throw new Error('capture: the adapter acknowledged without a capture id');
-        return json(200, await settle(ack.captureId));
+        return json(200, await settle(ack.captureId, person));
       },
     },
     {
@@ -137,7 +147,7 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         if (person === undefined) return unauthorized();
         const id = params['id'] ?? '';
         if (!(await owns(id, person))) return json(404, { error: 'unknown capture' });
-        return json(200, (await lookupCapture(lookupDeps, id)).response);
+        return json(200, (await lookupCapture(lookupDeps, id, person.role)).response);
       },
     },
     {
@@ -150,14 +160,15 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         if (!(await owns(id, person))) return json(404, { error: 'unknown capture' });
         const parsed = validateAnswerRequest(await body(req));
         if (!parsed.ok) return json(400, { error: parsed.error });
-        const current = await lookupCapture(lookupDeps, id);
+        const current = await lookupCapture(lookupDeps, id, person.role);
         // Nothing is asked right now (answered already, still working, or ended): say where it is.
         if (current.card === undefined) return json(200, current.response);
-        const choice = tapChoice(current.card.card, parsed.value.choiceId, await options.map());
+        // Only a choice offered to this caller: a reporter's Fix it is not one.
+        const choice = tapChoice(current.card.card, parsed.value.choiceId, await options.map(), person.role);
         if (choice === undefined) return json(400, { error: `${parsed.value.choiceId} is not a choice here` });
         const outcome = await engine.handleTap({ eventId: id, card: current.card.kind, choice, actor: { id: person.handle, role: person.role } });
         if (!outcome.accepted && outcome.reason === 'invalid-choice') return json(400, { error: `${parsed.value.choiceId} is not a choice here` });
-        return json(200, await settle(id));
+        return json(200, await settle(id, person));
       },
     },
     {
@@ -168,7 +179,7 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         if (person === undefined) return unauthorized();
         const incident = await incidentByKey(params['key'] ?? '');
         if (incident === undefined) return json(404, { error: 'no ticket with that key' });
-        return json(200, ticketStatus(incident, options.issueUrl));
+        return json(200, ticketStatus(incident, await options.map(), options.issueUrl));
       },
     },
     {

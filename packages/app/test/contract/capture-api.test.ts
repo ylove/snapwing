@@ -8,8 +8,12 @@
 //   evidence); File it files through the Jira projector (`filed`).
 // - Which surface, then filed: nothing names a surface; the answer picks one by its id.
 // - A surface hint skips inference; Cancel files nothing.
-// - A screenshot goes through the vision pass and lands on the Jira issue as an attachment.
+// - A screenshot goes through the vision pass and lands on the Jira issue as an attachment; its kv
+//   row is deleted then, or when its capture ends without a ticket.
 // - A revoked, unknown, or unmapped token is a bare 401; a reporter's Stop is 403.
+// - A key names the ticket that owns it, never a report linked to it later: Stop stops that ticket.
+// - A level 1 surface asks Fix it or Ticket only before filing: an engineer's Fix it starts the fixer,
+//   Ticket only files alone, and a reporter is offered (and may send) Ticket only.
 //
 // No keys and no network. Runs on the dialect `SNAPWING_DB` selects (pg-boss on Postgres).
 
@@ -22,7 +26,7 @@ import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createCaptureClient, type CaptureClient } from '@snapwing/capture-client/client.ts';
 import { CaptureAuthError } from '@snapwing/capture-client/errors.ts';
-import { renderChoices } from '@snapwing/capture-client/render.ts';
+import { formatRendered, renderChoices } from '@snapwing/capture-client/render.ts';
 import { CAPTURE_ROUTES } from '@snapwing/capture-client/wire.ts';
 import type { ImageReading } from '@snapwing/pipeline/contracts/incident.ts';
 import { DEMO_GITHUB_TOKEN, GITHUB_API, GitHubWorld, githubHandlers } from '@snapwing/pipeline/demo/msw/github.ts';
@@ -127,6 +131,8 @@ interface World {
   /** The ops routes plus compose's, as `snapwing serve` mounts them. */
   api: ApiServer;
   jira: JiraWorld;
+  /** Jira's transitions, and the webhooks for them, which a test sends (`deliverJira`). */
+  jiraHooks: JiraWebhooks;
   model: ScriptedModel;
   /** Files the Jira fake received as attachments, by issue key. */
   attachments: { issueKey: string; filename: string; bytes: string }[];
@@ -199,7 +205,8 @@ async function world(): Promise<World> {
     dir,
     // Absent files: no playbook (the defaults) and no instructions, whatever the working directory holds.
     env: { SNAPWING_MAP: DEMO_MAP, SNAPWING_WORKDIR_ROOT: join(dir, 'work'), SNAPWING_PLAYBOOK: join(dir, 'playbook.xml'), SNAPWING_INSTRUCTIONS: join(dir, 'INSTRUCTIONS.md') },
-    overrides: { model: withValidation(model), resolveHarness: () => idleHarness, projectorPollMs: 25 },
+    // A fixer that starts clones from a remote that is not there, so it fails at once and offline.
+    overrides: { model: withValidation(model), resolveHarness: () => idleHarness, gitRemoteUrl: (repo) => join(dir, 'remotes', `${repo}.git`), projectorPollMs: 25 },
   });
   // What `snapwing serve` mounts: the ops routes (`/healthz` with compose's platforms) and compose's.
   const composed = booted.composed;
@@ -209,6 +216,7 @@ async function world(): Promise<World> {
     booted,
     api,
     jira,
+    jiraHooks,
     model,
     attachments,
     workspaceId,
@@ -217,6 +225,25 @@ async function world(): Promise<World> {
       return createCaptureClient({ endpoint: ENDPOINT, token, timeoutMs: 30_000, fetch: (input, init) => api.fetch(new Request(input, init)) });
     },
   };
+}
+
+/** Sends the queued Jira webhooks for `issueKey` (its transitions) to the composed route. */
+async function deliverJira(w: World, issueKey: string): Promise<void> {
+  await expect.poll(() => w.jiraHooks.queued.some((d) => d.issueKey === issueKey), { timeout: 10_000, interval: 25 }).toBe(true);
+  const statuses = await w.jiraHooks.deliver(issueKey, (body) =>
+    w.api.fetch(new Request(`${ENDPOINT}/webhooks/jira`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
+  );
+  expect(statuses.every((s) => s === 200)).toBe(true);
+}
+
+/** The kv row holding a capture's image, read past any expiry: undefined only once it is deleted. */
+async function imageRow(w: World, captureId: string): Promise<string | undefined> {
+  const rows = await w.booted.state.ctx.db.selectFrom('kv').select('v').where('k', '=', `capture-image:${captureId}`).execute();
+  return rows[0]?.v;
+}
+
+async function eventTypes(w: World, incidentId: string): Promise<string[]> {
+  return (await w.booted.state.read(incidentId)).map((e) => e.type);
 }
 
 function settled(w: World): void {
@@ -309,15 +336,28 @@ describe('the capture API through capture-client', () => {
     settled(w);
   });
 
-  it('a screenshot goes through the vision pass and is attached to the ticket', { timeout: TEST_TIMEOUT }, async () => {
+  it('a screenshot goes through the vision pass, is attached to the ticket, and is kept nowhere else', { timeout: TEST_TIMEOUT }, async () => {
     const w = await world();
     const cli = await w.clientFor('helpDev');
     const first = await cli.sendImage(PNG, 'image/png');
     expect(w.model.images).toEqual([`image/png:${PNG}`]);
     expect(first).toMatchObject({ kind: 'new', surface: { id: 'help', label: 'Help Center' } });
+    expect(await imageRow(w, first.captureId)).toBe(PNG);
     const filed = await cli.answer(first.captureId, 'file-it');
     expect(filed).toMatchObject({ kind: 'filed', issueKey: 'HELP-1' });
     await expect.poll(() => w.attachments, { timeout: 10_000, interval: 25 }).toEqual([{ issueKey: 'HELP-1', filename: 'screenshot.png', bytes: PNG }]);
+    // Attached, the screenshot lives on the issue only: its row is gone (not just expired).
+    await expect.poll(() => imageRow(w, first.captureId), { timeout: 10_000, interval: 25 }).toBeUndefined();
+
+    // A capture that ends without a ticket drops its screenshot too.
+    const raycast = await w.clientFor('helpDev');
+    const second = await raycast.sendImage(PNG, 'image/png', { source: 'raycast' });
+    expect(second.captureId).not.toBe(first.captureId);
+    expect(await imageRow(w, second.captureId)).toBe(PNG);
+    expect(await raycast.answer(second.captureId, 'cancel')).toMatchObject({ kind: 'not-filed' });
+    await expect.poll(() => imageRow(w, second.captureId), { timeout: 10_000, interval: 25 }).toBeUndefined();
+    expect(w.attachments).toHaveLength(1);
+
     // A type the vision pass cannot read is refused before anything starts.
     await expect(cli.sendImage(PNG, 'image/tiff')).rejects.toMatchObject({ status: 400 });
     settled(w);
@@ -371,5 +411,90 @@ describe('the capture API through capture-client', () => {
     const log = await w.booted.state.read((await w.booted.state.findIncidents({ jiraKey: 'HELP-1' }))[0]?.id ?? '');
     expect(log.some((e) => e.type === 'stopped')).toBe(false);
     settled(w);
+  });
+
+  it('stops the ticket a key names, not a report linked to it later', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const engineer = await w.clientFor('webDev');
+    const first = await engineer.sendText(VAGUE, { surface: 'web' });
+    expect(first).toMatchObject({ kind: 'new', surface: { id: 'web', label: 'Website' } });
+    expect(await engineer.answer(first.captureId, 'file-it')).toMatchObject({ kind: 'filed', issueKey: 'WEB-1' });
+
+    // A later report of the same problem, linked to WEB-1: its row carries WEB-1 too, and is newer.
+    const reporter = await w.clientFor('supportLead');
+    const duplicate = await reporter.sendText(TRIAGE.summary, { surface: 'web' });
+    expect(duplicate).toMatchObject({ kind: 'tracked', issueKey: 'WEB-1' });
+    expect(await reporter.answer(duplicate.captureId, 'link')).toEqual({ kind: 'not-filed', captureId: duplicate.captureId, reason: 'Added this report to WEB-1.' });
+    expect((await w.booted.state.findIncidents({ jiraKey: 'WEB-1', limit: 1 }))[0]?.id).toBe(duplicate.captureId);
+
+    expect(await engineer.status('WEB-1')).toMatchObject({ issueKey: 'WEB-1', status: 'open' });
+    expect(await engineer.stop('WEB-1')).toEqual({ issueKey: 'WEB-1', stopped: true });
+    const stops = (await w.booted.state.read(first.captureId)).filter((e) => e.type === 'stopped');
+    expect(stops).toMatchObject([{ actor: { id: 'webDev', role: 'engineer' }, source: 'cli' }]);
+    expect((await w.booted.state.getIncident(first.captureId))?.status).toBe('stopped');
+    expect(await eventTypes(w, duplicate.captureId)).not.toContain('stopped');
+    expect(await engineer.status('WEB-1')).toMatchObject({ issueKey: 'WEB-1', status: 'stopped' });
+    // Already stopped: nothing more to stop.
+    expect(await engineer.stop('WEB-1')).toEqual({ issueKey: 'WEB-1', stopped: false });
+    settled(w);
+  });
+
+  describe('a level 1 surface, where the ticket waits on Fix it or Ticket only', () => {
+    const BOTH = [
+      { id: 'approve_fix', label: 'Fix it' },
+      { id: 'ticket_only', label: 'Ticket only' },
+    ];
+
+    it('an engineer taps Fix it: the ticket files and the fixer starts', { timeout: TEST_TIMEOUT }, async () => {
+      const w = await world();
+      const engineer = await w.clientFor('adminDev');
+      const first = await engineer.sendText(VAGUE, { surface: 'admin' });
+      expect(first).toMatchObject({ kind: 'new', surface: { id: 'admin', label: 'B2B Admin Portal' } });
+      const preview = await engineer.answer(first.captureId, 'file-it');
+      expect(preview).toEqual({ kind: 'fix-preview', captureId: first.captureId, summary: TRIAGE.summary, choices: BOTH });
+      expect(formatRendered(renderChoices(preview))).toBe(`Ready to file: ${TRIAGE.summary}\n1. Fix it\n2. Ticket only`);
+      expect(await engineer.poll(first.captureId)).toEqual(preview);
+      // Nothing is filed before the answer.
+      expect([...w.jira.issues.keys()]).toEqual(['ADM-7']);
+
+      expect(await engineer.answer(first.captureId, 'approve_fix')).toEqual({ kind: 'filed', captureId: first.captureId, issueKey: 'ADM-8', url: `${JIRA_BASE}/browse/ADM-8` });
+      // Fix it moves the ticket In Progress, and Jira's webhook for that starts the fixer.
+      await expect.poll(() => w.jiraHooks.transitions, { timeout: 10_000, interval: 25 }).toEqual(['ADM-8: To Do -> In Progress']);
+      await deliverJira(w, 'ADM-8');
+      await expect.poll(() => eventTypes(w, first.captureId), { timeout: 10_000, interval: 25 }).toContain('fixer-started');
+      expect(await w.booted.state.read(first.captureId)).toContainEqual(expect.objectContaining({ type: 'tapped', actor: { id: 'adminDev', role: 'engineer' }, payload: expect.objectContaining({ card: 'fix-preview', choice: 'approve_fix' }) }));
+      // The run has no remote to clone here, so it ends at once; let it, before the world goes away.
+      await expect.poll(() => eventTypes(w, first.captureId), { timeout: 10_000, interval: 25 }).toContain('fixer-failed');
+      settled(w);
+    });
+
+    it('an engineer taps Ticket only: the ticket files and no fixer starts', { timeout: TEST_TIMEOUT }, async () => {
+      const w = await world();
+      const engineer = await w.clientFor('adminDev');
+      const first = await engineer.sendText(VAGUE, { surface: 'admin' });
+      expect(await engineer.answer(first.captureId, 'file-it')).toMatchObject({ kind: 'fix-preview', choices: BOTH });
+      expect(await engineer.answer(first.captureId, 'ticket_only')).toMatchObject({ kind: 'filed', issueKey: 'ADM-8' });
+      // Filed ticket only: it waits on its owner, and nothing moves it In Progress.
+      await expect.poll(() => w.booted.state.getIncident(first.captureId), { timeout: 10_000, interval: 25 }).toMatchObject({ status: 'filed', waitingOn: { kind: 'human' } });
+      expect(w.jiraHooks.transitions).toEqual([]);
+      expect(await eventTypes(w, first.captureId)).not.toContain('fixer-started');
+      settled(w);
+    });
+
+    it('a reporter is offered Ticket only, and a Fix it they send anyway is refused', { timeout: TEST_TIMEOUT }, async () => {
+      const w = await world();
+      const reporter = await w.clientFor('salesLead');
+      const first = await reporter.sendText(VAGUE, { surface: 'admin' });
+      const preview = await reporter.answer(first.captureId, 'file-it');
+      expect(preview).toEqual({ kind: 'fix-preview', captureId: first.captureId, summary: TRIAGE.summary, choices: [{ id: 'ticket_only', label: 'Ticket only' }] });
+      await expect(reporter.answer(first.captureId, 'approve_fix')).rejects.toMatchObject({ status: 400 });
+      expect(await w.booted.state.read(first.captureId)).not.toContainEqual(expect.objectContaining({ type: 'tapped', payload: expect.objectContaining({ card: 'fix-preview' }) }));
+      expect(await reporter.poll(first.captureId)).toEqual(preview);
+
+      expect(await reporter.answer(first.captureId, 'ticket_only')).toMatchObject({ kind: 'filed', issueKey: 'ADM-8' });
+      expect(w.jiraHooks.transitions).toEqual([]);
+      expect(await eventTypes(w, first.captureId)).not.toContain('fixer-started');
+      settled(w);
+    });
   });
 });
