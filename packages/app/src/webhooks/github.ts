@@ -51,7 +51,7 @@ import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import type { EventActor, IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { isExpectedSeqConflict, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import { currentLevel, lastSeqOf, latest, newEvent } from '@snapwing/pipeline/fixer/job.ts';
-import { isTerminalStatus, isValidTransition, LIFECYCLE_STATUSES, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
+import { isTerminalStatus, isValidTransition, LIFECYCLE_STATUSES, OWNS_ITS_KEY, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import { AWAITING_CI, recordCiResult } from '@snapwing/pipeline/merge/ci.ts';
 import { startMergeEvaluate, statusOf } from '@snapwing/pipeline/merge/job.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
@@ -361,7 +361,7 @@ async function incidentByPr(deps: GitHubWebhookDeps, repo: string, number: numbe
 /** The incident in `repo` whose Jira key one of `branches` carries (`fix/web-1042-total` names `WEB-1042`). */
 async function incidentByBranch(deps: GitHubWebhookDeps, repo: string, branches: readonly string[]): Promise<IncidentView | undefined> {
   for (const key of new Set(branches.flatMap(issueKeys))) {
-    const [found] = await deps.state.findIncidents({ workspaceId: deps.workspaceId, jiraKey: key, limit: 1 });
+    const [found] = await deps.state.findIncidents({ workspaceId: deps.workspaceId, jiraKey: key, status: OWNS_ITS_KEY, limit: 1 });
     if (found !== undefined && sameRepo(found.repo, repo)) return found;
   }
   return undefined;

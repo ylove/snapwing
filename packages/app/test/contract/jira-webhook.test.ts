@@ -166,6 +166,33 @@ async function filed(level: 0 | 1 | 2 | 3 = 3): Promise<void> {
   );
 }
 
+/** A report of the same problem, newer than the incident above, linked to `KEY`: its row carries the key without owning it. */
+async function linkedDuplicate(): Promise<string> {
+  const dup = '01K6LINKEDDUP0000000000000';
+  now += 60_000;
+  const dev = (type: EventType, payload: unknown): NewEvent => ({ ...ev(type, payload as never), incidentId: dup }) as NewEvent;
+  await state.append(
+    dup,
+    [
+      dev('captured', {
+        kind: 'incident',
+        idempotencyKey: `slack:C-FAKE:${dup}`,
+        source: 'slack',
+        reporter: { id: 'U-FAKE-REPORTER', name: 'Sam', role: 'reporter' },
+        anchorText: 'Checkout says 500 again',
+        channelId: 'C-FAKE',
+      }),
+      dev('context-assembled', { bundle: { artifactId: '01K6BUNDLE00000000000000002', version: 1 }, includedCount: 2, excludedCount: 0 }),
+      dev('resolved', { surfaceId: 'web', componentId: 'checkout', repo: 'fake-org/web', resolvedBy: 'channel-explicit', confidence: 0.9 }),
+      dev('dedupe-checked', { candidates: [], decision: 'none' }),
+      dev('linked-to-existing', { issueKey: KEY }),
+    ],
+    0,
+  );
+  expect((await state.findIncidents({ jiraKey: KEY, limit: 1 }))[0]?.id).toBe(dup);
+  return dup;
+}
+
 async function log(): Promise<IncidentEvent[]> {
   return state.read(INC);
 }
@@ -290,6 +317,16 @@ describe('fixer trigger (main 10.1) and Stop (main 10.4)', () => {
     expect(runner.started).toHaveLength(1);
     expect((await log()).filter((e) => e.type === 'fixer-started')).toHaveLength(1);
     expect(await jiraEvents()).toHaveLength(1);
+  });
+
+  it('starts the fixer on the incident that owns the ticket, not a newer report linked to it', async () => {
+    await filed(2);
+    const dup = await linkedDuplicate();
+    expect(await deliver(route(), variant(fixture('issue-updated-in-progress'), { by: HUMAN }))).toMatchObject({ status: 200 });
+    expect(runner.started).toHaveLength(1);
+    expect(runner.started[0]?.workItem).toMatchObject({ id: INC, issueKey: KEY });
+    expect((await log()).filter((e) => e.type === 'fixer-started')).toHaveLength(1);
+    expect((await state.read(dup)).map((e) => e.type)).not.toContain('fixer-started');
   });
 
   describe('the in-progress status is the project\u2019s own (#269)', () => {

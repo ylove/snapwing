@@ -95,6 +95,9 @@ export const LIFECYCLE_STATUSES = Object.freeze([
   'linked-to-existing',
 ] as const satisfies readonly LifecycleStatus[]);
 
+/** Every status but `linked-to-existing`: a report linked to an existing issue carries its key without owning it. */
+export const OWNS_ITS_KEY: readonly LifecycleStatus[] = Object.freeze(LIFECYCLE_STATUSES.filter((s) => s !== 'linked-to-existing'));
+
 // Compile-time: LIFECYCLE_STATUSES lists every member of LifecycleStatus.
 type MissingStatuses = Exclude<LifecycleStatus, (typeof LIFECYCLE_STATUSES)[number]>;
 const statusesComplete: [MissingStatuses] extends [never] ? true : MissingStatuses = true;
