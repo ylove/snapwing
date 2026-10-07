@@ -2,21 +2,17 @@
 // trigger reaction does. The transport (#147) hands every interactivity payload that is not the message
 // shortcut to `onAction`, after the request was authenticated and answered.
 //
-// - Card choices (scope, dedupe, clarify, the level 1 fix preview, and the claim card's `Let the
-//   agent take it` and `Not a bug`, A 2.1) go to `orchestrator.handleTap`
-//   with the tapper resolved through the workspace map. An accepted tap replaces the card's buttons
-//   with a line naming who chose what; a refused one gets an ephemeral reply.
-// - Authorization is `policy/authorize.ts` (main 16). A reporter tapping `Fix it` gets "I've asked
-//   @owner to approve" and the card is reposted in the thread mentioning the owning engineer (main 8.2),
-//   recorded as `bot-message-posted { role: 'fix-preview' }` (A 1.3, #287; best effort).
-// - `stop` (any card or status message) and `dismiss` at levels 2 and 3 call `stopIncident`; `Not a
-//   bug` there also appends `not-a-bug` and queues a Jira close to Done with resolution "Won't Do"
-//   (main 8.2), through the outbox in the same transaction.
-// - `merge`, `request_changes`, and `revert` go to an injected `PrActions`; merge and revert need a
-//   linked GitHub identity (ADR 0007), request changes needs an engineer.
-// - The mid-flight claim card's `Let it finish` and `Stop it, I'll take over` (A 2.2, #337; block
-//   `midflight_actions:<runId>:<claimerId>`, cards/mid-flight.ts) go to the injected `midFlight`
-//   (`answerMidFlight`), which needs an engineer and the same run still going.
+// The rules a tap follows (card choices to `orchestrator.handleTap`, authorization, Stop and the Won't
+// Do close, the PR buttons, the mid-flight card) are platform-neutral and live in `../shared/taps.ts`,
+// which Teams applies too. This module parses `block_actions` into a tap (the card by the actions block's
+// `block_id`; the mid-flight card's `midflight_actions:<runId>:<claimerId>`, cards/mid-flight.ts) and
+// renders the reply the Slack way:
+//
+// - An accepted tap replaces the card's buttons with a line naming who chose what; a refused one gets an
+//   ephemeral reply (from the App Home, a direct message).
+// - A reporter tapping `Fix it` gets "I've asked @owner to approve" and the card is reposted in the
+//   thread mentioning the owning engineer (main 8.2), recorded as `bot-message-posted { role:
+//   'fix-preview' }` (A 1.3, #287; best effort).
 // - `handleEvent` takes Events API bodies: a `reaction_removed` of the trigger emoji by one of its reactors
 //   within 60 s of the trigger is a Stop for that trigger's incident (main 15.1). The transport never
 //   hands events to anything but the adapter, so `observeReactionRemoval` wraps the adapter given to it.
@@ -24,22 +20,23 @@
 // `handleAction` and `handleEvent` resolve to an `InteractivityOutcome` (tests); `onAction` and
 // `onEvent` hand it to `onOutcome` (logs). None throws for a payload it does not understand.
 
-import type { EventActor } from '@snapwing/pipeline/contracts/events.ts';
-import type { ApprovalAction } from '@snapwing/pipeline/contracts/incident.ts';
-import type { IncidentStatus, IncidentView, OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
-import { isExpectedSeqConflict } from '@snapwing/pipeline/contracts/state.ts';
-import type { CardKind } from '@snapwing/pipeline/engine/cursor.ts';
 import type { TapInput, TapOutcome } from '@snapwing/pipeline/engine/orchestrator.ts';
 import type { MidFlightAnswer, MidFlightAnswerInput } from '@snapwing/pipeline/fixer/claims.ts';
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
-import { PrActionRefusedError, type PrActionRefusal } from '@snapwing/pipeline/merge/actions.ts';
-import type { AutonomyLevelId, MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
-import { authorize, type DenyReason } from '@snapwing/pipeline/policy/authorize.ts';
+import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
-import { probableOwner } from '@snapwing/pipeline/resolve/lookup.ts';
 import { recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
-import { JIRA_DONE, jiraFieldBatchKey } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
-import { ulid } from '@snapwing/pipeline/util/ulid.ts';
+import {
+  actorFor,
+  askedOwnerText,
+  askOwnerLead,
+  createTapCore,
+  type InteractivityOutcome,
+  type LineFormat,
+  type PrActions,
+  type TapCard,
+  type TapReply,
+} from '../shared/taps.ts';
 import type { SlackAdapter } from './adapter.ts';
 import { parsedBodyOf, slackPayloadType } from './adapter.ts';
 import { context, esc, mention, section } from './cards/blocks.ts';
@@ -47,18 +44,17 @@ import { midFlightChoiceOf, parseMidFlightBlock } from './cards/mid-flight.ts';
 import type { SlackActionPayload } from './transport.ts';
 import type { SlackWeb } from './web.ts';
 
+export { JIRA_RESOLUTION_WONT_DO, type InteractivityOutcome, type PrActionInput, type PrActions } from '../shared/taps.ts';
+
 /** How long after the trigger a removed reaction still counts as a Stop (main 15.1). */
 export const TRIGGER_STOP_WINDOW_MS = 60_000;
-/** The Jira resolution a level 2 or 3 `Not a bug` closes with (main 8.2). */
-export const JIRA_RESOLUTION_WONT_DO = "Won't Do";
 /** Incidents scanned for the one a removed reaction triggered (newest first). */
 const TRIGGER_SCAN_LIMIT = 200;
-const MAX_APPEND_ATTEMPTS = 8;
 /** A trigger stamped slightly after the removal (Slack clocks) still matches. */
 const CLOCK_SKEW_MS = 5_000;
 
 /** The card each actions block belongs to, by the `block_id` the card builders (#129) give it. */
-const BLOCK_CARDS: Readonly<Record<string, CardKind | 'status'>> = {
+const BLOCK_CARDS: Readonly<Record<string, TapCard>> = {
   scope_actions: 'scope-preview',
   dedupe_actions: 'dedupe',
   clarify_actions: 'clarify',
@@ -68,34 +64,8 @@ const BLOCK_CARDS: Readonly<Record<string, CardKind | 'status'>> = {
   status_actions: 'status',
 };
 
-/** Statuses in which a fixer run or an agent PR is active, so Stop has something to stop at level 1. */
-const FIXER_ACTIVE: ReadonlySet<IncidentStatus> = new Set<IncidentStatus>([
-  'fixing',
-  'fixing-retry',
-  'in-review',
-  'in-review-retry',
-  'ci',
-  'ci-retry',
-  'mergeable',
-  'held',
-]);
-
-/** A PR button tap, after authorization. The implementation acts as the linked human, never the bot. */
-export interface PrActionInput {
-  incidentId: string;
-  /** The tapper: the Slack user id and the map role. */
-  actor: EventActor;
-  /** The incident's PR, when the incidents row knows it. */
-  prNumber?: number;
-  repo?: string;
-}
-
-/** The GitHub side of the PR buttons (main 11.2, 11.3); implemented over the GitHub client (#145). */
-export interface PrActions {
-  merge(input: PrActionInput): Promise<void>;
-  requestChanges(input: PrActionInput): Promise<void>;
-  revert(input: PrActionInput): Promise<void>;
-}
+/** The shared tap lines in Slack mrkdwn. */
+const SLACK_FORMAT: LineFormat = { who: mention, bold: (text) => `*${esc(text)}*` };
 
 export interface SlackInteractivityOptions {
   web: Pick<SlackWeb, 'postMessage' | 'updateMessage' | 'postEphemeral'>;
@@ -118,15 +88,6 @@ export interface SlackInteractivityOptions {
   /** Called with what each `onAction` or `onEvent` did (logs, metrics). */
   onOutcome?: (outcome: InteractivityOutcome) => void;
 }
-
-export type InteractivityOutcome =
-  | { kind: 'ignored'; reason: string }
-  | { kind: 'tapped'; card: CardKind; choice: string; outcome: TapOutcome }
-  | { kind: 'denied'; action: string; reason: DenyReason; askedOwner?: string }
-  | { kind: 'stopped'; incidentId: string; outcome: StopOutcome; wontDo?: boolean }
-  | { kind: 'pr-action'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string }
-  | { kind: 'pr-refused'; action: 'merge' | 'request_changes' | 'revert'; incidentId: string; reason: PrActionRefusal }
-  | { kind: 'mid-flight'; incidentId: string; answer: MidFlightAnswer };
 
 export interface SlackInteractivity {
   /** One interactivity payload; resolves to what it did. */
@@ -193,49 +154,22 @@ function parseTap(payload: SlackActionPayload): Tap | undefined {
   };
 }
 
-function actorFor(map: WorkspaceMap, slackUserId: string): EventActor {
-  const person = map.people.find((p) => p.slackId === slackUserId);
-  return { id: slackUserId, role: person?.role ?? 'unknown' };
-}
-
-/** The engineer who approves a fix: the surface's probable owner, else an engineer who owns it. */
-function approverFor(map: WorkspaceMap, incident: IncidentView | null): MapPerson | undefined {
-  if (incident?.surfaceId === undefined) return undefined;
-  const surfaceId = incident.surfaceId;
-  const owner = probableOwner(map, surfaceId, incident.componentId);
-  if (owner?.role === 'engineer' && owner.slackId !== undefined) return owner;
-  return map.people.find((p) => p.role === 'engineer' && p.slackId !== undefined && p.owns.some((o) => o.surface === surfaceId));
-}
-
-const DENY_TEXT: Readonly<Record<DenyReason, string>> = {
-  'engineer-required': 'Only an engineer on this surface can do that.',
-  'linked-identity-required': 'Link your GitHub account to Snapwing first; this button acts as you on GitHub.',
-  'agent-merges': 'At this level the agent merges once every gate passes.',
-  'level-disallows': 'That is not available at this autonomy level.',
-  'nothing-to-stop': 'Nothing is running for this incident yet.',
-};
-
-/** The level in force; an incident not planned yet is treated as level 1, as the orchestrator does. */
-function levelOf(incident: IncidentView | null): AutonomyLevelId {
-  return incident?.autonomyLevel ?? 1;
-}
-
-/** The fix preview's level 1 buttons; anything else is left to handleTap to refuse. */
-const FIX_PREVIEW_ACTIONS: ReadonlySet<string> = new Set<ApprovalAction>(['approve_fix', 'ticket_only', 'dismiss']);
-
-const NOT_PENDING_TEXT = 'This card already has an answer.';
-
-/** Why a mid-flight tap did nothing, for the tapper. */
-const MID_FLIGHT_REFUSED: Readonly<Record<Extract<MidFlightAnswer, { accepted: false }>['reason'], string>> = {
-  'engineer-required': DENY_TEXT['engineer-required'],
-  'run-finished': 'That fixer run has already finished.',
-  'wrong-run': 'That fixer run has already finished; a newer one is going.',
-};
-
 export function createSlackInteractivity(options: SlackInteractivityOptions): SlackInteractivity {
   const { web, state } = options;
   const clock = options.clock ?? (() => new Date());
-  const githubLinked = async (user: string): Promise<boolean> => (options.githubLinked === undefined ? false : await options.githubLinked(user));
+  const core = createTapCore({
+    platform: 'slack',
+    state,
+    workspaceId: options.workspaceId,
+    orchestrator: options.orchestrator,
+    stopIncident: options.stopIncident,
+    prActions: options.prActions,
+    ...(options.midFlight === undefined ? {} : { midFlight: options.midFlight }),
+    getMap: options.getMap,
+    ...(options.githubLinked === undefined ? {} : { githubLinked: options.githubLinked }),
+    clock,
+    format: SLACK_FORMAT,
+  });
 
   async function ephemeral(tap: Tap, text: string): Promise<void> {
     // The Home has no channel to whisper in: the reply is a direct message from the app.
@@ -261,220 +195,52 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
   }
 
   /** main 8.2: a reporter's `Fix it` asks the owner and reposts the card mentioning them. */
-  async function askOwner(tap: Tap, map: WorkspaceMap, incident: IncidentView | null, reason: DenyReason): Promise<InteractivityOutcome> {
-    const owner = approverFor(map, incident);
-    const ownerId = owner?.slackId;
-    await ephemeral(tap, ownerId === undefined ? "I've asked the owning engineer to approve." : `I've asked ${mention(ownerId)} to approve.`);
-    if (ownerId !== undefined && tap.blocks.length > 0) {
-      const lead = section(`${mention(ownerId)}, ${mention(tap.userId)} asked for a fix. Tap *Fix it* to approve.`);
-      const posted = await web.postMessage({
-        channel: tap.channel,
-        text: `${mention(ownerId)}, ${mention(tap.userId)} asked for a fix`,
-        blocks: [lead, ...tap.blocks],
-        ...(tap.threadTs === undefined ? {} : { thread_ts: tap.threadTs }),
-      });
-      const ref = { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'fix-preview' } as const;
-      await recordBotMessage(state, tap.incidentId, ref, clock).catch(() => undefined);
-    }
-    return { kind: 'denied', action: tap.actionId, reason, ...(ownerId === undefined ? {} : { askedOwner: ownerId }) };
-  }
-
-  async function cardTap(tap: Tap, card: CardKind, map: WorkspaceMap): Promise<InteractivityOutcome> {
-    const actor = actorFor(map, tap.userId);
-    let incident: IncidentView | null = null;
-    if (card === 'fix-preview' && FIX_PREVIEW_ACTIONS.has(tap.actionId)) {
-      // Authorize here as well as in handleTap, so the refusal can name the owner and repost the card.
-      incident = await state.getIncident(tap.incidentId);
-      const level = levelOf(incident);
-      const decision = authorize(
-        tap.actionId as ApprovalAction,
-        { kind: 'human', role: actor.role === 'human' ? 'unknown' : actor.role, githubLinked: false },
-        { level, fixerActive: false },
-      );
-      if (!decision.allowed) {
-        if (decision.askOwner === true) return askOwner(tap, map, incident, decision.reason);
-        await ephemeral(tap, DENY_TEXT[decision.reason]);
-        return { kind: 'denied', action: tap.actionId, reason: decision.reason };
-      }
-    }
-    const outcome = await options.orchestrator.handleTap({ eventId: tap.incidentId, card, choice: tap.actionId, actor });
-    if (outcome.accepted) {
-      await markCard(tap, `${mention(tap.userId)} chose *${esc(tap.label)}*.`);
-    } else if (outcome.askOwner === true && outcome.reason !== 'not-pending' && outcome.reason !== 'invalid-choice') {
-      return askOwner(tap, map, incident ?? (await state.getIncident(tap.incidentId)), outcome.reason);
-    } else {
-      const reason = outcome.reason;
-      await ephemeral(tap, reason === 'not-pending' || reason === 'invalid-choice' ? NOT_PENDING_TEXT : DENY_TEXT[reason]);
-    }
-    return { kind: 'tapped', card, choice: tap.actionId, outcome };
-  }
-
-  /** `stop` anywhere, or `dismiss` at levels 2 and 3 (a Stop plus a Won't Do close). */
-  async function stopTap(tap: Tap, map: WorkspaceMap, wontDo: boolean): Promise<InteractivityOutcome> {
-    const actor = actorFor(map, tap.userId);
-    const incident = await state.getIncident(tap.incidentId);
-    if (incident === null) {
-      await ephemeral(tap, NOT_PENDING_TEXT);
-      return ignored('unknown-incident');
-    }
-    const level = levelOf(incident);
-    const action: ApprovalAction = wontDo ? 'dismiss' : 'stop';
-    const decision = authorize(
-      action,
-      { kind: 'human', role: actor.role === 'human' ? 'unknown' : actor.role, githubLinked: false },
-      { level, fixerActive: FIXER_ACTIVE.has(incident.status) },
-    );
-    if (!decision.allowed) {
-      await ephemeral(tap, DENY_TEXT[decision.reason]);
-      return { kind: 'denied', action: tap.actionId, reason: decision.reason };
-    }
-    const outcome = await options.stopIncident({
-      incidentId: tap.incidentId,
-      actor,
-      source: 'slack',
-      ...(wontDo ? { reason: 'not a bug' } : {}),
+  async function askOwner(tap: Tap, ownerId: string | undefined): Promise<void> {
+    await ephemeral(tap, askedOwnerText(SLACK_FORMAT, ownerId));
+    if (ownerId === undefined || tap.blocks.length === 0) return;
+    const posted = await web.postMessage({
+      channel: tap.channel,
+      text: `${mention(ownerId)}, ${mention(tap.userId)} asked for a fix`,
+      blocks: [section(askOwnerLead(SLACK_FORMAT, ownerId, tap.userId)), ...tap.blocks],
+      ...(tap.threadTs === undefined ? {} : { thread_ts: tap.threadTs }),
     });
-    if (outcome.stopped === false && outcome.reason !== 'already-stopped') {
-      await ephemeral(tap, outcome.reason === 'terminal' ? 'This incident is already closed.' : NOT_PENDING_TEXT);
-      return { kind: 'stopped', incidentId: tap.incidentId, outcome };
-    }
-    if (wontDo) await closeWontDo(tap.incidentId, actor);
-    await markCard(tap, wontDo ? `${mention(tap.userId)} marked this *Not a bug*.` : `${mention(tap.userId)} stopped this.`);
-    return { kind: 'stopped', incidentId: tap.incidentId, outcome, ...(wontDo ? { wontDo: true } : {}) };
+    const ref = { platform: 'slack', channel: posted.channel, messageId: posted.ts, role: 'fix-preview' } as const;
+    await recordBotMessage(state, tap.incidentId, ref, clock).catch(() => undefined);
   }
 
-  /** Appends `not-a-bug` and, for a filed incident, queues the close to Done with resolution Won't Do. */
-  async function closeWontDo(incidentId: string, actor: EventActor): Promise<void> {
-    for (let attempt = 1; ; attempt++) {
-      const incident = await state.getIncident(incidentId);
-      if (incident === null || incident.status === 'not-a-bug' || incident.status === 'closed') return;
-      const now = clock();
-      const at = now.toISOString();
-      const event = {
-        workspaceId: options.workspaceId,
-        incidentId,
-        type: 'not-a-bug' as const,
-        v: 1,
-        source: 'slack' as const,
-        actor,
-        occurredAt: at,
-        payload: { reason: `dismissed after the fixer started by ${actor.id}` },
-      };
-      const jiraKey = incident.jiraKey;
-      try {
-        await state.transaction(async (tx) => {
-          if (jiraKey !== undefined) {
-            const row: OutboxItem = {
-              id: ulid(now.getTime()),
-              workspaceId: options.workspaceId,
-              target: 'jira',
-              incidentId,
-              op: 'transition',
-              payload: { issueKey: jiraKey, to: JIRA_DONE, resolution: JIRA_RESOLUTION_WONT_DO },
-              batchKey: jiraFieldBatchKey(incidentId, 'status'),
-              attempts: 0,
-              nextAttempt: at,
-              createdAt: at,
-            };
-            await tx.enqueueOutbox(row);
-          }
-          return tx.append(incidentId, [event], incident.lastSeq);
-        });
+  async function render(tap: Tap, reply: TapReply): Promise<void> {
+    switch (reply.kind) {
+      case 'mark':
+        return markCard(tap, reply.line);
+      case 'refuse':
+        return ephemeral(tap, reply.text);
+      case 'refuse-pr':
+        return ephemeral(tap, reply.linkUrl === undefined ? esc(reply.message) : `${esc(reply.message)}\n<${reply.linkUrl}|Link your GitHub account>`);
+      case 'ask-owner':
+        return askOwner(tap, reply.ownerId);
+      case 'none':
         return;
-      } catch (e) {
-        if (!isExpectedSeqConflict(e) || attempt >= MAX_APPEND_ATTEMPTS) throw e;
-      }
     }
-  }
-
-  async function prTap(tap: Tap, map: WorkspaceMap, action: 'merge' | 'request_changes' | 'revert'): Promise<InteractivityOutcome> {
-    const actor = actorFor(map, tap.userId);
-    const incident = await state.getIncident(tap.incidentId);
-    if (incident === null) {
-      await ephemeral(tap, NOT_PENDING_TEXT);
-      return ignored('unknown-incident');
-    }
-    const level = levelOf(incident);
-    const decision = authorize(
-      action,
-      { kind: 'human', role: actor.role === 'human' ? 'unknown' : actor.role, githubLinked: await githubLinked(tap.userId) },
-      { level, fixerActive: FIXER_ACTIVE.has(incident.status) },
-    );
-    if (!decision.allowed) {
-      await ephemeral(tap, DENY_TEXT[decision.reason]);
-      return { kind: 'denied', action, reason: decision.reason };
-    }
-    const input: PrActionInput = {
-      incidentId: tap.incidentId,
-      actor,
-      ...(incident.prNumber === undefined ? {} : { prNumber: incident.prNumber }),
-      ...(incident.repo === undefined ? {} : { repo: incident.repo }),
-    };
-    try {
-      if (action === 'merge') await options.prActions.merge(input);
-      else if (action === 'request_changes') await options.prActions.requestChanges(input);
-      else await options.prActions.revert(input);
-    } catch (e) {
-      if (!(e instanceof PrActionRefusedError)) throw e;
-      // Nothing was done: tell the tapper why, leave the card's buttons, never mark it (main 11.2).
-      const { message, linkUrl, reason } = e.outcome;
-      await ephemeral(tap, linkUrl === undefined ? esc(message) : `${esc(message)}\n<${linkUrl}|Link your GitHub account>`);
-      return { kind: 'pr-refused', action, incidentId: tap.incidentId, reason };
-    }
-    const verb = action === 'merge' ? 'merged this' : action === 'revert' ? 'reverted this' : 'requested changes';
-    await markCard(tap, `${mention(tap.userId)} ${verb}.`);
-    return { kind: 'pr-action', action, incidentId: tap.incidentId };
-  }
-
-  /** A 2.2: the claimer (or another engineer) answers the mid-flight card. */
-  async function midFlightTap(tap: Tap, offer: { runId: string; claimerId: string }): Promise<InteractivityOutcome> {
-    const choice = midFlightChoiceOf(tap.actionId);
-    if (choice === undefined || options.midFlight === undefined) return ignored('unknown-action');
-    const actor = actorFor(await options.getMap(), tap.userId);
-    const answer = await options.midFlight({ incidentId: tap.incidentId, runId: offer.runId, claimerId: offer.claimerId, choice, actor });
-    if (!answer.accepted) {
-      await ephemeral(tap, MID_FLIGHT_REFUSED[answer.reason]);
-      return { kind: 'mid-flight', incidentId: tap.incidentId, answer };
-    }
-    if (answer.choice === 'stop-it' && !answer.stop.stopped && answer.stop.reason !== 'already-stopped') {
-      await ephemeral(tap, answer.stop.reason === 'terminal' ? 'This incident is already closed.' : NOT_PENDING_TEXT);
-      return { kind: 'mid-flight', incidentId: tap.incidentId, answer };
-    }
-    const line =
-      answer.choice === 'let-it-finish'
-        ? `${mention(tap.userId)} chose *Let it finish*. The fixer keeps going.`
-        : `${mention(tap.userId)} stopped the fixer. The branch stays for ${mention(offer.claimerId)}, who has the ticket.`;
-    await markCard(tap, line);
-    return { kind: 'mid-flight', incidentId: tap.incidentId, answer };
   }
 
   async function handleAction(payload: SlackActionPayload): Promise<InteractivityOutcome> {
     if (slackPayloadType(payload) !== 'block_actions') return ignored('not-block-actions');
     const tap = parseTap(payload);
     if (tap === undefined) return ignored('malformed');
+    const base = { userId: tap.userId, incidentId: tap.incidentId, action: tap.actionId, label: tap.label };
     const offer = parseMidFlightBlock(tap.blockId);
-    if (offer !== undefined) return midFlightTap(tap, offer);
+    if (offer !== undefined) {
+      const result = await core.run({ ...base, card: 'mid-flight', midFlight: { ...offer, choice: midFlightChoiceOf(tap.actionId) } });
+      await render(tap, result.reply);
+      return result.outcome;
+    }
     // The Home view gives each item's actions block `<card block id>:<incident id>` (block ids are unique per view).
     const card = BLOCK_CARDS[tap.blockId.split(':')[0] ?? ''];
     if (card === undefined) return ignored('unknown-block');
     if (tap.actionId === 'open_pr') return ignored('link-button');
-    const map = await options.getMap();
-
-    switch (tap.actionId) {
-      case 'stop':
-        return stopTap(tap, map, false);
-      case 'merge':
-      case 'request_changes':
-      case 'revert':
-        return prTap(tap, map, tap.actionId);
-    }
-    if (card === 'pr-ready' || card === 'status') return ignored('unknown-action');
-    if (card === 'fix-preview' && tap.actionId === 'dismiss') {
-      // At levels 2 and 3 the fixer already started and no card is waiting (main 8.2).
-      const level = levelOf(await state.getIncident(tap.incidentId));
-      if (level >= 2) return stopTap(tap, map, true);
-    }
-    return cardTap(tap, card, map);
+    const result = await core.run({ ...base, card });
+    await render(tap, result.reply);
+    return result.outcome;
   }
 
   /** main 15.1: removing the trigger reaction within 60 s of the trigger stops that trigger. */
@@ -503,7 +269,7 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
       const reactors = rec(captured.payload.rawPayloadSnapshot)['reactors'];
       const triggeredBy = new Set<string>([captured.payload.reporter.id, ...(Array.isArray(reactors) ? reactors.filter((r): r is string => typeof r === 'string') : [])]);
       if (!triggeredBy.has(user)) return ignored('not-a-trigger-reactor');
-      const actor = actorFor(await options.getMap(), user);
+      const actor = actorFor(await options.getMap(), 'slack', user);
       const outcome = await options.stopIncident({ incidentId: incident.id, actor, source: 'slack', reason: 'trigger reaction removed' });
       return { kind: 'stopped', incidentId: incident.id, outcome };
     }
