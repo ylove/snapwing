@@ -351,6 +351,24 @@ describe(`handleSignal: claim and release (${TEST_DIALECT})`, () => {
     expect(rows.find((r) => r.op === 'add-comment')?.batchKey).toBe(jiraCommentBatchKey(INC));
   });
 
+  it('records the actor\'s linked GitHub login on the comment; absent without a link; a failed lookup never blocks the signal (#184)', async () => {
+    await filed();
+    const lookup = (impl: StatePort['getLinkedIdentity']): StatePort => Object.assign(Object.create(state) as StatePort, { getLinkedIdentity: impl });
+    const identity = { workspaceId: WS, chat: 'slack', chatUserId: DANA.id, githubLogin: 'dana-q', githubUserId: 7, accessToken: 'sealed', linkedAt: '', updatedAt: '' } as const;
+
+    await handleSignal(world({ state: lookup(() => Promise.resolve(identity)) }).deps, signal('claim', DANA, FIX_PREVIEW));
+    expect((await lastComment()).payload.actorGithubLogin).toBe('dana-q');
+
+    await handleSignal(world({ state: lookup(() => Promise.resolve(null)) }).deps, signal('release', DANA, FIX_PREVIEW));
+    expect((await lastComment()).payload).not.toHaveProperty('actorGithubLogin');
+
+    const before = (await log()).length;
+    const outcome = await handleSignal(world({ state: lookup(() => Promise.reject(new Error('db down'))) }).deps, signal('claim', DANA, FIX_PREVIEW));
+    expect(outcome.handled).toBe(true);
+    expect((await log()).length).toBeGreaterThan(before);
+    expect((await lastComment()).payload).not.toHaveProperty('actorGithubLogin');
+  });
+
   it('a claim on a message that is not the anchor or a fix preview is recorded only', async () => {
     await filed();
     const w = world();
@@ -481,7 +499,7 @@ describe(`handleSignal: the staging check (${TEST_DIALECT})`, () => {
     const line = `@Pat verified on staging at 10:00 UTC (${LINK})`;
     expect((await pending('jira')).filter((r) => r.op === 'add-comment').map((r) => r.payload['text'])).toEqual([line]);
     const github = await pending('github');
-    expect(github.map((r) => [r.op, r.payload, r.batchKey])).toEqual([['add-comment', { repo: 'fake-org/web', prNumber: 77, text: line }, jiraCommentBatchKey(INC)]]);
+    expect(github.map((r) => [r.op, r.payload, r.batchKey])).toEqual([['add-comment', { repo: 'fake-org/web', prNumber: 77, text: line.replace('@Pat', '**Pat**') }, jiraCommentBatchKey(INC)]]);
   });
 
   it('accept on a staging check the incident has moved past is recorded, not a verification', async () => {
@@ -537,10 +555,10 @@ describe(`handleSignal: the PR card and the other cards (${TEST_DIALECT})`, () =
     expect(await handleSignal(w.deps, signal('reject', LEE, PR_CARD))).toMatchObject({ effect: 'changes-requested' });
     const texts = (await pending('github')).map((r) => r.payload['text']);
     expect(texts).toEqual([
-      `Approved in Slack by @Dana at 10:00 UTC (${LINK})`,
-      `@Dana agreed with the pull request at 10:00 UTC (${LINK})`,
-      `@Pat agreed with the pull request at 10:00 UTC (${LINK})`,
-      `Changes requested in Slack by @Lee at 10:01 UTC (${LINK})`,
+      `Approved in Slack by **Dana** at 10:00 UTC (${LINK})`,
+      `**Dana** agreed with the pull request at 10:00 UTC (${LINK})`,
+      `**Pat** agreed with the pull request at 10:00 UTC (${LINK})`,
+      `Changes requested in Slack by **Lee** at 10:01 UTC (${LINK})`,
     ]);
   });
 
@@ -700,10 +718,12 @@ describe(`attribution batching (${TEST_DIALECT})`, () => {
       expect(new Set(rows.map((r) => r.batchKey))).toEqual(new Set([jiraCommentBatchKey(INC)]));
       const created = rows.map((r) => Date.parse(r.createdAt));
       expect(Math.max(...created) - Math.min(...created)).toBeLessThan(60_000);
+      // The PR comment names people in bold: a display name is not a GitHub login (#167).
+      const at = target === 'jira' ? (n: string) => `@${n}` : (n: string) => `**${n}**`;
       expect(rows.map((r) => r.payload['text'])).toEqual([
-        `@Pat verified on staging at 10:00 UTC (${LINK})`,
-        `@Sam verified on staging at 10:00 UTC (${LINK})`,
-        `Approved in Slack by @Dana at 10:00 UTC (${LINK})`,
+        `${at('Pat')} verified on staging at 10:00 UTC (${LINK})`,
+        `${at('Sam')} verified on staging at 10:00 UTC (${LINK})`,
+        `Approved in Slack by ${at('Dana')} at 10:00 UTC (${LINK})`,
       ]);
     }
   });

@@ -12,9 +12,11 @@ import { defaultCaptureEnv, runLog, runSay, runShot, runStatus, runStop, type Ca
 import { runConfig } from './config.ts';
 import { runLogin, runLogout } from './login.ts';
 import { runMap } from './map.ts';
+import { runMetrics } from './metrics.ts';
 import { runOnboard } from './onboard.ts';
 import { runState, type CliIo } from './state.ts';
 import { runToken } from './token.ts';
+import { runTrace } from './trace.ts';
 
 /** What commands reach beyond `CliIo`. Tests pass their own; the real CLI builds the defaults lazily. */
 export interface CliDeps {
@@ -91,6 +93,16 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
   onboard: {
     summary: 'set Snapwing up by interview; picks up where it stopped',
     run: (args, io) => runOnboard(args, io),
+  },
+  trace: {
+    label: 'trace KEY',
+    summary: 'the incident in order: bundle, stack result, gates, taps, fixer, merge',
+    run: (args, io) => runTrace(args, io),
+  },
+  metrics: {
+    label: 'metrics',
+    summary: 'incidents, time to PR and merge, autopilot, ask-back rate',
+    run: (args, io) => runMetrics(args, io),
   },
 };
 

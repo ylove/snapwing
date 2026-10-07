@@ -271,14 +271,16 @@ const TARGET_NAMES: Readonly<Record<TargetRole, string>> = {
 /**
  * The attribution line for a signal the handler recorded (see the file header), or undefined when it
  * writes none. Shared with the PR comment (`outbox/github.ts`). For example
- * `@pat verified on staging at 15:22 UTC (https://...)`.
+ * `@pat verified on staging at 15:22 UTC (https://...)`. `mention` words the person differently (the
+ * default is `@` and the name, right for Jira); the PR comment passes its own (`outbox/github.ts`).
  */
-export function attributionText(event: IncidentEvent): string | undefined {
+export function attributionText(event: IncidentEvent, mention?: (name: string) => string): string | undefined {
   if (event.type !== 'comment' || event.actor === undefined) return undefined;
   const p = event.payload;
   if (p.effect === undefined || p.signalSource === 'reaction-removed') return undefined;
   const name = p.actorName?.trim();
-  const who = `@${name === undefined || name === '' ? actorLabel(event.actor) : name}`;
+  const label = name === undefined || name === '' ? actorLabel(event.actor) : name;
+  const who = mention === undefined ? `@${label}` : mention(label);
   const at = clockTime(event.occurredAt);
   const when = `at ${at}`;
   const where = p.platform === 'slack' ? 'Slack' : p.platform === 'teams' ? 'Teams' : 'Jira';

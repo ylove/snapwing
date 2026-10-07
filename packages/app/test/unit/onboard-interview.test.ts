@@ -92,11 +92,11 @@ describe('the step registry', () => {
   });
 
   it('runs every stub as "not built yet" and finishes, then runs them again next time', async () => {
+    // The registry's own steps as stubs: built steps ask questions, which their own tests cover.
+    const stubs = ONBOARD_STEPS.map(({ id, number, title, needs }) => notBuiltYet({ id, number, title, needs }));
     const kv = memoryKv();
     const store = createKvOnboardingStore(kv);
     const t = terminal([]);
-    // Each step's issue replaces its stub, so the registry's shape is run with every module stubbed.
-    const stubs = ONBOARD_STEPS.map((s) => notBuiltYet({ id: s.id, number: s.number, title: s.title, needs: s.needs }));
     const result = await run(stubs, store, t.io);
     expect(result.outcome).toBe('complete');
     expect(result.ran).toEqual(stubs.map((s) => s.id));
