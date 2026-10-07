@@ -20,7 +20,7 @@ import {
   parseOnboardingState,
   type OnboardingStore,
 } from '../../src/onboard/interview/state.ts';
-import type { OnboardStep, StepContext, StepNeed, StepOutcome } from '../../src/onboard/interview/step.ts';
+import { notBuiltYet, type OnboardStep, type StepContext, type StepNeed, type StepOutcome } from '../../src/onboard/interview/step.ts';
 import { createTerminalIO, parseAnswers } from '../../src/onboard/interview/terminal.ts';
 import { ONBOARD_STEPS } from '../../src/onboard/steps/index.ts';
 import { upsertEnv as scriptUpsertEnv } from '../../../../scripts/github-bootstrap.ts';
@@ -92,16 +92,18 @@ describe('the step registry', () => {
   });
 
   it('runs every stub as "not built yet" and finishes, then runs them again next time', async () => {
+    // The registry's own steps as stubs: built steps ask questions, which their own tests cover.
+    const stubs = ONBOARD_STEPS.map(({ id, number, title, needs }) => notBuiltYet({ id, number, title, needs }));
     const kv = memoryKv();
     const store = createKvOnboardingStore(kv);
     const t = terminal([]);
-    const result = await run(ONBOARD_STEPS, store, t.io);
+    const result = await run(stubs, store, t.io);
     expect(result.outcome).toBe('complete');
-    expect(result.ran).toEqual(ONBOARD_STEPS.map((s) => s.id));
+    expect(result.ran).toEqual(stubs.map((s) => s.id));
     expect(Object.values(result.state.steps).every((r) => r.status === 'not-built')).toBe(true);
     expect(t.lines).toContain('Connect Jira: not built yet, skipping.');
-    const again = await run(ONBOARD_STEPS, store, terminal([]).io);
-    expect(again.ran).toEqual(ONBOARD_STEPS.map((s) => s.id));
+    const again = await run(stubs, store, terminal([]).io);
+    expect(again.ran).toEqual(stubs.map((s) => s.id));
   });
 
   it('refuses a need that is not an earlier step, and a duplicate id', () => {
