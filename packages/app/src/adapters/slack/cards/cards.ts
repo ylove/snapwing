@@ -1,5 +1,7 @@
 // Pure builders from an InteractiveCard to Block Kit JSON (main 5.5, 6.2, 7.2, 8.2, 11.2).
 // Every button carries `action_id` (an ApprovalAction or the card's choice) and `value` (the incident id).
+// The fallback `text` is mrkdwn Slack notifies from, so user text in it is escaped like the blocks: a
+// `<@U...>` or `<!channel>` in a summary must not ping anyone.
 
 import type { ClaimedCard, FileConfirmCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TriageResolutionPlan } from '@snapwing/pipeline/contracts/incident.ts';
@@ -19,7 +21,7 @@ export type CardOptions = FixPreviewOptions & PrReadyOptions;
 
 export function buildScopePreview(incidentId: string, card: Extract<InteractiveCard, { kind: 'scope-preview' }>): SlackMessage {
   return {
-    text: card.summary,
+    text: esc(card.summary),
     blocks: [
       section(esc(card.summary)),
       actions('scope_actions', [
@@ -38,7 +40,7 @@ export function buildDedupe(incidentId: string, card: Extract<InteractiveCard, {
   ].filter((f): f is string => f !== undefined);
   const lead = `This looks like *${esc(card.issueKey)}*${facts.length > 0 ? ` (${facts.join(', ')})` : ''}: "${esc(card.summary)}"`;
   return {
-    text: `This looks like ${card.issueKey}: ${card.summary}`,
+    text: esc(`This looks like ${card.issueKey}: ${card.summary}`),
     blocks: [
       section(lead),
       actions('dedupe_actions', [
@@ -58,7 +60,7 @@ export function buildClarify(incidentId: string, card: Extract<InteractiveCard, 
     if (options.length < 2 || options.length > 4) throw new RangeError('a clarify card has 2 to 4 options');
     blocks.push(actions('clarify_actions', options.map((o) => ({ label: o, actionId: o, value: incidentId }))));
   }
-  return { text, blocks };
+  return { text: esc(text), blocks };
 }
 
 function fixTouches(plan: TriageResolutionPlan): string | undefined {
@@ -100,7 +102,7 @@ export function buildFixPreview(
     );
   }
   blocks.push(actions('triage_actions', buttons));
-  return { text: `Diagnosis: ${plan.summary}`, blocks };
+  return { text: `Diagnosis: ${esc(plan.summary)}`, blocks };
 }
 
 /** A 2.1: an engineer is on it, so the fix preview is replaced: `Let the agent take it`, `Not a bug`. */

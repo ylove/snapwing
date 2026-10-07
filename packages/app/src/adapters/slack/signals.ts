@@ -490,10 +490,13 @@ export function buildResolutionPrompt(incidentId: string, prompt: ResolutionProm
   };
 }
 
-/** "Sounds like a second issue on the app. File it separately?" with **Yes** and **It's the same bug**. */
+/**
+ * "Sounds like a second issue on the app. File it separately?" with **Yes** and **It's the same bug**.
+ * "the app" is the reporter's own words, so the fallback text is escaped like the block.
+ */
 export function buildScopeChangeCard(incidentId: string, card: ScopeChangeCard): SlackMessage {
   return {
-    text: card.text,
+    text: esc(card.text),
     blocks: [
       section(esc(card.text)),
       actions(

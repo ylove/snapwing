@@ -7,6 +7,11 @@
 //
 // The router records thread posts; this file only posts. Map lookups here are Slack's: a channel by its
 // name or Slack id, a person by handle or email to their `slackId`.
+//
+// Only the mentions this surface emits ping anyone. `mention` and `mentionUser` return a mark
+// (`adapters/shared/mention-marks.ts`); a text post turns those marks into `<@U...>` and escapes the
+// rest (`&`, `<`, `>`), so a `<@U...>`, `<!here>`, `<!channel>` or `<!subteam^...>` inside user text (an
+// incident summary, a digest line, a task summary) reaches Slack as text.
 
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { IdentityLinks, PrReadyChat } from '@snapwing/pipeline/merge/human.ts';
@@ -14,6 +19,8 @@ import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import type { ChatSurface } from '../../server/chat.ts';
+import { createMentionMarks } from '../shared/mention-marks.ts';
+import { esc, mention } from './cards/blocks.ts';
 import { buildMidFlightCard } from './cards/mid-flight.ts';
 import { createSlackChannelMembers, type SlackChannelMembers } from './channel-members.ts';
 import { createSlackPrReadyChat } from './pr-ready.ts';
@@ -43,14 +50,14 @@ function message(e: unknown): string {
 }
 
 /**
- * A person reference from a ladder step or the owner (a Slack user id, a map handle, or an email) as a
- * Slack mention; a reference the map does not know stays `@name`.
+ * The Slack user id a person reference from a ladder step or the owner (a Slack user id, a map handle,
+ * or an email) names; undefined for a reference the map does not know.
  */
-export function slackMention(map: WorkspaceMap, ref: string): string {
+export function slackUserOf(map: WorkspaceMap, ref: string): string | undefined {
   const r = ref.trim().replace(/^@/, '');
   const person = map.people.find((p) => p.slackId === r || p.handle === r || (p.email !== undefined && p.email === r));
-  if (person?.slackId !== undefined) return `<@${person.slackId}>`;
-  return /^[UW][A-Z0-9]{2,}$/.test(r) ? `<@${r}>` : `@${r}`;
+  if (person?.slackId !== undefined) return person.slackId;
+  return /^[UW][A-Z0-9]{2,}$/.test(r) ? r : undefined;
 }
 
 /** A channel reference (`#name`, a name, or an id) as the Slack channel to post to; unknown stays as given. */
@@ -75,25 +82,37 @@ export function createSlackChatSurface(options: SlackChatSurfaceOptions): SlackC
     onSkip: (channel, error) => log.info(`channel members of ${channel} unknown (${error}): watchers there are mentioned in the thread`),
     onError: (e) => log.error(`channel members: ${message(e)}`),
   });
+
+  const marks = createMentionMarks();
+  /** Text as mrkdwn: this surface's marks as `<@U...>` (a Slack id is letters and digits), all else escaped. */
+  const render = (text: string): string =>
+    marks.render(text, esc, (ref) => {
+      const id = ref.replace(/[^A-Za-z0-9]/g, '');
+      return id === '' ? '' : mention(id);
+    });
+
   return {
     platform: 'slack',
     channelMembers,
 
     async threadPost(target, text) {
-      const posted = await web.postMessage({ channel: target.channel, text, ...(target.threadId === undefined ? {} : { thread_ts: target.threadId }) });
+      const posted = await web.postMessage({ channel: target.channel, text: render(text), ...(target.threadId === undefined ? {} : { thread_ts: target.threadId }) });
       return { channel: posted.channel, messageId: posted.ts };
     },
 
     async channelPost(channel, text) {
-      await web.postMessage({ channel: slackChannel(await options.getMap(), channel), text });
+      await web.postMessage({ channel: slackChannel(await options.getMap(), channel), text: render(text) });
     },
 
     async personPost(person, text) {
-      await web.postMessage({ channel: slackPerson(await options.getMap(), person), text });
+      await web.postMessage({ channel: slackPerson(await options.getMap(), person), text: render(text) });
     },
 
-    mention: slackMention,
-    mentionUser: (userId) => `<@${userId}>`,
+    mention(map, ref) {
+      const id = slackUserOf(map, ref);
+      return id === undefined ? `@${ref.trim().replace(/^@/, '')}` : marks.mark(id);
+    },
+    mentionUser: (userId) => marks.mark(userId),
 
     prReady: options.prReady ?? createSlackPrReadyChat({ web, state, onError: (e) => log.error(`pr card record: ${message(e)}`) }),
     textCards: createSlackTextCards({ web, state }),

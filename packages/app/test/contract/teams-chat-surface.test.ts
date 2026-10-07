@@ -3,7 +3,8 @@
 // `SNAPWING_DB` selects. Per effect: a thread post (recorded role `other` by the router), a channel post by
 // map name or id, a person post in the personal chat with the thread fallback, the PR card (role `pr`) and
 // the GitHub link prompt, the resolution prompt, the scope-change card, the mid-flight card, and channel
-// members from Graph. Also a person without a personal install and a channel without the grant.
+// members from Graph. Also a person without a personal install, a channel without the grant, and mention
+// tags inside user text, which never become mentions.
 
 import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +15,7 @@ import type { PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { MidFlightCard } from '@snapwing/pipeline/fixer/claims.ts';
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import { renderDigest } from '@snapwing/pipeline/notify/digest.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import type { StateStore } from '@snapwing/pipeline/state/store.ts';
@@ -240,13 +242,16 @@ describe('thread posts', () => {
     expect(body.entities).toEqual([{ type: 'mention', text: '<at>teamsDev</at>', mentioned: { id: DEV_AAD, name: 'teamsDev' } }]);
   });
 
-  it('mentions a person by every reference a ladder step or digest uses', () => {
-    expect(surface.mention(map, '@teamsDev')).toBe('<at>teamsDev</at>');
-    expect(surface.mention(map, 'ravi@example.com')).toBe('<at>teamsDev</at>');
-    expect(surface.mention(map, DEV_AAD)).toBe('<at>teamsDev</at>');
+  it('mentions a person by every reference a ladder step or digest uses', async () => {
+    for (const ref of ['@teamsDev', 'ravi@example.com', DEV_AAD]) await surface.channelPost(CHANNEL, `${surface.mention(map, ref)} over to you`);
+    await surface.channelPost(CHANNEL, `${surface.mentionUser(DEV_AAD)} over to you`);
+    expect(calls).toHaveLength(4);
+    for (const call of calls) {
+      expect(call.body.text).toBe('<at>teamsDev</at> over to you');
+      expect(call.body.entities).toEqual([{ type: 'mention', text: '<at>teamsDev</at>', mentioned: { id: DEV_AAD, name: 'teamsDev' } }]);
+    }
     expect(surface.mention(map, '@nobody')).toBe('@nobody');
     expect(surface.mention(map, 'webDev1')).toBe('@webDev1');
-    expect(surface.mentionUser(DEV_AAD)).toBe(`<at>${DEV_AAD}</at>`);
   });
 
   it('skips an incident whose source is not Teams, as the router does for any source with no surface', async () => {
@@ -332,6 +337,66 @@ describe('channel and person posts', () => {
     await bare.personPost('@teamsDev', 'hello');
     expect(calls).toEqual([]);
     expect(logs.some((l) => l.includes('no serviceUrl or tenant'))).toBe(true);
+  });
+});
+
+describe('mention tags inside user text', () => {
+  // An incident summary, a digest line, and a task summary are user text: a tag in one is shown as
+  // text with no entity, so it notifies nobody. Only what `mention` and `mentionUser` return is a mention.
+  const SPOOF = 'Checkout fails, ask <at>teamsReviewer</at> or <@U0WEBDEV1>';
+  const SHOWN = 'Checkout fails, ask &lt;at&gt;teamsReviewer&lt;/at&gt; or &lt;@U0WEBDEV1&gt;';
+  const DEV_ENTITY = { type: 'mention', text: '<at>teamsDev</at>', mentioned: { id: DEV_AAD, name: 'teamsDev' } };
+
+  it('an escalation step mentions its own person, never one the incident summary names', async () => {
+    await router.escalation.post({
+      incidentId: INCIDENT,
+      ladder: 'outage',
+      step: 1,
+      where: { kind: 'thread', channel: CHANNEL, threadId: ROOT },
+      mention: '@teamsDev',
+      text: `Escalating (outage, step 1 of 2): WEB-1042 ${SPOOF}`,
+    });
+    expect(calls[0]?.body.text).toBe(`<at>teamsDev</at> Escalating (outage, step 1 of 2): WEB-1042 ${SHOWN}`);
+    expect(calls[0]?.body.entities).toEqual([DEV_ENTITY]);
+  });
+
+  it('a digest line posts to a channel and to a person with no mention entity', async () => {
+    const text = renderDigest({
+      window: { from: new Date(T0 - 86_400_000), to: new Date(T0) },
+      opened: 1,
+      closed: 0,
+      pullRequests: 0,
+      autopilotMerges: 0,
+      reverts: 0,
+      oldestOpen: [{ incidentId: INCIDENT, label: 'WEB-1042', summary: SPOOF, openedAt: new Date(T0 - 3_600_000).toISOString(), ageMs: 3_600_000, waitingOn: 'human' }],
+    });
+    await router.postTo('#web-bugs-teams', text);
+    await router.postTo('@teamsDev', text);
+    const posts = calls.filter((c) => c.path.endsWith('/activities'));
+    expect(posts.map((c) => c.path)).toEqual([`conversations/${CHANNEL}/activities`, `conversations/${PERSONAL}-5c1d/activities`]);
+    for (const p of posts) {
+      expect(p.body.text).toContain(`- WEB-1042, ${SHOWN}: open 1h, waiting on an engineer.`);
+      expect(p.body.text).not.toContain('<at>');
+      expect(p.body.entities).toBeUndefined();
+    }
+  });
+
+  it('a ux friction task summary posts to the bug channel with no mention entity', async () => {
+    await router.channelPost('#web-bugs-teams', `${SPOOF}. When several people hit the same thing, the product is inviting it: filed a WEB Task labeled ux-friction.`);
+    expect(calls[0]?.body.text).toBe(`${SHOWN}. When several people hit the same thing, the product is inviting it: filed a WEB Task labeled ux-friction.`);
+    expect(calls[0]?.body.entities).toBeUndefined();
+  });
+
+  it('a thread post mentions the person it addresses, never one the text it carries names', async () => {
+    await router.threadPost(INCIDENT, { text: `@teamsDev, still on it? ${SPOOF}`, mentionUserId: DEV_AAD });
+    expect(calls[0]?.body.text).toBe(`<at>teamsDev</at>, still on it? ${SHOWN}`);
+    expect(calls[0]?.body.entities).toEqual([DEV_ENTITY]);
+  });
+
+  it('a string shaped like a mark in user text is not one', async () => {
+    await surface.channelPost(CHANNEL, `\u0002${REVIEWER_AAD}\u0003 and \u0002teamsReviewer\u0003`);
+    expect(calls[0]?.body.text).not.toContain('<at>');
+    expect(calls[0]?.body.entities).toBeUndefined();
   });
 });
 
