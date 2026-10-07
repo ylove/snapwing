@@ -512,6 +512,8 @@ export interface CommentPayload {
    * actor's id (B 3), so without it a rebuilt row names the platform user id.
    */
   actorName?: string;
+  /** The actor's linked GitHub login when recorded, so the PR comment can mention them (A 1.5); absent when not linked. */
+  actorGithubLogin?: string;
   /**
    * What the signal handler did with it (`SignalAction` in signals/handler.ts: an A 1.3 effect such as
    * `verify` or `reopen`, or `hold`, `release`, `stop`, `not-a-bug`, `watch`, `count`, `removed`,
