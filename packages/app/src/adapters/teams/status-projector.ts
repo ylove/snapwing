@@ -39,7 +39,7 @@
 import type { StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { isExpectedSeqConflict, type IncidentView, type OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
-import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import { channelPlatform, type WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { botMessagePosted, recordBotMessage } from '@snapwing/pipeline/signals/messages.ts';
@@ -319,11 +319,17 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
     await recordPosted(row, incident.id, ref);
   }
 
+  /** The Teams bug channel of the incident's surface, if the map lists one (a Slack channel for the same surface never counts). */
+  function teamsBugChannel(incident: IncidentView, map: WorkspaceMap | undefined) {
+    if (incident.surfaceId === undefined) return undefined;
+    return map?.channels.find((c) => c.surface === incident.surfaceId && channelPlatform(c) === 'teams');
+  }
+
   async function mirror(incident: IncidentView, at: Where, activity: TeamsOutgoingActivity, map: WorkspaceMap | undefined): Promise<void> {
     if (at.conversationType !== 'personal') return;
     const key = mirrorKey(incident.id);
     const known = await cache.get(key);
-    const bug = incident.surfaceId === undefined ? undefined : map?.channels.find((c) => c.surface === incident.surfaceId);
+    const bug = teamsBugChannel(incident, map);
     let target = bug === undefined ? undefined : { channelId: bug.id, serviceUrl: undefined as string | undefined };
     const ref = known === null ? undefined : parseMirror(known);
     if (ref !== undefined) {
@@ -417,12 +423,23 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
           why = `the personal chat could not be opened (${err.status} ${err.code})`;
         }
       }
+      // In a personal chat `at` is the reporter's 1:1 chat: never post another person's notification there.
+      const bug = at.conversationType === 'personal' ? teamsBugChannel(incident, map) : undefined;
+      const where = at.conversationType !== 'personal' ? 'mentioned in the thread instead' : bug === undefined ? 'not posted (the incident is in a personal chat and no Teams bug channel is mapped)' : 'mentioned in the bug channel instead';
       if (!noted.has(ref)) {
         noted.add(ref);
-        onError(new Error(`teams notify: ${ref} has no personal install, mentioned in the thread instead: ${why}`));
+        onError(new Error(`teams notify: ${ref} has no personal install, ${where}: ${why}`));
       }
-      const fallback = mergeNotifyText([{ delivery: 'thread', mentions: [ref], text: `<@${ref}> ${text}`, reason: parsed[0]?.reason ?? 'watch' }]);
-      await post(at, bodyOf(fallback, { reduced: await reduced(at) }));
+      if (at.conversationType === 'personal' && bug === undefined) return;
+      const mention = `<@${ref}>`;
+      const fallback = mergeNotifyText([{ delivery: 'thread', mentions: [ref], text: text.startsWith(mention) ? text : `${mention} ${text}`, reason: parsed[0]?.reason ?? 'watch' }]);
+      if (bug === undefined) {
+        await post(at, bodyOf(fallback, { reduced: await reduced(at) }));
+      } else {
+        const record = await readTeamsConversation(cache, bug.id).catch(() => undefined);
+        const isReduced = bug.teamId === undefined ? false : await readTeamsMode(cache, bug.teamId).then((m) => m === 'reduced').catch(() => false);
+        await connector.sendToConversation({ serviceUrl: record?.serviceUrl ?? at.serviceUrl, conversationId: bug.id }, bodyOf(fallback, { reduced: isReduced }));
+      }
       return;
     }
 

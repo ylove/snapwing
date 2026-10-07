@@ -185,7 +185,7 @@ const map: WorkspaceMap = {
   org: 'Example',
   updated: '2026-10-03T00:00:00Z',
   surfaces: [],
-  channels: [{ id: BUGS, name: 'web-bugs', surface: 'web', triggerEmoji: [] }],
+  channels: [{ id: BUGS, name: 'web-bugs', surface: 'web', platform: 'teams', teamId: 'team-1', triggerEmoji: [] }],
   triggers: { messageActions: [], emoji: [] },
   vocabulary: [],
   people: [
@@ -460,6 +460,21 @@ describe('personal chat incidents (main 15.1)', () => {
     expect(teams.in(chat)[0]!.text).toContain('PR is open');
   });
 
+  it('mirrors into the Teams bug channel even when a Slack channel for the same surface is listed first', async () => {
+    const chat = 'a:1Rae-personal-chat-3';
+    const incidentId = await capture(chat, { personal: true });
+    await state.append(
+      incidentId,
+      [{ workspaceId: WS, incidentId, type: 'resolved', v: 1, source: 'agent', occurredAt: new Date(time).toISOString(), payload: { surfaceId: 'web' } } as NewEvent<'resolved'>],
+      (await state.read(incidentId)).at(-1)!.seq,
+    );
+    const mixed: WorkspaceMap = { ...map, channels: [{ id: 'C0WEBBUGS', name: 'web-bugs', surface: 'web', triggerEmoji: [] }, ...map.channels] };
+    await enqueue(row(incidentId, 'A fix is being written.'));
+    await projector({ getMap: () => Promise.resolve(mixed) }).drainOnce();
+    expect(teams.in(BUGS)).toHaveLength(1);
+    expect(teams.in('C0WEBBUGS')).toHaveLength(0);
+  });
+
   it('does not mirror a channel incident, and a failing mirror does not fail the row', async () => {
     const channelIncident = await capture(CHANNEL);
     await state.append(
@@ -560,6 +575,46 @@ describe('notify rows (A 4.4)', () => {
     expect(messages[0]?.entities).toEqual([{ id: DANA, name: 'dana' }]);
     expect(errors).toHaveLength(1);
     expect(String((errors[0] as Error).message)).toContain('dana');
+  });
+
+  it('does not double the mention when a DM batch of two rows falls back to the thread', async () => {
+    const incidentId = await capture(CHANNEL);
+    const a = notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w1:dm:dana' });
+    const b = notify(incidentId, 'WEB-2 is live.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w1:dm:dana' });
+    await enqueue(a, b);
+    await projector().drainOnce();
+    expect(teams.in(CHANNEL).map((m) => m.text)).toEqual(['<at>dana</at>\nWEB-1 is live.\nWEB-2 is live.']);
+  });
+
+  it('a watcher fallback for a personal-chat incident goes to the Teams bug channel, never the reporter chat', async () => {
+    const chat = 'a:1Rae-personal-chat-4';
+    const incidentId = await capture(chat, { personal: true });
+    await state.append(
+      incidentId,
+      [{ workspaceId: WS, incidentId, type: 'resolved', v: 1, source: 'agent', occurredAt: new Date(time).toISOString(), payload: { surfaceId: 'web' } } as NewEvent<'resolved'>],
+      (await state.read(incidentId)).at(-1)!.seq,
+    );
+    await enqueue(notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w1:dm:dana' }));
+    await projector({ onError: () => {} }).drainOnce();
+    expect(teams.in(chat)).toHaveLength(0);
+    expect(teams.in(BUGS).map((m) => m.text)).toEqual(['<at>dana</at> WEB-1 is live.']);
+  });
+
+  it('a watcher fallback for a personal-chat incident with no Teams bug channel is logged once and acknowledged unposted', async () => {
+    const chat = 'a:1Rae-personal-chat-5';
+    const incidentId = await capture(chat, { personal: true });
+    const errors: unknown[] = [];
+    const first = notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w1:dm:dana' });
+    const second = notify(incidentId, 'WEB-1 is closed.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w9:dm:dana' });
+    const p = projector({ onError: (e) => errors.push(e) });
+    await enqueue(first);
+    const report = await p.drainOnce();
+    await enqueue(second);
+    await p.drainOnce();
+    expect(report.sent).toEqual([first.id]);
+    expect(teams.in(chat)).toHaveLength(0);
+    expect(teams.in(BUGS)).toHaveLength(0);
+    expect(errors).toHaveLength(1);
   });
 
   it('falls back to the thread for a watcher who resolves to nobody', async () => {
