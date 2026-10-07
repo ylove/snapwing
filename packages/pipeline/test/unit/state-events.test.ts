@@ -109,10 +109,12 @@ async function logSettled(): Promise<void> {
 }
 
 /**
- * `logSettled` and `readSince` each take their own watermark, so on Postgres a read right after
- * `logSettled` can still come back short. This reads from `cursor` until the page holds
- * `expected` events, then returns it, so the caller's assertions stay exact: a page that is too
- * long or wrong is returned and fails them. On SQLite it is a single read.
+ * `logSettled` and `readSince` each take their own watermark, and `pgWatermark` itself reads the
+ * snapshot and `pg_stat_activity` separately, so on Postgres any single `readSince` can come back
+ * short (a transaction of another database ending between the two reads). A later read returns
+ * the rest; nothing is skipped. This reads from `cursor` until the page holds `expected` events,
+ * then returns it, so the caller's assertions stay exact: a page that is too long or wrong is
+ * returned and fails them. On SQLite it is a single read.
  */
 async function readSettled(state: Pick<OpenedState, 'readSince'>, cursor: string, limit: number, expected: number): Promise<Awaited<ReturnType<OpenedState['readSince']>>> {
   const deadline = Date.now() + 10_000;
@@ -126,6 +128,42 @@ async function readSettled(state: Pick<OpenedState, 'readSince'>, cursor: string
     }
     await new Promise((r) => setTimeout(r, 10));
   }
+}
+
+/**
+ * Pages through the log from `from` with `limit` until `expected` events are collected, then reads
+ * once more and asserts nothing is left. An empty or short page before the count is "not yet" on
+ * Postgres (see `readSettled`), so it is retried from the same cursor until the deadline. A page
+ * that moves the cursor without events, or an overshoot, fails the caller's assertions.
+ */
+async function readAll(
+  state: Pick<OpenedState, 'readSince'>,
+  limit: number,
+  expected: number,
+  from = LOG_START,
+): Promise<{ pages: IncidentEvent[][]; events: IncidentEvent[]; cursor: string }> {
+  const deadline = Date.now() + 10_000;
+  const pages: IncidentEvent[][] = [];
+  let cursor = from;
+  let count = 0;
+  while (count < expected) {
+    const page = await state.readSince(cursor, limit);
+    if (page.events.length === 0) {
+      expect(page.cursor).toBe(cursor);
+      if (TEST_DIALECT !== 'postgres' || Date.now() > deadline) {
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 10));
+      continue;
+    }
+    expect(page.cursor).not.toBe(cursor);
+    pages.push(page.events);
+    count += page.events.length;
+    cursor = page.cursor;
+  }
+  // Everything is collected, so nothing else is appended: a final read has nothing to return.
+  expect((await state.readSince(cursor, limit)).events).toEqual([]);
+  return { pages, events: pages.flat(), cursor };
 }
 
 /** A clock that returns each of `times` once, then keeps returning the last. */
@@ -396,7 +434,6 @@ describe('readSince', () => {
     await state.append(INC_A, [closed(INC_A, 'a2')], 1); // T3
     await state.append(INC_C, [closed(INC_C, 'c3'), closed(INC_C, 'c4')], 2); // T3
     await logSettled();
-    await readSettled(state, LOG_START, 100, 9); // all nine events
     return state;
   }
 
@@ -405,19 +442,14 @@ describe('readSince', () => {
 
   it('pages across incidents in append order with no gaps or repeats (3 pages)', async () => {
     const state = await seed();
-    const pages: IncidentEvent[][] = [];
-    let cursor = LOG_START;
-    for (;;) {
-      const page = await state.readSince(cursor, 3);
-      if (page.events.length === 0) {
-        expect(page.cursor).toBe(cursor);
-        break;
-      }
-      pages.push(page.events);
-      expect(page.cursor).not.toBe(cursor);
-      cursor = page.cursor;
+    const { pages } = await readAll(state, 3, ORDER.length);
+    if (TEST_DIALECT !== 'postgres') {
+      expect(pages.map(reasons)).toEqual([ORDER.slice(0, 3), ORDER.slice(3, 6), ORDER.slice(6, 9)]);
+    } else {
+      // A short read can split a page differently on Postgres; the order and the limit still hold.
+      expect(reasons(pages.flat())).toEqual(ORDER);
+      expect(Math.max(...pages.map((p) => p.length))).toBeLessThanOrEqual(3);
     }
-    expect(pages.map(reasons)).toEqual([ORDER.slice(0, 3), ORDER.slice(3, 6), ORDER.slice(6, 9)]);
     const keys = pages.flat().map((e) => `${e.incidentId}#${e.seq}`);
     expect(new Set(keys).size).toBe(9);
     expect(pages.flat().map((e) => e.recordedAt)).toEqual([T1, T1, T1, T2, T2, T2, T3, T3, T3]);
@@ -425,18 +457,11 @@ describe('readSince', () => {
 
   it('one large page equals the pages, and odd page sizes split appends cleanly', async () => {
     const state = await seed();
-    const all = await state.readSince(LOG_START, 100);
+    const all = await readAll(state, 100, ORDER.length);
     expect(reasons(all.events)).toEqual(ORDER);
-    expect((await state.readSince(all.cursor, 100)).events).toEqual([]);
 
     for (const size of [1, 2, 4]) {
-      const seen: IncidentEvent[] = [];
-      let cursor = LOG_START;
-      for (let page = await state.readSince(cursor, size); page.events.length > 0; page = await state.readSince(cursor, size)) {
-        seen.push(...page.events);
-        cursor = page.cursor;
-      }
-      expect(seen, `page size ${size}`).toEqual(all.events);
+      expect((await readAll(state, size, ORDER.length)).events, `page size ${size}`).toEqual(all.events);
     }
   });
 
@@ -509,10 +534,8 @@ describe('readSince', () => {
     await reader;
 
     await logSettled();
-    for (let page = await s1.readSince(cursor, 50); page.events.length > 0; page = await s1.readSince(cursor, 50)) {
-      seen.push(...page.events);
-      cursor = page.cursor;
-    }
+    // A short read on Postgres is not the end: keep reading until all 90 are in (or the deadline).
+    seen.push(...(await readAll(s1, 50, 90 - seen.length, cursor)).events);
     const keys = seen.map((e) => `${e.incidentId}#${e.seq}`);
     expect(new Set(keys).size).toBe(keys.length);
     expect(keys).toHaveLength(90);
