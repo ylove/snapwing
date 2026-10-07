@@ -82,6 +82,10 @@ jobs:
         env:
           SNAPWING_DB: sqlite
         run: pnpm test && pnpm test:contract
+      - name: pack and npx (sqlite)
+        env:
+          SNAPWING_DB: sqlite
+        run: pnpm test:pack
       - name: test (postgres)
         if: success() || failure()
         env:

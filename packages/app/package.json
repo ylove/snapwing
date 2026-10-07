@@ -5,24 +5,33 @@
   "description": "Server (API plus worker), Slack, Teams, and alert adapters, providers, the snapwing CLI, and onboarding.",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
   "bin": {
-    "snapwing": "./src/cli/main.ts"
+    "snapwing": "./bin/snapwing.mjs"
   },
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*"
   },
+  "files": [
+    "bin",
+    "src"
+  ],
   "scripts": {
     "test": "vitest run test/unit",
     "test:contract": "vitest run test/contract --passWithNoTests",
     "test:live": "vitest run test/live --passWithNoTests",
     "test:e2e": "vitest run test/e2e --passWithNoTests --no-file-parallelism",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test:pack": "vitest run test/pack --no-file-parallelism"
   },
   "dependencies": {
     "@snapwing/capture-client": "workspace:*",
     "@snapwing/pipeline": "workspace:*",
-    "slimdom": "4.3.5"
+    "slimdom": "4.3.5",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
