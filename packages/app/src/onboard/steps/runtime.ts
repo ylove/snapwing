@@ -1,14 +1,12 @@
-// Onboarding step `runtime` (step 0 of main 22.2; main 14.3, 14.5; #397): where Snapwing runs, which
+// Onboarding step `runtime` (step 0 of main 22.2; main 14.3, 14.5; #12): where Snapwing runs, which
 // model provider keys the installer has, and whether there is a public URL or tunnel. It writes
 // `snapwing.config.xml` (`<runtime>` and `<models>`, validated against the XSD) and the keys, a
 // generated `SNAPWING_ENCRYPTION_KEY` and `SNAPWING_FIXER_TOKEN_SECRET`, and `SNAPWING_PUBLIC_URL` to
-// `.env`. A secret is read hidden, checked with one cheap call, and goes only to `.env`.
+// `.env`. A secret is read hidden, checked with one cheap call, and goes only to `.env`. A key whose
+// provider cannot be reached is kept (a rerun) or saved on the installer's say-so, and said to be
+// unchecked; only a key the provider refuses is asked for again.
 
-import {
-  MODEL_PROVIDERS,
-  type ModelProvider,
-  type RuntimeProvider,
-} from '@snapwing/pipeline/config/app-config.ts';
+import { MODEL_PROVIDERS, type ModelProvider } from '@snapwing/pipeline/config/app-config.ts';
 import { PROVIDER_KEY_ENV } from '@snapwing/pipeline/models/router.ts';
 import { DEFAULT_PORT } from '../../server/serve.ts';
 import {
@@ -16,9 +14,10 @@ import {
   generateEncryptionKey,
   generateFixerTokenSecret,
   writeAppConfig,
+  type ModelRowRef,
   type RuntimeChoice,
 } from '../config-write.ts';
-import type { SecretValue } from '../interview/io.ts';
+import { SecretValue } from '../interview/io.ts';
 import type { OnboardStep, StepContext } from '../interview/step.ts';
 
 const PROVIDER_NAMES: Readonly<Record<ModelProvider, string>> = {
@@ -64,11 +63,10 @@ export async function checkModelKey(
   }
 }
 
-const RUNTIME_CHOICES: readonly { readonly id: RuntimeProvider; readonly label: string }[] = [
+/** The runtimes `serve` has a fixer runner for. AWS and Google Cloud join when their runners exist. */
+const RUNTIME_CHOICES: readonly { readonly id: 'local' | 'docker'; readonly label: string }[] = [
   { id: 'local', label: 'On this machine (local): quickest, for trying it out; the fixer runs as you' },
   { id: 'docker', label: 'In Docker (a server or VPS): each fix runs in its own container' },
-  { id: 'aws', label: 'On AWS' },
-  { id: 'gcp', label: 'On Google Cloud' },
 ];
 
 /** The public URL as Snapwing stores it: https (http only for this machine), no trailing slash. */
@@ -86,24 +84,16 @@ export function normalizePublicUrl(text: string): string | undefined {
 }
 
 async function askWhere(ctx: StepContext): Promise<RuntimeChoice> {
-  const provider = (await ctx.io.choose({
+  const provider = await ctx.io.choose({
     id: 'where',
     text: 'Where will Snapwing run?',
     choices: RUNTIME_CHOICES.map(({ id, label }) => ({ id, label })),
     default: 'local',
-    why: 'This sets <runtime provider="..."/> in snapwing.config.xml (main 14.3). local runs the fixer and tests as the server user, so use it where no real secrets are held; docker and the cloud providers isolate each fix.',
-  })) as RuntimeProvider;
-  if (provider === 'local') {
-    ctx.io.say('Local it is. Snapwing will warn each time it starts: this is for development, not for a server holding real secrets.');
-    return { provider };
-  }
-  if (provider === 'docker') return { provider };
-  const region = await ctx.io.ask({
-    id: 'region',
-    text: `Which ${provider === 'aws' ? 'AWS' : 'Google Cloud'} region (for example ${provider === 'aws' ? 'us-east-2' : 'us-central1'})?`,
-    validate: (answer) => (/^[A-Za-z0-9-]+$/.test(answer) ? undefined : 'A region is letters, digits and dashes, such as us-east-2.'),
+    why: 'This sets <runtime provider="..."/> in snapwing.config.xml. local runs the fixer and tests as the server user, so use it where no real secrets are held; docker runs each fix in its own container.',
   });
-  return { provider, region };
+  if (provider === 'docker') return { provider: 'docker' };
+  ctx.io.say('Local it is. Snapwing will warn each time it starts: this is for development, not for a server holding real secrets.');
+  return { provider: 'local' };
 }
 
 /** Docker needs a fixer image; returns its name, or undefined after saying what is missing. */
@@ -121,7 +111,7 @@ async function askFixerImage(ctx: StepContext): Promise<string | undefined> {
       { id: 'none', label: 'Not yet' },
     ],
     default: 'none',
-    why: 'The docker runtime starts one container per fix from SNAPWING_FIXER_IMAGE (main 14.3). Snapwing refuses to start without it.',
+    why: 'The docker runtime starts one container per fix from SNAPWING_FIXER_IMAGE. Snapwing refuses to start without it.',
   });
   if (have === 'none') {
     ctx.io.say(
@@ -140,14 +130,79 @@ interface ProviderKey {
   readonly provider: ModelProvider;
   /** The key to write; undefined when it is already in `.env` and stays as it is. */
   readonly key?: SecretValue;
+  /** False when the provider could not be reached to check the key. */
+  readonly checked: boolean;
 }
 
-async function checkedFor(provider: ModelProvider, key: SecretValue): Promise<string | undefined> {
-  const check = await checkModelKey(provider, key);
-  if (check.ok) return undefined;
-  return check.reason === 'rejected'
-    ? `${PROVIDER_NAMES[provider]} did not accept that key. Check it and paste it again.`
-    : `Could not reach ${PROVIDER_NAMES[provider]} to check the key. Check your connection and paste it again.`;
+/**
+ * A key `readEnv` finds (in `.env`, else the process environment) that the provider did not refuse.
+ * One it could not reach is kept, said to be unchecked. One found in the process environment is
+ * written to `.env` as well (a no-op when `.env` holds the same value), so a `serve` started by a
+ * service manager without that environment still has it. Undefined when there is none or it was refused.
+ */
+async function existingKey(ctx: StepContext, provider: ModelProvider): Promise<ProviderKey | undefined> {
+  const name = PROVIDER_NAMES[provider];
+  const env = PROVIDER_KEY_ENV[provider];
+  const existing = await ctx.readEnv(env);
+  if (existing === undefined) return undefined;
+  const check = await checkModelKey(provider, existing);
+  if (!check.ok && check.reason === 'rejected') {
+    ctx.io.say(`${name}: found ${env}, but ${name} did not accept it.`);
+    return undefined;
+  }
+  const fromProcess = ctx.env[env] === existing.reveal();
+  const found = fromProcess ? `found ${env} in the environment` : `found ${env}`;
+  if (check.ok) {
+    ctx.io.say(
+      fromProcess
+        ? `${name}: ${found} and it works; it will go in .env too, so snapwing serve has it however it is started.`
+        : `${name}: ${found} and it works; keeping it.`,
+    );
+  } else {
+    ctx.io.say(
+      fromProcess
+        ? `${name}: ${found}, but could not reach ${name} to check it; it will go in .env unchecked, so snapwing serve has it however it is started.`
+        : `${name}: ${found}, but could not reach ${name} to check it; keeping it unchecked.`,
+    );
+  }
+  return { provider, checked: check.ok, ...(fromProcess ? { key: existing } : {}) };
+}
+
+/**
+ * Asks for a key until the provider accepts it. When the provider cannot be reached (as opposed to
+ * refusing the key), the installer may save it unchecked instead of pasting it again.
+ */
+async function pasteKey(ctx: StepContext, provider: ModelProvider): Promise<ProviderKey> {
+  const name = PROVIDER_NAMES[provider];
+  const env = PROVIDER_KEY_ENV[provider];
+  for (;;) {
+    let unreachable = false;
+    const key = await ctx.io.secret({
+      id: `${provider}-key`,
+      text: `Paste the ${name} API key:`,
+      why: `Typed hidden, never echoed or logged; saved only to .env as ${env}.`,
+      validate: async (answer) => {
+        const check = await checkModelKey(provider, answer);
+        unreachable = !check.ok && check.reason === 'unreachable';
+        return !check.ok && check.reason === 'rejected' ? `${name} did not accept that key. Check it and paste it again.` : undefined;
+      },
+    });
+    if (!unreachable) return { provider, key, checked: true };
+    const next = await ctx.io.choose({
+      id: `${provider}-unchecked`,
+      text: `Could not reach ${name} to check the key. Paste it again, or save it without checking?`,
+      choices: [
+        { id: 'again', label: 'Paste it again (check your connection first)' },
+        { id: 'save', label: 'Save it without checking' },
+      ],
+      default: 'again',
+      why: `${name} did not answer (no connection, a firewall, or the service is down), so the key may well be fine. Saved unchecked, it goes to .env as ${env}; if it turns out to be wrong, run snapwing onboard --step runtime to replace it.`,
+    });
+    if (next === 'save') {
+      ctx.io.say(`${name} could not be reached, so the key will be saved without being checked.`);
+      return { provider, key, checked: false };
+    }
+  }
 }
 
 async function askKeys(ctx: StepContext): Promise<ProviderKey[]> {
@@ -156,10 +211,9 @@ async function askKeys(ctx: StepContext): Promise<ProviderKey[]> {
     for (const provider of MODEL_PROVIDERS) {
       const name = PROVIDER_NAMES[provider];
       const env = PROVIDER_KEY_ENV[provider];
-      const existing = await ctx.readEnv(env);
-      if (existing !== undefined && (await checkModelKey(provider, existing)).ok) {
-        ctx.io.say(`${name}: found ${env} and it works; keeping it.`);
-        keys.push({ provider });
+      const found = await existingKey(ctx, provider);
+      if (found !== undefined) {
+        keys.push(found);
         continue;
       }
       const have = await ctx.io.choose({
@@ -173,13 +227,7 @@ async function askKeys(ctx: StepContext): Promise<ProviderKey[]> {
         why: `The key is checked with one read-only call to ${name} and saved to .env as ${env}. You need at least one provider; with several, the first of Anthropic, OpenAI, Google is the default.`,
       });
       if (have !== 'yes') continue;
-      const key = await ctx.io.secret({
-        id: `${provider}-key`,
-        text: `Paste the ${name} API key:`,
-        why: `Typed hidden, never echoed or logged; saved only to .env as ${env}.`,
-        validate: (answer) => checkedFor(provider, answer),
-      });
-      keys.push({ provider, key });
+      keys.push(await pasteKey(ctx, provider));
     }
     if (keys.length > 0) return keys;
     ctx.io.say('Snapwing needs a key for at least one model provider to read bug reports. Let us try again.');
@@ -197,7 +245,7 @@ async function askPublicUrl(ctx: StepContext): Promise<{ url: string; tunnel: bo
       { id: 'yes', label: 'Yes, I will paste it' },
     ],
     default: 'no',
-    why: 'Jira and GitHub send webhooks to this address (main 14.3). Without one, Snapwing polls them instead and SNAPWING_PUBLIC_URL is http://localhost:<port>. Slack works without one over Socket Mode.',
+    why: 'Jira and GitHub send webhooks to this address. Without one, Snapwing polls them instead and SNAPWING_PUBLIC_URL is http://localhost:<port>. Slack works without one over Socket Mode.',
   });
   if (have !== 'yes') {
     const url = `http://localhost:${port}`;
@@ -218,6 +266,19 @@ async function askPublicUrl(ctx: StepContext): Promise<{ url: string; tunnel: bo
   return { url, tunnel: true };
 }
 
+/** A rerun keeps the config's `<model>` rows; one whose provider has no key now stops `serve` from starting. */
+function warnRowsWithoutKey(ctx: StepContext, rows: readonly ModelRowRef[], withKeys: readonly ModelProvider[]): void {
+  for (const provider of MODEL_PROVIDERS) {
+    if (withKeys.includes(provider)) continue;
+    const tasks = rows.filter((r) => r.provider === provider).map((r) => r.task);
+    if (tasks.length === 0) continue;
+    ctx.io.say(
+      `Warning: snapwing.config.xml sends ${tasks.join(', ')} to ${PROVIDER_NAMES[provider]}, which has no key here. ` +
+        `snapwing serve will not start until ${PROVIDER_KEY_ENV[provider]} is in .env or those <model> rows name another provider.`,
+    );
+  }
+}
+
 export const runtimeStep: OnboardStep = {
   id: 'runtime',
   number: 0,
@@ -234,28 +295,33 @@ export const runtimeStep: OnboardStep = {
     const defaultProvider = defaultModelProvider(withKeys);
     if (defaultProvider === undefined) throw new Error('runtime step: no provider with a key');
 
-    await writeAppConfig(ctx.workdir, runtime, defaultProvider);
+    const written = await writeAppConfig(ctx.workdir, runtime, defaultProvider);
+    warnRowsWithoutKey(ctx, written.rows, withKeys);
 
     // A secret already in `.env` is kept: a new encryption key would strand data sealed with the old one.
     const entries: Record<string, string | SecretValue> = { SNAPWING_PUBLIC_URL: publicUrl.url };
     for (const { provider, key } of keys) if (key !== undefined) entries[PROVIDER_KEY_ENV[provider]] = key;
-    if ((await ctx.readEnv('SNAPWING_ENCRYPTION_KEY')) === undefined) entries['SNAPWING_ENCRYPTION_KEY'] = generateEncryptionKey();
+    if ((await ctx.readEnv('SNAPWING_ENCRYPTION_KEY')) === undefined) {
+      entries['SNAPWING_ENCRYPTION_KEY'] = new SecretValue(generateEncryptionKey());
+    }
     if ((await ctx.readEnv('SNAPWING_FIXER_TOKEN_SECRET')) === undefined) {
-      entries['SNAPWING_FIXER_TOKEN_SECRET'] = generateFixerTokenSecret();
+      entries['SNAPWING_FIXER_TOKEN_SECRET'] = new SecretValue(generateFixerTokenSecret());
     }
     if (fixerImage !== undefined) entries['SNAPWING_FIXER_IMAGE'] = fixerImage;
     await ctx.writeEnv(entries);
 
+    const unchecked = keys.filter((k) => !k.checked).map((k) => k.provider);
     ctx.io.say(
-      `Saved snapwing.config.xml (${runtime.provider}, models by ${PROVIDER_NAMES[defaultProvider]}) and the keys in .env.`,
+      `Saved snapwing.config.xml (${runtime.provider}, models by ${PROVIDER_NAMES[defaultProvider]}) and the keys in .env.` +
+        (unchecked.length === 0 ? '' : ` Not checked, because the provider could not be reached: ${unchecked.map((p) => PROVIDER_NAMES[p]).join(', ')}.`),
     );
     return {
       status: 'done',
       data: {
         runtime: runtime.provider,
-        ...(runtime.region === undefined ? {} : { region: runtime.region }),
         providers: withKeys,
         defaultProvider,
+        ...(unchecked.length === 0 ? {} : { unchecked }),
         publicUrl: publicUrl.url,
         tunnel: publicUrl.tunnel,
         ...(runtime.provider === 'docker' ? { fixerImage: fixerImage !== undefined } : {}),
