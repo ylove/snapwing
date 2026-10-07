@@ -351,6 +351,24 @@ describe(`handleSignal: claim and release (${TEST_DIALECT})`, () => {
     expect(rows.find((r) => r.op === 'add-comment')?.batchKey).toBe(jiraCommentBatchKey(INC));
   });
 
+  it('records the actor\'s linked GitHub login on the comment; absent without a link; a failed lookup never blocks the signal (#184)', async () => {
+    await filed();
+    const lookup = (impl: StatePort['getLinkedIdentity']): StatePort => Object.assign(Object.create(state) as StatePort, { getLinkedIdentity: impl });
+    const identity = { workspaceId: WS, chat: 'slack', chatUserId: DANA.id, githubLogin: 'dana-q', githubUserId: 7, accessToken: 'sealed', linkedAt: '', updatedAt: '' } as const;
+
+    await handleSignal(world({ state: lookup(() => Promise.resolve(identity)) }).deps, signal('claim', DANA, FIX_PREVIEW));
+    expect((await lastComment()).payload.actorGithubLogin).toBe('dana-q');
+
+    await handleSignal(world({ state: lookup(() => Promise.resolve(null)) }).deps, signal('release', DANA, FIX_PREVIEW));
+    expect((await lastComment()).payload).not.toHaveProperty('actorGithubLogin');
+
+    const before = (await log()).length;
+    const outcome = await handleSignal(world({ state: lookup(() => Promise.reject(new Error('db down'))) }).deps, signal('claim', DANA, FIX_PREVIEW));
+    expect(outcome.handled).toBe(true);
+    expect((await log()).length).toBeGreaterThan(before);
+    expect((await lastComment()).payload).not.toHaveProperty('actorGithubLogin');
+  });
+
   it('a claim on a message that is not the anchor or a fix preview is recorded only', async () => {
     await filed();
     const w = world();

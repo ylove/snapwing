@@ -82,7 +82,7 @@ const PAYLOAD_SHAPES = {
   stopped: { reason: 'string?' },
   released: { scope: 'string', reason: 'string', claimerId: 'string?', restoredLevel: 'number?', env: 'string?' },
   held: { kind: 'string', env: 'string?', claimerId: 'string?', expiresAt: 'string?', reason: 'string?', gate: 'object?' },
-  comment: { intent: 'string', platform: 'string', signalSource: 'string', confidence: 'number', raw: 'string', target: 'object?', environment: 'string?', count: 'object?', deepLink: 'string?', actorName: 'string?', effect: 'string?' },
+  comment: { intent: 'string', platform: 'string', signalSource: 'string', confidence: 'number', raw: 'string', target: 'object?', environment: 'string?', count: 'object?', deepLink: 'string?', actorName: 'string?', actorGithubLogin: 'string?', effect: 'string?' },
   'level-changed': { from: 'number', to: 'number', reason: 'string' },
   reverted: { prNumber: 'number', revertPrNumber: 'number?', reason: 'string?' },
   'resolution-signal': { messageId: 'string', text: 'string' },

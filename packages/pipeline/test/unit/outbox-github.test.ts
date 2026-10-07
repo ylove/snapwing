@@ -4,6 +4,7 @@
 import { describe, expect, it } from 'vitest';
 import type { IncidentEvent } from '../../src/contracts/events.ts';
 import type { IncidentView } from '../../src/contracts/state.ts';
+import { outboxFor } from '../../src/state/projections/outbox/index.ts';
 import { githubRows } from '../../src/state/projections/outbox/github.ts';
 
 function commentEvent(actorName: string | undefined, raw = 'works now'): IncidentEvent {
@@ -83,5 +84,27 @@ describe('githubRows: attribution comment on the pull request (#167)', () => {
   it('a mention in the quoted message text is defused too', () => {
     const text = textOf(commentEvent('Dana', 'thanks @ceo and @team'));
     expect(text).not.toMatch(/@[A-Za-z0-9]/);
+  });
+});
+
+describe('outboxFor: the linked login rides on the event (#184)', () => {
+  function withLogin(login: string | undefined): IncidentEvent {
+    const e = commentEvent('Dana Q');
+    return login === undefined ? e : ({ ...e, payload: { ...e.payload, actorGithubLogin: login } } as IncidentEvent);
+  }
+  function texts(event: IncidentEvent): { github: string | undefined; jira: string | undefined } {
+    const rows = outboxFor(event, { before: undefined, after: { ...AFTER, jiraKey: 'WEB-1042', status: 'in-progress' } as unknown as IncidentView, valid: true });
+    const text = (target: string): string | undefined => (rows.find((r) => r.target === target && r.op === 'add-comment')?.payload as { text?: string } | undefined)?.text;
+    return { github: text('github'), jira: text('jira') };
+  }
+
+  it('a linked actor is @login on the pull request and @display name on Jira', () => {
+    const t = texts(withLogin('dana-q'));
+    expect(t.github).toBe('@dana-q verified on staging at 09:07 UTC: "works now"');
+    expect(t.jira?.startsWith('@Dana Q verified')).toBe(true);
+  });
+
+  it('an unlinked actor is the bold name on the pull request', () => {
+    expect(texts(withLogin(undefined)).github?.startsWith('**Dana Q** verified')).toBe(true);
   });
 });
