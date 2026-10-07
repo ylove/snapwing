@@ -83,6 +83,7 @@ const ARROWS: Row[] = [
   ['ci', ev('merged'), 'merged'],
   ['ci-retry', ev('merged'), 'merged'],
   ['held', ev('merged'), 'merged'],
+  ['escalated', ev('merged'), 'merged'],
   ['mergeable', gateHold, 'held'],
   ['held', ev('released', { scope: 'hold', env: 'staging', reason: 'requested' }), 'mergeable'],
   ['merged', ev('deployed:staging'), 'deployed:staging'],
