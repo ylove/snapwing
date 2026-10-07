@@ -108,6 +108,26 @@ async function logSettled(): Promise<void> {
   }
 }
 
+/**
+ * `logSettled` and `readSince` each take their own watermark, so on Postgres a read right after
+ * `logSettled` can still come back short. This reads from `cursor` until the page holds
+ * `expected` events, then returns it, so the caller's assertions stay exact: a page that is too
+ * long or wrong is returned and fails them. On SQLite it is a single read.
+ */
+async function readSettled(state: Pick<OpenedState, 'readSince'>, cursor: string, limit: number, expected: number): Promise<Awaited<ReturnType<OpenedState['readSince']>>> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const page = await state.readSince(cursor, limit);
+    if (TEST_DIALECT !== 'postgres' || page.events.length >= expected) {
+      return page;
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`timed out waiting for readSince to return ${expected} events (got ${page.events.length})`);
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 /** A clock that returns each of `times` once, then keeps returning the last. */
 function steppedClock(times: string[]): () => Date {
   let i = 0;
@@ -376,6 +396,7 @@ describe('readSince', () => {
     await state.append(INC_A, [closed(INC_A, 'a2')], 1); // T3
     await state.append(INC_C, [closed(INC_C, 'c3'), closed(INC_C, 'c4')], 2); // T3
     await logSettled();
+    await readSettled(state, LOG_START, 100, 9); // all nine events
     return state;
   }
 
@@ -423,12 +444,12 @@ describe('readSince', () => {
     const state = await open({ now: steppedClock([T1, T2, T3]) });
     await state.append(INC_A, [closed(INC_A, 'a1')], 0);
     await logSettled();
-    const first = await state.readSince(LOG_START, 10);
+    const first = await readSettled(state, LOG_START, 10, 1);
     expect(reasons(first.events)).toEqual(['a1']);
     await state.append(INC_B, [closed(INC_B, 'b1')], 0);
     await state.append(INC_A, [closed(INC_A, 'a2')], 1);
     await logSettled();
-    const second = await state.readSince(first.cursor, 10);
+    const second = await readSettled(state, first.cursor, 10, 2);
     expect(reasons(second.events)).toEqual(['b1', 'a2']);
   });
 
@@ -436,11 +457,11 @@ describe('readSince', () => {
     const state = await open({ now: steppedClock([T3, T1]) });
     await state.append(INC_B, [closed(INC_B, 'b1')], 0); // T3
     await logSettled();
-    const first = await state.readSince(LOG_START, 10);
+    const first = await readSettled(state, LOG_START, 10, 1);
     expect(reasons(first.events)).toEqual(['b1']);
     await state.append(INC_A, [closed(INC_A, 'a1')], 0); // T1, earlier than the cursor's event
     await logSettled();
-    expect(reasons((await state.readSince(first.cursor, 10)).events)).toEqual(['a1']);
+    expect(reasons((await readSettled(state, first.cursor, 10, 1)).events)).toEqual(['a1']);
   });
 
   it('appends sharing one transaction come together, by incidentId then seq', async () => {
@@ -453,7 +474,7 @@ describe('readSince', () => {
     });
     await state.append(INC_B, [closed(INC_B, 'b2')], 1);
     await logSettled();
-    expect(reasons((await state.readSince(LOG_START, 10)).events)).toEqual(['b1', 'a1', 'a2', 'c1', 'c2', 'b2']);
+    expect(reasons((await readSettled(state, LOG_START, 10, 6)).events)).toEqual(['b1', 'a1', 'a2', 'c1', 'c2', 'b2']);
   });
 
   it('a reader racing concurrent appenders sees every event exactly once', { timeout: 30_000 }, async () => {
@@ -543,7 +564,7 @@ describe('readSince', () => {
         gate.open();
         expect(await first).toEqual({ seq: 1 });
         await logSettled();
-        const next = await state.readSince(during.cursor, 10);
+        const next = await readSettled(state, during.cursor, 10, 2);
         expect(reasons(next.events)).toEqual(['first', 'later']);
       } finally {
         gate.open();
@@ -556,7 +577,7 @@ describe('readSince', () => {
       await state.append(INC_C, [closed(INC_C, 'base')], 0);
       await logSettled();
       await state.transaction(async (tx) => {
-        expect(reasons((await tx.readSince(LOG_START, 10)).events)).toEqual(['base']);
+        expect(reasons((await readSettled(tx, LOG_START, 10, 1)).events)).toEqual(['base']);
         await tx.append(INC_A, [closed(INC_A, 'mine')], 0);
         // A later transaction commits, so the snapshot's xmax passes this one's id. Postgres leaves
         // the transaction's own id out of the snapshot's in-flight list; the bound still stops below
@@ -566,7 +587,7 @@ describe('readSince', () => {
         expect(reasons(await tx.read(INC_A))).toEqual(['mine']);
       });
       await logSettled();
-      expect(reasons((await state.readSince(LOG_START, 10)).events)).toEqual(['base', 'mine', 'later']);
+      expect(reasons((await readSettled(state, LOG_START, 10, 3)).events)).toEqual(['base', 'mine', 'later']);
     });
 
     it('a transaction that wrote before a later append sorts first even though it appends after', async () => {
@@ -591,7 +612,7 @@ describe('readSince', () => {
         gate.open();
         await caller;
         await logSettled();
-        expect(reasons((await state.readSince(during.cursor, 10)).events)).toEqual(['early', 'later']);
+        expect(reasons((await readSettled(state, during.cursor, 10, 2)).events)).toEqual(['early', 'later']);
       } finally {
         gate.open();
         await caller.catch(() => undefined);
@@ -636,7 +657,7 @@ describe('stored values round-trip', () => {
     expect(second).toEqual({ ...agentEvent, seq: 2, recordedAt: '2026-10-01T10:00:00.000Z' });
     expect(second && 'actor' in second).toBe(false);
     await logSettled();
-    expect((await state.readSince(LOG_START, 10)).events).toEqual([first, second]);
+    expect((await readSettled(state, LOG_START, 10, 2)).events).toEqual([first, second]);
   });
 
   it('stores v in its column', async () => {
@@ -663,7 +684,7 @@ describe('read and readSince upcast (B 4)', () => {
       const viaRead = await state.read(INC_A);
       expect(viaRead).toHaveLength(1);
       expect(viaRead[0]).toMatchObject({ type: 'closed', v: 2, payload: { reason: 'old shape' } });
-      const viaSince = await state.readSince(LOG_START, 10);
+      const viaSince = await readSettled(state, LOG_START, 10, 1);
       expect(viaSince.events).toHaveLength(1);
       expect(viaSince.events[0]).toMatchObject({ type: 'closed', v: 2, payload: { reason: 'old shape' } });
     } finally {
