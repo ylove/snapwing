@@ -481,7 +481,7 @@ describe(`handleSignal: the staging check (${TEST_DIALECT})`, () => {
     const line = `@Pat verified on staging at 10:00 UTC (${LINK})`;
     expect((await pending('jira')).filter((r) => r.op === 'add-comment').map((r) => r.payload['text'])).toEqual([line]);
     const github = await pending('github');
-    expect(github.map((r) => [r.op, r.payload, r.batchKey])).toEqual([['add-comment', { repo: 'fake-org/web', prNumber: 77, text: line }, jiraCommentBatchKey(INC)]]);
+    expect(github.map((r) => [r.op, r.payload, r.batchKey])).toEqual([['add-comment', { repo: 'fake-org/web', prNumber: 77, text: line.replace('@Pat', '**Pat**') }, jiraCommentBatchKey(INC)]]);
   });
 
   it('accept on a staging check the incident has moved past is recorded, not a verification', async () => {
@@ -537,10 +537,10 @@ describe(`handleSignal: the PR card and the other cards (${TEST_DIALECT})`, () =
     expect(await handleSignal(w.deps, signal('reject', LEE, PR_CARD))).toMatchObject({ effect: 'changes-requested' });
     const texts = (await pending('github')).map((r) => r.payload['text']);
     expect(texts).toEqual([
-      `Approved in Slack by @Dana at 10:00 UTC (${LINK})`,
-      `@Dana agreed with the pull request at 10:00 UTC (${LINK})`,
-      `@Pat agreed with the pull request at 10:00 UTC (${LINK})`,
-      `Changes requested in Slack by @Lee at 10:01 UTC (${LINK})`,
+      `Approved in Slack by **Dana** at 10:00 UTC (${LINK})`,
+      `**Dana** agreed with the pull request at 10:00 UTC (${LINK})`,
+      `**Pat** agreed with the pull request at 10:00 UTC (${LINK})`,
+      `Changes requested in Slack by **Lee** at 10:01 UTC (${LINK})`,
     ]);
   });
 
@@ -700,10 +700,12 @@ describe(`attribution batching (${TEST_DIALECT})`, () => {
       expect(new Set(rows.map((r) => r.batchKey))).toEqual(new Set([jiraCommentBatchKey(INC)]));
       const created = rows.map((r) => Date.parse(r.createdAt));
       expect(Math.max(...created) - Math.min(...created)).toBeLessThan(60_000);
+      // The PR comment names people in bold: a display name is not a GitHub login (#167).
+      const at = target === 'jira' ? (n: string) => `@${n}` : (n: string) => `**${n}**`;
       expect(rows.map((r) => r.payload['text'])).toEqual([
-        `@Pat verified on staging at 10:00 UTC (${LINK})`,
-        `@Sam verified on staging at 10:00 UTC (${LINK})`,
-        `Approved in Slack by @Dana at 10:00 UTC (${LINK})`,
+        `${at('Pat')} verified on staging at 10:00 UTC (${LINK})`,
+        `${at('Sam')} verified on staging at 10:00 UTC (${LINK})`,
+        `Approved in Slack by ${at('Dana')} at 10:00 UTC (${LINK})`,
       ]);
     }
   });
