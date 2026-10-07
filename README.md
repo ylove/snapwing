@@ -1,5 +1,7 @@
 # Snapwing (working title)
 
+**Decide how far the agent goes.** Stay in control from flag to fix.
+
 Snapwing turns a bug report in a Slack thread into a ticket that names the code involved, and, if you allow it, into a reviewed fix.
 
 > [!IMPORTANT]
@@ -10,6 +12,8 @@ Snapwing turns a bug report in a Slack thread into a ticket that names the code 
 Someone asks "is checkout broken for anyone?" in Slack and drops a screenshot. A teammate reacts with 🐛. Snapwing reads the whole thread, screenshots included, checks for duplicates, and files a Jira ticket that names the code it thinks is involved. If you let it, a coding agent writes the fix, a separate review agent checks it, a pull request opens, and the status comes back to the same thread.
 
 "If you let it" is the autonomy dial: admins set how far Snapwing goes on its own, per channel, component and priority.
+
+**Is this for you?** You already run a coding agent, and you keep branch protection with required reviews on.
 
 ## How it works
 
@@ -31,12 +35,18 @@ flowchart LR
 |---|---|---|---|
 | 0 | Ticket only | Never | Nobody: there is no fix |
 | 1 | Fix on tap | When an engineer taps **Fix it** | A person |
-| 2 | Fix now | Right after the ticket is filed | A person (code owners are asked to review) |
-| 3 | Autopilot | Right after the ticket is filed | The agent, only if the review agent, CI and the risk gate all pass |
+| 2 | Start automatically | Once the ticket is filed, without a tap | A person (code owners are asked to review) |
+| 3 | Autopilot | Once the ticket is filed, without a tap | The agent, only if the review agent, CI and the merge checks all pass |
+
+Branch protection decides which merges need a person. The dial decides which work starts and how far it goes.
 
 - The level is set per channel, component and priority. When several rules match, the most restrictive one wins, so a top-priority bug on an autopilot channel still gets a person.
+- Turn a component down to ticket only without turning the agent off.
 - At levels 2 and 3, every card and status message has a **Stop** button.
+- The merge checks are mechanical: files touched, diff size, protected paths, and no changes to CI or test configuration.
 - If any gate fails at level 3, the incident drops to level 2 and the thread says why. Nothing closes or disappears silently.
+- Level 3 merges as Snapwing's GitHub App. On a protected branch, an admin must first add the App to the branch protection bypass list, and GitHub applies that exemption to the whole branch. Snapwing uses it only for work at level 3, and only after every gate passes.
+- After an autopilot merge, a one-tap **Revert** stays available for 72 hours by default.
 - Who changed a level, and when, is recorded.
 
 ## What works today
@@ -70,9 +80,10 @@ flowchart LR
 These are planned, not built:
 
 - **Bug Memory:** when a new report matches a bug fixed before, you see the earlier ticket, its fix and any revert, and can reopen it in one tap.
-- **Dry run:** see the exact patch, the test results and the review verdict before anything is pushed, then Apply, Revise or Discard.
-- **Risk index:** a 0 to 100 score with the factors behind it, on every card, and usable as a merge gate.
-- **The dial, everywhere:** a visual dial in Slack and Teams, a per-incident override, and temporary boosts that expire.
+- **Dry run:** see the fix before anything is pushed. By default it runs in a sandbox with the full test suite and the review agent, and you see the patch, the results and the verdict, then Apply, Revise or Discard. A quicker preview without tests is an option: Apply opens a pull request, never a push to `main`, and CI tests it there. A lead can also put a whole workspace in dry run until an end time they set, such as a few hours while a fix is prepared or deployed. Snapwing then files and pushes nothing, and reports what it would have done.
+- **Risk index:** an uncalibrated 0 to 100 score with the factors behind it, on engineer-facing fix cards, and usable as a merge gate once an admin sets a threshold.
+- **The dial, everywhere:** a visual dial in Slack and Teams, a per-incident override, temporary boosts that expire, and setup that asks a starting level for each component (skipping it leaves everything at ticket only).
+- **Truthful status:** a merged fix is shown as merged, not fixed, until a deploy confirms it is live.
 - **GitHub Issues as a tracker:** everything that works with Jira, also working with GitHub Issues and Projects.
 - **More context:** specs and designs from Confluence, Figma, local folders and read-only MCP sources.
 - **Working alongside other coding agents:** step aside when Copilot, Claude, Codex or another agent already has the work, or hand it to them.
