@@ -8,7 +8,7 @@
 
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,6 +105,41 @@ describe.skipIf(NPM === undefined)(title, () => {
     expect(tarballs.app).toMatch(/snapwing-app-.*\.tgz$/);
   });
 
+  it('packs only tracked files: untracked env files, keys, and databases stay out of both tarballs', async () => {
+    const dummies = [
+      'packages/pipeline/src/.env',
+      'packages/app/src/.env.local',
+      'schemas/.env.live',
+      'manifests/slack/dummy.pem',
+      'packages/pipeline/src/secrets/key.pem',
+      'packages/app/src/dummy.key',
+      'demo/state/local.sqlite',
+      'packages/pipeline/src/local.sqlite-wal',
+    ].map((p) => join(REPO_ROOT, p));
+    const dirs = [join(REPO_ROOT, 'packages', 'pipeline', 'src', 'secrets')];
+    const madeDirs = dirs.filter((d) => !existsSync(d));
+    try {
+      for (const d of madeDirs) await mkdir(d, { recursive: true });
+      for (const f of dummies) await writeFile(f, 'not a real secret\n');
+      const out = join(root, 'tarballs-dirty');
+      const packed = await run('node', [PACK_SCRIPT, '--out', out, '--json'], REPO_ROOT, env);
+      expect(packed.stderr).toBe('');
+      expect(packed.code).toBe(0);
+      const dirty = JSON.parse(packed.stdout) as { pipeline: string; app: string };
+      for (const tgz of [dirty.pipeline, dirty.app]) {
+        const listing = (await run('tar', ['-tzf', tgz], root, env)).stdout;
+        expect(listing).toContain('package/package.json');
+        expect(listing).not.toMatch(/\.env|\.pem|\.key|secrets\/|\.sqlite/);
+      }
+      const pipelineListing = (await run('tar', ['-tzf', dirty.pipeline], root, env)).stdout;
+      expect(pipelineListing).not.toContain('test-driver.manifest.yaml');
+      expect(pipelineListing).not.toContain('package/demo/');
+    } finally {
+      for (const f of dummies) await rm(f, { force: true });
+      for (const d of madeDirs) await rm(d, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it('prints the usage for --help, and for a bare snapwing with exit 1', async () => {
     const help = await npx('--help');
     expect(help.stderr).not.toMatch(/ERR!|npm error/);
@@ -137,7 +172,7 @@ describe.skipIf(NPM === undefined)(title, () => {
       const { existsSync } = await import('node:fs');
       const a = await import('@snapwing/pipeline/util/assets.ts');
       const h = await import('@snapwing/pipeline/harness/untrusted-host.ts');
-      const assets = ['schemas/playbook.xsd', 'manifests/github-app.json', 'demo/state/expected.json'].map((p) => a.assetPath(p));
+      const assets = ['schemas/playbook.xsd', 'manifests/github-app.json'].map((p) => a.assetPath(p));
       const app = (await import('node:path')).join(process.cwd(), 'node_modules', '@snapwing', 'app');
       console.log(JSON.stringify({
         installed: a.INSTALLED_PACKAGE,

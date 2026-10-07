@@ -5,6 +5,9 @@
   "description": "Server (API plus worker), Slack, Teams, and alert adapters, providers, the snapwing CLI, and onboarding.",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
   "bin": {
     "snapwing": "./bin/snapwing.mjs"
   },

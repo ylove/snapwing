@@ -1,4 +1,4 @@
-// Root assets (`schemas/`, `manifests/`, `demo/`) from a source checkout or an installed package (ADR 0021).
+// Root assets (`schemas/`, `manifests/`, and in a checkout `demo/`) from a source checkout or an installed package (ADR 0021).
 //
 // In the monorepo the assets sit at the repository root, beside `packages/`. `pnpm pack:cli` copies
 // them into the `@snapwing/pipeline` tarball at the package root, so an installed package carries its
@@ -19,7 +19,7 @@ export const INSTALLED_PACKAGE = existsSync(join(PIPELINE_PACKAGE_ROOT, 'schemas
 /** Where `assetPath` resolves from: the package root when installed, else the repository root. */
 export const ASSET_ROOT = INSTALLED_PACKAGE ? PIPELINE_PACKAGE_ROOT : resolve(PIPELINE_PACKAGE_ROOT, '..', '..');
 
-/** The top-level asset directories `pnpm pack:cli` ships in the pipeline tarball. */
+/** The top-level asset directories. `pnpm pack:cli` ships `schemas` and `manifests`; `demo` is checkout-only. */
 export const ASSET_DIRS = ['schemas', 'manifests', 'demo'] as const;
 
 /**

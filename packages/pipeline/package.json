@@ -5,6 +5,9 @@
   "description": "Contracts, ports, engine, and every pipeline stage. No opinion about chat platforms or clouds.",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=20.6"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./*": "./src/*"
@@ -12,8 +15,7 @@
   "files": [
     "src",
     "schemas",
-    "manifests",
-    "demo"
+    "manifests"
   ],
   "scripts": {
     "test": "vitest run test/unit",
