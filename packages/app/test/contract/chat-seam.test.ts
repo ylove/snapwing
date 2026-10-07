@@ -157,7 +157,7 @@ async function boot(secrets: Record<string, string>, surfaces: readonly ChatSurf
 }
 
 /** An incident captured from `source`, with its thread at `channel` / `anchor`. */
-async function incident(b: Booted, source: 'slack' | 'teams' | 'cli', channel: string, anchor: string): Promise<string> {
+async function incident(b: Booted, source: 'slack' | 'teams' | 'cli', channel: string, anchor: string, root: string = anchor): Promise<string> {
   const workspaceId = await ensureInstallWorkspace(b.state);
   const id = ulid();
   const captured: NewEvent<'captured'> = {
@@ -175,7 +175,7 @@ async function incident(b: Booted, source: 'slack' | 'teams' | 'cli', channel: s
       anchorText: 'The cart total is blank',
       anchorId: anchor,
       channelId: channel,
-      threadId: anchor,
+      threadId: root,
     },
   };
   await b.state.append(id, [captured], 0);
@@ -218,6 +218,30 @@ function slackPosts(slack: SlackWorld): Record<string, unknown>[] {
 // Tests -----------------------------------------------------------------------------------------
 
 describe('the chat seam', () => {
+  it('posts under the thread root saved at capture, not a reported reply', async () => {
+    const slack = slackWorld(server, SLACK_CHANNEL, []);
+    const teams = fakeTeams();
+    const b = await boot(fakeSecrets(), [teams]);
+    const chat = router(b);
+    const midFlight: MidFlightCard = { kind: 'mid-flight', claimerUserId: TEAMS_LEAD, runId: ulid(), runAgeMs: 60_000, choices: ['let-it-finish', 'stop-it'], grace: 'PT10M' };
+    const onTeams = await incident(b, 'teams', TEAMS_CHANNEL, 'teams-reply-2', 'teams-root-1');
+    const onSlack = await incident(b, 'slack', SLACK_CHANNEL, '1790000000.000200', '1790000000.000100');
+
+    await chat.threadPost(onTeams, { text: 'on it' });
+    await chat.postMidFlightCard(onTeams, midFlight);
+    await chat.escalation.post({ incidentId: onTeams, ladder: 'outage', step: 1, where: { kind: 'thread', channel: TEAMS_CHANNEL, threadId: 'teams-reply-2' }, mention: 'teamsLead', text: 'outage.' });
+    const root = { channel: TEAMS_CHANNEL, threadId: 'teams-root-1' };
+    expect(teams.calls).toContainEqual({ kind: 'thread', target: root, text: 'on it' });
+    expect(teams.calls).toContainEqual({ kind: 'mid-flight', target: root, incidentId: onTeams });
+    expect(teams.calls).toContainEqual({ kind: 'thread', target: root, text: `<at>${TEAMS_LEAD}</at> outage.` });
+    expect(teams.calls.some((c) => JSON.stringify(c).includes('teams-reply-2'))).toBe(false);
+
+    await chat.threadPost(onSlack, { text: 'on it' });
+    await chat.escalation.post({ incidentId: onSlack, ladder: 'outage', step: 1, where: { kind: 'thread', channel: SLACK_CHANNEL, threadId: '1790000000.000200' }, mention: 'webDev', text: 'outage.' });
+    const threads = slackPosts(slack).map((p) => p['thread_ts']);
+    expect(threads).toEqual(['1790000000.000100', '1790000000.000100']);
+  });
+
   it('routes thread posts, escalations, digests, and the PR card by incident source', async () => {
     const slack = slackWorld(server, SLACK_CHANNEL, []);
     const teams = fakeTeams();
