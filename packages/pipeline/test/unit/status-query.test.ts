@@ -294,7 +294,8 @@ describe('answer', () => {
       expect(a.waitingOn.kind).toBe('deploy');
     }
     const reporter = queries.answer(merged.view, 'reporter');
-    expect(reporter.text).toContain('The fix is merged. Waiting for a staging deploy');
+    expect(reporter.text).toContain('The fix is merged (since');
+    expect(reporter.text.match(/Waiting/g)).toHaveLength(1);
     expect(reporter.text).toContain("when it's on staging I'll ask you to check");
     expect(reporter.text).toContain('Waiting on a deploy to staging.');
     expect(queries.answer(merged.view, 'engineer').text).toContain('merged 2:10 → waiting on: the staging deploy');

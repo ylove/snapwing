@@ -486,7 +486,7 @@ function standing(index: Index, incident: IncidentView, log: readonly IncidentEv
     }
     case 'merged':
       return {
-        now: 'The fix is merged. Waiting for a staging deploy',
+        now: 'The fix is merged',
         next: "when it's on staging I'll ask you to check",
         waiting: { kind: 'deploy', who: 'staging', since },
         chain: 'the staging deploy',
