@@ -30,6 +30,10 @@
 // - `review-failed` after the review passed (`ci`, `mergeable`, `held`) is a human's Request changes
 //   on the PR card (main 11.2, merge/actions.ts): it sends the PR back like a first review failure,
 //   and from `ci-retry` it escalates like a second one (a fixer start then leaves `escalated`).
+// - `merged` is accepted in every status that holds an open PR (`in-review`, `in-review-retry`, `ci`,
+//   `ci-retry`, `mergeable`, `held`, `escalated`): a person may merge before the review agent or CI
+//   finishes (main 11.2, levels 1 and 2). `escalated` is reached with the PR still open after a second
+//   review or CI failure; a `merged` event only exists when a PR merged, so a fixer-failed escalation never gets one.
 
 import type { EventType, IncidentEvent } from '../contracts/events.ts';
 
@@ -188,22 +192,26 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     closed: 'closed',
   },
   'in-review': {
+    merged: 'merged',
     'review-passed': 'ci',
     'review-failed': 'fixing-retry',
     closed: 'closed',
   },
   'in-review-retry': {
+    merged: 'merged',
     'review-passed': 'ci-retry',
     'review-failed': 'escalated',
     closed: 'closed',
   },
   ci: {
+    merged: 'merged',
     'ci-green': 'mergeable',
     'ci-red': 'fixing-retry',
     'review-failed': 'fixing-retry',
     closed: 'closed',
   },
   'ci-retry': {
+    merged: 'merged',
     'ci-green': 'mergeable',
     'ci-red': 'escalated',
     'review-failed': 'escalated',
@@ -252,6 +260,7 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     closed: 'closed',
   },
   escalated: {
+    merged: 'merged',
     claimed: 'claimed',
     'fixer-started': 'fixing',
     'pr-opened': 'in-review',

@@ -3,12 +3,12 @@
 // decides whether the event changes the message; this module turns its update into one
 // `update-status` row per chat target the incident's thread lives on. Every row of an incident shares
 // `batch_key` `status:{incident}`, so the chat projector (#149) keeps one message and edits it in place:
-// the first row posts and pins it, later ones edit it, and rows that pile up while the drain is
+// the first row posts it (and pins it where the platform can), later ones edit it, and rows that pile up while the drain is
 // paused collapse to the latest.
 //
-// The target is the platform the incident came from: a Slack thread gets `slack` rows. Teams joins
-// with its projector (phase 5) by adding `teams: 'teams'` to `CHAT_TARGETS`. An incident from the
-// CLI, Raycast, or an alert has no thread and gets no rows.
+// The target is the platform the incident came from: a Slack thread gets `slack` rows, a Teams
+// conversation `teams` rows (#393; Teams cannot pin, so its projector edits the one message in
+// place). An incident from the CLI, Raycast, or an alert has no thread and gets no rows.
 
 import type { StatusUpdate } from '../../../contracts/adapters.ts';
 import type { IncidentEvent } from '../../../contracts/events.ts';
@@ -21,7 +21,7 @@ import { rowsFor } from './row.ts';
 export const UPDATE_STATUS_OP = 'update-status';
 
 /** The chat target for each channel whose thread carries a status message. */
-const CHAT_TARGETS: Readonly<Partial<Record<ChannelSource, OutboxTarget>>> = { slack: 'slack' };
+const CHAT_TARGETS: Readonly<Partial<Record<ChannelSource, OutboxTarget>>> = { slack: 'slack', teams: 'teams' };
 
 /** The chat targets an incident from `source` posts its status message to. */
 export function statusTargets(source: ChannelSource): OutboxTarget[] {
