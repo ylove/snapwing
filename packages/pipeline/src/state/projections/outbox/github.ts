@@ -54,8 +54,9 @@ export function githubRows(event: IncidentEvent, change: IncidentChange, actor: 
     return WHO;
   });
   if (line === undefined) return [];
-  // Quoted message text may carry mentions too; defuse them all, then put the person's wording in.
-  const text = line.replace(/@(?=[A-Za-z0-9])/g, `@${ZWSP}`).replace(WHO, () => named);
+  // Quoted message text may carry mentions too; defuse them, then put the person's wording in.
+  // GitHub only mentions an `@` at the start of a word, so links and email addresses are left alone.
+  const text = line.replace(/(?<![A-Za-z0-9_])@(?=[A-Za-z0-9])/g, `@${ZWSP}`).replace(WHO, () => named);
   const payload: PrCommentRow = { repo: repoFullName(after.repo), prNumber: after.prNumber, text };
   return rowsFor(event, 'github', [{ op: 'add-comment', payload: { ...payload }, batchKey: jiraCommentBatchKey(event.incidentId) }]);
 }

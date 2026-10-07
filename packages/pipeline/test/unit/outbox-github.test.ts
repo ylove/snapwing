@@ -69,6 +69,17 @@ describe('githubRows: attribution comment on the pull request (#167)', () => {
     expect(textOf(commentEvent(undefined))).toMatch(/^\*\*U\\-FAKE\\-DANA\*\* verified/);
   });
 
+  it('an @ inside a word (a link, an email address) is left alone while a word-initial mention is defused', () => {
+    const link = 'https://teams.microsoft.com/l/message/19:abc@thread.tacv2/1700000000000';
+    const event = commentEvent('Dana', 'ask @ceo or dana@corp.com');
+    const withLink = { ...event, payload: { ...event.payload, deepLink: link } } as unknown as IncidentEvent;
+    const text = textOf(withLink);
+    expect(text).toContain(`(${link})`);
+    expect(text).toContain('dana@corp.com');
+    expect(text).toContain(' @​ceo');
+    expect(text.match(/\u200B/g)).toHaveLength(1);
+  });
+
   it('a mention in the quoted message text is defused too', () => {
     const text = textOf(commentEvent('Dana', 'thanks @ceo and @team'));
     expect(text).not.toMatch(/@[A-Za-z0-9]/);
