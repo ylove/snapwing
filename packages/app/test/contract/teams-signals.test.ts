@@ -225,7 +225,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     messages.set(messageId, { ...m, reactions });
   }
 
-  function setup(opts: { model?: ModelPort; text?: boolean } = {}) {
+  function setup(opts: { model?: ModelPort; text?: boolean; failClaim?: boolean } = {}) {
     const onError = vi.fn();
     const getMap = () => Promise.resolve(MAP);
     const cache = createKvCache(state as unknown as StateStore);
@@ -240,6 +240,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
       map: getMap,
       engine: {
         handleClaim: (incidentId, seq) => {
+          if (opts.failClaim === true) return Promise.reject(new Error('engine down'));
           claims.push({ incidentId, seq });
           return Promise.resolve({ commented: false, woke: false });
         },
@@ -371,6 +372,69 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     // The last set seen is kept for seven days.
     expect(JSON.parse((await w.cache.get(teamsReactionsKey(ANCHOR))) ?? '{}')).toMatchObject({ reactions: [{ user: PAT, name: 'fire' }] });
     expect(w.inbound).toEqual([]);
+    expect(w.onError).not.toHaveBeenCalled();
+  });
+
+  it('one reaction failing never drops the rest of its diff: the other is still handled, the failure reported once', async () => {
+    await filed();
+    const w = setup({ failClaim: true });
+
+    // Sam's 👀 and Pat's 🔥 arrive in one notification; the claim handler throws for the 👀.
+    setReactions(ANCHOR, [reaction(SAM, '👀', '2026-10-03T10:05:00.000Z'), reaction(PAT, '1f525_fire', '2026-10-03T10:05:00.000Z')]);
+    expect(await w.notify(updated())).toMatchObject([
+      { kind: 'trigger', reaction: 'fire', reactor: PAT, captured: false },
+      { kind: 'signal', intent: 'escalate', source: 'reaction', outcome: { handled: true, effect: 'count' } },
+    ]);
+    expect(w.onError).toHaveBeenCalledTimes(1);
+    expect((w.onError.mock.calls[0] as unknown[])[0]).toMatchObject({ message: 'engine down' });
+    expect((await comments()).map((c) => c.payload.intent)).toEqual(['claim', 'escalate']);
+  });
+
+  it('the same for two reactions in one Bot Framework activity', async () => {
+    await filed();
+    const w = setup({ failClaim: true });
+    const { reactionsAdded: _added, ...base } = fixture('message-reaction-activity');
+    expect(await w.activity({ ...base, replyToId: ANCHOR, reactionsAdded: [{ type: '👀' }, { type: '🔥' }] })).toMatchObject([
+      { kind: 'signal', intent: 'escalate', source: 'reaction', outcome: { handled: true } },
+    ]);
+    expect(w.onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a removal that arrives while the Graph fetch is in flight is applied after it, not lost to a stale read', async () => {
+    await filed();
+    const w = setup();
+    setReactions(ANCHOR, [reaction(SAM, '👀', '2026-10-03T10:05:00.000Z')]);
+
+    // Hold the notification's fetch open (the message as it was read, with the 👀 on it).
+    let fetching!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => (fetching = resolve));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    server.use(
+      http.get(`${GRAPH}/teams/:team/channels/:channel/messages/:id`, async ({ params }) => {
+        const read = messages.get(String(params['id']));
+        fetching();
+        await gate;
+        return HttpResponse.json(read);
+      }),
+    );
+    const verified = subscriptions.verifyNotification(updated());
+    const pending = w.signals.onNotifications(verified);
+    await fetchStarted;
+
+    // Sam takes the 👀 back meanwhile (the activity), then the fetch returns the stale message.
+    const { reactionsAdded: _added, ...base } = fixture('message-reaction-activity');
+    const removal = w.signals.onActivity({ ...base, replyToId: ANCHOR, reactionsRemoved: [{ type: '👀' }] });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    release();
+    await Promise.all([pending, removal]);
+
+    // The 👀 was seen, then its removal: the set ends without it, and the claim was released.
+    expect(JSON.parse((await w.cache.get(teamsReactionsKey(ANCHOR))) ?? '{}')).toMatchObject({ reactions: [] });
+    expect((await comments()).map((c) => [c.payload.intent, c.payload.signalSource])).toEqual([
+      ['claim', 'reaction'],
+      ['claim', 'reaction-removed'],
+    ]);
     expect(w.onError).not.toHaveBeenCalled();
   });
 

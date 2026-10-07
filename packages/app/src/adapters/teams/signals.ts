@@ -46,8 +46,8 @@
 //
 // People are their AAD object ids (the map's `teamsId`, ADR 0019); the bot's own reactions and messages
 // (its app id, or any application identity) are ignored. Channel-message notifications may need
-// Microsoft's protected-API or metered-API settings even with RSC (PLAN open question 16); until the
-// live tier settles it, the contract tier is the proof.
+// Microsoft's protected-API or metered-API settings even with RSC, which only a live tenant can settle;
+// until the live tier does, the contract tier is the proof.
 
 import type { ActorRole, IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
 import type { Intent } from '@snapwing/pipeline/contracts/signals.ts';
@@ -402,6 +402,19 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     return out;
   }
 
+  /**
+   * `reactionChange` that never ends its diff: the new set is already saved, so a change that is not
+   * handled now is never notified again. A failure is reported and the rest of the diff goes on.
+   */
+  async function guardedChange(site: ReactionSite, reaction: SeenReaction, removed: boolean, at: string): Promise<TeamsSignalOutcome[]> {
+    try {
+      return await reactionChange(site, reaction, removed, at);
+    } catch (e) {
+      onError(e);
+      return [];
+    }
+  }
+
   /** main 15.1: a trigger emoji on a person's message, captured through the adapter once `minReactors` agree. */
   async function trigger(
     site: ReactionSite & { message: GraphMessage; teamId: string },
@@ -467,9 +480,9 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     for (const r of added) {
       // An add older than the TTL is one the set forgot (first sight, or expired): taken as seen.
       if (Date.parse(r.at) < floor) continue;
-      out.push(...(await reactionChange(withCurrent, r, false, r.at)));
+      out.push(...(await guardedChange(withCurrent, r, false, r.at)));
     }
-    for (const r of removed) out.push(...(await reactionChange(withCurrent, r, true, now.toISOString())));
+    for (const r of removed) out.push(...(await guardedChange(withCurrent, r, true, now.toISOString())));
     return out.length === 0 ? [ignored('no-change')] : out;
   }
 
@@ -589,6 +602,17 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     const { teamId, channelId, messageId } = n;
     if (teamId === undefined || channelId === undefined || messageId === undefined) return [ignored('not-a-channel-message')];
     const id = n.replyId ?? messageId;
+    // A reaction notification fetches, diffs and applies as one step per message: a fetch outside the
+    // chain could be stale by the time it is applied (a removal applied in between would be re-added).
+    // The chain is per process; several replicas still race on the kv set.
+    if (n.changeType === 'created') return notified(n, given);
+    return serial(id, () => notified(n, given));
+  }
+
+  async function notified(n: VerifiedNotification, given: GraphMessage | undefined): Promise<TeamsSignalOutcome[]> {
+    const { teamId, channelId, messageId } = n;
+    if (teamId === undefined || channelId === undefined || messageId === undefined) return [ignored('not-a-channel-message')];
+    const id = n.replyId ?? messageId;
     let message = given;
     if (message === undefined) {
       if (options.graph === undefined) return [ignored('no-graph')];
@@ -615,7 +639,7 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
       byBot: personId(message.from, botAppId) === undefined,
       deepLink: message.webUrl ?? teamsMessageLink(channelId, id, teamId, rootId),
     };
-    return serial(id, () => diffMessage(site));
+    return diffMessage(site);
   }
 
   async function handleNotifications(notifications: readonly VerifiedNotification[]): Promise<TeamsSignalOutcome[]> {
@@ -739,8 +763,8 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
         return [...next.values()];
       });
       const out: TeamsSignalOutcome[] = [];
-      for (const r of added) out.push(...(await reactionChange(site, r, false, at)));
-      for (const r of removed) out.push(...(await reactionChange(site, r, true, at)));
+      for (const r of added) out.push(...(await guardedChange(site, r, false, at)));
+      for (const r of removed) out.push(...(await guardedChange(site, r, true, at)));
       return out.length === 0 ? [ignored('no-change')] : out;
     });
   }
