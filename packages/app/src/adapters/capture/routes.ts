@@ -23,7 +23,7 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
-import { isTerminalStatus, LIFECYCLE_STATUSES, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
+import { isTerminalStatus, OWNS_ITS_KEY, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { authorizeStopCommand } from '@snapwing/pipeline/policy/authorize.ts';
 import type { Route } from '../../server/http.ts';
@@ -51,12 +51,6 @@ export const CAPTURE_WAIT_MS = 8_000;
 const POLL_MS = 100;
 /** Statuses where a fixer run or its PR is active (the Stop button's `fixerActive`). */
 const FIXER_ACTIVE: ReadonlySet<LifecycleStatus> = new Set<LifecycleStatus>(['fixing', 'fixing-retry', 'in-review', 'in-review-retry', 'ci', 'ci-retry', 'mergeable', 'held']);
-/**
- * Every status but `linked-to-existing`: a report linked to an existing issue carries that issue's key
- * without owning it, so it never answers for the key. The same rule as `hasOwnIssue` in the pipeline's
- * `status/loopback.ts`.
- */
-const OWNS_ITS_KEY: readonly LifecycleStatus[] = LIFECYCLE_STATUSES.filter((s) => s !== 'linked-to-existing');
 
 /** A route path with `:name` for each parameter of a `CAPTURE_ROUTES` builder. */
 function pattern(build: (value: string) => string, name: string): string {

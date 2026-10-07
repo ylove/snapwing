@@ -39,7 +39,7 @@ import type { EventActor, NewEvent } from '@snapwing/pipeline/contracts/events.t
 import { isExpectedSeqConflict, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import { newEvent, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
-import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
+import { isTerminalStatus, OWNS_ITS_KEY } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { jiraFieldBatchKey, type JiraField } from '@snapwing/pipeline/state/projections/outbox/jira.ts';
 import type { JiraClient } from '../jira/client/client.ts';
@@ -148,7 +148,7 @@ async function commitDelivery(state: StatePort, key: string, incidentId: string,
 }
 
 async function incidentFor(deps: JiraWebhookDeps, issueKey: string): Promise<(IncidentView & { jiraKey: string }) | undefined> {
-  const [found] = await deps.fixer.state.findIncidents({ workspaceId: deps.fixer.workspaceId, jiraKey: issueKey, limit: 1 });
+  const [found] = await deps.fixer.state.findIncidents({ workspaceId: deps.fixer.workspaceId, jiraKey: issueKey, status: OWNS_ITS_KEY, limit: 1 });
   return found?.jiraKey === undefined ? undefined : { ...found, jiraKey: found.jiraKey };
 }
 
