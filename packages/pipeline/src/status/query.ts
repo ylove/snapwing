@@ -486,7 +486,7 @@ function standing(index: Index, incident: IncidentView, log: readonly IncidentEv
     }
     case 'merged':
       return {
-        now: 'The fix is merged and rolling out to staging',
+        now: 'The fix is merged',
         next: "when it's on staging I'll ask you to check",
         waiting: { kind: 'deploy', who: 'staging', since },
         chain: 'the staging deploy',
@@ -726,7 +726,7 @@ function waitPhrase(w: StatusWaitingOn): string {
     case 'human':
       return w.who === undefined ? 'an engineer' : mentionToken(w.who);
     case 'deploy':
-      return `the rollout to ${w.who === undefined ? 'staging' : clean(w.who)}`;
+      return `a deploy to ${w.who === undefined ? 'staging' : clean(w.who)}`;
     case 'hold':
       return w.who === undefined ? 'a human review' : `a human review by ${mentionToken(w.who)}`;
     case 'nothing':
