@@ -199,6 +199,12 @@ importers:
       '@snapwing/pipeline':
         specifier: workspace:*
         version: link:../pipeline
+      slimdom:
+        specifier: 4.3.5
+        version: 4.3.5
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
     devDependencies:
       '@types/node':
         specifier: ^26.6.3

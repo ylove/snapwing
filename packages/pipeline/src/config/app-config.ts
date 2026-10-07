@@ -1,14 +1,14 @@
 // Application config, snapwing.config.xml (main 14.3 provider selection, main 14.5 models and harness).
 // Schema: schemas/app-config.xsd. The types here are plain data; the model router (#26) consumes ModelsConfig.
 
-import { fileURLToPath } from 'node:url';
 import { parseXmlDocument, type Element } from 'slimdom';
 import { JIRA_LOGICAL_STATUSES, type JiraLogicalStatus, type JiraStatusOverrides } from '../jira/statuses.ts';
 import { validateXsd, type ValidationResult } from '../schemas/validate.ts';
+import { assetPath } from '../util/assets.ts';
 import { parseDuration } from '../util/duration.ts';
 
 export const APP_CONFIG_NAMESPACE = 'urn:snapwing:config:v1';
-export const APP_CONFIG_XSD = fileURLToPath(new URL('../../../../schemas/app-config.xsd', import.meta.url));
+export const APP_CONFIG_XSD = assetPath('schemas/app-config.xsd');
 
 export const RUNTIME_PROVIDERS = ['local', 'aws', 'gcp', 'docker'] as const;
 export const MODEL_PROVIDERS = ['anthropic', 'openai', 'google'] as const;

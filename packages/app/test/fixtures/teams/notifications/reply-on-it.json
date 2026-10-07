@@ -1,0 +1,22 @@
+{
+  "id": "1790000100777",
+  "replyToId": "1790000100123",
+  "etag": "1790000100777",
+  "messageType": "message",
+  "createdDateTime": "2026-10-03T10:07:00.000Z",
+  "lastModifiedDateTime": "2026-10-03T10:07:00.000Z",
+  "deletedDateTime": null,
+  "subject": null,
+  "importance": "normal",
+  "locale": "en-us",
+  "webUrl": "https://teams.microsoft.com/l/message/19%3A5f3c0a7e9d2b4c1a8e6f%40thread.tacv2/1790000100777?groupId=2b9e4c7d-0000-4000-8000-0000000000a1&tenantId=7a0d5e6f-0000-4000-8000-0000000000c1&createdTime=1790000100777&parentMessageId=1790000100123",
+  "from": {
+    "application": null,
+    "device": null,
+    "user": { "id": "6f1c2a3b-0000-4000-8000-00000000e001", "displayName": "Sam Engineer", "userIdentityType": "aadUser" }
+  },
+  "body": { "contentType": "html", "content": "<p>On it!</p>" },
+  "attachments": [],
+  "mentions": [],
+  "reactions": []
+}

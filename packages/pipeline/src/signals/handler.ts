@@ -246,6 +246,7 @@ async function applySignal(
   let pre: SignalAction | undefined;
   if (!removed) pre = await sideEffect(deps, signal, incidentId, role, playbook);
 
+  const githubLogin = removed ? undefined : await linkedLogin(deps, signal);
   let reopenReview: ArtifactRef | undefined;
   for (let attempt = 1; ; attempt++) {
     const incident = await deps.state.getIncident(incidentId);
@@ -257,7 +258,7 @@ async function applySignal(
         : await decide(deps, playbook, signal, incident, role);
     if (decision.effect === 'reopen' && reopenReview === undefined) reopenReview = await putRejection(deps, incidentId, signal);
     const count = await countFor(deps, playbook, signal, incident, role);
-    const comment = commentEvent(deps, incidentId, signal, actor, role, decision.effect, count);
+    const comment = commentEvent(deps, incidentId, signal, actor, role, decision.effect, count, githubLogin);
     const events: NewEvent[] = [comment, ...(decision.events ?? [])];
     try {
       const { seq } = await deps.state.transaction(async (tx) => {
@@ -533,6 +534,7 @@ function commentEvent(
   role: TargetRole,
   effect: SignalAction,
   count: CommentPayload['count'],
+  githubLogin?: string,
 ): NewEvent<'comment'> {
   const payload: CommentPayload = {
     intent: signal.intent,
@@ -546,8 +548,19 @@ function commentEvent(
     ...(count === undefined ? {} : { count }),
     ...(signal.deepLink === undefined ? {} : { deepLink: signal.deepLink }),
     ...(actor.name === undefined ? {} : { actorName: actor.name }),
+    ...(githubLogin === undefined ? {} : { actorGithubLogin: githubLogin }),
   };
   return { workspaceId: deps.workspaceId, incidentId, type: 'comment', v: 1, source: signal.platform, actor, occurredAt: signal.timestamp, payload };
+}
+
+/** The actor's linked GitHub login, for the PR attribution comment; a failed lookup is absent, never an error. */
+async function linkedLogin(deps: SignalDeps, signal: SignalInput): Promise<string | undefined> {
+  try {
+    const identity = await deps.state.getLinkedIdentity({ workspaceId: deps.workspaceId, chat: signal.platform, chatUserId: signal.actor.id });
+    return identity === null || identity.githubLogin === '' ? undefined : identity.githubLogin;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The map role is the event's `actor.role` (#291: only an engineer's `claimed` holds the fixer). */

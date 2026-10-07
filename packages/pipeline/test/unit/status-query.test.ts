@@ -279,6 +279,28 @@ describe('answer', () => {
     expect(reporterViolations(a.text)).toEqual([]);
   });
 
+  it('a merged incident with no deploy event says it waits for a staging deploy, never "rolling out" (#168)', () => {
+    const merged = build({
+      id: '01JZ00000000000000000000C4',
+      key: 'WEB-1073',
+      summary: 'Tax line missing',
+      surface: 'web',
+      then: [...toCi, d('ci-green', { prNumber: 418, headSha: 'abc' }), d('merged', { prNumber: 418, mergeCommitSha: 'def', levelAtMergeTime: 2 })],
+    });
+    const queries = createStatusQueries(snapshot([merged]));
+    for (const audience of ['reporter', 'engineer', 'lead'] as const) {
+      const a = queries.answer(merged.view, audience);
+      expect(a.text).not.toMatch(/rolling out|rollout/i);
+      expect(a.waitingOn.kind).toBe('deploy');
+    }
+    const reporter = queries.answer(merged.view, 'reporter');
+    expect(reporter.text).toContain('The fix is merged (since');
+    expect(reporter.text.match(/Waiting/g)).toHaveLength(1);
+    expect(reporter.text).toContain("when it's on staging I'll ask you to check");
+    expect(reporter.text).toContain('Waiting on a deploy to staging.');
+    expect(queries.answer(merged.view, 'engineer').text).toContain('merged 2:10 → waiting on: the staging deploy');
+  });
+
   it("the engine's recorded wait wins over the status", () => {
     const asked = build({
       id: '01JZ00000000000000000000C2',

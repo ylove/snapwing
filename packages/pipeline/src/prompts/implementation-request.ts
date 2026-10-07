@@ -6,15 +6,15 @@
 // The one exception is `<workspace-instructions>` (INSTRUCTIONS.md, Companion A 6.3), the fixer's
 // copy of the workspace's prose rules: its line breaks are kept and only its ends are trimmed.
 
-import { fileURLToPath } from 'node:url';
 import { parseXmlDocument, type Element } from 'slimdom';
 import { INSTRUCTIONS_ELEMENT, instructionsBlock } from '../config/instructions.ts';
 import { validateXsd, type ValidationResult } from '../schemas/validate.ts';
+import { assetPath } from '../util/assets.ts';
 
 export const IMPLEMENTATION_REQUEST_NAMESPACE = 'urn:snapwing:impl:v1';
 
 /** Absolute path to the XSD, for callers that want to run `validate` themselves. */
-export const IMPLEMENTATION_REQUEST_XSD = fileURLToPath(new URL('../../../../schemas/implementation-request.xsd', import.meta.url));
+export const IMPLEMENTATION_REQUEST_XSD = assetPath('schemas/implementation-request.xsd');
 
 export type Confidence = 'low' | 'medium' | 'high';
 export type HandoffMode = 'review' | 'auto';
