@@ -159,6 +159,13 @@ export function createChatRouter(options: ChatRouterOptions): ChatRouter {
     return surface;
   }
 
+  /** The thread root saved at capture, else the anchor (a reported reply's own id is not a root). */
+  async function rootOf(incident: IncidentView): Promise<string | undefined> {
+    let threadId = incident.anchorId;
+    for (const e of await state.read(incident.id)) if (e.type === 'captured' && e.payload.threadId !== undefined && e.payload.threadId !== '') threadId = e.payload.threadId;
+    return threadId === '' ? undefined : threadId;
+  }
+
   /** The incident's surface and thread, or nothing (logged) when either is missing. */
   async function threadOf(incidentId: string, what: string): Promise<{ surface: ChatSurface; target: ChatTarget } | undefined> {
     const incident = await state.getIncident(incidentId);
@@ -172,7 +179,8 @@ export function createChatRouter(options: ChatRouterOptions): ChatRouter {
       log.info(`${what} for incident ${incidentId} skipped: it has no ${surface.platform} thread`);
       return undefined;
     }
-    return { surface, target: { channel: incident.channelId, ...(incident.anchorId === undefined ? {} : { threadId: incident.anchorId }) } };
+    const threadId = await rootOf(incident);
+    return { surface, target: { channel: incident.channelId, ...(threadId === undefined ? {} : { threadId }) } };
   }
 
   async function record(incidentId: string, platform: ChatPlatform, posted: ChatPosted, what: string): Promise<void> {
@@ -199,9 +207,12 @@ export function createChatRouter(options: ChatRouterOptions): ChatRouter {
         await surface.channelPost(post.where.channel, withMention(surface, map, post));
         return;
       }
-      const surface = await incidentSurface(post.incidentId, 'escalation post');
-      if (surface === undefined) return;
-      const target: ChatTarget = { channel: post.where.channel, ...(post.where.threadId === undefined ? {} : { threadId: post.where.threadId }) };
+      const incident = await state.getIncident(post.incidentId);
+      if (incident === null) log.info(`escalation post for incident ${post.incidentId} skipped: no such incident`);
+      const surface = chatFor(incident, 'escalation post');
+      if (incident === null || surface === undefined) return;
+      const threadId = (await rootOf(incident)) ?? post.where.threadId;
+      const target: ChatTarget = { channel: post.where.channel, ...(threadId === undefined ? {} : { threadId }) };
       const posted = await surface.threadPost(target, withMention(surface, map, post));
       // Recorded, so a reaction on it resolves to the incident (best effort: the post is out).
       await record(post.incidentId, surface.platform, posted, 'escalation post');
