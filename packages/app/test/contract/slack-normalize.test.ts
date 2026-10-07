@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { checkSlackSignature, verifySlackSignature } from '../../src/adapters/slack/auth.ts';
-import { createSlackAuthorOf } from '../../src/adapters/slack/authorship.ts';
+import { createSlackAuthorOf, type SlackUserFacts } from '../../src/adapters/slack/authorship.ts';
 import {
   normalizeSlack,
   type SlackNormalizeContext,
@@ -210,6 +210,91 @@ describe('normalizeSlack: reaction_added', () => {
     const m = map({ triggers: { messageActions: [], emoji: [{ slack: 'thumbsup', teams: 'like' }] } });
     const p = incident(await normalizeSlack(reaction({ reaction: 'thumbsup::skin-tone-3' }), ctx({ map: m })));
     expect(p.idempotencyKey).toBe('slack-C0WEB-1700000000.000200-thumbsup');
+  });
+});
+
+describe('normalizeSlack: who reacted with the trigger (#170)', () => {
+  const TEAM = 'T0001';
+  const CAP = { level: 1, reason: 'guest-trigger' };
+  const people: Record<string, SlackUserFacts> = {
+    U0REPORTER: { team_id: TEAM },
+    U0MEMBER: { team_id: TEAM },
+    U0GUEST: { team_id: TEAM, is_restricted: true },
+    U0SINGLE: { team_id: TEAM, is_ultra_restricted: true },
+    U0OUTSIDER: { team_id: 'T0OTHERORG' },
+  };
+  /** `users.info` from `people`; anyone else fails. Records who was asked. */
+  function lookup(asked: string[] = []) {
+    return createSlackAuthorOf({
+      botUserId: BOT,
+      teamId: TEAM,
+      usersInfo: (u) => (asked.push(u), people[u] === undefined ? Promise.reject(new Error('user_not_found')) : Promise.resolve(people[u])),
+    });
+  }
+  /** A trigger added by `user`, with `users` as everyone `reactions.get` lists for it. */
+  function trigger(user: string, users: string[], emoji = 'bug') {
+    const raw = reaction({ user, reaction: emoji });
+    const reactionsGet = () => Promise.resolve({ text: 't', reactions: [{ name: emoji, users }] });
+    return { raw, reactionsGet };
+  }
+
+  it("leaves a member's trigger uncapped, asking users.info once per user per process", async () => {
+    const asked: string[] = [];
+    const authorOf = lookup(asked);
+    const { raw, reactionsGet } = trigger('U0MEMBER', ['U0MEMBER']);
+    expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toBeUndefined();
+    expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toBeUndefined();
+    expect(asked).toEqual(['U0MEMBER']);
+  });
+
+  it('caps a trigger from a guest (multi- or single-channel) or an external user at level 1, and still files it', async () => {
+    const authorOf = lookup();
+    for (const user of ['U0GUEST', 'U0SINGLE', 'U0OUTSIDER']) {
+      const { raw, reactionsGet } = trigger(user, [user]);
+      const p = incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet })));
+      expect(p.levelCap).toEqual(CAP);
+      expect(p.idempotencyKey).toBe('slack-C0WEB-1700000000.000200-bug');
+      expect(p.reporter.id).toBe(user);
+    }
+  });
+
+  it('lets a member among the reactors lift the cap, asking the one who reacted first and stopping at a member', async () => {
+    const asked: string[] = [];
+    const { raw, reactionsGet } = trigger('U0GUEST', ['U0OUTSIDER', 'U0MEMBER', 'U0SINGLE']);
+    expect(incident(await normalizeSlack(raw, ctx({ authorOf: lookup(asked), reactionsGet }))).levelCap).toBeUndefined();
+    expect(asked).toEqual(['U0GUEST', 'U0OUTSIDER', 'U0MEMBER']);
+  });
+
+  it('minReactors="2": a guest and a member trigger uncapped; two guests trigger capped at 1; one guest alone does not', async () => {
+    const authorOf = lookup();
+    const withMember = trigger('U0GUEST', ['U0GUEST', 'U0MEMBER'], 'fire');
+    expect(incident(await normalizeSlack(withMember.raw, ctx({ authorOf, reactionsGet: withMember.reactionsGet }))).levelCap).toBeUndefined();
+    const guests = trigger('U0GUEST', ['U0GUEST', 'U0SINGLE'], 'fire');
+    expect(incident(await normalizeSlack(guests.raw, ctx({ authorOf, reactionsGet: guests.reactionsGet }))).levelCap).toEqual(CAP);
+    const alone = trigger('U0GUEST', ['U0GUEST'], 'fire');
+    expect(await normalizeSlack(alone.raw, ctx({ authorOf, reactionsGet: alone.reactionsGet }))).toEqual({ kind: 'ignored', reason: 'below-min-reactors' });
+  });
+
+  it('fails closed: a users.info that fails classifies the user as external, and is asked again next time', async () => {
+    const asked: string[] = [];
+    const authorOf = lookup(asked);
+    expect(await authorOf.membership('U0NOBODY')).toBe('external');
+    const { raw, reactionsGet } = trigger('U0NOBODY', ['U0NOBODY']);
+    expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toEqual(CAP);
+    expect(asked).toEqual(['U0NOBODY', 'U0NOBODY']);
+  });
+
+  it('caps every trigger without a users.info lookup, and compares teams only when the workspace team is known', async () => {
+    expect(incident(await normalizeSlack(fixture('reaction-added'), ctx())).levelCap).toEqual(CAP);
+    const noTeam = createSlackAuthorOf({ botUserId: BOT, usersInfo: (u) => Promise.resolve(people[u] ?? {}) });
+    expect(await noTeam.membership('U0OUTSIDER')).toBe('member');
+    expect(await noTeam.membership('U0GUEST')).toBe('guest');
+    expect(await lookup().membership('U0REPORTER')).toBe('member');
+  });
+
+  it('caps nothing but trigger reactions: the shortcut and a direct message carry no cap', async () => {
+    expect(incident(await normalizeSlack(fixture('message-action'), ctx())).levelCap).toBeUndefined();
+    expect(incident(await normalizeSlack(fixture('message-im-text'), ctx())).levelCap).toBeUndefined();
   });
 });
 

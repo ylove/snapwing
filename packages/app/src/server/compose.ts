@@ -445,15 +445,20 @@ function harnessChoice(config: HarnessConfig, adapter: HarnessAdapter): HarnessC
   return { adapter: 'generic', templateId: template.id };
 }
 
-/** The bot's own user id, its bot id, and the workspace subdomain, from one `auth.test` call. */
-async function slackIdentity(token: string): Promise<{ userId: string; botId?: string; domain?: string }> {
+/** The bot's own user id, its bot id, the workspace's team id, and its subdomain, from one `auth.test` call. */
+async function slackIdentity(token: string): Promise<{ userId: string; botId?: string; teamId?: string; domain?: string }> {
   const res = await fetch('https://slack.com/api/auth.test', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
   });
-  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; bot_id?: string; url?: string; error?: string };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; bot_id?: string; team_id?: string; url?: string; error?: string };
   if (body.ok !== true || typeof body.user_id !== 'string') throw new Error(`slack auth.test failed: ${body.error ?? `http_${res.status}`}`);
-  return { userId: body.user_id, ...(typeof body.bot_id === 'string' && body.bot_id !== '' ? { botId: body.bot_id } : {}), ...workspaceDomain(body.url) };
+  return {
+    userId: body.user_id,
+    ...(typeof body.bot_id === 'string' && body.bot_id !== '' ? { botId: body.bot_id } : {}),
+    ...(typeof body.team_id === 'string' && body.team_id !== '' ? { teamId: body.team_id } : {}),
+    ...workspaceDomain(body.url),
+  };
 }
 
 /** `https://acme.slack.com/` gives `acme`; anything else (a custom domain, no url) gives nothing. */
@@ -745,9 +750,9 @@ export const compose: ComposeFn = async (deps) => {
   let mapSnapshot: WorkspaceMap = await getMap();
   const liveMap = async (): Promise<WorkspaceMap> => (mapSnapshot = await getMap());
 
-  // Slack, when configured. One `auth.test` at startup gives the bot user id and the workspace
-  // subdomain (the Conversation Link). Who wrote a message is shared by every inbound path that reads
-  // people's messages (#360): a person posting through an app carries `bot_id` and is still a person.
+  // Slack, when configured. One `auth.test` at startup gives the bot user id, the workspace's team id,
+  // and its subdomain (the Conversation Link). Who wrote a message is shared by every inbound path that
+  // reads people's messages (#360): a person posting through an app carries `bot_id` and is still a person.
   const slack = web === undefined ? undefined : await (async (slackWeb: SlackWeb) => {
     const identity =
       overrides.slackBotUserId !== undefined && overrides.slackWorkspaceDomain !== undefined ? undefined : await slackIdentity(secret('SLACK_BOT_TOKEN'));
@@ -756,6 +761,8 @@ export const compose: ComposeFn = async (deps) => {
     const authorOf = createSlackAuthorOf({
       botUserId,
       ...(identity?.botId === undefined ? {} : { botId: identity.botId }),
+      // A trigger reactor from another team is external (#170).
+      ...(identity?.teamId === undefined ? {} : { teamId: identity.teamId }),
       usersInfo: (user) => slackWeb.usersInfo(user),
     });
     const adapter = createSlackAdapter({

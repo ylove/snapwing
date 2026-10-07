@@ -23,6 +23,7 @@ import type {
   ClarifyQuestion,
   DedupeResult,
   IncidentActor,
+  LevelCap,
   MergeGateResult,
   Resolution,
   TriageResolutionPlan,
@@ -244,6 +245,8 @@ export interface CapturedPayload {
   reporter: IncidentActor;
   /** The anchor message's author when someone else brought it in (#363); `incidents.reporter_id` when present. */
   anchorAuthor?: IncidentActor;
+  /** The capture's ceiling on the level (`CanonicalIncidentPayload.levelCap`, #170); triage resolves the level under it. */
+  levelCap?: LevelCap;
   anchorText: string;
   /** The anchor message id; `incidents.anchor_id`. */
   anchorId?: string;
@@ -317,6 +320,8 @@ export interface PlannedPayload
   plan?: ArtifactRef;
   /** Set when triage could not route the incident and filed it to the fallback project at level 0 (#115). */
   degraded?: 'unresolved-surface';
+  /** Set when the capture's `levelCap` lowered the level policy resolves (#170): the cap's reason. Absent when the cap was moot. */
+  capped?: LevelCap['reason'];
 }
 
 /**

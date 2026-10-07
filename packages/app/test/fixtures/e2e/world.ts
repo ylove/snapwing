@@ -29,6 +29,8 @@ export const SIGNING_SECRET = 'test-signing-secret';
 export const BOT_USER = 'U0SNAPWING';
 /** The workspace subdomain the fake `auth.test` reports. */
 export const WORKSPACE_DOMAIN = 'acme-test';
+/** The workspace's team id: `auth.test`'s, the Events API envelope's, and every fake user's. */
+export const TEAM_ID = 'T0001';
 
 /** Fakes only: none of these looks like a real credential. */
 export function fakeSecrets(): Record<string, string> {
@@ -143,8 +145,16 @@ export function slackWorld(server: SetupServer, channel: string, messages: reado
       return HttpResponse.json({ ok: true, members: options.members, response_metadata: { next_cursor: '' } });
     }),
     http.post(`${SLACK_API}/auth.test`, ({ request }) =>
-      authorized(request) ? HttpResponse.json({ ok: true, user_id: BOT_USER, url: `https://${WORKSPACE_DOMAIN}.slack.com/` }) : HttpResponse.json({ ok: false, error: 'invalid_auth' }),
+      authorized(request)
+        ? HttpResponse.json({ ok: true, user_id: BOT_USER, team_id: TEAM_ID, url: `https://${WORKSPACE_DOMAIN}.slack.com/` })
+        : HttpResponse.json({ ok: false, error: 'invalid_auth' }),
     ),
+    // Everyone is a member of the workspace, so a trigger reaction is never capped as a guest's (#170).
+    http.get(`${SLACK_API}/users.info`, ({ request }) => {
+      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
+      const user = new URL(request.url).searchParams.get('user') ?? '';
+      return HttpResponse.json({ ok: true, user: { id: user, team_id: TEAM_ID } });
+    }),
     http.post(`${SLACK_API}/:method`, async ({ request, params }) => {
       if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
       const method = String(params['method']);

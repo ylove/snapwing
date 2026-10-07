@@ -94,6 +94,12 @@ export interface SlackUser {
   real_name?: string;
   deleted?: boolean;
   is_bot?: boolean;
+  /** A multi-channel guest. */
+  is_restricted?: boolean;
+  /** A single-channel guest. */
+  is_ultra_restricted?: boolean;
+  /** The user's own workspace: another organization's for someone in a Slack Connect channel. */
+  team_id?: string;
   profile?: { email?: string; display_name?: string; real_name?: string };
 }
 
