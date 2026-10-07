@@ -14,8 +14,8 @@
 //   authenticated activity), else `options.serviceUrl`.
 // - A channel is a map channel by name or id (`#web-bugs-teams`, or `19:...@thread.tacv2`).
 // - A person is reached in their personal chat with the bot, which Teams opens only where the app is
-//   installed for them (`createPersonalConversation`; main 15.2, #384). Without it, a person post goes to
-//   the first Teams map channel with a mention, and a card meant for one person goes to the thread with a
+//   installed for them (`createPersonalConversation`; main 15.2, #384). Without it, a person post is
+//   dropped with an info log (it has no thread to mention them in), and a card meant for one person goes to the thread with a
 //   mention (a link prompt says so without the link: see `pr-ready.ts`).
 // - Opening a personal chat sends the user's `29:` Teams id in `members[].id` when an inbound activity
 //   gave one (kv `teams-user:{aadObjectId}`, written by `rememberUser`), the AAD object id in
@@ -217,8 +217,10 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
     const record = await readTeamsConversation(cache, channelId).catch(() => undefined);
     const serviceUrl = record?.serviceUrl ?? options.serviceUrl;
     if (serviceUrl === undefined) throw new TeamsError(`no serviceUrl known for conversation ${channelId}`);
-    const type = record?.conversationType ?? (channelId.includes('@thread.tacv2') ? 'channel' : 'personal');
-    const teamId = record?.teamId ?? (await options.getMap()).channels.find((c) => c.id === channelId)?.teamId;
+    const mapChannel = (await options.getMap()).channels.find((c) => channelPlatform(c) === 'teams' && c.id === channelId);
+    // With no record, a channel is a `@thread.tacv2` id or any id the map lists as a Teams channel (older `@thread.skype` ids).
+    const type = record?.conversationType ?? (channelId.includes('@thread.tacv2') || mapChannel !== undefined ? 'channel' : 'personal');
+    const teamId = record?.teamId ?? mapChannel?.teamId;
     return { serviceUrl, type, ...(teamId === undefined ? {} : { teamId }) };
   }
 
@@ -247,21 +249,23 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
       log.info(`personal message to ${aadObjectId} skipped: no serviceUrl or tenant known for them yet`);
       return false;
     }
+    let chat: Awaited<ReturnType<typeof connector.createPersonalConversation>>;
     try {
-      const chat = await connector.createPersonalConversation({
+      chat = await connector.createPersonalConversation({
         serviceUrl,
         tenantId,
         aadObjectId,
         ...(user?.teamsUserId === undefined ? {} : { userId: user.teamsUserId }),
         ...(options.botId === undefined ? {} : { botId: options.botId }),
       });
-      await connector.sendToConversation({ serviceUrl: chat.serviceUrl ?? serviceUrl, conversationId: chat.id }, activity);
-      return true;
     } catch (e) {
       if (!noPersonalChat(e)) throw e;
       log.info(`personal message to ${aadObjectId} not delivered (${message(e)}): the app is not installed for them`);
       return false;
     }
+    // A failure to send into a chat that opened is a fault, never "not installed": it must not go public.
+    await connector.sendToConversation({ serviceUrl: chat.serviceUrl ?? serviceUrl, conversationId: chat.id }, activity);
+    return true;
   }
 
   async function reducedAt(channelId: string): Promise<boolean> {
@@ -287,7 +291,10 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
   async function threadOf(incidentId: string): Promise<ChatTarget | undefined> {
     const incident = await state.getIncident(incidentId);
     if (incident === null || incident.source !== 'teams' || incident.channelId === undefined) return undefined;
-    return { channel: incident.channelId, ...(incident.anchorId === undefined ? {} : { threadId: incident.anchorId }) };
+    // The thread root saved at capture, else the anchor (a reported reply's own id is not a root).
+    let threadId = incident.anchorId;
+    for (const e of await state.read(incidentId)) if (e.type === 'captured' && e.payload.threadId !== undefined && e.payload.threadId !== '') threadId = e.payload.threadId;
+    return { channel: incident.channelId, ...(threadId === undefined || threadId === '' ? {} : { threadId }) };
   }
 
   const textCards: ChatTextCards = {
@@ -327,14 +334,8 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
       const map = await options.getMap();
       const activity = mentionActivity(map, text);
       if (await postPersonal(person, activity)) return;
-      // No personal chat: the first Teams channel the map names, with the person mentioned.
-      const channel = map.channels.find((c) => channelPlatform(c) === 'teams' && c.id !== '');
-      if (channel === undefined) {
-        log.info(`personal message to ${person} dropped: no personal chat and no Teams channel in the map`);
-        return;
-      }
-      const aad = teamsPerson(map, person);
-      await post({ channel: channel.id }, mentionActivity(map, `<at>${aad}</at> ${text}`));
+      // No thread here to mention them in, and a channel chosen by map order is unrelated to them: say so and stop.
+      log.info(`personal message to ${teamsPerson(map, person)} dropped: no personal install, and nowhere else to post it`);
     },
 
     mention: teamsMention,

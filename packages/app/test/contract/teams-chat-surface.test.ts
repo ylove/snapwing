@@ -82,7 +82,7 @@ let surface: TeamsChatSurface;
 let router: ChatRouter;
 let graphMembers: Map<string, () => Response>;
 
-function incidentEvents(id: string, opts: { channelId: string; anchorId?: string }): NewEvent<EventType>[] {
+function incidentEvents(id: string, opts: { channelId: string; anchorId?: string; threadId?: string }): NewEvent<EventType>[] {
   return [
     {
       workspaceId: WS,
@@ -98,6 +98,7 @@ function incidentEvents(id: string, opts: { channelId: string; anchorId?: string
         reporter: { id: DEV_AAD, name: 'teamsDev', role: 'engineer' },
         anchorText: 'checkout is broken',
         ...(opts.anchorId === undefined ? {} : { anchorId: opts.anchorId }),
+        ...(opts.threadId === undefined ? {} : { threadId: opts.threadId }),
         channelId: opts.channelId,
         rawPayloadSnapshot: { type: 'message', text: 'checkout is broken' },
       } satisfies EventPayloads['captured'],
@@ -105,7 +106,7 @@ function incidentEvents(id: string, opts: { channelId: string; anchorId?: string
   ];
 }
 
-async function seed(id: string, opts: { channelId: string; anchorId?: string }): Promise<void> {
+async function seed(id: string, opts: { channelId: string; anchorId?: string; threadId?: string }): Promise<void> {
   await state.append(id, incidentEvents(id, opts), 0);
 }
 
@@ -298,16 +299,27 @@ describe('channel and person posts', () => {
     expect(opened.map((c) => c.body.members)).toEqual([[{ id: DEV_AAD, aadObjectId: DEV_AAD }], [{ id: REVIEWER_AAD, aadObjectId: REVIEWER_AAD }]]);
   });
 
-  it('a person without a personal install is mentioned in the first Teams channel instead, with an info log and no error', async () => {
+  it('a person without a personal install is not posted anywhere public: an info log and no channel post', async () => {
     await surface.personPost('@noInstall', 'Your digest');
-    expect(calls.map((c) => c.path)).toEqual(['conversations', `conversations/${CHANNEL}/activities`]);
-    const fallback = calls[1]?.body;
-    expect(fallback.text).toBe('<at>noInstall</at> Your digest');
-    expect(fallback.entities).toEqual([{ type: 'mention', text: '<at>noInstall</at>', mentioned: { id: NOINSTALL_AAD, name: 'noInstall' } }]);
+    expect(calls.map((c) => c.path)).toEqual(['conversations']);
     expect(logs.some((l) => l.includes(NOINSTALL_AAD) && l.includes('not installed'))).toBe(true);
+    expect(logs.some((l) => l.includes(NOINSTALL_AAD) && l.includes('dropped'))).toBe(true);
   });
 
-  it('with no tenant to open a chat in and no Teams channel, a person post is dropped with an info log', async () => {
+  it('a 400 from sending into a chat that opened throws and posts nothing publicly', async () => {
+    server.use(
+      http.post(`${V3}/conversations/${PERSONAL}-5c1d/activities`, async ({ request }) => {
+        calls.push({ method: request.method, path: decodeURIComponent(new URL(request.url).pathname.replace(/^\/amer\/v3\//, '')), auth: null, body: await request.json() });
+        return HttpResponse.json({ error: { code: 'BadArgument', message: 'bad payload' } }, { status: 400 });
+      }),
+    );
+    await expect(surface.personPost('@teamsDev', 'Your digest')).rejects.toMatchObject({ status: 400, operation: 'sendToConversation' });
+    expect(calls.map((c) => c.path)).toEqual(['conversations', `conversations/${PERSONAL}-5c1d/activities`]);
+    expect(calls.some((c) => c.path.includes(CHANNEL))).toBe(false);
+    expect(logs.some((l) => l.includes('not installed'))).toBe(false);
+  });
+
+  it('a person post with no tenant to open a chat in is dropped with an info log', async () => {
     const bare = createTeamsChatSurface({
       connector: createTeamsConnector({ token: async () => 'teams-test-token' }),
       graph: createTeamsGraph({ token: 'graph-test-token' }),
@@ -320,7 +332,6 @@ describe('channel and person posts', () => {
     await bare.personPost('@teamsDev', 'hello');
     expect(calls).toEqual([]);
     expect(logs.some((l) => l.includes('no serviceUrl or tenant'))).toBe(true);
-    expect(logs.some((l) => l.includes('dropped'))).toBe(true);
   });
 });
 
@@ -424,6 +435,33 @@ describe('text-signal cards (A 3)', () => {
     expect(calls[0]?.path).toBe(`conversations/${CHANNEL};messageid=${ROOT}/activities/${ROOT}`);
     expect(cardOf(calls[0] as Call).actions?.map((a) => a.verb)).toEqual(['yes', 'same']);
     expect(posted).toEqual({ platform: 'teams', channel: CHANNEL, messageId: POSTED, role: 'other' });
+  });
+
+  it('puts the scope and resolution cards under the captured thread root when the reported message is a reply', async () => {
+    const REPLY_INCIDENT = '01K6TEAMSCHAT00000000000003';
+    const REPLY = '1790000100777';
+    await seed(REPLY_INCIDENT, { channelId: CHANNEL, anchorId: REPLY, threadId: ROOT });
+    await surface.textCards.postScopeCard(REPLY_INCIDENT, { kind: 'scope-change', text: 'x', messageId: 'm', choices: [{ id: 'yes', label: 'Yes' }] } as never);
+    await surface.textCards.askResolution(REPLY_INCIDENT, { ...prompt, userId: NOINSTALL_AAD } as never);
+    const thread = `conversations/${CHANNEL};messageid=${ROOT}/activities/${ROOT}`;
+    expect(calls.map((c) => c.path)).toEqual([thread, 'conversations', thread]);
+  });
+
+  it('treats an id the map lists as a Teams channel as a channel, whatever its suffix, when no record exists', async () => {
+    const OLD = '19:legacy0123456789@thread.skype';
+    const legacy = { ...map, channels: [...map.channels, { id: OLD, name: 'legacy', platform: 'teams', teamId: TEAM } as never] };
+    const s = createTeamsChatSurface({
+      connector: createTeamsConnector({ token: async () => 'teams-test-token' }),
+      graph: createTeamsGraph({ token: 'graph-test-token' }),
+      state,
+      cache: createKvCache(state as unknown as StateStore),
+      getMap: () => Promise.resolve(legacy),
+      identity: { isLinked: () => Promise.resolve(false) },
+      serviceUrl: SERVICE_URL,
+      log: { info: (l) => logs.push(l), error: (l) => errors.push(l) },
+    });
+    await s.threadPost({ channel: OLD, threadId: ROOT }, 'hi');
+    expect(calls[0]?.path).toBe(`conversations/${OLD};messageid=${ROOT}/activities/${ROOT}`);
   });
 
   it('posts nothing for an incident that has no Teams thread', async () => {
