@@ -17,7 +17,7 @@
 //     `?secret=<secret>` (the inbound route's check for unsigned REST webhooks); the secret is never printed.
 //   `dryRun` plans and writes nothing (no Jira writes, no env file write).
 // Never prints a secret, one line per check. The report also carries structured facts (`teamManaged`,
-// `statusProblems`) so the onboarding step can speak plain language without parsing lines.
+// `statusProblems`, `authRefused`) so the onboarding step can speak plain language without parsing lines.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { loadAppConfig } from '@snapwing/pipeline/config/app-config.ts';
@@ -27,7 +27,18 @@ import {
   resolveJiraStatuses,
   type JiraStatusOverrides,
 } from '@snapwing/pipeline/jira/statuses.ts';
-import { createJiraClientFromSecrets, JiraNotFoundError, type JiraClient, type JiraField } from '../../jira/client/index.ts';
+import { createJiraClientFromSecrets, JiraError, JiraNotFoundError, type JiraClient, type JiraField } from '../../jira/client/index.ts';
+
+/** A screen or webhook call Jira answered with an error status; the message is what the report prints. */
+class RawHttpError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export const REQUIRED_ENV = ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN', 'JIRA_PROJECT_KEY'] as const;
 export const DEFAULT_CONFIG_PATH = 'snapwing.config.xml';
 export const WEBHOOK_EVENTS = ['jira:issue_updated', 'comment_created'] as const;
@@ -92,6 +103,8 @@ export interface BootstrapReport {
   teamManaged?: boolean;
   /** One line per lifecycle target the project's statuses could not serve (from the workflow check). */
   statusProblems?: string[];
+  /** Jira refused a call with 401 or 403: the login was revoked, or the account lacks admin rights. */
+  authRefused?: boolean;
   /** Full output: the first line says what the run needs, the last line says what to do next. */
   lines: string[];
 }
@@ -142,7 +155,7 @@ const asRecord = (v: unknown): Record<string, unknown> =>
 
 const NEXT_WEBHOOK =
   'next: once the tunnel is up, set SNAPWING_PUBLIC_URL in .env.live and run pnpm jira:bootstrap webhook';
-const NEXT_AFTER_WEBHOOK = 'next: the Jira side is ready; continue with the remaining steps of issue #2';
+const NEXT_AFTER_WEBHOOK = 'next: the Jira side is ready; nothing more to run for it';
 const NEXT_FIX = 'next: fix the FAIL lines above, then run the same command again (it is safe to re-run)';
 
 export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapReport> {
@@ -154,6 +167,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
   const warnings: string[] = [];
   const plan: string[] = [];
   let teamManaged = false;
+  let authRefused = false;
   const statusProblems: string[] = [];
 
   const required: string[] = mode === 'webhook' ? [...REQUIRED_ENV, 'SNAPWING_PUBLIC_URL'] : [...REQUIRED_ENV];
@@ -184,13 +198,14 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
       warnings,
       ...(teamManaged ? { teamManaged } : {}),
       ...(statusProblems.length > 0 ? { statusProblems } : {}),
+      ...(authRefused ? { authRefused } : {}),
       lines,
     };
   };
 
   const missing = required.filter((k) => (env[k] ?? '') === '');
   if (missing.length > 0) {
-    checks.push({ name: 'env', ok: false, message: `missing ${missing.join(', ')}; add them to .env.live (issue #2 step 4 lists them)` });
+    checks.push({ name: 'env', ok: false, message: `missing ${missing.join(', ')}; add them to .env.live` });
     return finish();
   }
   const baseUrl = (env['JIRA_BASE_URL'] ?? '').replace(/\/+$/, '');
@@ -222,7 +237,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
           : res.status === 404
             ? ' (check JIRA_BASE_URL and JIRA_PROJECT_KEY)'
             : '';
-      throw new Error(`jira ${method} ${path} returned HTTP ${res.status}${hint}`);
+      throw new RawHttpError(`jira ${method} ${path} returned HTTP ${res.status}${hint}`, res.status);
     }
     const text = await res.text();
     return text === '' ? {} : (JSON.parse(text) as unknown);
@@ -233,6 +248,8 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
       const note = await fn();
       checks.push(note === undefined ? { name, ok: true } : { name, ok: true, message: note });
     } catch (err) {
+      const status = err instanceof JiraError || err instanceof RawHttpError ? err.status : undefined;
+      if (status === 401 || status === 403) authRefused = true;
       checks.push({ name, ok: false, message: scrub(err instanceof Error ? err.message : String(err)) });
     }
   };
