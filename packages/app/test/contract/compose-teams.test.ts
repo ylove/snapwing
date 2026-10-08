@@ -57,6 +57,9 @@ const CHATTER = '1790845080000';
 const ANCHOR = '1790845200000';
 const FOLLOW_UP = '1790845320000';
 const ANCHOR_AT = '2026-10-08T09:02:00.000Z';
+/** A later reply in the anchor's thread that names a second issue. */
+const SECOND = '1790845500000';
+const SECOND_AT = '2026-10-08T09:05:00.000Z';
 
 const TEAMS_SECRETS = { TEAMS_APP_ID: APP_ID, TEAMS_APP_PASSWORD: APP_PASSWORD, TEAMS_TENANT_ID: TENANT };
 
@@ -250,6 +253,13 @@ function teamsWorld(options: { subscriptionStatus?: number } = {}): TeamsWorld {
       const found = THREAD.find((m) => m['id'] === id(params, 'message'));
       return found === undefined ? HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 }) : HttpResponse.json(found);
     }),
+    http.get(`${GRAPH}/teams/:team/channels/:channel/messages/:message/replies/:reply`, ({ request, params }) => {
+      if (!authorized(request)) return denied();
+      world.graph.push(`reply ${id(params, 'reply')}`);
+      return id(params, 'reply') === SECOND
+        ? HttpResponse.json({ ...graphMessage(SECOND, SECOND_AT, 'also the footer is broken', RAE), replyToId: id(params, 'message') })
+        : HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 });
+    }),
     http.get(`${GRAPH}/teams/:team/channels/:channel/messages/:message/replies`, ({ request }) => (authorized(request) ? HttpResponse.json({ value: [] }) : denied())),
     http.get(`${GRAPH}/users/:user`, () => HttpResponse.json({ error: { code: 'Authorization_RequestDenied', message: 'Insufficient privileges' } }, { status: 403 })),
     http.get(`${GRAPH}/teams/:team/channels/:channel/members`, ({ request, params }) => {
@@ -394,8 +404,8 @@ describe('compose with Teams under snapwing serve', () => {
   }, 60_000);
 });
 
-describe('one Teams capture through the composed app', () => {
-  it('runs the action command to a filed issue: the engine files it, a tap reaches the interactivity, and the status message drains to Teams', async () => {
+/** The composed app with Slack and Teams on the capture's recording and the Jira and GitHub worlds. */
+async function bootCapture(overrides: ComposeOverrides = {}) {
     const recording = parseScenario('01-level-0-ticket-only.json', JSON.parse(await readFile(join(DEMO_LEVELS, '01-level-0-ticket-only.json'), 'utf8')));
     const slack = slackWorld(server, SLACK_CHANNEL, []);
     const teams = teamsWorld();
@@ -423,9 +433,15 @@ describe('one Teams capture through the composed app', () => {
       secrets,
       dir,
       env: await env(),
-      overrides: { model: withValidation(model), resolveHarness: () => idleHarness, slackBotUserId: BOT_USER, slackWorkspaceDomain: WORKSPACE_DOMAIN, projectorPollMs: 25 },
+      overrides: { ...overrides, model: withValidation(model), resolveHarness: () => idleHarness, slackBotUserId: BOT_USER, slackWorkspaceDomain: WORKSPACE_DOMAIN, projectorPollMs: 25 },
     });
     const b = booted;
+    return { b, slack, teams, jiraWorld };
+}
+
+describe('one Teams capture through the composed app', () => {
+  it('runs the action command to a filed issue: the engine files it, a tap reaches the interactivity, and the status message drains to Teams', async () => {
+    const { b, slack, teams, jiraWorld } = await bootCapture();
     const { state, logged, errors } = b;
     expect(paths(b.composed)).toEqual(expect.arrayContaining(TEAMS_ROUTES));
     expect(b.composed.deps?.chat.platforms).toEqual(['slack', 'teams']);
@@ -486,6 +502,62 @@ describe('one Teams capture through the composed app', () => {
     expect(unhandled).toEqual([]);
     expect(errors).toEqual([]);
     expect(logged).toEqual([]);
+  }, 60_000);
+
+  it('files the second issue of a scope change: Yes on the card makes a Teams incident anchored on the reply, linked from the first', async () => {
+    let inject: TeamsInject | undefined;
+    const { b, teams } = await bootCapture({ teamsInject: (fn) => (inject = fn) });
+    const { state, logged } = b;
+    if (inject === undefined) throw new Error('compose did not hand over the Teams seam');
+    const waitFor = <T,>(read: () => T | undefined, what: string): Promise<T> =>
+      vi.waitFor(
+        () => {
+          const found = read();
+          if (found === undefined) throw new Error(`no ${what} yet (${logged.join('; ')})`);
+          return found;
+        },
+        { timeout: 20_000, interval: 25 },
+      );
+    const cardWith = (verb: string) => teams.connector.find((c) => c.kind === 'reply' && (cardOf(c.body)?.actions ?? []).some((a) => a.verb === verb));
+
+    // Filed as before: the action command, then Looks right.
+    expect((await b.api.fetch(activityRequest('http://snapwing.test', actionCommand()))).status).toBe(200);
+    const preview = await waitFor(() => cardWith('looks-right'), 'scope preview');
+    const incidentId = cardOf(preview.body)?.actions?.find((a) => a.verb === 'looks-right')?.data?.['incidentId'] ?? '';
+    expect((await b.api.fetch(activityRequest('http://snapwing.test', cardTap(preview.activityId, 'looks-right', { incidentId })))).status).toBe(200);
+    await vi.waitFor(async () => expect((await state.getIncident(incidentId))?.status).toBe('filed'), { timeout: 30_000, interval: 50 });
+
+    // A reply in the thread that names another issue: the scope-change card, then Yes.
+    const reply = { ...actionCommand(), type: 'message', id: SECOND, text: 'also the footer is broken', timestamp: SECOND_AT, value: undefined, name: undefined };
+    expect(await inject({ activity: reply })).toEqual({ status: 200 });
+    const scopeCard = await waitFor(() => cardWith('yes'), 'scope-change card');
+    const data = cardOf(scopeCard.body)?.actions?.find((a) => a.verb === 'yes')?.data ?? {};
+    const yes = await b.api.fetch(activityRequest('http://snapwing.test', cardTap(scopeCard.activityId, 'yes', data)));
+    expect(yes.status).toBe(200);
+
+    // The second incident: Teams, anchored on the reply, reported by its author, named by the scope-split event.
+    const other = await vi.waitFor(
+      async () => {
+        const found = (await state.findIncidents({ limit: 5 })).find((i) => i.id !== incidentId);
+        if (found === undefined) throw new Error(`no linked incident yet (${logged.join('; ')})`);
+        return found;
+      },
+      { timeout: 20_000, interval: 25 },
+    );
+    expect(other).toMatchObject({ source: 'teams', anchorId: SECOND, channelId: CHANNEL, reporterId: RAE });
+    const split = (await state.read(incidentId)).filter((e) => e.type === 'text-signal' && (e.payload as { kind?: string }).kind === 'scope-change');
+    expect(split.map((e) => [(e.payload as { phase?: string }).phase, (e.payload as { linkedIncidentId?: string }).linkedIncidentId])).toEqual([
+      ['proposed', undefined],
+      ['split', other.id],
+    ]);
+    // The same message through Fix it dedupes onto it: no third incident.
+    const again = { ...actionCommand() };
+    const value = again['value'] as Record<string, unknown>;
+    const message = value['messagePayload'] as Record<string, unknown>;
+    again['value'] = { ...value, messagePayload: { ...message, id: SECOND, replyToId: ANCHOR } };
+    expect((await b.api.fetch(activityRequest('http://snapwing.test', again))).status).toBe(200);
+    await vi.waitFor(async () => expect((await state.findIncidents({ limit: 5 })).map((i) => i.id).sort()).toEqual([incidentId, other.id].sort()), { timeout: 5_000, interval: 25 });
+    expect(unhandled).toEqual([]);
   }, 60_000);
 });
 

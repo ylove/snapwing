@@ -136,6 +136,7 @@ export async function emptySandboxes(server: SetupServer, dir: string): Promise<
       { id: SLACK_CHANNEL.id, name: SLACK_CHANNEL.name, is_private: false, is_member: false },
       { id: 'C0GENERAL', name: 'general', is_private: false, is_member: false },
     ],
+    users: { [OWNER.email]: { id: SLACK_INSTALLER, name: OWNER.login } },
   });
   const slackMessages: Record<string, unknown>[] = [];
   const slackSamples: Record<string, unknown>[] = [];

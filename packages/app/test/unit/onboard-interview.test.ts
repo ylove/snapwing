@@ -118,7 +118,7 @@ describe('the step registry', () => {
     expect(() => validateRegistry([step('A', [], done)])).toThrow(/lowercase/);
   });
 
-  it('meets a list need with one done step, or with every step skipped or not built', () => {
+  it('meets a list need with one done step, or with every step not built; all left out is not met', () => {
     const state = (statuses: Record<string, 'done' | 'skipped' | 'blocked' | 'not-built'>) => ({
       ...emptyState(new Date(0)),
       steps: Object.fromEntries(Object.entries(statuses).map(([id, status]) => [id, { status, attempts: 1 }])),
@@ -126,6 +126,8 @@ describe('the step registry', () => {
     expect(needMet(['slack', 'teams'], state({ slack: 'blocked', teams: 'done' }))).toBe(true);
     expect(needMet(['slack', 'teams'], state({ slack: 'blocked', teams: 'skipped' }))).toBe(false);
     expect(needMet(['slack', 'teams'], state({ slack: 'not-built', teams: 'not-built' }))).toBe(true);
+    expect(needMet(['slack', 'teams'], state({ slack: 'skipped', teams: 'skipped' }))).toBe(false);
+    expect(needMet(['slack', 'teams'], state({ slack: 'skipped', teams: 'done' }))).toBe(true);
     expect(needMet('jira', state({}))).toBe(false);
   });
 });

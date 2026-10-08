@@ -113,6 +113,15 @@ describe('step 0: runtime, model keys, public URL', () => {
     expect(loadAppConfig(await readConfig()).models.defaultProvider).toBe('openai');
   });
 
+  it('asks about each provider key with the right article', async () => {
+    const { lines } = await interview(['local', 'no', 'no', 'no']);
+    const text = lines.join('\n');
+    expect(text).toContain('Do you have an Anthropic (Claude) API key?');
+    expect(text).toContain('Do you have an OpenAI API key?');
+    expect(text).toContain('Do you have a Google (Gemini) API key?');
+    expect(text).not.toMatch(/\ba (Anthropic|OpenAI)/);
+  });
+
   it('asks again after a bad key, saying so, and never keeps the bad one', async () => {
     const { result, lines } = await interview(['local', 'yes', 'sk-ant-wrong-0000', KEYS.anthropic, 'no', 'no', 'no']);
     expect(result.outcome).toBe('complete');

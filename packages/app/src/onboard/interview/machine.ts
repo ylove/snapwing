@@ -9,6 +9,13 @@
 // run, and in this run every step that does not need it carries on (ADR 0004). `only` reruns one
 // step whatever its status.
 //
+// A chat platform that finishes after the steps that read it (Slack approved by its admin days later)
+// makes those steps stale: a finished step whose record is older than the platform's `done`. The
+// run walks them again, in order, through their own keep-or-change paths, so the installer checks
+// them against what the platform now shows instead of answering everything again. The readers are
+// the steps that take the platform in a list need (from the registry) plus `READS_CHAT`, the steps
+// that read the platforms' saved data without naming them as a need.
+//
 // Secrets: every `SecretValue` the run sees (asked, read from `.env`, or written to it) is redacted
 // from each record before it is saved, so the state never holds a secret even when a step slips
 // one into its data or an error message.
@@ -40,11 +47,47 @@ const statusOf = (state: OnboardingState, id: string): StepStatus => state.steps
 const passes = (s: StepStatus): boolean => s === 'done' || s === 'skipped' || s === 'not-built';
 const isFinished = (s: StepStatus): boolean => s === 'done' || s === 'skipped';
 
+/** Steps that read a chat platform's saved data though none of their needs names it (see the file header). */
+export const READS_CHAT: readonly string[] = Object.freeze(['surfaces', 'words', 'people', 'finish']);
+
+/** Step ids that are a chat platform: those named in a list need. */
+function platformIds(steps: readonly OnboardStep[]): readonly string[] {
+  return [...new Set(steps.flatMap((s) => s.needs.filter((n): n is readonly string[] => typeof n !== 'string').flat()))];
+}
+
+/**
+ * The finished steps after `platform` that read it and were finished before it was: stale, so a run
+ * walks them again. The test drive reads a platform too, but it never counts as finished before the
+ * steps ahead of it, so it is left to its own path.
+ */
+export function staleReaders(steps: readonly OnboardStep[], state: OnboardingState, platform: string): readonly OnboardStep[] {
+  const at = state.steps[platform];
+  const platformDone = at?.status === 'done' ? at.finishedAt : undefined;
+  if (platformDone === undefined) return [];
+  const from = steps.findIndex((s) => s.id === platform);
+  return steps.filter((s, i) => {
+    if (i <= from || !isFinished(statusOf(state, s.id))) return false;
+    const reads = READS_CHAT.includes(s.id) || s.needs.some((n) => typeof n !== 'string' && n.includes(platform));
+    const finished = state.steps[s.id]?.finishedAt;
+    return reads && s.id !== 'test-drive' && finished !== undefined && finished < platformDone;
+  });
+}
+
+/** Whether a list need has been left out by the installer: no step done, and at least one skipped. */
+function leftOut(need: StepNeed, state: OnboardingState): need is readonly string[] {
+  if (typeof need === 'string') return false;
+  const statuses = need.map((id) => statusOf(state, id));
+  return !statuses.includes('done') && statuses.every((s) => s === 'skipped' || s === 'not-built') && statuses.includes('skipped');
+}
+
 /** Whether one need is met in `state` (see `StepNeed`). */
 export function needMet(need: StepNeed, state: OnboardingState): boolean {
   if (typeof need === 'string') return passes(statusOf(state, need));
   const statuses = need.map((id) => statusOf(state, id));
-  return statuses.includes('done') || statuses.every((s) => s === 'skipped' || s === 'not-built');
+  if (statuses.includes('done')) return true;
+  // Every one left out on purpose is not a chat platform: that waits (see `leftOut`). Only steps
+  // not built yet, which cannot be asked, stand in for one.
+  return statuses.every((s) => s === 'not-built');
 }
 
 export interface RunInterviewOptions {
@@ -264,11 +307,31 @@ export async function runInterview(options: RunInterviewOptions): Promise<Interv
     io.say(`Picking up where you left off: ${resume.title}.`);
   }
 
+  const said = new Set<string>();
+  const platforms = platformIds(steps);
+  const lateTold = new Set<string>();
   for (const step of steps) {
-    if (isFinished(statusOf(state, step.id))) continue;
+    if (isFinished(statusOf(state, step.id))) {
+      const late = platforms.filter((p) => p !== step.id && staleReaders(steps, state, p).some((s) => s.id === step.id));
+      if (late.length === 0) continue;
+      // A platform finished after this step did: go through it again, against the platform.
+      for (const p of late.filter((x) => !lateTold.has(x))) {
+        lateTold.add(p);
+        const names = staleReaders(steps, state, p).map((s) => s.title);
+        const title = steps.find((s) => s.id === p)?.title ?? p;
+        io.say(`${title} is done, after the steps that use it. I will check these again against it: ${names.join(', ')}. Keep what is right.`);
+      }
+    }
     const unmet = step.needs.filter((n) => !needMet(n, state));
     if (unmet.length > 0) {
       waiting.push({ id: step.id, on: unmet.flatMap((n) => (typeof n === 'string' ? [n] : [...n])) });
+      for (const need of unmet) {
+        const key = typeof need === 'string' ? '' : need.join(' ');
+        if (!leftOut(need, state) || said.has(key)) continue;
+        said.add(key);
+        const options = (need as readonly string[]).map((id) => `\`snapwing onboard --step ${id}\``);
+        io.say(`Snapwing needs a chat platform, and every one was left out. Run ${options.join(' or ')} to set one up; the steps that need it wait until then.`);
+      }
       continue;
     }
     const { stop } = await runStep(step);

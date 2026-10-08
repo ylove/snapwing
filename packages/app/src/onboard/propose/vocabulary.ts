@@ -246,7 +246,7 @@ async function readSlack(
 }
 
 async function readTeams(out: Collected, graph: Pick<TeamsGraph, 'channelMessages'>, channel: ScanChannel, oldest: Date): Promise<void> {
-  const label = `#${shownName(channel.name)}`;
+  const label = shownName(channel.name);
   if (channel.teamId === undefined) return;
   let raw: GraphMessage[];
   try {
