@@ -455,8 +455,10 @@ describe('the capture API through capture-client', () => {
     const reporter = await w.clientFor('supportLead');
     const duplicate = await reporter.sendText(TRIAGE.summary, { surface: 'web' });
     expect(duplicate).toEqual({ kind: 'not-filed', captureId: duplicate.captureId, reason: 'Added this report to WEB-1.' });
-    // Both rows carry WEB-1 (the link and the watcher land within a millisecond of each other, so which is newest is not fixed).
-    expect((await w.booted.state.findIncidents({ jiraKey: 'WEB-1' })).map((i) => i.id).sort()).toEqual([first.captureId, duplicate.captureId].sort());
+    // The watcher write can land in the same millisecond as the link, so make the duplicate the newest WEB-1 row explicitly (test only): the lookup must then pick the owner by status, not by recency.
+    const { ctx } = w.booted.state;
+    await ctx.db.updateTable('incidents').set({ updated_at: ctx.codec.timestamp(new Date(Date.now() + 60_000)) }).where('id', '=', duplicate.captureId).execute();
+    expect((await w.booted.state.findIncidents({ jiraKey: 'WEB-1', limit: 1 }))[0]?.id).toBe(duplicate.captureId);
 
     expect(await engineer.status('WEB-1')).toMatchObject({ issueKey: 'WEB-1', status: 'open' });
     expect(await engineer.stop('WEB-1')).toEqual({ issueKey: 'WEB-1', stopped: true });
