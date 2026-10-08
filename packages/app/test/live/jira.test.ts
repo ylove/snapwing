@@ -284,7 +284,9 @@ describe.skipIf(!hasSecrets)('Jira live tier', () => {
       found = page.issues.map((x) => x.key);
       if (found.length === 0) await sleep(1500);
     }
-    expect(found).toEqual([key]);
+    // The run label is on every issue this file creates (the assignee test makes a second one), so the
+    // search finds this issue among them rather than alone.
+    expect(found).toContain(key);
   });
 
   it('answers a missing issue and a bad create with typed errors', async () => {
