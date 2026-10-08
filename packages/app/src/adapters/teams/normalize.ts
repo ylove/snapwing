@@ -5,7 +5,7 @@
 //     `composeExtension/fetchTask` or `composeExtension/submitAction` invoke carrying `messagePayload`;
 //   - a message in the bot's personal chat (text, file attachments, inline images);
 //   - a trigger reaction on a person's channel message, found by the Graph diff (the signals module,
-//     #392, hands it over as a `TeamsReactionTrigger`; Bot Framework only reports reactions on the
+//     #7, hands it over as a `TeamsReactionTrigger`; Bot Framework only reports reactions on the
 //     bot's own messages).
 //
 // People are keyed by their AAD object id (`from.aadObjectId`, Graph's `user.id`), never the `29:` id,
@@ -30,7 +30,7 @@ import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { splitConversationId, type TeamsConversationType } from './conversations.ts';
 import type { GraphMessage } from './graph.ts';
 
-/** The action command's id in the Teams app manifest (#389 declares it). */
+/** The action command's id in the Teams app manifest (#5 declares it). */
 export const TEAMS_ACTION_COMMAND_ID = 'fixItFromHere';
 
 export const TEAMS_FETCH_TASK = 'composeExtension/fetchTask';
@@ -49,7 +49,7 @@ export interface TeamsUserInfo {
 }
 
 /**
- * A trigger reaction found by the Graph diff (#392). `reaction` is already the playbook's `teams` name
+ * A trigger reaction found by the Graph diff (#7). `reaction` is already the playbook's `teams` name
  * (`bug`), mapped from Graph's `reactionType` by the signals module's table.
  */
 export interface TeamsReactionTrigger {
@@ -103,7 +103,7 @@ export type TeamsNormalizeResult =
   | { kind: 'incident'; payload: CanonicalIncidentPayload }
   | { kind: 'ignored'; reason: TeamsIgnoreReason };
 
-/** An image the context reader downloads (#378): an inline image (hosted content or a chat attachment) or a file. */
+/** An image the context reader downloads: an inline image (hosted content or a chat attachment) or a file. */
 export interface TeamsSnapshotFile {
   kind: 'inline' | 'file';
   url: string;
@@ -392,7 +392,7 @@ async function actionCommand(activity: Rec, invoke: string, ctx: TeamsNormalizeC
   const reporter = await actor(ctx, invokerAad, str(from['name']));
   const levelCap = await triggerCapOf(ctx, [invokerAad], conv.tenantId);
 
-  // The anchor's author, when a person other than the invoker wrote it (#363); a bot's post has none.
+  // The anchor's author, when a person other than the invoker wrote it; a bot's post has none.
   const author = rec(message['from']);
   const authorUser = rec(author['user']);
   const authorAad = str(authorUser['id']);

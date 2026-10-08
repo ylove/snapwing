@@ -1,4 +1,4 @@
-// The user-side check before filing (#305, A 5.2, main 7.2). A screenshot reading with a user-side
+// The user-side check before filing (A 5.2, main 7.2). A screenshot reading with a user-side
 // indicator at or above the playbook's confidence floor turns the ask-back round into one favor with
 // That fixed it / Still broken / I meant <env>. The engine runs on the in-process workflow over a real
 // store (SNAPWING_DB picks the dialect) with a scripted model and a fake chat adapter, as in

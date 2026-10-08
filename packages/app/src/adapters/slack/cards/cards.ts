@@ -120,7 +120,7 @@ export function buildClaimed(incidentId: string, card: ClaimedCard): SlackMessag
 }
 
 /**
- * main 15.3 (#377): a capture's lookup, "New. Looks like Website (from src/cart/total.ts). File it?" The
+ * main 15.3: a capture's lookup, "New. Looks like Website (from src/cart/total.ts). File it?" The
  * capture adapter holds it for the CLI or Raycast; it is never posted in Slack and renders here so every
  * card kind has a builder.
  */

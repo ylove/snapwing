@@ -1,5 +1,5 @@
 // The `local` SecretsPort (main 14.3): secrets from a `.env` file (for example `.env.live`, which is
-// gitignored; build/CONTEXT.md 6b). Values are never logged and never appear in an error message.
+// gitignored). Values are never logged and never appear in an error message.
 //
 // Lookup: the file first, then `fallbackEnv` (default `process.env`), so CI, which exports
 // repository secrets as environment variables, needs no file. An empty value counts as unset. A

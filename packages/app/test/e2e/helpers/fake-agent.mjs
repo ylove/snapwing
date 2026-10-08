@@ -8,7 +8,7 @@
 //   node fake-agent.mjs <world dir> <review wait seconds>
 //
 // SNAPWING_ROLE=fixer: the fix is the one the fixture's README names (`applyDiscount` divides the
-// percent by 1000 instead of 100). Two world files change what it does, for the Companion A rows
+// percent by 1000 instead of 100). Two world files change what it does, for the A 8 rows
 // (companion-a.test.ts) that need a merge or a CI wait without touching the fixture's `main`:
 //   `<world dir>/pr-base`          the pull request's base branch (a `test/` branch the test made from
 //                                  `main`), instead of the request's `handoff/@base` or `main`;

@@ -163,7 +163,7 @@ function scene(opts: { role?: 'reporter' | 'engineer'; text?: string; readings?:
 
 const unresolved: Resolution = { resolvedBy: 'unresolved', confidence: 0 };
 
-describe('ask-back audience when someone else flagged the post (#365, main 7.1 layer 2)', () => {
+describe('ask-back audience when someone else flagged the post (main 7.1 layer 2)', () => {
   it("the reporter-role the model sees is the anchor author's", async () => {
     const { payload } = scene({ role: 'engineer' });
     const flagged: CanonicalIncidentPayload = { ...payload, anchorAuthor: { id: 'U0SALES', name: 'Sam', role: 'reporter' } };

@@ -1,4 +1,4 @@
-// The Teams chat surface (#395; main 11.2, main 15.2, A 1.4, A 2.2, A 3, A 4.4, A 4.6, A 5.3, A 6.2): every
+// The Teams chat surface (#10; main 11.2, main 15.2, A 1.4, A 2.2, A 3, A 4.4, A 4.6, A 5.3, A 6.2): every
 // outbound effect compose performs, over the Bot Connector and Graph on MSW and a real store on the dialect
 // `SNAPWING_DB` selects. Per effect: a thread post (recorded role `other` by the router), a channel post by
 // map name or id, a person post in the personal chat with the thread fallback, the PR card (role `pr`) and

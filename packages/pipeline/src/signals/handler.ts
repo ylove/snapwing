@@ -46,7 +46,7 @@
 // of the surface weight from the playbook; window from the incident's `openedAt`). A signal after the
 // window is recorded but not counted. A removed reaction (`reaction-removed`) is recorded with the
 // same count and no attribution, so the projections take the reactor back out; its other reversals
-// are A 1.6 (`planRemoval`, signals/removal.ts, #289, wired in #348): the plan is made on the log as
+// are A 1.6 (`planRemoval`, signals/removal.ts): the plan is made on the log as
 // read before the removal comment and the claims (`getClaims`), the comment records its `effect`, and
 // its events (a `released`, a `held` gate) go after the comment in the same append. A released claim
 // then calls `handleClaim` like any release. A trigger removed within 60 s is the adapter's Stop

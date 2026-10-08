@@ -1,4 +1,4 @@
-// Teams personal-chat queue (#384; main 15.2, 20.2): the `queue` command and the first install send the
+// Teams personal-chat queue (main 15.2, 20.2): the `queue` command and the first install send the
 // same queue Slack Home renders, as an Adaptive Card, over a real store on the dialect `SNAPWING_DB`
 // selects. The Bot Connector is MSW; GitHub is recorded. The tap verbs are the interactivity verbs.
 

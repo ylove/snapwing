@@ -100,12 +100,12 @@ export interface SlackWorld {
 
 export interface SlackWorldOptions {
   /**
-   * The channel's members for `conversations.members` (A 4.4, #337). Absent: Slack answers
+   * The channel's members for `conversations.members` (A 4.4). Absent: Slack answers
    * `missing_scope`, as it does for an app installed before `channels:read`, and nothing is written.
    */
   members?: readonly string[];
   /**
-   * Milliseconds to hold the reply to a `chat.postMessage` whose body this picks (#354). The call is
+   * Milliseconds to hold the reply to a `chat.postMessage` whose body this picks. The call is
    * already in `calls`, so a test can tap the card while the app still waits for Slack's answer, the
    * gap between a card going out and its record being written.
    */

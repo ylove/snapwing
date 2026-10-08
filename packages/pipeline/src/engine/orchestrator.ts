@@ -54,7 +54,7 @@
 //                   the informational fix preview at 2 and 3, and `deps.startFixer`. `fixer.run`
 //                   refuses to start while the hold lasts. A reporter's claim holds nothing: it is
 //                   [add-comment "@pat is looking into it."], after filed.
-//   capture (raycast, cli; main 15.3, 15.4, #377): no scope card. After dedupe-checked, exactly one
+//   capture (raycast, cli; main 15.3, 15.4): no scope card. After dedupe-checked, exactly one
 //                 lookup card instead of the ask-back: the dedupe card (Open it is `link`, Create
 //                   anyway), file-confirm when the surface resolved (File it, Not this surface,
 //                   Cancel), or the surface question (clarified asks surface, every map label as an
@@ -259,7 +259,7 @@ export class IncidentOrchestrator {
       if (cursor.captured === undefined || pendingCard(nextPhase(cursor, this.phaseOptions(cursor))) !== tap.card) {
         return { accepted: false, reason: 'not-pending' };
       }
-      // A capture's surface question takes one of its options or Cancel, never free text (#377).
+      // A capture's surface question takes one of its options or Cancel, never free text.
       if (tap.card === 'clarify' && isCaptureSource(cursor.captured.payload.source)) {
         const options = cursor.clarified[cursor.clarified.length - 1]?.payload.options ?? [];
         if (tap.choice !== CAPTURE_CANCEL_CHOICE && !options.includes(tap.choice)) return { accepted: false, reason: 'invalid-choice' };

@@ -16,7 +16,7 @@
 //
 // The model is a fixed fake (live model calls belong to the e2e tier); Slack, Jira, GitHub and the database are real.
 //
-// Needs the Slack, Jira and GitHub App secrets of build/CONTEXT.md 6b plus SLACK_TEST_CHANNEL, SLACK_TEST_REPORTER_ID
+// Needs the Slack, Jira and GitHub App secrets of main 14.5 plus SLACK_TEST_CHANNEL, SLACK_TEST_REPORTER_ID
 // and SLACK_TEST_ENGINEER_ID, from the environment or `.env.live` (SNAPWING_ENV_LIVE). Without them the whole file
 // skips. SNAPWING_DB / DATABASE_URL pick the dialect as everywhere else (default SQLite, a temp file).
 //

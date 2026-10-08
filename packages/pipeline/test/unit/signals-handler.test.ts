@@ -316,7 +316,7 @@ describe(`handleSignal: claim and release (${TEST_DIALECT})`, () => {
     expect(await pending('jira')).toEqual([]);
   });
 
-  it("a claim carries the claimer's map email, and after filing it writes the assignee row keyed field:{incident}:assignee (#323)", async () => {
+  it("a claim carries the claimer's map email, and after filing it writes the assignee row keyed field:{incident}:assignee", async () => {
     await filed();
     const w = world();
     await handleSignal(w.deps, signal('claim', LEE, FIX_PREVIEW));
@@ -657,7 +657,7 @@ describe(`handleSignal: counting (${TEST_DIALECT})`, () => {
   });
 });
 
-// Removal (A 1.6, #289, wired in #348) ------------------------------------------------------------
+// Removal (A 1.6) ------------------------------------------------------------
 
 describe(`handleSignal: removal plans (${TEST_DIALECT})`, () => {
   it('a removed claim releases the claim in the same append and calls handleClaim', async () => {

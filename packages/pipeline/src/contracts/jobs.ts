@@ -1,4 +1,4 @@
-// Job contracts for the WorkflowPort (Companion B 1) and the durable timers (Companion B 5).
+// Job contracts for the WorkflowPort (B 1) and the durable timers (B 5).
 // Interface and helpers only; implementations live in pipeline/src/workflow/{inprocess,pgboss}.
 
 import type { ArtifactRef } from './events.ts';

@@ -1,4 +1,4 @@
-// The engineer's queue in the Teams personal chat (main 15.2, 20.2, #384). It renders the same model
+// The engineer's queue in the Teams personal chat (main 15.2, 20.2). It renders the same model
 // Slack Home does (`status/queue.ts`, `queueFor`) as one Adaptive Card, sent when the user types `queue`
 // to the bot and when the app is first installed for them. The personal static tab (the console's queue
 // page behind Teams SSO) waits for phase 6; the card is phase 5 parity.

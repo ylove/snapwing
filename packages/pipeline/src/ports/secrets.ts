@@ -1,6 +1,6 @@
 // src/ports/secrets.ts (main 14.3): the secrets runtime port. Local: a `.env` file
 // (providers/local/secrets.ts); aws: Secrets Manager; gcp: Secret Manager; docker: `.env` or Vault.
-// Secret names are the ones in build/CONTEXT.md 6b. A value is never logged or put in an error.
+// Secret names are the ones in main 14.5. A value is never logged or put in an error.
 
 export interface SecretsPort {
   /** The secret's value. Rejects with `SecretNotFoundError` when the provider has no such secret. */

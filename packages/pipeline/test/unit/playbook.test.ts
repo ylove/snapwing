@@ -32,7 +32,7 @@ async function errorsOf(xml: string): Promise<PlaybookError[]> {
 }
 
 describe('defaults', () => {
-  it('an empty <playbook/> is valid and loads to every Companion A default', async () => {
+  it('an empty <playbook/> is valid and loads to every default', async () => {
     const playbook = await load(`<playbook xmlns="${NS}"/>`);
     expect(playbook).toEqual(defaultPlaybook());
     expect(playbook.weights).toEqual({ reporter: 1, engineer: 1.5, owner: 2, window: 'PT2H' });

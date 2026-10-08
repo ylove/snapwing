@@ -1,4 +1,4 @@
-// Who wrote a Slack message event: Snapwing itself, another bot, or a person (#360).
+// Who wrote a Slack message event: Snapwing itself, another bot, or a person.
 //
 // A person who posts through an app with their own user token (a Shortcuts-style integration, the e2e
 // "Snapwing Test Driver") gets `bot_id` and `app_id` on the message, and `user` is the person. A bot

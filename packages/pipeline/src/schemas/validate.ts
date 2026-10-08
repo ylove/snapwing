@@ -1,5 +1,5 @@
 // XML validation: XSD for structure, Schematron for cross-references (main 4.2, main 9.2).
-// Toolchain and its limits: build/decisions/0010-xml-validation-toolchain.md.
+// Toolchain and its limits: ADR 0010.
 //
 // Every function here resolves to a result and never throws or rejects: an invalid document,
 // a malformed document, an unreadable schema, and a schema that fails to compile are all

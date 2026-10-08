@@ -1,4 +1,4 @@
-// #393: a Teams incident gets `target='teams'` rows, as a Slack one gets `target='slack'` (main 12, 15.2,
+// #8: a Teams incident gets `target='teams'` rows, as a Slack one gets `target='slack'` (main 12, 15.2,
 // A 4.4). Both platforms run through a real store on the dialect `SNAPWING_DB` selects, so the rows are
 // the ones the projections write, and each platform's rows stay off the other's queue. A DM is the
 // exception: it goes to the platform the watcher subscribed from, whatever the incident's.

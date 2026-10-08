@@ -680,7 +680,7 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
   if (takeTimeout(env)) {
     // Appended even when no wait is recorded: this event is what closes the round.
     const closed = newEvent(env, 'waiting-changed', {});
-    // A capture's surface question: silence files nothing (#377).
+    // A capture's surface question: silence files nothing.
     await commit(env, capture ? [closed, cancelled(env, 'clarify')] : [closed]);
     return 'continue';
   }
@@ -701,7 +701,7 @@ export async function clarifyCardStep(env: StepEnv, phase: Extract<Phase, { kind
   return awaitCard(env, card, waitFor);
 }
 
-// Capture sources (main 15.3, 15.4; #377) ------------------------------------------------------------
+// Capture sources (main 15.3, 15.4) ------------------------------------------------------------
 
 /** `capture-cancelled`: Cancel by `tap`'s actor, or the card's timeout when there is no tap. */
 function cancelled(env: StepEnv, card: CaptureCancelledPayload['card'], tap?: Tap): NewEvent {

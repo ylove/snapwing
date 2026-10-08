@@ -102,11 +102,11 @@ export interface Resolution {
   ownerId?: string;
   repo?: string;
   jiraProject?: string;
-  /** `surface-hint`: the capture named its surface (`--surface web`, #377), so nothing was inferred. */
+  /** `surface-hint`: the capture named its surface (`--surface web`), so nothing was inferred. */
   resolvedBy: 'mention' | 'channel-explicit' | 'file-path' | 'vocabulary' | 'image' | 'channel-inferred' | 'alert' | 'llm' | 'clarify' | 'surface-hint' | 'unresolved';
   confidence: number;              // 0..1
   /**
-   * Spec silent (#375). What the step matched, when it can say: for `file-path`, the repo-relative
+   * Spec silent. What the step matched, when it can say: for `file-path`, the repo-relative
    * path found in the surface's repo tree, so a lookup response can say "from src/cart/... in the trace"
    * (main 15.3). Absent for every other step.
    */
@@ -129,7 +129,7 @@ export interface CanonicalIncidentPayload {
   source: ChannelSource;
   reporter: IncidentActor;
   /**
-   * Spec silent (#363). Who wrote the anchor message, when that is a person other than `reporter`:
+   * Spec silent. Who wrote the anchor message, when that is a person other than `reporter`:
    * an engineer's trigger reaction or message action on a reporter's post. The incident's reporter
    * (`IncidentView.reporterId`, the one asked to check staging, A 4.4) is this person when present.
    */
@@ -143,7 +143,7 @@ export interface CanonicalIncidentPayload {
     deepLink?: string;
     /**
      * A capture source's named surface (the CLI's `--surface web`, main 15.4), as a map surface id or
-     * label. A known one skips inference and the surface question; dedupe still runs (#377). An
+     * label. A known one skips inference and the surface question; dedupe still runs. An
      * unknown one is ignored.
      */
     surfaceHint?: string;

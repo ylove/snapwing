@@ -72,7 +72,7 @@ describe('slack cards', () => {
     expect(text).toContain('<@U0WEBDEV1>');
   });
 
-  it('file-confirm (#377, never posted in Slack): File it, Not this surface, Cancel, with the evidence', () => {
+  it('file-confirm (never posted in Slack): File it, Not this surface, Cancel, with the evidence', () => {
     const msg = buildCard(ID, { kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website', evidence: 'src/cart/total.ts' });
     expect(buttons(msg).map((b) => [b.action_id, b.value])).toEqual([['file-it', ID], ['not-this-surface', ID], ['cancel', ID]]);
     expect(JSON.stringify(msg.blocks[0])).toContain('New. Looks like *Website* (from `src/cart/total.ts`). File it?');

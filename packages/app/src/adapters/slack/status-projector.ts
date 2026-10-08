@@ -18,7 +18,7 @@
 //   `slack-status-mirror:{incident}`. The mirror is best effort: a failure there is reported through
 //   `onError` and never fails the row. It is not pinned. A new mirror is recorded as
 //   `bot-message-posted { role: 'status' }`, best effort too.
-// - `notify` rows (A 4.4, `outbox/notify.ts`, #329): a thread message that mentions the watchers, or a
+// - `notify` rows (A 4.4, `outbox/notify.ts`): a thread message that mentions the watchers, or a
 //   DM to one watcher. Rows that share a `batch_key` and are due together merge into one message: the
 //   union of their mentions once, then each row's line in order. They are posted, not pinned, in the
 //   incident's thread. The reporter's staging request (`reason: request`) is recorded with

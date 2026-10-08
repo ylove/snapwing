@@ -1,4 +1,4 @@
-// 0006: `capture_tokens` (main 15.3, 15.4, 16, ADR 0007, #374). The per-user bearer tokens Raycast
+// 0006: `capture_tokens` (main 15.3, 15.4, 16, ADR 0007). The per-user bearer tokens Raycast
 // and the CLI send. A row holds the SHA-256 of the token, never the token: the plaintext is shown
 // once when it is issued. One row per token, so a person may hold several (a laptop, a script) and a
 // leaked one is revoked alone. A revoked row stays (with `revoked_at`) as the audit of who held what.

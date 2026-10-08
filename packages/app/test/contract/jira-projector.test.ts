@@ -403,7 +403,7 @@ function plainIssue(key: string): FakeIssue {
   return { key, fields: {}, labels: [], status: 'Backlog', comments: [], attachments: [] };
 }
 
-describe('assignee (#323; main 9.1, B 7.2, B 7.3)', () => {
+describe('assignee (main 9.1, B 7.2, B 7.3)', () => {
   it('create-issue sets the assignee by account id when the suggested email resolves', async () => {
     jira.users = [DANA, SAM];
     const incidentId = ulid(time);

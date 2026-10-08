@@ -1,4 +1,4 @@
-// State contracts: the types the StatePort (Companion B 1) reads and writes, one per B 3 table it
+// State contracts: the types the StatePort (B 1) reads and writes, one per B 3 table it
 // exposes. Interface only; implementations live in pipeline/src/state (#16 onward). Storage choices
 // (query builder, migrations, how jsonb, timestamptz, and boolean map on SQLite) are ADR 0011.
 //
@@ -138,7 +138,7 @@ export interface IncidentView {
    * Known before anyone is assigned in Jira; the status message names it (main 12).
    */
   ownerRef?: string;
-  /** Who reported it: the anchor message's author when someone else brought it in (`captured.anchorAuthor`, #363), else `captured.reporter`. */
+  /** Who reported it: the anchor message's author when someone else brought it in (`captured.anchorAuthor`), else `captured.reporter`. */
   reporterId?: string;
   source: ChannelSource;
   channelId?: string;

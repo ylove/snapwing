@@ -1,4 +1,4 @@
-// `capture_tokens` (main 15.3, 15.4, 16, ADR 0007, #374): the per-user bearer tokens Raycast and the
+// `capture_tokens` (main 15.3, 15.4, 16, ADR 0007): the per-user bearer tokens Raycast and the
 // CLI send. A token is `CAPTURE_TOKEN_PREFIX` plus 32 random bytes in base64url. The store keeps its
 // SHA-256 (lowercase hex) and never the token, so a database dump identifies no one's credential;
 // the plaintext exists only in `issueCaptureToken`'s result. A leaked token identifies one person and

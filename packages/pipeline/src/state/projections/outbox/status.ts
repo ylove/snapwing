@@ -7,7 +7,7 @@
 // paused collapse to the latest.
 //
 // The target is the platform the incident came from: a Slack thread gets `slack` rows, a Teams
-// conversation `teams` rows (#393; Teams cannot pin, so its projector edits the one message in
+// conversation `teams` rows (#8; Teams cannot pin, so its projector edits the one message in
 // place). An incident from the CLI, Raycast, or an alert has no thread and gets no rows.
 
 import type { StatusUpdate } from '../../../contracts/adapters.ts';

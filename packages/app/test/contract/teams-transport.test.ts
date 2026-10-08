@@ -1,5 +1,5 @@
-// The Teams transport on MSW (main 14.1, 15.2, #390). Requests go through the mounted routes as web-standard
-// `Request`s; the Bot Framework JWT is the real check (#369) against a locally generated key served as the
+// The Teams transport on MSW (main 14.1, 15.2). Requests go through the mounted routes as web-standard
+// `Request`s; the Bot Framework JWT is the real check against a locally generated key served as the
 // JWKS, endorsed for `msteams`. Graph's permission grants and channel messages are MSW too; an unhandled
 // request fails the test, so no Microsoft endpoint is ever called.
 

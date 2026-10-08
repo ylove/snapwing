@@ -91,7 +91,7 @@ async function seed(inc: Seed, summary: string, component: string, opts: { chann
         kind: 'incident',
         idempotencyKey: `slack-${inc.anchor}-bug`,
         source: 'slack',
-        // An engineer's trigger on the reporter's post brings it in; the post is the reporter's (#363).
+        // An engineer's trigger on the reporter's post brings it in; the post is the reporter's.
         ...(opts.triggeredBy === undefined
           ? { reporter: { id: REPORTER, name: 'salesLead', role: 'reporter' } }
           : { reporter: { id: opts.triggeredBy, name: 'webDev1', role: 'engineer' }, anchorAuthor: { id: REPORTER, name: 'salesLead', role: 'reporter' } }),
@@ -243,7 +243,7 @@ describe('a mention anywhere', () => {
   });
 });
 
-// #360: the live status-pull row asked from the reporter's own account through the "Snapwing Test
+// The live status-pull row asked from the reporter's own account through the "Snapwing Test
 // Driver" app (a user token), so Slack stamped the DM with `bot_id` and `app_id`, and the query dropped
 // it as a bot's. A person posting through an app is still a person.
 describe('a person posting through an app (bot_id and app_id on their message)', () => {
@@ -262,7 +262,7 @@ describe('a person posting through an app (bot_id and app_id on their message)',
     expect(posts[0]?.blocks).toHaveLength(1);
   });
 
-  it("answers the reporter in their shape when an engineer's trigger brought their post in (#363)", async () => {
+  it("answers the reporter in their shape when an engineer's trigger brought their post in", async () => {
     await seed(CART_A, 'Cart total blank', 'checkout', { triggeredBy: ENGINEER });
     const text = await answerTo(throughApp(dm(REPORTER, `<@${BOT}> where are we with the cart thing? [snapwing-test]`)));
     expect(text).toMatch(/^\*?WEB-1051\b/);

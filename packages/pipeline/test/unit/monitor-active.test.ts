@@ -1,4 +1,4 @@
-// Active monitoring for critical incidents (#301; A 4.5, B 5 `heartbeat:{incident}` and
+// Active monitoring for critical incidents (A 4.5, B 5 `heartbeat:{incident}` and
 // `stall:{incident}`, B 8). Runs on the in-process workflow over the dialect `SNAPWING_DB` selects,
 // with a fake clock, fake sources of truth (the reconciler's shape plus deploys), a fake chat side,
 // and the real escalation ladders (monitor/ladder.ts) reading this module's `stalled` fact. The

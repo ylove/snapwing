@@ -1,4 +1,4 @@
-// The Teams status projector (main 12, 15.2, 20.1, B 7.1; #393): the one writer of the status message for
+// The Teams status projector (main 12, 15.2, 20.1, B 7.1; #8): the one writer of the status message for
 // a Teams install. It drains `target='teams'` `update-status` and `notify` rows in order and keeps one
 // message per incident, edited in place. It mirrors `adapters/slack/status-projector.ts`: the drain
 // loop, ordering, 429 pause, retry, and park policy are the same, and the constants, the notify merge,
@@ -20,7 +20,7 @@
 //   message is mirrored there (main 15.1) and edited in place; its ref is kept in the cache under
 //   `teams-status-mirror:{incident}`. Best effort: a failure there goes to `onError` and never fails
 //   the row. A new mirror is recorded as `bot-message-posted { role: 'status' }`, best effort too.
-// - `notify` rows (A 4.4, #329): rows that share a `batch_key` and are due together become one message,
+// - `notify` rows (A 4.4): rows that share a `batch_key` and are due together become one message,
 //   the union of their mentions once (`<at>` with entities), then each row's line. A thread batch is
 //   one message in the incident's thread. A DM batch goes to the watcher's personal chat when the bot
 //   can open one (the app is installed for them); when it cannot, the watcher is mentioned in the

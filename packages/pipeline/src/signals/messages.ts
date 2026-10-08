@@ -34,7 +34,7 @@ export function roleOfCard(kind: InteractiveCard['kind']): BotMessageRole {
       return 'fix-preview';
     case 'pr-ready':
       return 'pr';
-    // `file-confirm` is held for a capture's client (#377), never posted in chat.
+    // `file-confirm` is held for a capture's client, never posted in chat.
     case 'clarify':
     case 'file-confirm':
       return 'other';

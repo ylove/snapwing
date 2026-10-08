@@ -1,4 +1,4 @@
-// Status pull in Teams (#394; A 4.3, A 4.4, main 15.2): a mention in a thread, a mention anywhere, the
+// Status pull in Teams (#9; A 4.3, A 4.4, main 15.2): a mention in a thread, a mention anywhere, the
 // personal chat, and the `status` command, each answered in place through `respond`, shaped to the
 // asker's role from the map (`teamsId`), over a real store on the dialect `SNAPWING_DB` selects. The Bot
 // Connector is MSW; standing watches write and remove real subscription rows.

@@ -1,5 +1,5 @@
 // E2E tier: autonomy levels 1 and 2 on real Slack, Jira, and GitHub (main 14.4 e2e row, main 12; #162).
-// The phase 3 proof together with the live tier (BUILDING.md 6).
+// The phase 3 proof together with the live tier.
 //
 // Per level, exactly as main 14.4 says: the reporter user posts a bug-shaped message in the test
 // channel, the engineer user reacts with the trigger emoji (:bug:), and then the test asserts that the

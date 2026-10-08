@@ -330,7 +330,7 @@ async function deploymentSteps(deps: GitHubWebhookDeps, repo: string, body: Reco
 
 /**
  * The stage a deployment's environment is: by name (`environments`, case-insensitive), else GitHub's
- * `production_environment` flag. Shared with the deploy poll (reconcile/sources.ts, #360).
+ * `production_environment` flag. Shared with the deploy poll (reconcile/sources.ts).
  */
 export function deployStageOf(environment: string | undefined, productionFlag: boolean, environments?: Partial<Record<DeployStage, readonly string[]>>): DeployStage | undefined {
   const name = environment?.trim().toLowerCase();

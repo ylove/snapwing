@@ -136,7 +136,7 @@ describe('SlackAdapter over HTTP', () => {
     expect(web.reactionsGet).toHaveBeenCalledTimes(1);
   });
 
-  it("emoji trigger on someone else's message: the message's author is the anchor author, a bot's message has none (#363)", async () => {
+  it("emoji trigger on someone else's message: the message's author is the anchor author, a bot's message has none", async () => {
     const posted = { ts: '1700000000.000200', text: 'Cart total is wrong', user: 'U0POSTER' };
     const web = fakeWeb({ reactionsGet: vi.fn(() => Promise.resolve({ reactions: [{ name: 'bug', users: ['U0REPORTER'] }], message: posted })) });
     const { route, payloads } = setup({ web });
@@ -377,7 +377,7 @@ describe('SlackAdapter status', () => {
     expect(web.postMessage).toHaveBeenCalledTimes(1);
   });
 
-  // #360: the A 5.2 note after That fixed it (#305, `issueKey: ''`) went out as the pinned status
+  // The A 5.2 note after That fixed it (`issueKey: ''`) went out as the pinned status
   // message, "🐛 Great, no bug then...", so the live user-side row never found a note starting with it.
   it('a status with no issue key is a plain thread note: no emoji, no pin, not the status message, role other', async () => {
     const web = fakeWeb();

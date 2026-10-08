@@ -25,7 +25,7 @@
 // It pages on `tx_order`, the writing transaction, which append sets per dialect:
 // - Postgres: the column default, `pg_current_xact_id()` (one value per transaction, assigned at its
 //   first write). `readSince` returns only rows whose `tx_order` is below a watermark taken from its
-//   own snapshot (`pgWatermark`, #424): the oldest transaction that snapshot sees in flight and that
+//   own snapshot (`pgWatermark`): the oldest transaction that snapshot sees in flight and that
 //   could write this database's log. Every transaction below it has committed or rolled back or
 //   belongs to another database on the server, and every row that commits later has a `tx_order` at
 //   or above it, so a cursor never passes a row that is not yet visible.
@@ -169,7 +169,7 @@ export async function readSince(ctx: StateContext, cursor: string, limit: number
 }
 
 /**
- * The Postgres `readSince` bound (ADR 0013, amended by #424), as an expression to evaluate in the
+ * The Postgres `readSince` bound (ADR 0013, amended later), as an expression to evaluate in the
  * statement that reads the log, so it comes from the snapshot that decides which rows are visible.
  * It is the least of:
  * - the snapshot's xmax: every transaction at or above it started after the snapshot;

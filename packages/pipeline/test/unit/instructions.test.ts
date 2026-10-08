@@ -1,4 +1,4 @@
-// INSTRUCTIONS.md (Companion A 6.1, 6.3, 6.4; A 8 lint row): the cap, the block in the triage, clarify,
+// INSTRUCTIONS.md (A 6.1, 6.3, 6.4; A 8 lint row): the cap, the block in the triage, clarify,
 // fixer (implementation request), and review prompts, and the lint against the map and playbook.
 
 import { readFileSync } from 'node:fs';
@@ -38,7 +38,7 @@ beforeAll(async () => {
   map = await parseWorkspaceMap(exampleXml);
 });
 
-/** Companion A 6.3's example file, verbatim. */
+/** A 6.3's example file, verbatim. */
 const SPEC_EXAMPLE = `# Workspace instructions
 
 - The payments service (src/payments) is owned by an outside vendor. Never start the fixer on it;
@@ -88,7 +88,7 @@ describe('loadInstructions: the cap and the block', () => {
     const result = loadInstructions('x'.repeat(INSTRUCTIONS_MAX_CHARS + 1), previous);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.reason).toBe('INSTRUCTIONS.md is 4,001 characters; the cap is 4,000 (Companion A 6.3). Shorten it; the previous version stays live.');
+    expect(result.reason).toBe('INSTRUCTIONS.md is 4,001 characters; the cap is 4,000. Shorten it; the previous version stays live.');
     expect(result.instructions).toBe(previous);
   });
 

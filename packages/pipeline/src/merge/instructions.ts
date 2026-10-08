@@ -1,5 +1,5 @@
 // src/merge/instructions.ts: workspace instructions applied at the two steps the agent takes on its own,
-// the autopilot merge and the fixer start (Companion A 6.3, A 6.4; main 11.3).
+// the autopilot merge and the fixer start (A 6.3, A 6.4; main 11.3).
 //
 // `checkInstructions(gate, input)` asks the model, with one classify call over the instructions block
 // (in the system prompt, as triage and clarify carry it) and the incident, whether any instruction

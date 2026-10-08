@@ -4,7 +4,7 @@
      are replaced with escaped data. Prose inside the elements is what the model applies; the element
      names are for humans and tests. The gate in src/clarify/gate.ts enforces the same rules in code.
      When the workspace has an INSTRUCTIONS.md, src/clarify/prompt.ts appends it to the system prompt as
-     a workspace-instructions block (Companion A 6.3). -->
+     a workspace-instructions block (A 6.3). -->
 <clarify-prompt version="1">
   <system>
     You draft at most one clarifying question about a bug report. Never ask a question the reporter could

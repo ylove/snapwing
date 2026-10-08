@@ -1,4 +1,4 @@
-// `snapwing trace` and `snapwing metrics` (#387) over a seeded log, on the dialect `SNAPWING_DB`
+// `snapwing trace` and `snapwing metrics` (#4) over a seeded log, on the dialect `SNAPWING_DB`
 // names (SQLite by default, Postgres with `DATABASE_URL`): a level 2 incident end to end, a
 // stopped one, an autopilot one that was reverted, and one outside the metrics window.
 

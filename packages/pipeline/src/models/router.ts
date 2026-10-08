@@ -31,7 +31,7 @@ export const MODEL_TASK_LIST: readonly ModelTask[] = ['triage', 'segmentation', 
 /** Provider order for picking a default from the keys present (ADR 0002). */
 export const PROVIDER_PREFERENCE: readonly ModelProvider[] = ['anthropic', 'openai', 'google'];
 
-/** Conventional secret names (main 14.5, build/CONTEXT.md 6b). */
+/** Conventional secret names (main 14.5). */
 export const PROVIDER_KEY_ENV: Readonly<Record<ModelProvider, string>> = {
   anthropic: 'ANTHROPIC_API_KEY',
   openai: 'OPENAI_API_KEY',

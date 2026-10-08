@@ -1,4 +1,4 @@
-// Lookup-first for capture sources (#377, main 15.3, 15.4, 14.2): a Raycast or CLI capture has no scope
+// Lookup-first for capture sources (main 15.3, 15.4, 14.2): a Raycast or CLI capture has no scope
 // card and, after resolve and dedupe, shows exactly one of the dedupe card, `file-confirm`, or the
 // surface question. Cancel and every timeout end it `not-filed` with no Jira row. The process job runs
 // on the in-process WorkflowPort over a real state store (SNAPWING_DB picks the dialect); the adapter,

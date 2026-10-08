@@ -1,5 +1,5 @@
-// E2E tier: the Companion A rows on real Slack, Jira, and GitHub (A 8, the phase 4 proof, BUILDING.md 6;
-// #308). Same harness as levels.test.ts (#162): `snapwing serve` in this process with the local runner
+// E2E tier: the A 8 rows on real Slack, Jira, and GitHub (the phase 4 proof).
+// Same harness as levels.test.ts (#162): `snapwing serve` in this process with the local runner
 // and Socket Mode, a Cloudflare quick tunnel, a per-run Jira admin webhook, the GitHub App webhook
 // pointed at the tunnel, live models, and every card tap a `block_actions` payload built from the real
 // card and handed to the Socket Mode connection (Slack has no API that presses a button). Each row
@@ -37,7 +37,7 @@
 //   never answers, by webhook or by the monitor's poll. In CI, the heartbeat posts after
 //   `monitor.heartbeat`, and after `monitor.stallAfter` plus the `stalled-fix` ladder's first step
 //   (PT0M) the owner is mentioned in the thread. The proof playbook shortens 10 and 15 minutes to 1
-//   and 3 (#301: steps count from the stall).
+//   and 3 (steps count from the stall).
 //
 // The staging and stall rows merge or wait on CI without touching the fixture's `main`: the test makes
 // a `test/` branch from `main`, protects it as the fixture's owner through `gh` (the App cannot
@@ -439,7 +439,7 @@ async function untilFiled(r: Row, choices: Readonly<Record<string, Choice>> = DE
 /**
  * A deploy the test made, then the stage it should move the incident to. The only path from a GitHub
  * deployment to `deployed:*` for an unmonitored incident is the App's `deployment_status` webhook, so a
- * timeout says what GitHub delivered (#360: the first live run timed out with no way to tell).
+ * timeout says what GitHub delivered (the first live run timed out with no way to tell).
  */
 async function untilDeployed(r: Row, status: 'deployed:staging' | 'deployed:production', deployedAt: number): Promise<IncidentView> {
   try {
@@ -545,7 +545,7 @@ async function cleanupRow(r: Row): Promise<string[]> {
 
 // The suite -----------------------------------------------------------------------------------------
 
-describe.skipIf(!ready)('e2e Companion A rows on Slack (A 8)', () => {
+describe.skipIf(!ready)('e2e rows on Slack (A 8)', () => {
   beforeAll(async () => {
     slack = createSlackDriver({
       botToken: v.SLACK_BOT_TOKEN,
@@ -579,7 +579,7 @@ describe.skipIf(!ready)('e2e Companion A rows on Slack (A 8)', () => {
       if (hook.needsActivation) console.warn(`e2e companion A: the GitHub App webhook is not active yet.\n${hook.lines.join('\n')}`);
     }
     // `needsActivation` is only known while the URL is the placeholder; an App webhook that was never
-    // ticked Active has no deliveries at all, and the staging row then cannot see its deploys (#360).
+    // ticked Active has no deliveries at all, and the staging row then cannot see its deploys.
     if (ghAdmin) {
       const deliveries = await appHookDeliveries(live.secrets, 1).catch(() => undefined);
       if (deliveries?.length === 0) console.warn('e2e companion A: the GitHub App webhook has never delivered anything; it is most likely inactive, so the staging row will not see its deploys (tick "Active" under Webhook on the App settings page).');

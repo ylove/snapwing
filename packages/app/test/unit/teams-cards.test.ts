@@ -117,7 +117,7 @@ describe('teams cards', () => {
     }
   });
 
-  it('file-confirm (#377, never posted in Teams): File it, Not this surface, Cancel, with the evidence', () => {
+  it('file-confirm (never posted in Teams): File it, Not this surface, Cancel, with the evidence', () => {
     const c = buildCard(ID, { kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website', evidence: 'src/cart/total.ts' });
     expect(verbs(c)).toEqual(['file-it', 'not-this-surface', 'cancel']);
     expect(bodyText(c)).toContain('New. Looks like **Website** (from src/cart/total.ts). File it?');

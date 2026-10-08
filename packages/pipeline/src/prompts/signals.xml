@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Signal classification prompt (Companion A 1.2, the LLM pass). src/signals/llm.ts reads the two
+<!-- Signal classification prompt (A 1.2, the LLM pass). src/signals/llm.ts reads the two
      elements below: the system prompt and the request template. It extends the segmentation prompt
      (segmentation.xml) and keeps its shape: {{thread}} is replaced with the XML list of earlier thread
      messages and {{message}} with the message to classify. Prose inside the elements is what the model

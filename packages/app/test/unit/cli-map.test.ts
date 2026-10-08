@@ -1,4 +1,4 @@
-// `snapwing map show | set-level | set-trigger` (#388): each command on a temp copy of the example map,
+// `snapwing map show | set-level | set-trigger`: each command on a temp copy of the example map,
 // and the invalid edit that changes nothing.
 
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';

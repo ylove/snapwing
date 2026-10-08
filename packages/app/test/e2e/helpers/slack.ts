@@ -169,7 +169,7 @@ export function createSlackDriver(o: SlackDriverOptions): SlackDriver {
       }
       for (const m of messages) {
         // By author: the test users post through the Test Driver app, so their messages carry `bot_id`
-        // too, and only the author's token can delete them (#360: `cant_delete_message`).
+        // too, and only the author's token can delete them (`cant_delete_message`).
         const token = byBot(m, bot) ? o.botToken : m.user === o.reporter.id ? o.reporter.token : m.user === o.engineer.id ? o.engineer.token : undefined;
         if (token === undefined) {
           failures.push(`DM message ${m.ts} by another user was left in place`);
@@ -243,7 +243,7 @@ export function createSlackDriver(o: SlackDriverOptions): SlackDriver {
 /**
  * A message the bot posted: its user is the bot user, or it has a `bot_id` and no user at all. Not
  * `bot_id` alone: the test users post through the "Snapwing Test Driver" app with their user tokens,
- * and Slack stamps `bot_id` and `app_id` on those messages too (#360).
+ * and Slack stamps `bot_id` and `app_id` on those messages too.
  */
 export function byBot(m: SlackMessage, botUserId: string): boolean {
   return m.user === botUserId || (m.user === undefined && m.bot_id !== undefined);

@@ -1,4 +1,4 @@
-// Reaction lookup and the lexicon pass (Companion A 1.2). Pure and deterministic.
+// Reaction lookup and the lexicon pass (A 1.2). Pure and deterministic.
 import { PLAYBOOK_INTENTS, type PlaybookSignals } from '../config/playbook.ts';
 import type { Intent } from '../contracts/signals.ts';
 import { compileLexicon, matchLexicon } from './lexicon.ts';

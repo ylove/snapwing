@@ -100,9 +100,9 @@ it('pages the global log in append order without gaps (ADR 0013)', async () => {
   expect(await f.state().readSince(cursor, 2)).toEqual({ events: [], cursor });
 });
 
-// #424: on Postgres the watermark counts only transactions that can write this database's log. Two
+// On Postgres the watermark counts only transactions that can write this database's log. Two
 // databases on one server, like the shared test container or a managed server hosting several.
-describe.runIf(TEST_DIALECT === 'postgres')('readSince beside other databases on one Postgres server (#424)', () => {
+describe.runIf(TEST_DIALECT === 'postgres')('readSince beside other databases on one Postgres server', () => {
   let home: TestDatabase | undefined;
   let other: TestDatabase | undefined;
   let state: OpenedState;

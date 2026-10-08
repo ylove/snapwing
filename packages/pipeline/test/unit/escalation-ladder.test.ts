@@ -376,7 +376,7 @@ describe('outage ladder', () => {
     expect(w.chat.posts[0]?.mention).toBe('U-FAKE-ASSIGNEE');
   });
 
-  // #360: an outage reached by reactions adopted at capture starts the ladder before resolution names
+  // An outage reached by reactions adopted at capture starts the ladder before resolution names
   // an owner; `mention="owner"` then falls back to the owner of the channel's surface in the map.
   it('before resolution, mentions the owner of the channel surface from the map', async () => {
     const map = {
@@ -461,7 +461,7 @@ describe('stalled-fix ladder', () => {
     await append(ev('monitoring-started', { qualifiedBy: 'critical-surface' }));
     expect(await w.ladders.evaluate(INC)).toEqual([]);
 
-    // A 4.5: the stall detector (#301) reports the stall and evaluates.
+    // A 4.5: the stall detector reports the stall and evaluates.
     w.flags.stalled = true;
     expect(await w.ladders.evaluate(INC)).toEqual([{ ladder: 'stalled-fix', started: true }]);
     await at(14);

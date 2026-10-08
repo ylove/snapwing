@@ -1,4 +1,4 @@
-// The GitHub-backed RepoTrees (#377): the default branch's blob paths through the git trees API, read
+// The GitHub-backed RepoTrees: the default branch's blob paths through the git trees API, read
 // with a `contents: read` token for that one repo, cached per repo, and undefined when unreadable.
 
 import { describe, expect, it } from 'vitest';

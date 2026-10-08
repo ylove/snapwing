@@ -1,4 +1,4 @@
-// Per-user capture tokens (#374; main 15.3, 15.4, 16, ADR 0007). Runs on the dialect `SNAPWING_DB`
+// Per-user capture tokens (main 15.3, 15.4, 16, ADR 0007). Runs on the dialect `SNAPWING_DB`
 // selects; the local gate runs the file on both SQLite and Postgres. Every token here is generated
 // at run time by the store; none is written in this file.
 

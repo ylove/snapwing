@@ -1,4 +1,4 @@
-// Signal contracts: Companion A section 7.
+// Signal contracts: A section 7.
 import type { ApprovalAction, IncidentActor } from './incident.ts';
 
 export type Intent =

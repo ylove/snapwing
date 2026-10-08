@@ -39,7 +39,7 @@ export function probableOwner(map: WorkspaceMap, surfaceId: string, componentId?
 
 /**
  * The owner of the surface a channel maps to (`<channel surface>`, then `probableOwner`), as a handle:
- * who the incident's owner most likely is before resolution has run (#360: a reaction ladder step
+ * who the incident's owner most likely is before resolution has run (a reaction ladder step
  * reached at adoption, when the incident is only captured). Undefined for an unmapped channel, a
  * `from-payload` one, or an ambiguous owner.
  */

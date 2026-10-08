@@ -1,11 +1,11 @@
-// src/signals/ux-friction.ts: when user error is a product bug (A 5.3), #306.
+// src/signals/ux-friction.ts: when user error is a product bug (A 5.3).
 //
 // `userSide/@uxFrictionThreshold` different reporters landing on the same indicator kind on the same
 // surface within `userSide/@uxFrictionWindow` is a UX defect, not that many mistakes. The agent files
 // one Task labeled `ux-friction` that summarizes the pattern without naming anyone ("3 reporters
 // landed on a test environment on Web app") and posts it to the surface's bug channel.
 //
-// The input is the log: a reporter's "That fixed it" is a `user-side` event (#305) whose actor is the
+// The input is the log: a reporter's "That fixed it" is a `user-side` event whose actor is the
 // reporter and whose payload carries `kind` and `surfaceId`. Events with no actor or no surface are
 // not counted (there is no reporter, or no surface to say it about). One reporter tapping twice counts
 // once. Off when `userSide check="false"`: `scan` reads nothing and files nothing, and the log it

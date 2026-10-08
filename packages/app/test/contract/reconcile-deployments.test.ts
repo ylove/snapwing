@@ -1,6 +1,6 @@
-// The active monitor's deploy source over the GitHub Deployments API (#360; A 4.5, B 8): what a missed
+// The active monitor's deploy source over the GitHub Deployments API (A 4.5, B 8): what a missed
 // `deployment_status` webhook would have said. Compose gives the monitor `createReconcileSources`,
-// which until #360 had no `deployments`, so a monitored incident sat at `merged` while the fixture had
+// which until recently had no `deployments`, so a monitored incident sat at `merged` while the fixture had
 // real deployments of its merge commit. Payloads are shaped from GitHub's REST documentation, trimmed
 // to the fields the source reads.
 
