@@ -15,12 +15,14 @@
 //   ways is read once (the activity id is the Graph message id). In reduced mode (no RSC grant, so no
 //   notifications, ADR 0005) reactions on the bot's own messages are the only ones that count.
 //
-// The last set seen lives in kv `teams-reactions:{messageId}` (JSON, 7-day TTL): one entry per person
-// and reaction name, with when it was added. Both sources apply their change to the same set and
-// emit only what changed it, so a reaction on a bot's card that arrives both ways counts once, and a
-// redelivered notification emits nothing. The first notification for a message the set has never
-// seen emits the reactions added inside the TTL; older ones are taken as already seen. Changes to one
-// message are applied one at a time in this process.
+// The last set seen lives in kv `teams-reactions:{channelId}:{messageId}` (JSON, 7-day TTL; message ids
+// are unique only within a channel): one entry per person and reaction name, with when it was added.
+// Both sources apply their change to the same set and emit only what changed it, so a reaction on a
+// bot's card that arrives both ways counts once, and a redelivered notification emits nothing. The first
+// notification for a message the set has never seen emits only the reactions added after the team's
+// subscription started (`subscriptionSince`, less 5 s of clock skew; inside the TTL when no start is
+// kept); older ones are taken as already seen, so a week-old reaction never counts. Changes to one
+// message (by channel and id) are applied one at a time in this process.
 //
 // Each added or removed reaction is mapped to the playbook's `teams` names (`reactions.ts`; an unknown
 // `reactionType` is ignored) and then, in this order:
@@ -42,7 +44,10 @@
 // lexicon, and then the model, exactly as a Slack reply does: the target is the thread's root, a reply
 // that mentions the bot is the status query's, and with `text` every reply also goes to
 // `handleTextSignal` after the intent path. Teams has no ephemeral messages, so a standing watch is
-// confirmed through the injected `confirmStanding` (the personal chat, wired by compose), if any.
+// confirmed through the injected `confirmStanding` (the personal chat, wired by compose), if any. A
+// reply that arrives as a Bot Framework activity may name a mentioned person by their `29:` id alone;
+// the Connector's member lookup (`getMember`, remembered in kv `teams-member:{29:id}` for 30 days) turns
+// it into the AAD object id, so "@Dana can you take this" still hands off.
 //
 // People are their AAD object ids (the map's `teamsId`, ADR 0019); the bot's own reactions and messages
 // (its app id, or any application identity) are ignored. Channel-message notifications may need
@@ -72,10 +77,11 @@ import {
 } from '@snapwing/pipeline/signals/text.ts';
 import { TeamsIgnoredError, type TeamsInbound } from './adapter.ts';
 import { splitConversationId } from './conversations.ts';
+import type { TeamsConnector } from './connector.ts';
 import { GraphApiError, type GraphIdentity, type GraphMessage, type TeamsGraph } from './graph.ts';
 import { teamsHtmlToText, teamsTriggerEmoji, type TeamsReactionTrigger } from './normalize.ts';
 import { teamsReactionNames } from './reactions.ts';
-import type { VerifiedNotification } from './subscriptions.ts';
+import { subscriptionSince, type VerifiedNotification } from './subscriptions.ts';
 
 /** How long the last set of reactions seen on a message is kept. */
 export const REACTIONS_TTL_SEC = 7 * 24 * 60 * 60;
@@ -95,7 +101,11 @@ const SEEN_TTL_SEC = 60 * 60;
 /** Most earlier thread messages the model sees as context. */
 const THREAD_CONTEXT_LIMIT = 30;
 
-export const teamsReactionsKey = (messageId: string): string => `teams-reactions:${messageId}`;
+/** How long a `29:` id resolved to an AAD object id is remembered. */
+export const MEMBER_TTL_SEC = 30 * 24 * 60 * 60;
+
+export const teamsReactionsKey = (channelId: string, messageId: string): string => `teams-reactions:${channelId}:${messageId}`;
+export const teamsMemberKey = (teamsUserId: string): string => `teams-member:${teamsUserId}`;
 
 export interface TeamsSignalsOptions {
   /** The handler's dependencies (compose builds them once). */
@@ -106,6 +116,8 @@ export interface TeamsSignalsOptions {
   botAppId: string;
   /** Graph, to read a notified message and a thread's earlier replies. Absent: notifications need `message`. */
   graph?: Pick<TeamsGraph, 'message' | 'channelReplies'>;
+  /** The Bot Connector, to resolve a mention that names only a `29:` id. Absent: such a mention names nobody. */
+  connector?: Pick<TeamsConnector, 'getMember'>;
   /** `IncidentOrchestrator.handleInbound`, for a trigger reaction. Absent: a trigger is only counted. */
   handleInbound?: (source: 'teams', raw: TeamsInbound) => Promise<unknown>;
   /** The Stop for a trigger removed within 60 s (main 15.1). Default `deps.stopIncident`. */
@@ -312,14 +324,15 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     });
   }
 
-  /** Runs `fn` after every earlier change to the same message in this process. */
-  function serial<T>(messageId: string, fn: () => Promise<T>): Promise<T> {
-    const prior = chains.get(messageId) ?? Promise.resolve();
+  /** Runs `fn` after every earlier change to the same message (by channel and id) in this process. */
+  function serial<T>(channelId: string, messageId: string, fn: () => Promise<T>): Promise<T> {
+    const key = `${channelId}:${messageId}`;
+    const prior = chains.get(key) ?? Promise.resolve();
     const next = prior.then(fn, fn);
-    chains.set(messageId, next);
+    chains.set(key, next);
     void next.then(
-      () => (chains.get(messageId) === next ? chains.delete(messageId) : undefined),
-      () => (chains.get(messageId) === next ? chains.delete(messageId) : undefined),
+      () => (chains.get(key) === next ? chains.delete(key) : undefined),
+      () => (chains.get(key) === next ? chains.delete(key) : undefined),
     );
     return next;
   }
@@ -332,17 +345,32 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
 
   // Reactions ---------------------------------------------------------------------------------------
 
-  /** Applies `change` to the set of `messageId` and returns what it changed. */
+  /** Applies `change` to the set of the message and returns what it changed; `firstSight` when there was no set. */
   async function applyToSet(
+    channelId: string,
     messageId: string,
     change: (before: SeenReaction[] | undefined) => SeenReaction[],
-  ): Promise<{ added: SeenReaction[]; removed: SeenReaction[] }> {
-    const key = teamsReactionsKey(messageId);
+  ): Promise<{ added: SeenReaction[]; removed: SeenReaction[]; firstSight: boolean }> {
+    const key = teamsReactionsKey(channelId, messageId);
     const before = parseSeen(await deps.cache.get(key));
     const now = change(before);
     const diff = diffReactions(before ?? [], now);
     if (before === undefined || diff.added.length > 0 || diff.removed.length > 0) await deps.cache.set(key, serializeSeen(now), REACTIONS_TTL_SEC);
-    return diff;
+    return { ...diff, firstSight: before === undefined };
+  }
+
+  /**
+   * The oldest add a first sight counts: the team's subscription start (less the clock skew between Graph's
+   * stamps and ours, so the reaction that caused the notification always counts), never further back than the TTL.
+   */
+  async function firstSightFloor(teamId: string | undefined, ttlFloor: number): Promise<number> {
+    if (teamId === undefined) return ttlFloor;
+    const since = await subscriptionSince(deps.cache, teamId).catch((e: unknown) => {
+      onError(e);
+      return undefined;
+    });
+    const start = since === undefined ? Number.NaN : Date.parse(since);
+    return Number.isFinite(start) ? Math.max(start - CLOCK_SKEW_MS, ttlFloor) : ttlFloor;
   }
 
   /** One added or removed reaction (see the file header for the order). */
@@ -473,12 +501,14 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
   async function diffMessage(site: ReactionSite & { message: GraphMessage }): Promise<TeamsSignalOutcome[]> {
     const now = deps.clock();
     const current = reactionsOf(site.message, botAppId, now);
-    const floor = now.getTime() - REACTIONS_TTL_SEC * 1000;
-    const { added, removed } = await applyToSet(site.messageId, () => current);
+    const ttlFloor = now.getTime() - REACTIONS_TTL_SEC * 1000;
+    const { added, removed, firstSight } = await applyToSet(site.channelId, site.messageId, () => current);
+    // On first sight, an add from before the team's subscription started was never notified: taken as seen.
+    const floor = firstSight ? await firstSightFloor(site.teamId, ttlFloor) : ttlFloor;
     const out: TeamsSignalOutcome[] = [];
     const withCurrent = { ...site, current };
     for (const r of added) {
-      // An add older than the TTL is one the set forgot (first sight, or expired): taken as seen.
+      // An add older than the floor is one the set forgot (first sight, or expired): taken as seen.
       if (Date.parse(r.at) < floor) continue;
       out.push(...(await guardedChange(withCurrent, r, false, r.at)));
     }
@@ -606,7 +636,7 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     // chain could be stale by the time it is applied (a removal applied in between would be re-added).
     // The chain is per process; several replicas still race on the kv set.
     if (n.changeType === 'created') return notified(n, given);
-    return serial(id, () => notified(n, given));
+    return serial(channelId, id, () => notified(n, given));
   }
 
   async function notified(n: VerifiedNotification, given: GraphMessage | undefined): Promise<TeamsSignalOutcome[]> {
@@ -683,6 +713,25 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     return threadReply(rec(activity)) !== undefined;
   }
 
+  /**
+   * The AAD object id of a mentioned person the activity names only by their `29:` id: from kv, else the
+   * Connector's member lookup (remembered). '' when neither can say, and the mention then names nobody.
+   */
+  async function memberAad(roster: { serviceUrl: string; conversationId: string }, teamsUserId: string): Promise<string> {
+    const connector = options.connector;
+    if (!teamsUserId.startsWith('29:') || connector === undefined || roster.serviceUrl === '' || roster.conversationId === '') return '';
+    try {
+      const known = await deps.cache.get(teamsMemberKey(teamsUserId));
+      if (known !== null && known !== '') return known;
+      const aad = (await connector.getMember({ ...roster, memberId: teamsUserId })).aadObjectId ?? '';
+      if (aad !== '') await deps.cache.set(teamsMemberKey(teamsUserId), aad, MEMBER_TTL_SEC);
+      return aad;
+    } catch (e) {
+      onError(e);
+      return '';
+    }
+  }
+
   /** A thread reply activity, as the Graph message it is (the same id, so the two sources dedupe). */
   async function replyActivity(a: Rec): Promise<TeamsSignalOutcome[]> {
     const thread = threadReply(a);
@@ -691,23 +740,26 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     const channelData = rec(a['channelData']);
     const map = await options.getMap();
     const teamId = str(rec(channelData['team'])['aadGroupId']) || map.channels.find((c) => c.id === thread.teamChannel)?.teamId || '';
-    const mentions = (Array.isArray(a['entities']) ? (a['entities'] as unknown[]) : [])
+    const mentioned = (Array.isArray(a['entities']) ? (a['entities'] as unknown[]) : [])
       .map(rec)
       .filter((e) => str(e['type']) === 'mention')
       .map((e) => rec(e['mentioned']));
+    // The member lookup answers for the team (its General channel's id), else for the channel.
+    const roster = { serviceUrl: str(a['serviceUrl']), conversationId: str(rec(channelData['team'])['id']) || thread.teamChannel };
+    const mentions = await Promise.all(
+      mentioned.map(async (m) => ({ id: str(m['id']), name: str(m['name']), aad: str(m['aadObjectId']) || (await memberAad(roster, str(m['id']))) })),
+    );
     const message: GraphMessage = {
       id: str(a['id']),
       replyToId: thread.rootId,
       createdDateTime: iso(str(a['timestamp']), deps.clock()),
       from: { user: { id: str(from['aadObjectId']), displayName: str(from['name']), userIdentityType: 'aadUser' } },
       body: { contentType: 'html', content: str(a['text']) },
-      mentions: mentions.map((m, i) => {
-        const id = str(m['id']);
+      mentions: mentions.map(({ id, name, aad }, i) => {
         const isBot = id === botAppId || id === `28:${botAppId}`;
-        const aad = str(m['aadObjectId']);
         return {
           id: i,
-          mentionText: str(m['name']),
+          mentionText: name,
           mentioned: isBot ? { application: { id: botAppId } } : aad === '' ? {} : { user: { id: aad } },
         };
       }),
@@ -755,8 +807,8 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
       byBot: true,
       ...(inChannel ? { deepLink: teamsMessageLink(channelId, messageId, teamId, rootId) } : {}),
     };
-    return serial(messageId, async () => {
-      const { added, removed } = await applyToSet(messageId, (before) => {
+    return serial(channelId, messageId, async () => {
+      const { added, removed } = await applyToSet(channelId, messageId, (before) => {
         const next = new Map((before ?? []).map((r) => [keyOf(r), r]));
         for (const r of removes) next.delete(keyOf(r));
         for (const r of adds) if (!next.has(keyOf(r))) next.set(keyOf(r), r);

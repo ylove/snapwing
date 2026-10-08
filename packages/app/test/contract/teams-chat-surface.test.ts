@@ -254,6 +254,23 @@ describe('thread posts', () => {
     expect(surface.mention(map, 'webDev1')).toBe('@webDev1');
   });
 
+  it('mentions a person outside the map by the name Teams gave them, never by their raw id', async () => {
+    const DANA = '7f3e9c1a-0000-4000-8000-00000000d001';
+    // Before any activity from Dana, nothing names her: the id stays as given.
+    await surface.channelPost(CHANNEL, `${surface.mentionUser(DANA)} is watching`);
+    await surface.rememberUser({
+      type: 'message',
+      serviceUrl: SERVICE_URL,
+      from: { id: '29:1dana-teams-id', aadObjectId: DANA, name: 'Dana Lee' },
+      conversation: { id: 'a:1dana-personal', conversationType: 'personal', tenantId: TENANT },
+    });
+    expect(JSON.parse((await createKvCache(state as unknown as StateStore).get(teamsUserKey(DANA))) ?? '{}')).toMatchObject({ name: 'Dana Lee', teamsUserId: '29:1dana-teams-id' });
+    await surface.channelPost(CHANNEL, `${surface.mentionUser(DANA)} is watching`);
+    await surface.threadPost({ channel: CHANNEL, threadId: ROOT }, `Over to ${surface.mentionUser(DANA)}.`);
+    expect(calls.map((c) => c.body.text)).toEqual([`@${DANA} is watching`, '<at>Dana Lee</at> is watching', 'Over to <at>Dana Lee</at>.']);
+    for (const call of calls.slice(1)) expect(call.body.entities).toEqual([{ type: 'mention', text: '<at>Dana Lee</at>', mentioned: { id: DANA, name: 'Dana Lee' } }]);
+  });
+
   it('skips an incident whose source is not Teams, as the router does for any source with no surface', async () => {
     const other = '01K6TEAMSCHAT00000000000003';
     await state.append(

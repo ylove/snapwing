@@ -27,10 +27,10 @@ import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { recordBotMessage, roleOfCard, type PostedMessage } from '@snapwing/pipeline/signals/messages.ts';
 import { buildCard, type CardOptions } from './cards/cards.ts';
-import { card as adaptiveCard, mentionsFromMap, renderText, type AdaptiveCard, type MentionFor } from './cards/elements.ts';
+import { card as adaptiveCard, mentionsFromMap, mentionsOr, renderText, type AdaptiveCard, type MentionFor } from './cards/elements.ts';
 import { buildStatusCard } from './cards/status.ts';
 import { TeamsError, TeamsNotFoundError, type TeamsConnector, type TeamsOutgoingActivity } from './connector.ts';
-import { conversationFromActivity, readTeamsConversation, readTeamsMode, rememberTeamsConversation } from './conversations.ts';
+import { conversationFromActivity, readTeamsConversation, readTeamsMode, rememberedNames, rememberTeamsConversation } from './conversations.ts';
 import { GraphPermissionError, type TeamsGraph } from './graph.ts';
 import {
   normalizeTeams,
@@ -270,8 +270,11 @@ export function createTeamsAdapter(options: TeamsAdapterOptions): TeamsAdapter {
     );
   }
 
-  async function mentions(override: MentionFor | undefined): Promise<MentionFor> {
-    return override ?? mentionsFromMap((await options.getMap()).people);
+  /** The map's people, then the names Teams gave the people `about` names whom the map does not list. */
+  async function mentions(override: MentionFor | undefined, about: unknown): Promise<MentionFor> {
+    if (override !== undefined) return override;
+    const fromMap = mentionsFromMap((await options.getMap()).people);
+    return mentionsOr(fromMap, await rememberedNames(cache, JSON.stringify(about), (id) => fromMap(id) !== undefined));
   }
 
   /** Says "On it" in the reactor's personal chat; Teams opens one only where the app is installed for them. */
@@ -336,14 +339,14 @@ export function createTeamsAdapter(options: TeamsAdapterOptions): TeamsAdapter {
     async postInteractive(payload, card) {
       const at = await where(payload);
       const viewer = options.cardOptions === undefined ? {} : await options.cardOptions(payload, card);
-      const built = buildCard(payload.eventId, card, { ...viewer, mentions: await mentions(viewer.mentions), reduced: await reduced(at) });
+      const built = buildCard(payload.eventId, card, { ...viewer, mentions: await mentions(viewer.mentions, card), reduced: await reduced(at) });
       const posted = await post(at, cardActivity(built));
       await record(payload.eventId, posted, roleOfCard(card.kind));
     },
 
     async postStatus(payload, status: StatusUpdate) {
       const at = await where(payload);
-      const opts = { mentions: await mentions(undefined), reduced: await reduced(at) };
+      const opts = { mentions: await mentions(undefined, status), reduced: await reduced(at) };
       if (status.issueKey === '') {
         // A note about an incident with no issue (#305, #360): a plain card in the thread, no stage emoji,
         // never the incident's status message.

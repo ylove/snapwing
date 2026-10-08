@@ -13,6 +13,7 @@ import {
   createTeamsSubscriptions,
   subscriptionIdKey,
   subscriptionKey,
+  subscriptionSince,
   teamIdsInMap,
   type TeamsSubscriptions,
 } from '../../src/adapters/teams/subscriptions.ts';
@@ -96,7 +97,7 @@ describe('create and renew', () => {
     const expires = Date.parse(String(created[0]?.['expirationDateTime']));
     expect(expires - clock).toBe(SUBSCRIPTION_LIFETIME_MS);
     expect(expires - clock).toBeLessThanOrEqual(60 * MIN);
-    expect(JSON.parse((await cache.get(subscriptionKey('T1'))) ?? '')).toEqual({ id: 'sub-1', expiresAt: iso(expires) });
+    expect(JSON.parse((await cache.get(subscriptionKey('T1'))) ?? '')).toEqual({ id: 'sub-1', expiresAt: iso(expires), since: iso(clock) });
     expect(await cache.get(subscriptionIdKey('sub-1'))).toBe('T1');
     expect((await subs.mode('T1')).mode).toBe('full');
   });
@@ -124,6 +125,18 @@ describe('create and renew', () => {
     clock += 44 * MIN;
     expect((await subs.ensure('T1')).kind).toBe('active');
     expect(created).toHaveLength(1);
+  });
+
+  it("keeps when the team's notifications started across renewals and a recreation", async () => {
+    grantingGraph();
+    const start = clock;
+    await subs.ensure('T1');
+    clock += 45 * MIN;
+    expect((await subs.ensure('T1')).kind).toBe('renewed');
+    expect(await subscriptionSince(cache, 'T1')).toBe(iso(start));
+    await subs.handleLifecycle({ value: [{ subscriptionId: 'sub-1', lifecycleEvent: 'subscriptionRemoved', clientState: CLIENT_STATE }] });
+    expect(JSON.parse((await cache.get(subscriptionKey('T1'))) ?? '')).toMatchObject({ id: 'sub-2', since: iso(start) });
+    expect(await subscriptionSince(cache, 'T2')).toBeUndefined();
   });
 
   it('recreates when Graph no longer knows the subscription on renew', async () => {

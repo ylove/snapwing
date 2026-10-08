@@ -21,10 +21,11 @@
 //   gave one (kv `teams-user:{aadObjectId}`, written by `rememberUser`), the AAD object id in
 //   `aadObjectId`, and the bot's app id as `botId` (#370). Real Teams may want that `29:` id; there is no
 //   tenant to confirm it on in this build.
-// - A mention is `<at>handle</at>` text plus a `mention` entity keyed by the AAD object id (`teamsId`).
-//   Only the mentions this surface emits become one: `mention` and `mentionUser` return a mark
-//   (`adapters/shared/mention-marks.ts`), and a text post turns those marks into `<at>` tags with
-//   entities and escapes `<` and `>` everywhere else. An `<at>...</at>` inside user text (an incident
+// - A mention is `<at>handle</at>` text plus a `mention` entity keyed by the AAD object id (`teamsId`);
+//   a person the map does not list is `<at>` the name Teams gave them (`from.name`, kept in their user
+//   record by `rememberUser`), never a raw id. Only the mentions this surface emits become one:
+//   `mention` and `mentionUser` return a mark (`adapters/shared/mention-marks.ts`), and a text post
+//   turns those marks into `<at>` tags with entities and escapes `<` and `>` everywhere else. An `<at>...</at>` inside user text (an incident
 //   summary, a digest line, a task summary) is shown as text, with no entity, and notifies nobody.
 
 import type { MidFlightCard } from '@snapwing/pipeline/fixer/claims.ts';
@@ -38,10 +39,18 @@ import { parseDuration } from '@snapwing/pipeline/util/duration.ts';
 import type { ChatPosted, ChatSurface, ChatTextCards } from '../../server/chat.ts';
 import { createMentionMarks, type MentionMarks } from '../shared/mention-marks.ts';
 import { buildMidFlightCard } from './cards/mid-flight.ts';
-import { renderText, mentionsFromMap, textBlock, type AdaptiveCard, type MentionEntity } from './cards/elements.ts';
+import { renderText, mentionsFromMap, mentionsOr, textBlock, type AdaptiveCard, type MentionEntity } from './cards/elements.ts';
 import { buildResolutionPrompt, buildScopeChangeCard } from './cards/signals.ts';
 import { createTeamsChannelMembers, type TeamsChannelMembers } from './channel-members.ts';
-import { readTeamsConversation, readTeamsMode, type TeamsConversationType } from './conversations.ts';
+import {
+  readTeamsConversation,
+  readTeamsMode,
+  readTeamsUser,
+  rememberedNames,
+  teamsUserKey,
+  userFromActivity,
+  type TeamsConversationType,
+} from './conversations.ts';
 import {
   TeamsApiError,
   TeamsError,
@@ -78,67 +87,14 @@ export interface TeamsChatSurfaceOptions {
 export interface TeamsChatSurface extends ChatSurface {
   readonly platform: 'teams';
   readonly channelMembers: TeamsChannelMembers;
-  /** Remembers who an inbound activity's sender is (`29:` id, serviceUrl, tenant) for opening their personal chat. */
+  /** Remembers who an inbound activity's sender is (`29:` id, name, serviceUrl, tenant): their personal chat, their name. */
   rememberUser(activity: unknown): Promise<void>;
 }
 
-/** What is kept about a person from the last activity they sent. */
-export interface TeamsUserRecord {
-  aadObjectId: string;
-  /** The `29:` Teams id from `from.id`, when the activity carried one. */
-  teamsUserId?: string;
-  serviceUrl: string;
-  tenantId?: string;
-  updatedAt: string;
-}
-
-export const teamsUserKey = (aadObjectId: string): string => `teams-user:${aadObjectId}`;
-
-type Rec = Record<string, unknown>;
-
-function rec(v: unknown): Rec {
-  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Rec) : {};
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
+export { teamsUserKey, userFromActivity, type TeamsUserRecord } from './conversations.ts';
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-/** The user record an inbound activity implies, or undefined without an AAD id or a serviceUrl. */
-export function userFromActivity(activity: unknown, now: Date): TeamsUserRecord | undefined {
-  const a = rec(activity);
-  const from = rec(a['from']);
-  const aadObjectId = str(from['aadObjectId']);
-  const serviceUrl = str(a['serviceUrl']);
-  if (aadObjectId === '' || serviceUrl === '') return undefined;
-  const fromId = str(from['id']);
-  const tenantId = str(rec(rec(a['channelData'])['tenant'])['id']) || str(rec(a['conversation'])['tenantId']);
-  return {
-    aadObjectId,
-    ...(fromId.startsWith('29:') ? { teamsUserId: fromId } : {}),
-    serviceUrl,
-    ...(tenantId === '' ? {} : { tenantId }),
-    updatedAt: now.toISOString(),
-  };
-}
-
-async function readUser(cache: Pick<CachePort, 'get'>, aadObjectId: string): Promise<TeamsUserRecord | undefined> {
-  const raw = await cache.get(teamsUserKey(aadObjectId));
-  if (raw === null) return undefined;
-  try {
-    const p = rec(JSON.parse(raw));
-    const serviceUrl = str(p['serviceUrl']);
-    if (serviceUrl === '') return undefined;
-    const teamsUserId = str(p['teamsUserId']);
-    const tenantId = str(p['tenantId']);
-    return { aadObjectId, ...(teamsUserId === '' ? {} : { teamsUserId }), serviceUrl, ...(tenantId === '' ? {} : { tenantId }), updatedAt: str(p['updatedAt']) };
-  } catch {
-    return undefined;
-  }
 }
 
 /** The map person a reference names: `@handle`, an email, or a user id (AAD object id, Slack id). */
@@ -182,17 +138,24 @@ function escapeText(text: string): string {
 
 /**
  * Text as a message activity: each mark whose ref is a map handle or a Teams id becomes `<at>handle</at>`
- * with a mention entity keyed by the AAD object id, any other mark `@ref`; everything else is escaped,
- * so no other `<at>` reaches Teams.
+ * with a mention entity keyed by the AAD object id, a mark whose ref is an AAD object id in `names` (a
+ * person outside the map) `<at>` the name Teams gave them, any other mark `@ref`; everything else is
+ * escaped, so no other `<at>` reaches Teams.
  */
-export function mentionActivity(marks: Pick<MentionMarks, 'render'>, map: WorkspaceMap, text: string): TeamsOutgoingActivity {
+export function mentionActivity(
+  marks: Pick<MentionMarks, 'render'>,
+  map: WorkspaceMap,
+  text: string,
+  names: ReadonlyMap<string, string> = new Map(),
+): TeamsOutgoingActivity {
   const entities: MentionEntity[] = [];
   const out = marks.render(text, escapeText, (name) => {
     const person = personOf(map, name);
-    if (person?.teamsId === undefined || person.teamsId === '') return escapeText(`@${name}`);
-    const shown = person.handle.replace(/[<>]/g, '');
+    const id = person?.teamsId !== undefined && person.teamsId !== '' ? person.teamsId : names.has(name) ? name : undefined;
+    if (id === undefined) return escapeText(`@${name}`);
+    const shown = (person?.teamsId === id ? person.handle : (names.get(name) ?? name)).replace(/[<>]/g, '');
     const tag = `<at>${shown}</at>`;
-    if (!entities.some((e) => e.mentioned.id === person.teamsId)) entities.push({ type: 'mention', text: tag, mentioned: { id: person.teamsId as string, name: shown } });
+    if (!entities.some((e) => e.mentioned.id === id)) entities.push({ type: 'mention', text: tag, mentioned: { id, name: shown } });
     return tag;
   });
   return { type: 'message', text: out, ...(entities.length === 0 ? {} : { entities }) };
@@ -204,8 +167,8 @@ function noPersonalChat(e: unknown): boolean {
 }
 
 /** The card with a line of mention text first, for a card that goes to a thread instead of one person. */
-function withLead(card: AdaptiveCard, leadText: string, map: WorkspaceMap): AdaptiveCard {
-  const lead = renderText(leadText, mentionsFromMap(map.people));
+function withLead(card: AdaptiveCard, leadText: string, map: WorkspaceMap, names: ReadonlyMap<string, string>): AdaptiveCard {
+  const lead = renderText(leadText, mentionsOr(mentionsFromMap(map.people), names));
   const entities = [...(card.msteams?.entities ?? [])];
   for (const e of lead.entities) if (!entities.some((x) => x.mentioned.id === e.mentioned.id)) entities.push(e);
   return { ...card, body: [textBlock(lead.text), ...card.body], ...(entities.length === 0 ? {} : { msteams: { entities } }) };
@@ -247,15 +210,25 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
     return { channel: target.channel, messageId: out.id };
   }
 
+  /** The names Teams gave the people `text` mentions whom the map does not list (their user records). */
+  function namesIn(map: WorkspaceMap, text: string): Promise<Map<string, string>> {
+    return rememberedNames(cache, text, (id) => map.people.some((p) => p.teamsId === id));
+  }
+
+  /** `text` as a message activity, a person outside the map named as Teams names them. */
+  async function textActivity(map: WorkspaceMap, text: string): Promise<TeamsOutgoingActivity> {
+    return mentionActivity(marks, map, text, await namesIn(map, text));
+  }
+
   /** Text a caller composed (this surface's marks, its own words, user text) in `target`'s thread. */
   async function postText(target: ChatTarget, text: string): Promise<ChatPosted> {
-    return post(target, mentionActivity(marks, await options.getMap(), text));
+    return post(target, await textActivity(await options.getMap(), text));
   }
 
   /** Delivers to a person's personal chat; false (logged) when the bot cannot reach them there. */
   async function postPersonal(userId: string, activity: TeamsOutgoingActivity): Promise<boolean> {
     const aadObjectId = teamsPerson(await options.getMap(), userId);
-    const user = await readUser(cache, aadObjectId).catch(() => undefined);
+    const user = await readTeamsUser(cache, aadObjectId).catch(() => undefined);
     const serviceUrl = user?.serviceUrl ?? options.serviceUrl;
     const tenantId = user?.tenantId ?? options.tenantId;
     if (serviceUrl === undefined || tenantId === undefined) {
@@ -320,7 +293,8 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
       // Teams has no ephemeral message: the asker's personal chat, else the thread with a mention.
       if (await postPersonal(prompt.userId, cardMessage(built))) return;
       const map = await options.getMap();
-      await post(where, cardMessage(withLead(built, `<@${prompt.userId}> this one is for you:`, map)));
+      const lead = `<@${prompt.userId}> this one is for you:`;
+      await post(where, cardMessage(withLead(built, lead, map, await namesIn(map, lead))));
     },
     async postScopeCard(incidentId, card): Promise<PostedMessage | undefined> {
       const where = await threadOf(incidentId);
@@ -341,12 +315,12 @@ export function createTeamsChatSurface(options: TeamsChatSurfaceOptions): TeamsC
 
     async channelPost(channel, text) {
       const map = await options.getMap();
-      await post({ channel: teamsChannel(map, channel) }, mentionActivity(marks, map, text));
+      await post({ channel: teamsChannel(map, channel) }, await textActivity(map, text));
     },
 
     async personPost(person, text) {
       const map = await options.getMap();
-      const activity = mentionActivity(marks, map, text);
+      const activity = await textActivity(map, text);
       if (await postPersonal(person, activity)) return;
       // No thread here to mention them in, and a channel chosen by map order is unrelated to them: say so and stop.
       log.info(`personal message to ${teamsPerson(map, person)} dropped: no personal install, and nowhere else to post it`);

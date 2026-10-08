@@ -22,12 +22,12 @@ import type { StopInput } from '@snapwing/pipeline/fixer/stop.ts';
 import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createTeamsAdapter, type TeamsInbound } from '../../src/adapters/teams/adapter.ts';
-import type { TeamsConnector } from '../../src/adapters/teams/connector.ts';
+import { TeamsNotFoundError, type GetMemberArgs, type TeamsConnector } from '../../src/adapters/teams/connector.ts';
 import { createTeamsGraph, type GraphMessage, type GraphReaction } from '../../src/adapters/teams/graph.ts';
 import { teamsSnapshotOf } from '../../src/adapters/teams/normalize.ts';
 import { emojiOfReactionType, TEAMS_REACTION_TABLE, teamsReactionName, teamsReactionNames } from '../../src/adapters/teams/reactions.ts';
-import { createTeamsSignals, teamsReactionsKey, type TeamsSignalOutcome } from '../../src/adapters/teams/signals.ts';
-import { createTeamsSubscriptions } from '../../src/adapters/teams/subscriptions.ts';
+import { createTeamsSignals, teamsMemberKey, teamsReactionsKey, type TeamsSignalOutcome } from '../../src/adapters/teams/signals.ts';
+import { createTeamsSubscriptions, subscriptionKey } from '../../src/adapters/teams/subscriptions.ts';
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CLIENT_STATE = 'teams-client-state-test';
@@ -44,6 +44,13 @@ const UNREPORTED = '1790000200123';
 const RAE = '6f1c2a3b-0000-4000-8000-00000000a001';
 const SAM = '6f1c2a3b-0000-4000-8000-00000000e001';
 const PAT = '6f1c2a3b-0000-4000-8000-00000000a002';
+/** Not in the map: known to Teams only. */
+const DANA = '6f1c2a3b-0000-4000-8000-00000000e003';
+const DANA_TEAMS_ID = '29:1dana-engineer-teams-id';
+/** Who the Connector's member lookup knows, by `29:` id. */
+const MEMBERS: Readonly<Record<string, string>> = { [DANA_TEAMS_ID]: DANA };
+/** Another channel of the same team. */
+const OTHER_CHANNEL = '19:9a8b7c6d5e4f3a2b1c0d@thread.tacv2';
 
 /** The trigger reaction that filed the incident, and when. */
 const T_TRIGGER = Date.parse('2026-10-03T10:00:30.000Z');
@@ -277,11 +284,21 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     };
     const text: TextSignalDeps = { workspaceId: WS, state, playbook: () => defaultPlaybook(), ports: textPorts, clock: () => now };
     const outcomes: TeamsSignalOutcome[][] = [];
+    /** The Connector's member lookup: a `29:` id to the member's AAD object id, each call recorded. */
+    const memberLookups: GetMemberArgs[] = [];
+    const connector: Pick<TeamsConnector, 'getMember'> = {
+      getMember: (args) => {
+        memberLookups.push(args);
+        const aad = MEMBERS[args.memberId];
+        return aad === undefined ? Promise.reject(new TeamsNotFoundError('getMember', 'MemberNotFound')) : Promise.resolve({ id: args.memberId, aadObjectId: aad });
+      },
+    };
     const signals = createTeamsSignals({
       deps,
       getMap,
       botAppId: APP_ID,
       graph: createTeamsGraph({ token: 'graph-test-token' }),
+      connector,
       handleInbound,
       stopIncident: (input) => {
         stops.push(input);
@@ -313,7 +330,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
       await signals.idle();
       return outcomes.at(-1) ?? [];
     };
-    return { signals, notify, activity, onError, claims, stops, handlerStops, inbound, captured, cache, standingReplies, textPorts };
+    return { signals, notify, activity, onError, claims, stops, handlerStops, inbound, captured, cache, standingReplies, textPorts, memberLookups };
   }
 
   const comments = async (): Promise<IncidentEvent<'comment'>[]> => (await state.read(INC)).filter((e): e is IncidentEvent<'comment'> => e.type === 'comment');
@@ -370,7 +387,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     expect(recorded[0]?.payload).toMatchObject({ target: { role: 'anchor', messageId: ANCHOR }, deepLink: messages.get(ANCHOR)?.webUrl });
     expect(recorded[1]?.occurredAt).toBe('2026-10-03T10:06:00.000Z');
     // The last set seen is kept for seven days.
-    expect(JSON.parse((await w.cache.get(teamsReactionsKey(ANCHOR))) ?? '{}')).toMatchObject({ reactions: [{ user: PAT, name: 'fire' }] });
+    expect(JSON.parse((await w.cache.get(teamsReactionsKey(CHANNEL, ANCHOR))) ?? '{}')).toMatchObject({ reactions: [{ user: PAT, name: 'fire' }] });
     expect(w.inbound).toEqual([]);
     expect(w.onError).not.toHaveBeenCalled();
   });
@@ -430,7 +447,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     await Promise.all([pending, removal]);
 
     // The 👀 was seen, then its removal: the set ends without it, and the claim was released.
-    expect(JSON.parse((await w.cache.get(teamsReactionsKey(ANCHOR))) ?? '{}')).toMatchObject({ reactions: [] });
+    expect(JSON.parse((await w.cache.get(teamsReactionsKey(CHANNEL, ANCHOR))) ?? '{}')).toMatchObject({ reactions: [] });
     expect((await comments()).map((c) => [c.payload.intent, c.payload.signalSource])).toEqual([
       ['claim', 'reaction'],
       ['claim', 'reaction-removed'],
@@ -649,5 +666,56 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     expect((await comments()).map((c) => c.payload.signalSource)).toEqual(['reaction', 'reaction-removed']);
     expect(w.inbound).toEqual([]);
     expect(w.onError).not.toHaveBeenCalled();
+  });
+
+  it("first sight counts only reactions newer than the team's subscription start, never a week-old one", async () => {
+    await filed();
+    const w = setup();
+    // Notifications for the team started at 10:00; Pat's 👀 is six days older (inside the 7-day TTL).
+    await w.cache.set(subscriptionKey(TEAM), JSON.stringify({ id: 'sub-1', expiresAt: '2026-10-03T11:00:00.000Z', since: '2026-10-03T10:00:00.000Z' }));
+    setReactions(ANCHOR, [reaction(PAT, '👀', '2026-09-27T10:00:00.000Z'), reaction(SAM, '👀', '2026-10-03T10:05:00.000Z')]);
+    expect(await w.notify(updated())).toMatchObject([{ kind: 'signal', intent: 'claim', source: 'reaction', outcome: { handled: true } }]);
+    expect((await comments()).map((c) => c.actor?.id)).toEqual([SAM]);
+    // Both are in the set, so the old one is never counted later either.
+    expect(await w.notify(updated())).toEqual([{ kind: 'ignored', reason: 'no-change' }]);
+    expect(JSON.parse((await w.cache.get(teamsReactionsKey(CHANNEL, ANCHOR))) ?? '{}').reactions).toHaveLength(2);
+    expect(w.onError).not.toHaveBeenCalled();
+  });
+
+  it('the reaction set and the per-message chain are per channel: the same message id in another channel is its own message', async () => {
+    await filed();
+    const w = setup();
+    setReactions(ANCHOR, [reaction(SAM, '👀', '2026-10-03T10:05:00.000Z')]);
+    expect(await w.notify(updated())).toMatchObject([{ kind: 'signal', intent: 'claim', outcome: { handled: true } }]);
+    // A notification for a message with the same id in another channel is not the anchor's redelivery.
+    const elsewhere = JSON.parse(JSON.stringify(updated()).replaceAll(CHANNEL, OTHER_CHANNEL)) as Record<string, unknown>;
+    expect(await w.notify(elsewhere)).toMatchObject([{ kind: 'signal', intent: 'claim', outcome: { handled: false } }]);
+    expect(await w.cache.get(teamsReactionsKey(OTHER_CHANNEL, ANCHOR))).not.toBeNull();
+    expect(await w.cache.get(`teams-reactions:${ANCHOR}`)).toBeNull();
+    expect((await comments()).map((c) => c.actor?.id)).toEqual([SAM]);
+  });
+
+  it('a mention in an RSC reply that names only a 29: id resolves through the member lookup, so the handoff still lands', async () => {
+    await filed();
+    const w = setup({ text: true });
+    now = new Date('2026-10-03T10:07:01.000Z');
+    const handoff = (id: string): Record<string, unknown> => ({
+      ...fixture('reply-activity'),
+      id,
+      text: '<p><at>Dana</at> can you take this?</p>',
+      entities: [{ type: 'mention', text: '<at>Dana</at>', mentioned: { id: DANA_TEAMS_ID, name: 'Dana' } }],
+    });
+    expect(await w.activity(handoff('1790000100781'))).toMatchObject([{ kind: 'ignored', reason: 'no-intent', text: { handled: true, kind: 'handoff', effect: 'handoff-asked' } }]);
+    const asked = (await state.read(INC)).filter((e): e is IncidentEvent<'text-signal'> => e.type === 'text-signal').at(-1);
+    expect(asked?.payload).toMatchObject({ kind: 'handoff', phase: 'asked', to: DANA });
+    expect(w.memberLookups).toEqual([{ serviceUrl: 'https://smba.trafficmanager.net/emea/', conversationId: '19:team-general@thread.tacv2', memberId: DANA_TEAMS_ID }]);
+    expect(await w.cache.get(teamsMemberKey(DANA_TEAMS_ID))).toBe(DANA);
+
+    // The next mention of Dana reads the remembered id; one Teams does not know names nobody.
+    await w.activity(handoff('1790000100782'));
+    expect(w.memberLookups).toHaveLength(1);
+    const unknown = { ...handoff('1790000100783'), entities: [{ type: 'mention', text: '<at>Kim</at>', mentioned: { id: '29:1kim-unknown', name: 'Kim' } }] };
+    expect(await w.activity(unknown)).toMatchObject([{ kind: 'ignored', reason: 'no-intent', text: { handled: false } }]);
+    expect(w.onError).toHaveBeenCalledTimes(1);
   });
 });

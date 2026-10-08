@@ -21,7 +21,8 @@
 // AAD object id) are ignored.
 //
 // The asker's role comes from the workspace map (`people[].teamsId`, the AAD object id); an unmapped
-// user is `unknown` and so gets the reporter or lead shape, never the engineer one.
+// user is `unknown` and so gets the reporter or lead shape, never the engineer one. A person the answer
+// mentions who is not in the map is named as Teams names them (their user record, with `cache`).
 //
 // `createStatusQueries` is pure over a snapshot and `events(id)` is synchronous, so each question first
 // loads the incident rows and the logs of the asking channel's open incidents, resolves, then loads the
@@ -31,13 +32,14 @@
 import type { IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
 import type { StatusAnswer, StatusQuery } from '@snapwing/pipeline/contracts/signals.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './adapter.ts';
 import type { TeamsConnector, TeamsOutgoingActivity } from './connector.ts';
-import { splitConversationId } from './conversations.ts';
-import { actionSet, card, mentionsFromMap, renderText, type ActionSpec } from './cards/elements.ts';
+import { rememberedNames, splitConversationId } from './conversations.ts';
+import { actionSet, card, mentionsFromMap, mentionsOr, renderText, type ActionSpec } from './cards/elements.ts';
 import { teamsHtmlToText } from './normalize.ts';
 
 /** The slice of the state port a status question reads. */
@@ -51,6 +53,8 @@ export interface TeamsStatusQueryOptions {
   getMap: () => Promise<WorkspaceMap>;
   /** Writes standing subscriptions asked for in the personal chat; without it such a message is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
+  /** kv: the names Teams gave people the map does not list (their user records). Absent: such a person is `@id`. */
+  cache?: Pick<CachePort, 'get'>;
   clock?: () => Date;
   /** IANA zone for the wall-clock times in an answer. Default UTC. */
   timeZone?: string;
@@ -113,8 +117,11 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
   }
 
   /** The answer as a message with one Adaptive Card; an engineer's answer to one incident carries Stop and Revert. */
-  function messageFor(answer: StatusAnswer, map: WorkspaceMap): TeamsOutgoingActivity {
-    const rendered = renderText(answer.text, mentionsFromMap(map.people));
+  async function messageFor(answer: StatusAnswer, map: WorkspaceMap): Promise<TeamsOutgoingActivity> {
+    const fromMap = mentionsFromMap(map.people);
+    const names =
+      options.cache === undefined ? new Map<string, string>() : await rememberedNames(options.cache, answer.text, (id) => fromMap(id) !== undefined);
+    const rendered = renderText(answer.text, mentionsOr(fromMap, names));
     // The card's own fallback keeps the escapes, so user markdown (a summary's link) is never live there.
     const fallback = renderText(answer.text, () => undefined).text;
     const wanted: ActionSpec[] =
@@ -265,7 +272,7 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
           text,
           context: { channelId: request.channelId, ...(request.threadId === undefined ? {} : { threadId: request.threadId }) },
         });
-        await post(request, messageFor(answer, map));
+        await post(request, await messageFor(answer, map));
       } catch (e) {
         onError(e);
       }

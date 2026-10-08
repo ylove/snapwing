@@ -14,6 +14,8 @@ import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
 import { PrActionRefusedError } from '@snapwing/pipeline/merge/actions.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
+import { defaultPlaybook } from '@snapwing/pipeline/config/playbook.ts';
+import { handleTextSignal, type LinkedIncidentRequest, type TextSignalDeps } from '@snapwing/pipeline/signals/text.ts';
 import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
@@ -35,6 +37,7 @@ import {
   type PrActionInput,
   type TeamsCardStore,
   type TeamsInteractivity,
+  type TeamsInteractivityOptions,
 } from '../../src/adapters/teams/interactivity.ts';
 
 const T0 = Date.parse('2026-10-03T09:00:00.000Z');
@@ -137,7 +140,7 @@ let ix: TeamsInteractivity;
 let outcomes: unknown[];
 let errors: unknown[];
 
-function make(): TeamsInteractivity {
+function make(extra: Partial<TeamsInteractivityOptions> = {}): TeamsInteractivity {
   const deps: MidFlightDeps = {
     workspaceId: WS,
     state,
@@ -181,6 +184,7 @@ function make(): TeamsInteractivity {
     clock: () => new Date(now),
     onOutcome: (o) => outcomes.push(o),
     onError: (e) => errors.push(e),
+    ...extra,
   });
 }
 
@@ -498,6 +502,26 @@ describe('card choices go to handleTap with the tapper resolved by AAD object id
     // With no card body to keep, the shared message is left as it is.
     expect(seen).toEqual([]);
   });
+
+  it("a clarify option that reads like a reserved verb is a clarify answer, never that verb's path", async () => {
+    await seedPrOpen(2);
+    linked.add(RAE);
+    const reserved: TeamsCardInput = {
+      kind: 'clarify',
+      question: { audience: 'reporter', text: 'Which button did you press?', options: ['stop', 'merge'], asks: 'surface', gatePassed: true, gateFailures: [] },
+    };
+    const { outcome, card } = await tapOn(RAE, reserved, 'stop');
+    // The card says what it is in the data its buttons carry.
+    expect(executeAction(card, 'stop').data).toEqual({ incidentId: INC, card: 'clarify' });
+    expect(outcome).toEqual({ kind: 'tapped', card: 'clarify', choice: 'stop', outcome: { accepted: true, resumed: true } });
+    expect(taps.map((t) => [t.card, t.choice])).toEqual([['clarify', 'stop']]);
+    // With no remembered card too: `merge` stays a clarify answer and never reaches the PR actions.
+    const merged = await ix.handleInvoke(invoke(RAE, executeAction(card, 'merge'), undefined));
+    expect(merged.outcome).toEqual({ kind: 'tapped', card: 'clarify', choice: 'merge', outcome: { accepted: true, resumed: true } });
+    expect(prCalls).toEqual([]);
+    expect(cancelled).toEqual([]);
+    expect(await types()).not.toContain('stopped');
+  });
 });
 
 // Not a bug, by the card tapped -------------------------------------------------------------------
@@ -596,6 +620,24 @@ describe('authorization (main 8.2, 11.2, 16)', () => {
     const bySam = await ix.handleInvoke(invoke(SAM, executeAction(card, 'approve_fix'), repostId));
     expect(bySam.outcome).toMatchObject({ kind: 'tapped', choice: 'approve_fix' });
     expect(lastLine(answeredCard(bySam.card))).toBe('<at>sam</at> chose Fix it.');
+  });
+
+  it("with no remembered card, a reporter's Fix it still reaches the owner: the thread gets the line that mentions them", async () => {
+    await seedPlanned(1);
+    const card = build(fixPreview(1));
+    const { outcome, card: answer } = await ix.handleInvoke(invoke(RAE, executeAction(card, 'approve_fix'), '1790000999999'));
+    expect(outcome).toEqual({ kind: 'denied', action: 'approve_fix', reason: 'engineer-required', askedOwner: SAM });
+    expect(answer).toBeUndefined();
+    expect(taps).toEqual([]);
+    // A reply in the thread: the lead line alone (the card above keeps its buttons), mentioning Sam.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.path).toBe(`/amer/v3/conversations/${THREAD}/activities/${ROOT}`);
+    const lead = cardIn(seen[0]);
+    expect(lead?.body.map((b) => b.text)).toEqual(['<at>sam</at>, <at>rae</at> asked for a fix. Tap Fix it to approve.']);
+    expect(lead?.actions ?? []).toEqual([]);
+    expect(mentioned(lead as AdaptiveCard)).toEqual(expect.arrayContaining([SAM, RAE]));
+    expect((await lastOf('bot-message-posted'))?.payload).toMatchObject({ platform: 'teams', channel: CHANNEL, role: 'other' });
+    expect(errors).toEqual([]);
   });
 
   it('a merge without a Teams-linked GitHub identity is refused and never reaches the PR actions', async () => {
@@ -786,6 +828,102 @@ describe('a tap on an unknown incident, and invokes that are not taps', () => {
   });
 });
 
+// The text-signal cards (A 3) -----------------------------------------------------------------------
+
+describe('the text-signal cards through answerResolution and answerScopeChange (A 3)', () => {
+  const ASKED = '1790000100555';
+  const SECOND = '1790000100556';
+  let posted: { card: AdaptiveCard; id: string }[];
+  let filedLinked: LinkedIncidentRequest[];
+
+  /** The text signals over the store; their cards go up through the remembering connector, as compose wires them. */
+  function textDeps(): TextSignalDeps {
+    const put = async (c: AdaptiveCard): Promise<string> => {
+      const id = await post(c);
+      posted.push({ card: c, id });
+      return id;
+    };
+    return {
+      workspaceId: WS,
+      state,
+      playbook: defaultPlaybook(),
+      clock: () => new Date(now),
+      proposalWait: { maxMs: 0 },
+      ports: {
+        askResolution: async (incidentId, prompt) => void (await put(build({ ...prompt, kind: 'resolution' }, incidentId))),
+        postScopeCard: async (incidentId, c) => ({ platform: 'teams', channel: CHANNEL, messageId: await put(build(c, incidentId)), role: 'other' }),
+        fileLinked: (request) => (filedLinked.push(request), Promise.resolve({ incidentId: '01K6TEAMSTAP0000000000002' })),
+        assign: () => Promise.resolve(),
+      },
+    };
+  }
+
+  /** Rae says `text` in the incident's thread, as the signals hand it over. */
+  async function rae(deps: TextSignalDeps, id: string, text: string) {
+    return handleTextSignal(deps, {
+      platform: 'teams',
+      thread: { channel: CHANNEL, rootId: ROOT },
+      message: { id, authorId: RAE, text, timestamp: new Date(now).toISOString() },
+      actor: { id: RAE, name: 'rae', role: 'reporter' },
+    });
+  }
+
+  beforeEach(async () => {
+    posted = [];
+    filedLinked = [];
+    await seedPlanned(1);
+    await append([ev('filed', { jiraKey: 'WEB-1042' })]);
+  });
+
+  it('the resolution question: only its asker answers; Close it closes the incident and the card says so for everyone', async () => {
+    const deps = textDeps();
+    ix = make({ text: deps });
+    expect(await rae(deps, ASKED, 'nvm, works now')).toMatchObject({ handled: true, effect: 'resolution-asked' });
+    const [question] = posted;
+    if (question === undefined) throw new Error('no resolution question');
+    expect(executeAction(question.card, 'close').data).toEqual({ incidentId: INC, messageId: ASKED });
+
+    // Sam was not asked: told why on his view of the card, and nothing is edited.
+    const bySam = await ix.handleInvoke(invoke(SAM, executeAction(question.card, 'close'), question.id));
+    expect(bySam.outcome).toEqual({ kind: 'text-signal', incidentId: INC, choice: 'close', outcome: { handled: false, reason: 'not-allowed' } });
+    expect(lastLine(answeredCard(bySam.card))).toBe('Only the person it asked, the reporter, or an engineer can answer this.');
+    expect(answeredCard(bySam.card).actions).toEqual(question.card.actions);
+    expect(seen).toEqual([]);
+
+    const byRae = await ix.handleInvoke(invoke(RAE, executeAction(question.card, 'close'), question.id));
+    expect(byRae.outcome).toMatchObject({ kind: 'text-signal', incidentId: INC, choice: 'close', outcome: { handled: true, effect: 'closed' } });
+    const closed = answeredCard(byRae.card);
+    expect(lastLine(closed)).toBe('Closed WEB-1042.');
+    expect(closed.actions).toBeUndefined();
+    expect(edits()).toEqual([{ path: cardPath(question.id), card: closed }]);
+    expect(await types()).toContain('closed');
+    expect(taps).toEqual([]);
+  });
+
+  it('the scope-change card: Yes files the second issue on Teams, the card names who chose, and a second answer is refused', async () => {
+    const deps = textDeps();
+    ix = make({ text: deps });
+    expect(await rae(deps, SECOND, 'same thing on the app too')).toMatchObject({ handled: true, effect: 'scope-proposed' });
+    const [scopeCard] = posted;
+    if (scopeCard === undefined) throw new Error('no scope-change card');
+
+    const bySam = await ix.handleInvoke(invoke(SAM, executeAction(scopeCard.card, 'yes'), scopeCard.id));
+    expect(bySam.outcome).toMatchObject({ kind: 'text-signal', choice: 'yes', outcome: { handled: true, effect: 'scope-split' } });
+    expect(filedLinked).toEqual([expect.objectContaining({ parentIncidentId: INC, platform: 'teams', channel: CHANNEL, messageId: SECOND, reporter: expect.objectContaining({ id: RAE }) })]);
+    const chosen = answeredCard(bySam.card);
+    expect(lastLine(chosen)).toBe('<at>sam</at> chose Yes.');
+    expect(mentioned(chosen)).toContain(SAM);
+    expect(edits()).toEqual([{ path: cardPath(scopeCard.id), card: chosen }]);
+
+    seen = [];
+    const again = await ix.handleInvoke(invoke(RAE, executeAction(scopeCard.card, 'same-bug'), scopeCard.id));
+    expect(again.outcome).toMatchObject({ kind: 'text-signal', choice: 'same-bug', outcome: { handled: false, reason: 'already-decided' } });
+    expect(lastLine(answeredCard(again.card))).toBe('This question already has an answer.');
+    expect(seen).toEqual([]);
+    expect(filedLinked).toHaveLength(1);
+  });
+});
+
 // onAction, the transport's handler --------------------------------------------------------------
 
 describe('onAction, as the transport (#390) calls it', () => {
@@ -836,6 +974,33 @@ describe('onAction, as the transport (#390) calls it', () => {
     expectLinkSentPrivately(SAM, LINK_URL);
     expect(await store.get(THREAD, id)).toEqual(card);
     expect(outcomes).toEqual([{ kind: 'pr-refused', action: 'merge', incidentId: INC, reason: 'not-linked' }]);
+  });
+
+  it('a refusal that lands past the budget reaches the tapper in their personal chat; one inside it, or an accepted tap, does not', async () => {
+    await seedPrOpen(2);
+    linked.add(RAE);
+    const card = build(prReady);
+    const id = await post(card);
+    // Inside the budget the answer card carries the reason: nothing private.
+    const inside = await ix.onAction(invoke(RAE, executeAction(card, 'request_changes'), id), { expired: () => false });
+    expect(lastLine(answeredCard(inside))).toBe('Only an engineer on this surface can do that.');
+    expect(seen).toEqual([]);
+
+    // Past it the transport already said "Working on it": the reason goes to Rae's personal chat.
+    await ix.onAction(invoke(RAE, executeAction(card, 'request_changes'), id), { expired: () => true });
+    const opened = seen.filter((s) => s.path === '/amer/v3/conversations');
+    expect(opened.map((s) => s.body)).toEqual([expect.objectContaining({ isGroup: false, members: [{ id: `29:${RAE}`, aadObjectId: RAE }], tenantId: TENANT })]);
+    const told = seen.filter((s) => s.path === PERSONAL_PATH).map((s) => cardIn(s)?.body.map((b) => b.text));
+    expect(told).toEqual([['You tapped Request changes. Only an engineer on this surface can do that.']]);
+    expect(edits()).toEqual([]);
+
+    // An accepted tap past the budget is seen through its edit in place: nothing private.
+    seen = [];
+    linked.add(SAM);
+    await ix.onAction(invoke(SAM, executeAction(card, 'merge'), id), { expired: () => true });
+    expect(seen.filter((s) => s.method !== 'PUT')).toEqual([]);
+    expect(edits()).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 
   it('an edit in place that fails does not fail the tap, and the card is still remembered as answered', async () => {

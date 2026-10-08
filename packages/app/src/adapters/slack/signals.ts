@@ -73,6 +73,7 @@ import {
   type TextSignalPorts,
 } from '@snapwing/pipeline/signals/text.ts';
 import type { Playbook } from '@snapwing/pipeline/config/playbook.ts';
+import { textSignalRefusal } from '../shared/taps.ts';
 import { parsedBodyOf, type SlackAdapter } from './adapter.ts';
 import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
 import { actions, context, esc, mention, section, type SlackMessage } from './cards/blocks.ts';
@@ -412,14 +413,14 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
       if (choice === undefined) return;
       const outcome = await answerResolution(textDeps, { incidentId, messageId: block.messageId, actor, choice, at });
       const key = incident?.jiraKey ?? 'the ticket';
-      await reply(outcome.handled ? (choice === 'close' ? `Closed ${key}.` : `Keeping ${key} open.`) : refusalText(outcome.reason));
+      await reply(outcome.handled ? (choice === 'close' ? `Closed ${key}.` : `Keeping ${key} open.`) : textSignalRefusal(outcome.reason));
       return;
     }
     const choice = SCOPE_ACTIONS.find((c) => c === actionId);
     if (choice === undefined) return;
     const outcome = await answerScopeChange(textDeps, { incidentId, messageId: block.messageId, actor, choice, at });
     if (!outcome.handled) {
-      await reply(refusalText(outcome.reason));
+      await reply(textSignalRefusal(outcome.reason));
       return;
     }
     // The card says who answered and loses its buttons.
@@ -505,15 +506,6 @@ export function buildScopeChangeCard(incidentId: string, card: ScopeChangeCard):
       ),
     ],
   };
-}
-
-const REFUSALS: Readonly<Partial<Record<string, string>>> = {
-  'not-allowed': 'Only the person it asked, the reporter, or an engineer can answer this.',
-  closed: 'This incident is already closed.',
-};
-
-function refusalText(reason: string): string {
-  return REFUSALS[reason] ?? 'This question already has an answer.';
 }
 
 /**

@@ -16,7 +16,7 @@ import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { teamsStatusKey } from '../../src/adapters/teams/adapter.ts';
 import { createTeamsConnector } from '../../src/adapters/teams/connector.ts';
-import { rememberTeamsConversation } from '../../src/adapters/teams/conversations.ts';
+import { rememberTeamsConversation, teamsUserKey } from '../../src/adapters/teams/conversations.ts';
 import {
   createTeamsStatusProjector,
   mirrorKey,
@@ -588,6 +588,34 @@ describe('notify rows (A 4.4)', () => {
     await projector().drainOnce();
     expect(teams.created[0]).toMatchObject({ members: [{ id: RAE_TEAMS, aadObjectId: RAE }], bot: { id: 'bot-app-id' } });
     expect(teams.in(`a:chat-${RAE}`)).toHaveLength(1);
+  });
+
+  it('a standing watcher outside the map: their chat opens with the 29: id their last activity gave, and they are named as Teams names them', async () => {
+    // Lee asked for a standing watch in the personal chat; the activity left this record (`rememberUser`).
+    const LEE = '44444444-4444-4444-8444-444444444444';
+    const record = { aadObjectId: LEE, teamsUserId: '29:lee-teams-user-id', name: 'Lee Watcher', serviceUrl: SERVICE_URL, tenantId: TENANT, updatedAt: new Date(time).toISOString() };
+    await kvCache().set(teamsUserKey(LEE), JSON.stringify(record));
+    const incidentId = await capture(CHANNEL);
+
+    // No personal install yet: mentioned in the thread by name, never by the raw id.
+    await enqueue(notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: [LEE], batch: `notify:w1:dm:${LEE}` }));
+    await projector({ onError: () => undefined }).drainOnce();
+    expect(teams.created[0]).toMatchObject({ members: [{ id: '29:lee-teams-user-id', aadObjectId: LEE }] });
+    const [fallback] = teams.in(CHANNEL);
+    expect(fallback?.text).toBe('<at>Lee Watcher</at> WEB-1 is live.');
+    expect(fallback?.entities).toEqual([{ id: LEE, name: 'Lee Watcher' }]);
+
+    // Installed: the DM reaches the chat the 29: id opens. The status message names them the same way.
+    teams.installed.add(LEE);
+    await enqueue(notify(incidentId, 'WEB-1 is closed.', { delivery: 'dm', mentions: [LEE], batch: `notify:w2:dm:${LEE}` }));
+    await enqueue(row(incidentId, `Ready for review, <@${LEE}>.`));
+    await projector().drainOnce();
+    expect(teams.created[1]).toMatchObject({ members: [{ id: '29:lee-teams-user-id', aadObjectId: LEE }], tenantId: TENANT });
+    expect(teams.in(`a:chat-${LEE}`).map((a) => a.text)).toEqual(['WEB-1 is closed.']);
+    const status = teams.in(CHANNEL).find((m) => m.text.includes('Ready for review'));
+    expect(status?.text).toContain('<at>Lee Watcher</at>');
+    expect(status?.text).not.toContain(LEE);
+    expect(status?.entities).toEqual([{ id: LEE, name: 'Lee Watcher' }]);
   });
 
   it('mentions a watcher without a personal install in the thread, and logs it once', async () => {

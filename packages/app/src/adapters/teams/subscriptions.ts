@@ -5,8 +5,10 @@
 // - One subscription per team in the map: `/teams/{id}/channels/getAllMessages`, change types `created`
 //   and `updated`. Channel-message subscriptions last at most 60 minutes, so `ensure` renews at 45 and the
 //   worker calls `ensureAll` every `SUBSCRIPTION_TICK_MS`. State is kv `teams-subscription:{teamId}`
-//   (JSON `{ id, expiresAt }`), plus `teams-subscription-id:{id}` so a lifecycle notification, which does
-//   not name a team, finds its team.
+//   (JSON `{ id, expiresAt, since }`), plus `teams-subscription-id:{id}` so a lifecycle notification, which
+//   does not name a team, finds its team. `since` is when the team's notifications started: when a
+//   subscription was asked for with no state kept, carried across renewals and recreations, so the signals
+//   never count a reaction older than it on a message they first see (`subscriptionSince`).
 // - `handleValidation(req)` answers Graph's `validationToken` handshake. `verifyNotification(body)` keeps
 //   only notifications whose `clientState` matches (constant time) and drops the rest, forged or not.
 //   `handleLifecycle(body)` runs the verified lifecycle events: `reauthorizationRequired` renews,
@@ -45,6 +47,8 @@ export type TeamsMode = { mode: 'full'; since: string } | { mode: 'reduced'; sin
 export interface SubscriptionState {
   id: string;
   expiresAt: string;
+  /** ISO 8601: when the team's notifications started (absent in state written before it was kept). */
+  since?: string;
 }
 
 export type EnsureOutcome =
@@ -135,7 +139,14 @@ function readState(raw: string | null): SubscriptionState | undefined {
   if (typeof v !== 'object' || v === null) return undefined;
   const rec = v as Record<string, unknown>;
   const expires = typeof rec['expiresAt'] === 'string' ? Date.parse(rec['expiresAt']) : Number.NaN;
-  return typeof rec['id'] === 'string' && Number.isFinite(expires) ? { id: rec['id'], expiresAt: rec['expiresAt'] as string } : undefined;
+  if (typeof rec['id'] !== 'string' || !Number.isFinite(expires)) return undefined;
+  const since = typeof rec['since'] === 'string' && Number.isFinite(Date.parse(rec['since'])) ? rec['since'] : undefined;
+  return { id: rec['id'], expiresAt: rec['expiresAt'] as string, ...(since === undefined ? {} : { since }) };
+}
+
+/** When the team's notifications started, or undefined when no subscription state keeps it. */
+export async function subscriptionSince(cache: Pick<CachePort, 'get'>, teamId: string): Promise<string | undefined> {
+  return readState(await cache.get(subscriptionKey(teamId)))?.since;
 }
 
 const RESOURCE_RE = /teams\('([^']+)'\)\/channels\('([^']+)'\)\/messages\('([^']+)'\)(?:\/replies\('([^']+)'\))?/;
@@ -170,8 +181,11 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
     return readState(await cache.get(subscriptionKey(teamId)));
   }
 
-  async function save(teamId: string, sub: GraphSubscription): Promise<SubscriptionState> {
-    const state: SubscriptionState = { id: sub.id, expiresAt: sub.expirationDateTime };
+  /** Keeps `sub`; `askedAt` is when it was asked for (a new subscription notifies from then on). */
+  async function save(teamId: string, sub: GraphSubscription, askedAt: Date = now()): Promise<SubscriptionState> {
+    // The start survives a renewal and a recreation; a reduced team's cleared state starts again.
+    const since = (await load(teamId))?.since ?? askedAt.toISOString();
+    const state: SubscriptionState = { id: sub.id, expiresAt: sub.expirationDateTime, since };
     await cache.set(subscriptionKey(teamId), JSON.stringify(state));
     await cache.set(subscriptionIdKey(sub.id), teamId);
     return state;
@@ -206,6 +220,7 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
   }
 
   async function create(teamId: string): Promise<EnsureOutcome> {
+    const askedAt = now();
     const sub = await graph.createSubscription({
       resource: subscriptionResource(teamId),
       changeType: SUBSCRIPTION_CHANGE_TYPES,
@@ -214,9 +229,9 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
       expirationDateTime: expiry(),
       clientState,
     });
-    const state = await save(teamId, sub);
+    const state = await save(teamId, sub, askedAt);
     await markFull(teamId);
-    return { kind: 'created', teamId, ...state };
+    return { kind: 'created', teamId, id: state.id, expiresAt: state.expiresAt };
   }
 
   async function run(teamId: string, forceRenew: boolean, recreate: boolean): Promise<EnsureOutcome> {
@@ -228,12 +243,12 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
       const state = recreate ? undefined : await load(teamId);
       if (!state) return await create(teamId);
       const due = forceRenew || Date.parse(state.expiresAt) - now().getTime() <= SUBSCRIPTION_LIFETIME_MS - SUBSCRIPTION_RENEW_AFTER_MS;
-      if (!due) return { kind: 'active', teamId, ...state };
+      if (!due) return { kind: 'active', teamId, id: state.id, expiresAt: state.expiresAt };
       try {
         const sub = await graph.renewSubscription(state.id, expiry());
         const renewed = await save(teamId, sub);
         await markFull(teamId);
-        return { kind: 'renewed', teamId, ...renewed };
+        return { kind: 'renewed', teamId, id: renewed.id, expiresAt: renewed.expiresAt };
       } catch (error) {
         // Graph forgot it (expired or removed): start over. Anything else is handled below.
         if (error instanceof GraphApiError && error.status === 404) return await create(teamId);
