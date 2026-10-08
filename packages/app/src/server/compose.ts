@@ -74,8 +74,9 @@
 //                through the chat router, which picks the platform's `ChatSurface` by incident source
 //                (Slack's is `adapters/slack/chat-surface.ts`, Teams' `adapters/teams/chat-surface.ts`).
 //                Deps that carry one platform (`HumanDeps.chat`, the PR actions) are built per platform.
-//                Slack is optional: its secrets are required only when one of them is set (or its
-//                transport named), and with no chat platform at all startup fails naming the Slack group.
+//                Slack is optional: its secrets are required only once its bot token (or app token) is set
+//                (or its transport named); an app created but not installed (#240) is pending: off, one log line.
+//                With no chat platform at all startup fails naming the Slack group.
 //   Teams        (the "Teams" sections) optional the same way: on when any of TEAMS_APP_ID,
 //                TEAMS_APP_PASSWORD, TEAMS_TENANT_ID, or TEAMS_PUBLIC_URL is set, and then the first three
 //                are required. One Bot Connector client (client credentials against the tenant), wrapped
@@ -338,6 +339,15 @@ export class MissingSecretsError extends Error {
     super(`${why === undefined ? '' : `${why}: `}missing secrets: ${missing.join(', ')} (set them in the env file or the provider's secret store; names in build/CONTEXT.md 6b)`);
   }
 }
+
+/** The values onboarding writes when it creates the Slack app, before any install: with no bot token they mean pending. */
+export const SLACK_CREATION_SECRETS: readonly string[] = Object.freeze(['SLACK_CLIENT_ID', 'SLACK_CLIENT_SECRET']);
+
+/** The next step once the workspace admin approves the Slack install. */
+const SLACK_INSTALL_PENDING_NEXT = 'once the Slack install is approved, run `snapwing onboard --step slack`';
+
+/** The one line serve logs when the Slack app exists but SLACK_BOT_TOKEN is not set yet. */
+export const SLACK_INSTALL_PENDING = `slack: the app is created but its install is pending approval (no SLACK_BOT_TOKEN yet), so Slack is off; ${SLACK_INSTALL_PENDING_NEXT}`;
 
 /** What startup says when no chat platform is configured: it names the Slack group, and the Teams one. */
 export const NO_CHAT_PLATFORM = `no chat platform is configured (Slack needs its group of secrets; Teams needs ${TEAMS_SECRETS.join(', ')})`;
@@ -687,12 +697,19 @@ export const compose: ComposeFn = async (deps) => {
   // Slack is configured when any of its secrets is set or its transport is named (#368); then the whole
   // group is required. With no chat platform at all, startup names the Slack group.
   const otherSurfaces = overrides.chatSurfaces ?? [];
-  const slackProbe = await readSecrets(deps.secrets, [], [...SLACK_SECRETS, 'SLACK_APP_TOKEN']);
-  const slackOn = slackProbe.size > 0 || (transportChoice !== undefined && transportChoice !== '');
+  // The exception is an app created but not yet installed (#240): onboarding writes the signing secret and
+  // the client id and secret at creation, the bot token only after the workspace admin approves the install.
+  // Those values alone mean Slack is pending: off, with one log line, so Teams is not held up.
+  const slackProbe = await readSecrets(deps.secrets, [], [...SLACK_SECRETS, 'SLACK_APP_TOKEN', ...SLACK_CREATION_SECRETS]);
+  const slackInstalled = slackProbe.has('SLACK_BOT_TOKEN') || slackProbe.has('SLACK_APP_TOKEN');
+  const slackNamed = transportChoice !== undefined && transportChoice !== '';
+  const slackOn = slackInstalled || slackNamed;
+  const slackPending = !slackOn && SLACK_CREATION_SECRETS.concat('SLACK_SIGNING_SECRET').some((name) => slackProbe.has(name));
+  if (slackPending) log.info(SLACK_INSTALL_PENDING);
   // Teams the same way: any of its secrets set (its public URL included) means Teams, and the whole group.
   const teamsProbe = await readSecrets(deps.secrets, [], [...TEAMS_SECRETS, 'TEAMS_PUBLIC_URL']);
   const teamsOn = teamsProbe.size > 0;
-  if (!slackOn && !teamsOn && otherSurfaces.length === 0) throw new MissingSecretsError(SLACK_SECRETS, NO_CHAT_PLATFORM);
+  if (!slackOn && !teamsOn && otherSurfaces.length === 0) throw new MissingSecretsError(SLACK_SECRETS, slackPending ? `${NO_CHAT_PLATFORM}; ${SLACK_INSTALL_PENDING_NEXT}` : NO_CHAT_PLATFORM);
   const required = [
     ...(slackOn ? SLACK_SECRETS : []),
     ...(teamsOn ? TEAMS_SECRETS : []),

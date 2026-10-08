@@ -402,6 +402,52 @@ describe('compose with Teams under snapwing serve', () => {
     expect(teams.scopes).toContain('https://graph.microsoft.com/.default');
     expect(unhandled).toEqual([]);
   }, 60_000);
+
+  it('starts on Teams while the Slack app awaits install approval, with one log line, and Teams answers', async () => {
+    const teams = teamsWorld();
+    // The values onboarding writes when it creates the Slack app: no bot token until the install is approved.
+    const secrets: Record<string, string> = { ...fakeSecrets(), ...TEAMS_SECRETS, SLACK_CLIENT_ID: '1234.5678', SLACK_CLIENT_SECRET: 'client-secret-abc' };
+    delete secrets['SLACK_BOT_TOKEN'];
+    const file = join(dir, 'pending.env');
+    await writeFile(file, envFile(secrets));
+    const out: string[] = [];
+    const err: string[] = [];
+    const signals = new EventEmitter();
+    let markReady!: (info: { url?: string }) => void;
+    const ready = new Promise<{ url?: string }>((r) => (markReady = r));
+    let inject: TeamsInject | undefined;
+    const code = runServe(
+      ['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG],
+      { env: { ...dbEnv(), ...(await env()), SNAPWING_ENV_FILE: file }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
+      { signals, onReady: markReady, compose: (deps) => compose({ ...deps, overrides: { resolveHarness: () => idleHarness, teamsInject: (fn) => (inject = fn) } }) },
+    );
+    void code.then(() => markReady({}));
+    const { url } = await ready;
+    const log = out.join('\n');
+    expect(log).toContain('composed: teams http, runner local');
+    expect(log.match(/install is pending approval/g)).toHaveLength(1);
+    expect(log).toContain('snapwing onboard --step slack');
+    expect(log).not.toContain('slack http transport');
+    const health = (await (await fetch(`${url}/healthz`)).json()) as { ok: boolean; platforms?: { id: string }[] };
+    expect(health.platforms?.map((p) => p.id)).toEqual(['teams']);
+
+    const queue = { ...fixture('activities/personal-text.json'), text: 'queue' };
+    if (inject === undefined) throw new Error('compose did not hand over the Teams seam');
+    expect(await inject({ activity: queue })).toEqual({ status: 200 });
+    expect(teams.connector.filter((c) => c.kind === 'send')).toHaveLength(1);
+
+    signals.emit('SIGTERM');
+    expect(await code).toBe(0);
+    expect(unhandled).toEqual([]);
+  }, 60_000);
+
+  it('with the Slack install pending and no other platform, fails naming the pending install and the next step', async () => {
+    const pending: Record<string, string> = { ...fakeSecrets(), SLACK_CLIENT_ID: '1234.5678', SLACK_CLIENT_SECRET: 'client-secret-abc' };
+    delete pending['SLACK_BOT_TOKEN'];
+    await expect(composeOnly(pending)).rejects.toThrow(MissingSecretsError);
+    await expect(composeOnly(pending)).rejects.toThrow('Teams needs TEAMS_APP_ID');
+    await expect(composeOnly(pending)).rejects.toThrow('run `snapwing onboard --step slack`');
+  });
 });
 
 /** The composed app with Slack and Teams on the capture's recording and the Jira and GitHub worlds. */
