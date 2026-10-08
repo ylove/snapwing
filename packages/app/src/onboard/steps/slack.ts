@@ -329,9 +329,9 @@ export function createSlackStep(deps: SlackStepDeps = {}): OnboardStep {
           clientId = new SecretValue(created.clientId);
           clientSecret = new SecretValue(created.clientSecret);
           await ctx.writeEnv({
-            SLACK_SIGNING_SECRET: created.signingSecret,
+            SLACK_SIGNING_SECRET: new SecretValue(created.signingSecret),
             SLACK_CLIENT_ID: created.clientId,
-            SLACK_CLIENT_SECRET: created.clientSecret,
+            SLACK_CLIENT_SECRET: clientSecret,
           });
           await ctx.progress({ appId, redirect: listener !== undefined });
           io.say('The Slack app is created.');

@@ -7,6 +7,7 @@ import { setupServer } from 'msw/node';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseDotenv } from '../../../pipeline/src/providers/local/secrets.ts';
 import { scriptedPrompter } from '../../src/cli/prompt.ts';
 import { runInterview, type InterviewResult } from '../../src/onboard/interview/machine.ts';
 import { createKvOnboardingStore, type OnboardingStore } from '../../src/onboard/interview/state.ts';
@@ -320,5 +321,28 @@ describe('onboarding step 1: Slack', () => {
     expect(refused.envText).toContain(`SLACK_BOT_TOKEN=${OTHER_BOT}`);
     expect(refused.envText).not.toContain(`SLACK_BOT_TOKEN=${BOT}`);
     expect(slack.created).toHaveLength(1);
+  });
+
+  it('hands the generated secrets to the redactor, so a later step cannot leak them', async () => {
+    const leak: OnboardStep = {
+      id: 'leak',
+      number: 3,
+      title: 'Leak',
+      needs: ['slack'],
+      run: async () => {
+        const env = parseDotenv(await readFile(join(dir, '.env'), 'utf8'), '.env');
+        throw new Error(`oops ${env.get('SLACK_SIGNING_SECRET') ?? ''} ${env.get('SLACK_CLIENT_SECRET') ?? ''}`);
+      },
+    };
+    const io = createTerminalIO({ prompter: scriptedPrompter(PASTE), say: () => undefined });
+    const result = await runInterview({
+      steps: [runtime, createSlackStep({ apiBase: API, listen: () => Promise.resolve(undefined) }), leak],
+      store: memoryStore().store,
+      io,
+      workdir: dir,
+      env: {},
+    });
+    expect(result.outcome).toBe('failed');
+    expect(result.failure?.message).toBe('oops [secret] [secret]');
   });
 });
