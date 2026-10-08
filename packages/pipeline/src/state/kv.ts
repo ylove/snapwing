@@ -67,3 +67,32 @@ export async function kvSetIfAbsent(ctx: StateContext, k: string, v: string, ttl
 export async function kvDelete(ctx: StateContext, k: string): Promise<void> {
   await ctx.db.deleteFrom('kv').where('k', '=', k).execute();
 }
+
+/** Rows `kvSweepExpired` deletes per statement. */
+export const KV_SWEEP_BATCH = 500;
+
+/**
+ * Deletes rows whose `expires_at` has passed, `batch` per statement so a large backlog never holds a
+ * long lock, until a statement deletes fewer than `batch`. Rows without an expiry are never touched.
+ * Returns how many were deleted. The same SQL on both dialects (no `DELETE ... LIMIT`).
+ */
+export async function kvSweepExpired(ctx: StateContext, batch: number = KV_SWEEP_BATCH): Promise<number> {
+  if (!Number.isInteger(batch) || batch < 1) {
+    throw new RangeError(`kvSweepExpired: batch must be a positive integer, got ${String(batch)}`);
+  }
+  let total = 0;
+  for (;;) {
+    const now = ctx.codec.timestamp(ctx.now());
+    const result = await ctx.db
+      .deleteFrom('kv')
+      .where('k', 'in', (eb) =>
+        eb.selectFrom('kv').select('k').where('expires_at', 'is not', null).where('expires_at', '<=', now).orderBy('expires_at').limit(batch),
+      )
+      .where('expires_at', 'is not', null)
+      .where('expires_at', '<=', now)
+      .executeTakeFirst();
+    const deleted = Number(result.numDeletedRows);
+    total += deleted;
+    if (deleted < batch) return total;
+  }
+}

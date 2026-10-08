@@ -91,6 +91,12 @@ export interface JiraProjectorOptions {
    * upload can drop them. Best effort: a failure goes to `onError` and never retries the row.
    */
   screenshotsAttached?: (refs: readonly ScreenshotRef[]) => Promise<void>;
+  /**
+   * Called when a `create-issue` row is parked, whether after `maxAttempts` failed sends or at once on
+   * a permanent error, so whoever kept the screenshots' bytes can drop them (#271). Best effort, like
+   * `screenshotsAttached`.
+   */
+  screenshotsAbandoned?: (refs: readonly ScreenshotRef[]) => Promise<void>;
   /** Clock for holds, pauses, and backoff; use the store's clock. Default `() => new Date()`. */
   now?: () => Date;
   batchSize?: number;
@@ -246,15 +252,28 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
     return err instanceof Error ? err.message : String(err);
   }
 
+  /** A parked create-issue row will never attach its screenshots: tell the keeper they can go (#271). */
+  async function abandonScreenshots(row: OutboxItem): Promise<void> {
+    if (options.screenshotsAbandoned === undefined || row.op !== 'create-issue') return;
+    try {
+      const op = parseJiraRow(row);
+      if (op.op === 'create-issue' && op.screenshots.length > 0) await options.screenshotsAbandoned(op.screenshots);
+    } catch (e) {
+      onError(e);
+    }
+  }
+
   /** Defers or parks a row whose send failed. Resolves true when the row was parked. */
   async function failed(row: OutboxItem, err: unknown): Promise<boolean> {
     const attempts = row.attempts + 1;
     if (permanent(err)) {
       await state.parkOutbox(row.id, message(err));
+      await abandonScreenshots(row);
       return true;
     }
     if (attempts >= maxAttempts) {
       await state.parkOutbox(row.id, `gave up after ${attempts} attempts: ${message(err)}`);
+      await abandonScreenshots(row);
       return true;
     }
     const delay = Math.min(retryDelayMs * 2 ** (attempts - 1), maxRetryDelayMs);

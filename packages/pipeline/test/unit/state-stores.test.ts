@@ -171,6 +171,19 @@ describe('webhook inbox (B 8)', () => {
     expect(results.filter((seen) => !seen)).toHaveLength(1);
   });
 
+  it('sweeps expired rows in batches and leaves live and never-expiring rows alone (#271)', async () => {
+    for (let i = 0; i < 5; i++) await store.kvSet(`old:${String(i)}`, 'x', 30);
+    await store.kvSet('live', 'y', 3600);
+    await store.kvSet('forever', 'z');
+    expect(await store.kvSweepExpired(2)).toBe(0); // nothing has expired yet
+    advance(30_000); // expires_at == now: expired
+    expect(await store.kvSweepExpired(2)).toBe(5); // three statements: 2, 2, 1
+    const left = await store.ctx.db.selectFrom('kv').select('k').orderBy('k').execute();
+    expect(left.map((r) => r.k)).toEqual(['forever', 'live']);
+    expect(await store.kvSweepExpired()).toBe(0);
+    await expect(store.kvSweepExpired(0)).rejects.toBeInstanceOf(RangeError);
+  });
+
   it('rejects a TTL that is not a positive number of seconds', async () => {
     await expect(state.seenWebhook('ci', 'x', 0)).rejects.toBeInstanceOf(RangeError);
     await expect(state.seenWebhook('ci', 'x', Number.NaN)).rejects.toBeInstanceOf(RangeError);

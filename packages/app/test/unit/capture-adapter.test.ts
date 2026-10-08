@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { CaptureRequest } from '@snapwing/capture-client/wire.ts';
+import type { EventType } from '@snapwing/pipeline/contracts/events.ts';
 import type { InteractiveCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -15,6 +16,7 @@ import {
   captureScreenshotLoader,
   createCaptureAdapter,
   createCaptureContextSource,
+  dropEndedCaptureImage,
   readCaptureCard,
   readCaptureRecord,
   releaseCaptureScreenshots,
@@ -97,6 +99,27 @@ describe('createCaptureAdapter', () => {
     await releaseCaptureScreenshots(cache)([{ url: 'https://files.slack.com/x.png' }, { url, filename: 'screenshot.png' }]);
     expect(await captureImageLoader(cache)({ kind: 'image', url })).toBeUndefined();
     await expect(captureScreenshotLoader(cache, () => Promise.reject(new Error('not this one')))({ url })).rejects.toThrow('no longer kept');
+  });
+
+  it('drops the image at every terminal and unfiled end, whatever the ticket (#271)', async () => {
+    const incident = (jiraKey?: string): IncidentView => ({ status: 'open', ...(jiraKey === undefined ? {} : { jiraKey }) }) as unknown as IncidentView;
+    const keep = async (type: EventType, jiraKey: string | undefined): Promise<boolean> => {
+      const cache = memoryCache();
+      const id = '01JZ0000000000000000000CAP';
+      await cache.set(`capture-image:${id}`, PNG, 60);
+      await dropEndedCaptureImage(cache, { getIncident: () => Promise.resolve(incident(jiraKey)) }, { type, incidentId: id });
+      return (await cache.get(`capture-image:${id}`)) !== null;
+    };
+    for (const type of ['stopped', 'escalated', 'closed'] as const) {
+      expect(await keep(type, undefined)).toBe(false);
+      expect(await keep(type, 'WEB-1')).toBe(false); // nothing attaches after a terminal end
+    }
+    for (const type of ['capture-cancelled', 'not-a-bug', 'user-side', 'resolution-signal'] as const) {
+      expect(await keep(type, undefined)).toBe(false);
+    }
+    expect(await keep('not-a-bug', 'WEB-1')).toBe(true); // filed: the projector still has to attach it
+    expect(await keep('filed', undefined)).toBe(true);
+    expect(await keep('comment', undefined)).toBe(true);
   });
 
   it('keeps the card the engine posts, by capture id', async () => {
