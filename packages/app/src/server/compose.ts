@@ -1795,7 +1795,7 @@ export const compose: ComposeFn = async (deps) => {
     ...oauth.routes,
     ...captureRoutes,
   ];
-  if (!s.has('JIRA_WEBHOOK_SECRET')) log.info(`JIRA_WEBHOOK_SECRET is not set: ${JIRA_WEBHOOK_PATH} accepts unauthenticated deliveries`);
+  if (!s.has('JIRA_WEBHOOK_SECRET')) log.info(`JIRA_WEBHOOK_SECRET is not set: ${JIRA_WEBHOOK_PATH} refuses every delivery until it is set (Jira webhooks are off)`);
 
   // Jobs.
   const jobs: JobModule[] = [

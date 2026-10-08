@@ -296,15 +296,17 @@ export function createJiraStep(deps: JiraStepDeps = {}): OnboardStep {
 
     // ---- the webhook -----------------------------------------------------------------------------
     let webhook: WebhookState = 'waiting';
+    // The secret exists whether or not there is a public address yet, so the address registered now
+    // or later always carries it (#266). An existing one is kept.
+    let secret = await ctx.readEnv('JIRA_WEBHOOK_SECRET');
+    if (secret === undefined) {
+      secret = new SecretValue(randomBytes(24).toString('hex'));
+      await ctx.writeEnv({ JIRA_WEBHOOK_SECRET: secret });
+    }
     const publicUrl = (await ctx.readEnv('SNAPWING_PUBLIC_URL'))?.reveal();
     if (publicUrl === undefined || !/^https:\/\//.test(publicUrl)) {
       io.say('Snapwing has no public https address yet, so Jira cannot send it updates. Run this step again once it has one; nothing else is lost.');
     } else {
-      let secret = await ctx.readEnv('JIRA_WEBHOOK_SECRET');
-      if (secret === undefined) {
-        secret = new SecretValue(randomBytes(24).toString('hex'));
-        await ctx.writeEnv({ JIRA_WEBHOOK_SECRET: secret });
-      }
       let refused = false;
       webhook = 'registered';
       for (const key of keys) {

@@ -63,7 +63,7 @@ export interface JiraWebhookDeps {
   fixer: FixerDeps;
   /** The account the agent's Jira credentials act as; read once and kept. */
   jira: Pick<JiraClient, 'myself'>;
-  /** `JIRA_WEBHOOK_SECRET`; when absent, deliveries are not authenticated. */
+  /** `JIRA_WEBHOOK_SECRET`; when absent or empty, every delivery is refused with 401 (#266). */
   secret?: string;
   /**
    * Resolves the `in-progress` logical status to the issue's project's own status name. When
@@ -86,7 +86,7 @@ export function createJiraWebhookRoute(deps: JiraWebhookDeps): (req: Request) =>
   const agentAccount = memoAccount(deps.jira);
   return async (req) => {
     const raw = new Uint8Array(await req.arrayBuffer());
-    if (deps.secret !== undefined && deps.secret !== '' && !authentic(req, raw, deps.secret)) {
+    if (deps.secret === undefined || deps.secret === '' || !authentic(req, raw, deps.secret)) {
       return json(401, { error: 'unauthorized' });
     }
     const payload = parse(raw);

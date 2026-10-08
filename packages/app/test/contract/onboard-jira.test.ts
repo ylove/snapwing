@@ -339,7 +339,7 @@ describe('onboarding step 2: Jira', () => {
     expect(result.state.steps['jira']?.data).toMatchObject({ webhook: 'waiting' });
     expect(jira.webhooks).toHaveLength(0);
     expect(jira.calls).not.toContain('register-webhook');
-    expect(envText).not.toContain('JIRA_WEBHOOK_SECRET');
+    expect(envText).toMatch(/^JIRA_WEBHOOK_SECRET=\S+$/m);
     expect(lines.join('\n')).toMatch(/no public https address yet/);
     expectPlain(lines, GOOD);
   });

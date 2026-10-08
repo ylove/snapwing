@@ -42,7 +42,7 @@ import { CAPTURE_ANSWERS_PER_WINDOW, CAPTURE_IMAGE_MAX_BYTES, CAPTURE_SENDS_PER_
 import { createApiServer, type ApiServer } from '../../src/server/http.ts';
 import { opsRoutes } from '../../src/server/ops.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
-import { bootComposed, DEMO_MAP, EXAMPLE_CONFIG, fakeSecrets, slackWorld, type Booted } from '../fixtures/e2e/world.ts';
+import { JIRA_HOOK_SECRET, bootComposed, DEMO_MAP, EXAMPLE_CONFIG, fakeSecrets, slackWorld, type Booted } from '../fixtures/e2e/world.ts';
 
 const ENDPOINT = 'http://snapwing.test';
 const TEST_TIMEOUT = 60_000;
@@ -234,7 +234,7 @@ async function world(): Promise<World> {
 async function deliverJira(w: World, issueKey: string): Promise<void> {
   await expect.poll(() => w.jiraHooks.queued.some((d) => d.issueKey === issueKey), { timeout: 10_000, interval: 25 }).toBe(true);
   const statuses = await w.jiraHooks.deliver(issueKey, (body) =>
-    w.api.fetch(new Request(`${ENDPOINT}/webhooks/jira`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
+    w.api.fetch(new Request(`${ENDPOINT}/webhooks/jira?secret=${JIRA_HOOK_SECRET}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
   );
   expect(statuses.every((s) => s === 200)).toBe(true);
 }

@@ -209,7 +209,7 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
 
   const listener = (incoming: IncomingMessage, outgoing: ServerResponse): void => {
     void handleNode(incoming, outgoing).catch((e: unknown) => {
-      onError(e, { method: incoming.method ?? '', path: incoming.url ?? '' });
+      onError(e, { method: incoming.method ?? '', path: (incoming.url ?? '').split('?')[0] ?? '' });
       if (!outgoing.headersSent) {
         outgoing.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
       }
