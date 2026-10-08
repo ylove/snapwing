@@ -8,7 +8,8 @@
 // - A personal-chat message that reads as a status question ("what's open on the website?", a bare key):
 //   answered in the personal chat. Any other personal-chat message is a capture and is not intercepted.
 // - The `status [key or words]` bot command in the personal chat: answered there. With no words it lists
-//   the open incidents on the surface, as Slack's `/snapwing-status` does.
+//   the open incidents on the surface, as Slack's `/snapwing-status` does. `status` counts only alone or
+//   with a `?`, a key, or "of/on/for" after it: "status page is down" is a report and is captured.
 // - A personal-chat message that asks to be kept posted ("keep me posted on the website", "stop updating
 //   me on web"): a standing surface subscription (A 4.4, `signals/standing.ts`), confirmed in the chat.
 //   Only when `standing` is given.
@@ -36,7 +37,7 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { createStatusQueries, type QueryResolution } from '@snapwing/pipeline/status/query.ts';
-import { looksLikeStatusQuestion } from '../slack/status-query.ts';
+import { looksLikeStatusQuestion, surfaceWords } from '../slack/status-query.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './adapter.ts';
 import type { TeamsConnector, TeamsOutgoingActivity } from './connector.ts';
 import { splitConversationId } from './conversations.ts';
@@ -82,15 +83,6 @@ function str(v: unknown): string {
 }
 
 const STATUS_COMMAND = /^status(?:\s+(.*))?$/i;
-
-/**
- * A 4.4 words the shared parser does not know: "stop updating me on web" is "stop keeping me posted on
- * web". Rewritten here (the parser is the pipeline's, `signals/standing.ts`) so both the check and the
- * write see the phrase it matches.
- */
-function standingPhrase(text: string): string {
-  return text.replace(/^(?:(?:please|pls)\s+)?(?:stop|quit)\s+updating me\b/i, 'stop keeping me posted');
-}
 
 interface Request {
   asker: string;
@@ -211,8 +203,20 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     return teamsHtmlToText(withoutBot).replace(/\s+/g, ' ').trim();
   }
 
+  // `intercepts` is synchronous, so it reads the surfaces of the last map seen; each call refreshes them.
+  let surfaceList: string[] = [];
+  async function refreshSurfaces(): Promise<void> {
+    try {
+      surfaceList = surfaceWords(await options.getMap());
+    } catch {
+      // keep the last list; the question path reports map errors itself
+    }
+  }
+  void refreshSurfaces();
+
   /** The request an activity carries, or undefined when it is not ours. */
   function requestOf(activity: unknown): Request | undefined {
+    const surfaces = surfaceList;
     const a = rec(activity);
     if (str(a['type']) !== 'message') return undefined;
     const from = rec(a['from']);
@@ -230,13 +234,12 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     const base = { asker, serviceUrl, activityId };
 
     if (conversationType === 'personal') {
-      const standing = standingPhrase(text);
-      if (options.standing !== undefined && parseStandingWatch(standing)?.command === false) {
-        return { ...base, channelId: conversationId, text: standing, kind: 'standing' };
+      if (options.standing !== undefined && parseStandingWatch(text)?.command === false) {
+        return { ...base, channelId: conversationId, text, kind: 'standing' };
       }
       const command = STATUS_COMMAND.exec(text);
-      if (command !== null) return { ...base, channelId: conversationId, text: (command[1] ?? '').trim(), kind: 'command' };
-      if (looksLikeStatusQuestion(text)) return { ...base, channelId: conversationId, text, kind: 'personal' };
+      if (command !== null && looksLikeStatusQuestion(text, surfaces)) return { ...base, channelId: conversationId, text: (command[1] ?? '').trim(), kind: 'command' };
+      if (looksLikeStatusQuestion(text, surfaces)) return { ...base, channelId: conversationId, text, kind: 'personal' };
       return undefined;
     }
 
@@ -244,7 +247,7 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     if (!mentionsBot(a)) return undefined;
     // Only a status question or a bare key is ours; any other mention (`queue`, "I'll take this") falls through
     // to the commands and the signals, as Slack's plain `message` event does.
-    if (!looksLikeStatusQuestion(text)) return undefined;
+    if (!looksLikeStatusQuestion(text, surfaces)) return undefined;
     if (conversationType === 'groupChat') return { ...base, channelId: conversationId, text, kind: 'mention' };
     const split = splitConversationId(conversationId);
     const channelId = str(rec(rec(a['channelData'])['channel'])['id']) || split.channelId;
@@ -279,9 +282,13 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
   return {
     ask,
 
-    intercepts: (activity) => requestOf(activity) !== undefined,
+    intercepts: (activity) => {
+      void refreshSurfaces();
+      return requestOf(activity) !== undefined;
+    },
 
     async handle(activity) {
+      await refreshSurfaces();
       const request = requestOf(activity);
       if (request === undefined) return;
       // Teams redelivers an activity it did not get a timely 200 for.

@@ -326,6 +326,28 @@ describe('a direct message', () => {
     expect(looksLikeStatusQuestion('WEB-1042?')).toBe(true);
     expect(looksLikeStatusQuestion('any update on the nav thing')).toBe(true);
   });
+
+  it('answers "status" only with a key, a "?", "of/on/for", or nothing after it; a "status ..." report is captured', () => {
+    for (const q of ['status', 'status?', 'Status on WEB-1042', 'status WEB-1042', 'status of the cart bug', 'status for checkout', "what's the status"]) {
+      expect(looksLikeStatusQuestion(q), q).toBe(true);
+    }
+    for (const r of ['status page is down after deploy', 'status code 500 on checkout', 'status badge is blank']) {
+      expect(looksLikeStatusQuestion(r), r).toBe(false);
+      expect(sq.intercepts(dm(REPORTER, r)), r).toBe(false);
+    }
+    expect(sq.intercepts(dm(REPORTER, 'status of the cart bug'))).toBe(true);
+  });
+
+  it('answers "status <surface>" when the words after status are exactly a surface id or name; "status web page is down" is captured', async () => {
+    expect(looksLikeStatusQuestion('status web')).toBe(false);
+    expect(looksLikeStatusQuestion('status web', ['web', 'Website'])).toBe(true);
+    await sq.handleEvent(dm(REPORTER, 'status web'));
+    expect(posts).toHaveLength(1);
+    expect(sq.intercepts(dm(REPORTER, 'status web'))).toBe(true);
+    expect(sq.intercepts(dm(REPORTER, 'status Web?'))).toBe(true);
+    expect(sq.intercepts(dm(REPORTER, 'status Website'))).toBe(true);
+    expect(sq.intercepts(dm(REPORTER, 'status web page is down'))).toBe(false);
+  });
 });
 
 describe('/snapwing-status (A 4.3 `/status`, a name Slack reserves)', () => {
