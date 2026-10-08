@@ -7,7 +7,7 @@
 // answers undefined and the command exits asking for `--choice`. A hidden question (the login
 // token) reads a piped stdin instead.
 
-import { createReadStream } from 'node:fs';
+import { createReadStream, openSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { Writable, type Readable } from 'node:stream';
 import type { NumberedChoice } from '@snapwing/capture-client/render.ts';
@@ -69,8 +69,9 @@ export interface TerminalPrompterOptions {
 function defaultOpenTty(): Readable | undefined {
   if (process.platform === 'win32') return undefined;
   try {
-    const stream = createReadStream('/dev/tty');
-    // Opening fails asynchronously when there is no controlling terminal; swallow it, the read sees EOF.
+    // Open it here so a missing controlling terminal (ENXIO under CI or a pipe) is caught, not thrown later.
+    const fd = openSync('/dev/tty', 'r');
+    const stream = createReadStream('', { fd });
     stream.on('error', () => stream.destroy());
     return stream;
   } catch {
@@ -102,6 +103,8 @@ export function terminalPrompter(options: TerminalPrompterOptions): Prompter {
     const rl = createInterface({ input: source.stream, output, terminal: source.terminal });
     return new Promise<string | undefined>((done) => {
       let answered = false;
+      // A terminal that fails to open or read (ENXIO) is no answer, not a crash.
+      rl.on('error', () => rl.close());
       rl.on('close', () => {
         source.close();
         if (!answered) {

@@ -117,7 +117,10 @@ export function createTerminalIO(options: TerminalIOOptions): InterviewIO {
         say(`${question} ${hidden ? '[hidden]' : answer}`);
       } else {
         answer = await (hidden ? options.prompter.hidden(`${question} `) : options.prompter.line(`${question} `));
-        if (answer === undefined) throw new InterviewAborted(id);
+        if (answer === undefined) {
+          say('There is no terminal to ask on. Run `snapwing onboard` in a terminal, or pass `--answers <file>` with an answer for every question.');
+          throw new InterviewAborted(id);
+        }
       }
       if (isWhy(answer)) {
         explain(why);
