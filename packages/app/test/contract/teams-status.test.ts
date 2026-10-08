@@ -352,6 +352,39 @@ describe('first post', () => {
     expect(teams.in(CHANNEL)).toHaveLength(1);
   });
 
+  it('a failed append after posting is retried by editing that message, never by posting a second', async () => {
+    const incidentId = await capture(CHANNEL);
+    await enqueue(row(incidentId, 'Looking into it.'));
+    let failed = false;
+    const flaky = new Proxy(state, {
+      get(target, prop, receiver) {
+        if (prop === 'append') {
+          return (id: string, events: NewEvent[], expectedSeq: number) => {
+            if (!failed) {
+              failed = true;
+              return Promise.reject(new Error('database is locked'));
+            }
+            return target.append(id, events, expectedSeq);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const p = projector({ state: flaky });
+
+    expect((await p.drainOnce()).deferred).toHaveLength(1);
+    expect(await postedEvents(incidentId)).toHaveLength(0);
+    expect(teams.in(CHANNEL)).toHaveLength(1);
+
+    time += 5000;
+    const report = await p.drainOnce();
+
+    expect(report.parked).toEqual([]);
+    expect(teams.in(CHANNEL)).toHaveLength(1);
+    expect((await postedEvents(incidentId)).map((e) => e.payload)).toEqual([{ messageId: teams.in(CHANNEL)[0]!.id }]);
+  });
+
   it('maps a handle mention to an <at> with its entity', async () => {
     const incidentId = await capture(CHANNEL);
     await enqueue(row(incidentId, 'Ready for review, <@pat>.'));

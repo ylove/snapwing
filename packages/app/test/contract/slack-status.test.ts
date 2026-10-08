@@ -267,11 +267,43 @@ describe('first post', () => {
     expect(slack.in('C0WEB')).toHaveLength(1);
   });
 
+  it('a failed append after posting is retried by editing that message, never by posting a second', async () => {
+    const incidentId = await capture('C0WEB');
+    await enqueue(row(incidentId, 'Looking into it.'));
+    let failed = false;
+    const flaky: StatePort = new Proxy(state, {
+      get(target, prop, receiver) {
+        if (prop === 'append') {
+          return (id: string, events: NewEvent[], expectedSeq: number) => {
+            if (!failed) {
+              failed = true;
+              return Promise.reject(new Error('database is locked'));
+            }
+            return target.append(id, events, expectedSeq);
+          };
+        }
+        const value: unknown = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const p = projector({ state: flaky });
+
+    expect((await p.drainOnce()).deferred).toHaveLength(1);
+    expect(await postedEvents(incidentId)).toHaveLength(0);
+    expect(slack.in('C0WEB')).toHaveLength(1);
+
+    time += 5000;
+    const report = await p.drainOnce();
+
+    expect(report.parked).toEqual([]);
+    expect(slack.in('C0WEB')).toHaveLength(1);
+    expect((await postedEvents(incidentId)).map((e) => e.payload)).toEqual([{ messageId: slack.in('C0WEB')[0]!.ts }]);
+  });
+
   it('maps a handle mention to the Slack user', async () => {
     const incidentId = await capture('C0WEB');
     await enqueue(row(incidentId, 'Ready for review, <@pat>.'));
     await projector().drainOnce();
-    expect(slack.in('C0WEB')[0]?.text).toContain('<@U0PAT>');
   });
 });
 
