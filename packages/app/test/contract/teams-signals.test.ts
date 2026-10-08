@@ -1,7 +1,7 @@
-// Teams signals (#392; A 1.1 to 1.4, A 1.6, A 3; main 15.1, 15.2): recorded Graph change notifications
-// authenticated by the real `verifyNotification` (#379), Graph on MSW through the real client (#371), Bot
+// Teams signals (#7; A 1.1 to 1.4, A 1.6, A 3; main 15.1, 15.2): recorded Graph change notifications
+// authenticated by the real `verifyNotification`, Graph on MSW through the real client, Bot
 // Framework `messageReaction` activities, and the real signal handler over the dialect `SNAPWING_DB`
-// selects. A trigger goes through the real adapter's normalizer (#383) behind a recording
+// selects. A trigger goes through the real adapter's normalizer behind a recording
 // `handleInbound`; the engine, the Stop, and the fixer start are recording fakes.
 
 import { readFileSync } from 'node:fs';
@@ -315,7 +315,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
       onOutcome: (o) => outcomes.push(o),
       onError,
     });
-    /** A notification body through the real clientState check, then the signals module as the transport (#390) calls it. */
+    /** A notification body through the real clientState check, then the signals module as the transport calls it. */
     const notify = async (body: Record<string, unknown>): Promise<TeamsSignalOutcome[]> => {
       const verified = subscriptions.verifyNotification(body);
       expect(verified).toHaveLength(1);

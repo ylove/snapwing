@@ -1,4 +1,4 @@
-// src/ports/workflow.ts (Companion B 1). Storage and resume semantics: build/decisions/0012-workflow-waits.md.
+// src/ports/workflow.ts (B 1). Storage and resume semantics: ADR 0012.
 
 import type { Job, JobName } from '../contracts/jobs.ts';
 import { decodeKeySegment, keySegment, timerKey } from '../contracts/jobs.ts';

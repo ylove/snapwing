@@ -1,4 +1,4 @@
-// The mid-flight claim card (A 2.2, #292, #337): "@dana, the fixer started on this 4 minutes ago and
+// The mid-flight claim card (A 2.2, #292): "@dana, the fixer started on this 4 minutes ago and
 // is on `fix/WEB-1042`." with **Let it finish** and **Stop it, I'll take over**. Pure: no I/O.
 //
 // The buttons' value is the incident id, as on every card. The run and the claimer the card offers the

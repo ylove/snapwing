@@ -1,4 +1,4 @@
-// GitHub projector (#336; B 7.1, B 11): drains `target='github'` `add-comment` rows against a fake GitHub
+// GitHub projector (B 7.1, B 11): drains `target='github'` `add-comment` rows against a fake GitHub
 // behind MSW, on the dialect `SNAPWING_DB` selects. The clock is shared by the store and the projector,
 // so batch windows, pauses, and backoff move only when a test moves it.
 

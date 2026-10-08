@@ -1,10 +1,10 @@
-// Teams signals (A 1.1 to 1.4, A 1.6, A 3; main 15.1, 15.2; #392): reactions and thread replies, the
+// Teams signals (A 1.1 to 1.4, A 1.6, A 3; main 15.1, 15.2; #7): reactions and thread replies, the
 // Teams side of `adapters/slack/signals.ts`, handed to the same signal handler (`handleSignal`).
 //
-// The transport (#390, `TeamsSignalsRoute`) calls `onNotifications`, `observes`, and `onActivity`. Two
+// The transport (`TeamsSignalsRoute`) calls `onNotifications`, `observes`, and `onActivity`. Two
 // sources, because Bot Framework reports a reaction only on a message the bot sent (main 15.2):
 //
-// - A Graph change notification on a channel message (`chatMessage`, #379's subscription), already
+// - A Graph change notification on a channel message (`chatMessage`'s subscription), already
 //   authenticated by its `clientState` (`TeamsSubscriptions.verifyNotification`). The message is read
 //   from the notification when the caller decrypted its resource data, else fetched from Graph
 //   (`GET .../messages/{id}` or `.../replies/{id}`). An `updated` message has its `reactions` diffed
@@ -169,7 +169,7 @@ export type TeamsSignalOutcome = (
 };
 
 /**
- * The module as the Teams transport (#390, `TeamsSignalsRoute`) calls it: `observes` and `onActivity` for
+ * The module as the Teams transport (`TeamsSignalsRoute`) calls it: `observes` and `onActivity` for
  * Bot Framework activities, `onNotifications` for change notifications whose `clientState` matched.
  */
 export interface TeamsSignals {

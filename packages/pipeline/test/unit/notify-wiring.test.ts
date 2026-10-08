@@ -1,4 +1,4 @@
-// #329: the notify hook (#298) wired into `projectIncident`. Events go through a real store (both
+// The notify hook wired into `projectIncident`. Events go through a real store (both
 // dialects, `SNAPWING_DB`), so what the projection reads is what production reads: the cached
 // playbook, the incident's and the standing subscriptions, the channel member list, and the rows of
 // the open burst window. Also the standing subscription writers and the DM phrases that use them.
@@ -49,7 +49,7 @@ async function filedIncident(opts: { priority?: 'Highest' | 'High' | 'Medium' | 
       kind: 'incident',
       idempotencyKey: `slack:${id}`,
       source: 'slack',
-      // An engineer's trigger on the reporter's post: the engineer brought it in, the reporter wrote it (#363).
+      // An engineer's trigger on the reporter's post: the engineer brought it in, the reporter wrote it.
       ...(opts.triggeredBy === undefined
         ? { reporter: { id: REPORTER, name: 'Test Reporter', role: 'reporter' } }
         : { reporter: { id: opts.triggeredBy, name: 'Test Engineer', role: 'engineer' }, anchorAuthor: { id: REPORTER, name: 'Test Reporter', role: 'reporter' } }),
@@ -184,7 +184,7 @@ describe('the wired hook (A 4.4)', () => {
     await state.unsubscribe({ workspaceId, userId: 'U-FAR', scopeKind: 'surface', scopeId: 'web' });
   });
 
-  it('asks the anchor\'s author, not the engineer whose trigger brought it in, to check staging (#363)', async () => {
+  it('asks the anchor\'s author, not the engineer whose trigger brought it in, to check staging', async () => {
     time += 3_600_000;
     await state.putConfigVersion('playbook', 'hash-empty', '<playbook xmlns="urn:snapwing:playbook:v1" version="1"/>');
     const { id, seq } = await filedIncident({ triggeredBy: 'U-FAKE-ENGINEER' });

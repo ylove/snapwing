@@ -1,4 +1,4 @@
-// Teams status projector (#393; main 12, 15.2, A 4.4, B 7.1): drains `target='teams'` `update-status` and
+// Teams status projector (#8; main 12, 15.2, A 4.4, B 7.1): drains `target='teams'` `update-status` and
 // `notify` rows against an in-memory Bot Connector behind MSW, on the dialect `SNAPWING_DB` selects. The
 // clock is shared by the store and the projector, so pauses and backoff move only when a test moves it.
 

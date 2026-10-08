@@ -5,7 +5,7 @@
 //   order  resolvedBy         confidence  source
 //   1      mention            0.95        main 4.4 step 1
 //   2      channel-explicit   0.90        main 4.4 step 2
-//   3      file-path          0.85        main 15.3 (#375; main 4.4 is silent on its place)
+//   3      file-path          0.85        main 15.3 (main 4.4 is silent on its place)
 //   4      vocabulary         0.80        main 4.4 step 3
 //   5      image              0.70        main 4.4 step 4
 //   6      channel-inferred   0.60        main 4.4 step 5

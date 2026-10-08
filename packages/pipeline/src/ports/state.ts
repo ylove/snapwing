@@ -1,4 +1,4 @@
-// src/ports/state.ts (Companion B 1). Types: contracts/state.ts. Storage: ADR 0011 (Kysely, one
+// src/ports/state.ts (B 1). Types: contracts/state.ts. Storage: ADR 0011 (Kysely, one
 // migration set on SQLite and Postgres). Implementation: pipeline/src/state, opened by
 // `openState(options)` in state/db.ts (#16 onward).
 //

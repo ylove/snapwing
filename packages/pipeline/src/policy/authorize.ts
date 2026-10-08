@@ -78,7 +78,7 @@ export function authorize(action: ApprovalAction, actor: AuthorizeActor, ctx: Au
 }
 
 /**
- * main 15.4, ADR 0022 (#385): Stop as a typed command (the capture API's `stop`, which the CLI and
+ * main 15.4, ADR 0022 (#3): Stop as a typed command (the capture API's `stop`, which the CLI and
  * Raycast send with a ticket key) rather than the Stop button on the incident's own card or status
  * message: engineers only, then the button's rule for the level.
  */

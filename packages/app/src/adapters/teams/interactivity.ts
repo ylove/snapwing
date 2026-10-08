@@ -1,7 +1,7 @@
 // Teams interactivity (main 8.2, 11.2, 15.2, 16; A 2.1, A 2.2; B 5 awaitInteractive): what a tap on an
-// Adaptive Card button does. Every button is an `Action.Execute` (Universal Actions, #372), so a tap
+// Adaptive Card button does. Every button is an `Action.Execute` (Universal Actions), so a tap
 // arrives as an `invoke` activity named `adaptiveCard/action` carrying the action's `verb` and `data`
-// (`{ incidentId }` plus what a Slack block id would carry). The transport (#390) authenticates it and
+// (`{ incidentId }` plus what a Slack block id would carry). The transport authenticates it and
 // hands it to `onAction`, whose card answers the invoke.
 //
 // The rules are Slack's, from `../shared/taps.ts`: card choices to `orchestrator.handleTap` with the
@@ -31,8 +31,8 @@
 // the invoke alone, with the same card and a one-line reason, and never touches the shared message. A
 // refusal that carries a GitHub link (`/auth/github/start?state=...`, single use and bound to the
 // tapper) never puts the link on a card: it goes to the tapper's personal chat with the bot as an
-// `Action.OpenUrl` button, and the reason on the card says so. The transport (#390,
-// `TeamsInteractivity.onAction`) answers the invoke with `onAction`'s card, or with "Working on it" past
+// `Action.OpenUrl` button, and the reason on the card says so. The transport
+// (`TeamsInteractivity.onAction`) answers the invoke with `onAction`'s card, or with "Working on it" past
 // its 4 s budget; an accepted tap's edit has landed either way, and a refusal that lands past the budget
 // (the transport says so, `TeamsInvokeBudget`) goes to the tapper's personal chat, since its card is
 // never shown.
@@ -224,7 +224,7 @@ export interface TeamsInteractivityOptions {
   onError?: (error: unknown) => void;
 }
 
-/** The transport's `TeamsInteractivity` (#390) plus `handleInvoke` for tests. */
+/** The transport's `TeamsInteractivity` plus `handleInvoke` for tests. */
 export interface TeamsInteractivity {
   /** One invoke activity; resolves to what it did and the answer card. Rejects when the tap's work failed. */
   handleInvoke(activity: unknown): Promise<TeamsTapResult>;

@@ -118,7 +118,7 @@ describe('synthesizeIssue', () => {
     expect(flat[5]).toBe('Line items lose their price when a promo is applied after a quantity change.');
   });
 
-  describe('a capture flagged by someone other than its author (#365)', () => {
+  describe('a capture flagged by someone other than its author', () => {
     const flagged: CanonicalIncidentPayload = {
       ...payload,
       reporter: { id: 'U0ENG', name: 'mobDev', email: 'dev@example.com', role: 'engineer' },

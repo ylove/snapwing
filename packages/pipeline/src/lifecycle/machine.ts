@@ -1,4 +1,4 @@
-// Lifecycle state machine as a pure reducer. Companion B 5.
+// Lifecycle state machine as a pure reducer. B 5.
 //
 // `incidents.status` is derived from the last state-changing event. The projector (#18) calls
 // `nextStatus` for every event and logs when `isValidTransition` says the event did not fit.
@@ -151,7 +151,7 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'not-a-bug': 'not-a-bug',
     // A 5.2: the reporter's user-side check fixed it, so nothing is filed.
     'user-side': 'not-filed',
-    // main 15.3, 15.4: a capture's lookup was cancelled or timed out, so nothing is filed (#377).
+    // main 15.3, 15.4: a capture's lookup was cancelled or timed out, so nothing is filed.
     'capture-cancelled': 'not-filed',
   },
   planned: {

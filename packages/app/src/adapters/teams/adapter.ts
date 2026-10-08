@@ -1,18 +1,18 @@
 // The Teams IngestionAdapter (main 13, 14.1, 15.2; ADR 0019). It authenticates through the Bot Framework
-// JWT verifier (#369), normalizes through `normalize.ts`, acknowledges without ephemerals (Teams has none),
-// and posts the Adaptive Cards of #372 through the Bot Connector client of #370.
+// JWT verifier, normalizes through `normalize.ts`, acknowledges without ephemerals (Teams has none),
+// and posts the Adaptive Cards through the Bot Connector client.
 //
 // Inbound requests reach the adapter as a `TeamsInbound`: a Bot Framework activity (the Authorization
-// header plus the parsed body; the transport, #390, parses once to dispatch by type), or a reaction
-// trigger the signals module (#392) found by diffing Graph's `reactions` after a change notification it
+// header plus the parsed body; the transport, parses once to dispatch by type), or a reaction
+// trigger the signals module (#7) found by diffing Graph's `reactions` after a change notification it
 // already authenticated by its `clientState`. The adapter normalizes once per inbound (cached), so
 // `normalizePayload` and the transport's own check agree on one `eventId`.
 //
 // Acknowledgement: the action command is answered with the invoke's task message "On it, pulling
 // context"; a personal-chat capture with the same line in the personal chat; a reaction trigger with the
 // same line in the reactor's personal chat (best effort: Teams opens one only where the app is installed
-// for that person). The anchor gets no ✅: Graph's `setReaction` appears to be delegated only (PLAN open
-// question 4), so the live tier settles it.
+// for that person). The anchor gets no ✅: Graph's `setReaction` appears to be delegated only (an open
+// question), so the live tier settles it.
 //
 // Every authenticated activity refreshes the conversation record in kv `teams-conversation:{channelId}`
 // (`conversations.ts`); posts read the serviceUrl from it, so a reaction trigger, which carries none, can
@@ -65,7 +65,7 @@ export interface TeamsAck {
 }
 
 /**
- * The Bot Framework JWT check (#369's `verifyBotFrameworkJwt` has this shape): issuer, audience (the
+ * The Bot Framework JWT check (`verifyBotFrameworkJwt` has this shape): issuer, audience (the
  * app id), expiry, signature, and the token's serviceUrl claim against the activity's.
  */
 export type TeamsJwtVerifier = (
@@ -348,7 +348,7 @@ export function createTeamsAdapter(options: TeamsAdapterOptions): TeamsAdapter {
       const at = await where(payload);
       const opts = { mentions: await mentions(undefined, status), reduced: await reduced(at) };
       if (status.issueKey === '') {
-        // A note about an incident with no issue (#305, #360): a plain card in the thread, no stage emoji,
+        // A note about an incident with no issue: a plain card in the thread, no stage emoji,
         // never the incident's status message.
         const note = adaptiveCard(status.text, [renderText(status.text, opts.mentions)], [], opts);
         await record(payload.eventId, await post(at, cardActivity(note)), 'other');

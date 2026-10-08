@@ -87,8 +87,8 @@ function actor(ctx: SlackNormalizeContext, id: string, fallbackName: string): In
 }
 
 /**
- * The anchor message's author, when a person other than the one who brought the report in wrote it
- * (#363): an engineer's trigger reaction or shortcut on a reporter's post. That person is the
+ * The anchor message's author, when a person other than the one who brought the report in wrote it:
+ * an engineer's trigger reaction or shortcut on a reporter's post. That person is the
  * incident's reporter, the one asked to check staging (A 4.4) and answered in the reporter's shape
  * (A 4.3). A bot's or Snapwing's own message has no reporter of its own, so it gives none.
  */

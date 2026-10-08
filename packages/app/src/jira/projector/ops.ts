@@ -15,7 +15,7 @@
 //   update-fields  { issueKey, fields?, customFields? }     at least one field; `fields.assignee` is
 //                                                           { email }, resolved to an accountId (below)
 //   create-task    { fields }                               an issue no incident owns (the A 5.3 ux-friction
-//                                                           Task, #337): the create-issue fields, no assignee,
+//                                                           Task): the create-issue fields, no assignee,
 //                                                           no custom fields; a retry finds the issue by the
 //                                                           label `snapwing-task-<row id>` (`taskLabel`)
 //
@@ -23,7 +23,7 @@
 // a name to a Jira field id through `customFieldIds`; a name with no id is left out of the write
 // (fields.ts checks the map at startup; prompt.ts rewrites the placeholder key).
 //
-// Assignee (#323, main 9.1, B 7.2). Jira Cloud assigns by `accountId`, so an email is looked up first
+// Assignee (main 9.1, B 7.2). Jira Cloud assigns by `accountId`, so an email is looked up first
 // (`client.findUserByEmail`, cached per projector by `createAssigneeResolver`). `create-issue` sets the
 // assignee from `suggestedAssigneeEmail`; an `update-fields` row writes `fields.assignee` (a claim by an
 // engineer, batch key `field:{incident}:assignee`, so a human's later edit drops it, B 7.3). An email

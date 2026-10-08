@@ -1,4 +1,4 @@
-// Phase 4 wiring on the composed app (#337; A 2.2, A 2.3, A 2.4, A 4.4, A 4.6, A 5.3, A 6.4, main
+// Phase 4 wiring on the composed app (A 2.2, A 2.3, A 2.4, A 4.4, A 4.6, A 5.3, A 6.4, main
 // 11.3), on MSW with the e2e world of #160 (fixtures/e2e/): the real `compose`, worker, projectors, and
 // routes, Slack events and taps signed as Slack sends them, local bare repositories behind a fake
 // GitHub, and the fake agent behind the generic harness.
@@ -372,7 +372,7 @@ describe('phase 4 wiring on the composed app', () => {
     const bare = w.github.repos.get(w.repo);
     expect(execFileSync('git', ['ls-remote', '--heads', bare?.url ?? '', branch], { env: GIT_ENV, encoding: 'utf8' })).toContain(`refs/heads/${branch}`);
 
-    // The claimer is the assignee: the #323 `update-fields` row, by the map's email, queued with the Stop.
+    // The claimer is the assignee: the `update-fields` row, by the map's email, queued with the Stop.
     // (The projector sends it after the claim's attribution comment, whose 60 s batch window holds the lane, B 7.1.)
     const stoppedAt = Date.parse(log.find((e) => e.type === 'stopped')?.occurredAt ?? '');
     const assignRows = (await outboxRowsOf(w.booted.state.ctx, incidentId, 'update-fields')).filter((r) => r.batchKey === jiraFieldBatchKey(incidentId, 'assignee'));

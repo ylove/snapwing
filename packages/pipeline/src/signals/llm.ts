@@ -1,4 +1,4 @@
-// The LLM pass of message classification (Companion A 1.2). A message that missed the lexicon and sits
+// The LLM pass of message classification (A 1.2). A message that missed the lexicon and sits
 // in an active incident's thread goes to the model through the ModelPort (task `segmentation`, schema
 // `signal`). The model returns one intent or `none` and a confidence; an intent under
 // `lexicon.confidenceFloor` (default 0.7) is dropped. The caller decides which messages qualify.

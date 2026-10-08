@@ -335,7 +335,7 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
 }
 
 /**
- * A capture source after dedupe (main 15.3, 15.4; #377). The first response is exactly one of: the
+ * A capture source after dedupe (main 15.3, 15.4). The first response is exactly one of: the
  * link to a tracked issue (handled above, with candidates), `file-confirm` when the surface resolved, or the surface
  * question (a `clarify` round asking `surface`, its options the map's labels) when it did not. File it,
  * a surface answer, or Create anyway with a resolved surface goes on to the plan; Not this surface, or

@@ -113,7 +113,7 @@ export interface EngineDeps {
   playbook?: () => Playbook;
   instructions?: () => WorkspaceInstructions | undefined;
   /**
-   * The repo trees the resolve step's file-path match reads (main 15.3, #375); absent skips that step.
+   * The repo trees the resolve step's file-path match reads (main 15.3); absent skips that step.
    * Compose gives a GitHub-backed one (`app/src/github/repo-trees.ts`); a local-checkout source plugs in
    * the same way.
    */
@@ -145,7 +145,7 @@ export const DEFAULT_MAX_SCOPE_ROUNDS = 3;
 export const DEFAULT_AGENT_NAME = 'orchestrator';
 /**
  * main 14.2: Raycast keys live 24 h, so the same stack trace sent after a regression next week is not
- * dropped. The CLI's keys have the same shape and window (main 14.2 names only Raycast; #377). B 8
+ * dropped. The CLI's keys have the same shape and window (main 14.2 names only Raycast). B 8
  * keeps other deliveries 7 days.
  */
 export const RAYCAST_IDEMPOTENCY_TTL_SEC = 24 * 60 * 60;

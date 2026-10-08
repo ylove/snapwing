@@ -38,7 +38,7 @@
 // Only incidents with an issue of their own and not yet closed take text signals: before filing, the
 // main 5.4 resolution pass and the clarify round own the thread, and a terminal incident has nothing
 // to change. Every append passes the incident row's `lastSeq` and decides again on a conflict. A
-// factory-free module: compose (#335/#337) wires the ports and calls the four entry points.
+// factory-free module: compose wires the ports and calls the four entry points.
 
 import { classifyLexicon } from './classify.ts';
 import { parseSignalPrompt, type SignalPrompt } from './llm.ts';
@@ -166,7 +166,7 @@ export interface TextSignalDeps {
   environmentHint?: (incident: IncidentView) => Promise<string | undefined>;
   clock: () => Date;
   /**
-   * How long a tap on the scope-change card waits for its proposal to reach the log (#354). The card is
+   * How long a tap on the scope-change card waits for its proposal to reach the log. The card is
    * posted before the proposal is recorded (the record carries the card's message id), so a tap can land
    * in between; it re-reads the log every `stepMs` for up to `maxMs` (defaults 100 ms and 5 s) before it
    * is refused as not pending. `sleep` is a seam for tests.
@@ -315,7 +315,7 @@ export async function answerScopeChange(
 
 /**
  * The proposal for `messageId`, waiting (bounded, see `TextSignalDeps.proposalWait`) for one still being
- * recorded: the card is posted first, so an early tap finds nothing yet (#354).
+ * recorded: the card is posted first, so an early tap finds nothing yet.
  */
 async function awaitScopeProposal(deps: TextSignalDeps, incidentId: string, messageId: string): Promise<ReturnType<typeof scopeProposal>> {
   const maxMs = deps.proposalWait?.maxMs ?? PROPOSAL_WAIT_MS;

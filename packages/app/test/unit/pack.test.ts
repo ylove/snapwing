@@ -1,4 +1,4 @@
-// Packaging without the network (#382, ADR 0021): `assetPath` and `serverCodeRoot` resolution, and
+// Packaging without the network (#2, ADR 0021): `assetPath` and `serverCodeRoot` resolution, and
 // the installed bin shim (`bin/snapwing.mjs`) passing its arguments and exit code through to `main`,
 // run from the monorepo against a temp working directory. Packing and `npx` from the tarballs need the
 // registry and live in the pack tier (`pnpm test:pack`, test/pack/pack.test.ts).

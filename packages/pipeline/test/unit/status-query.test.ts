@@ -79,7 +79,7 @@ interface Spec {
   /** Minutes after BASE of the first event. */
   start?: number;
   then?: Draft[];
-  /** Someone else's trigger on the reporter's post: they brought it in, the reporter wrote it (#363). */
+  /** Someone else's trigger on the reporter's post: they brought it in, the reporter wrote it. */
   triggeredBy?: IncidentActor;
 }
 
@@ -385,7 +385,7 @@ describe('answer', () => {
     expect(q.respond(ask('status?', REPORTER, { channelId: CHANNEL, threadId: '1700000000.000100' })).audience).toBe('reporter');
   });
 
-  it("the anchor's author is the reporter when an engineer's trigger brought it in, and asking from their DM gets the reporter's one line (#363)", () => {
+  it("the anchor's author is the reporter when an engineer's trigger brought it in, and asking from their DM gets the reporter's one line", () => {
     const filed = build({ id: '01JZ00000000000000000000B1', key: 'WEB-2001', summary: 'Discounts ten times too small', surface: 'web', owner: 'dana', priority: 'High', level: 0, triggeredBy: ENGINEER });
     expect(filed.view.reporterId).toBe(REPORTER.id);
     const world = createStatusQueries(snapshot([filed]));

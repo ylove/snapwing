@@ -1,4 +1,4 @@
-// The chat seam (#368, main 15.2 parity rule): the composed app reaches chat only through the router,
+// The chat seam (main 15.2 parity rule): the composed app reaches chat only through the router,
 // which picks a surface by the incident's source. A fake second surface (`teams`) is plugged in through
 // the compose seam next to Slack on MSW; thread posts, escalation posts, digests, and the PR card for a
 // Teams incident reach the fake, the same effects for a Slack incident reach Slack, and an incident whose
@@ -265,7 +265,7 @@ describe('the chat seam', () => {
     expect(teams.calls).toContainEqual({ kind: 'mid-flight', target: { channel: TEAMS_CHANNEL, threadId: 'teams-anchor-1' }, incidentId: onTeams });
 
     // Escalation: a thread step goes to the incident's surface with the mention rendered there; a
-    // `#channel` step goes to the channel's platform, Slack until the map names one (#367).
+    // `#channel` step goes to the channel's platform, Slack until the map names one.
     await chat.escalation.post({ incidentId: onTeams, ladder: 'outage', step: 1, where: { kind: 'thread', channel: TEAMS_CHANNEL, threadId: 'teams-anchor-1' }, mention: 'teamsLead', text: 'this looks like an outage.' });
     expect(teams.calls).toContainEqual({ kind: 'thread', target: { channel: TEAMS_CHANNEL, threadId: 'teams-anchor-1' }, text: `<at>${TEAMS_LEAD}</at> this looks like an outage.` });
     expect(await recorded(b, onTeams)).toHaveLength(3);

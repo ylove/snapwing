@@ -1,6 +1,6 @@
 // A capture's lookup-first response (main 15.3, 15.4; ADR 0022), read from the engine's log, the
 // incidents row, and the card the capture adapter kept in kv. The engine's cards map to the wire's
-// kinds (#377):
+// kinds:
 //
 //   dedupe card                         tracked        (kept for a card already waiting; a new capture that
 //                                                      matches an issue links at once and answers not-filed)

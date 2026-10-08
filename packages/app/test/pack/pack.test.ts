@@ -1,4 +1,4 @@
-// The pack tier (`pnpm test:pack`, #382, ADR 0021): `pnpm pack:cli` writes the pipeline and app
+// The pack tier (`pnpm test:pack`, #2, ADR 0021): `pnpm pack:cli` writes the pipeline and app
 // tarballs, and `npx` runs `snapwing` from them in an empty directory outside the repository, with
 // nothing published. It needs npm and the registry (npx installs the packages' dependencies), so it
 // is its own tier, never part of unit or contract, and is skipped, with the reason in its title, when

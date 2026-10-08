@@ -1,4 +1,4 @@
-// Slack notifications (#329; A 4.4, A 1.3, B 7.1): the Slack projector's `notify` op against an
+// Slack notifications (A 4.4, A 1.3, B 7.1): the Slack projector's `notify` op against an
 // in-memory Slack behind MSW, on the dialect `SNAPWING_DB` selects. Covers one milestone, a merged
 // burst (rows of one batch_key become one message), a DM, and the staging request's record as the
 // `staging-check` role, which the A 8 verification flow resolves a reaction through. Also a DM about a

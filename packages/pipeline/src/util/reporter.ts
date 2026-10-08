@@ -1,4 +1,4 @@
-// Who the incident's reporter is (#363, #365). `payload.reporter` is who brought the report in; when that
+// Who the incident's reporter is. `payload.reporter` is who brought the report in; when that
 // person only flagged someone else's post (a trigger reaction, the message shortcut), `anchorAuthor` is
 // the post's author, the person who saw the bug. Anything that names or asks "the reporter" uses this.
 

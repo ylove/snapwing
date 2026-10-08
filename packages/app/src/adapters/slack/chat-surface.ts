@@ -1,4 +1,4 @@
-// The Slack chat surface (#368): Slack's side of the chat seam (`server/chat.ts`), the outbound effects
+// The Slack chat surface: Slack's side of the chat seam (`server/chat.ts`), the outbound effects
 // compose used to perform inline. Thread, channel, and direct posts through `chat.postMessage` (a user
 // id as the channel opens the app's DM); mentions as `<@U...>`; the PR card (`createSlackPrReadyChat`,
 // recorded as role `pr`); the text-signal cards (`createSlackTextCards`); the mid-flight card

@@ -54,7 +54,7 @@ async function open(): Promise<ConfigWatch> {
   return w;
 }
 
-describe('the playbook cache hook (#329)', () => {
+describe('the playbook cache hook', () => {
   it('hands each validated playbook to onPlaybook, and nothing that was rejected', async () => {
     const cached: string[] = [];
     await writeFile(playbookPath, playbookXml('<claims expiry="PT2H"/>'));

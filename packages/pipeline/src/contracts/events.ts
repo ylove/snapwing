@@ -1,6 +1,6 @@
 // Event catalog: the vocabulary of the incident event log.
-// Companion A 4.2 (event names), A 4.3 and A 4.5 (status message, waiting on, monitoring), and A 7
-// (IncidentEvent); Companion B 3 (incident_events columns),
+// A 4.2 (event names), A 4.3 and A 4.5 (status message, waiting on, monitoring), and A 7
+// (IncidentEvent); B 3 (incident_events columns),
 // B 4 (versioning and corrections), B 5 (lifecycle transitions), B 7.3 (Jira inbound), B 9 (fixer reporting).
 //
 // Parameterized names. A 4.2 writes `held:<env>` and `comment:<intent>`. They are modelled here as the
@@ -98,7 +98,7 @@ export type EventType =
   | 'user-side'
   // Text signals after filing (A 3, #294)
   | 'text-signal'
-  // main 15.3, 15.4: a capture source's lookup ended with nothing filed (#377)
+  // main 15.3, 15.4: a capture source's lookup ended with nothing filed
   | 'capture-cancelled';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
@@ -243,7 +243,7 @@ export interface CapturedPayload {
   source: ChannelSource;
   /** Who brought the report in: the author of a DM or capture, the person who reacted or ran the shortcut. */
   reporter: IncidentActor;
-  /** The anchor message's author when someone else brought it in (#363); `incidents.reporter_id` when present. */
+  /** The anchor message's author when someone else brought it in; `incidents.reporter_id` when present. */
   anchorAuthor?: IncidentActor;
   /** The capture's ceiling on the level (`CanonicalIncidentPayload.levelCap`, #170); triage resolves the level under it. */
   levelCap?: LevelCap;
@@ -253,7 +253,7 @@ export interface CapturedPayload {
   channelId: string;
   threadId?: string;
   deepLink?: string;
-  /** A capture source's named surface (`CanonicalIncidentPayload.context.surfaceHint`, #377). */
+  /** A capture source's named surface (`CanonicalIncidentPayload.context.surfaceHint`). */
   surfaceHint?: string;
   /** Removed by the nightly retention job after the window (B 4); readers must tolerate its absence. */
   rawPayloadSnapshot?: Record<string, unknown>;
@@ -336,7 +336,7 @@ export interface FiledPayload {
 export interface ClaimedPayload {
   claimerId: string;
   expiresAt: string;
-  /** The claimer's email from the workspace map, when it has one; the Jira assignee write resolves it (#323). */
+  /** The claimer's email from the workspace map, when it has one; the Jira assignee write resolves it. */
   claimerEmail?: string;
 }
 
@@ -883,7 +883,7 @@ export interface TextSignalPayload {
 }
 
 /**
- * main 15.3, 15.4 (#377): a capture source's (Raycast, CLI) lookup ended with nothing filed and no Jira
+ * main 15.3, 15.4: a capture source's (Raycast, CLI) lookup ended with nothing filed and no Jira
  * row: Cancel on `card` (the actor is who tapped), or `timedOut` when nobody answered it, since a capture
  * has no thread where silence could go on. Terminal: the incident ends `not-filed`.
  */

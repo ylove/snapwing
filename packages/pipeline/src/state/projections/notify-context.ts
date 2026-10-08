@@ -1,4 +1,4 @@
-// What the notification hook needs and the event does not carry (A 4.4, #329): `IncidentChange.notify`
+// What the notification hook needs and the event does not carry (A 4.4): `IncidentChange.notify`
 // for `outbox/notify.ts`. Built inside the append transaction, for an event that is a milestone only,
 // so an ordinary append reads nothing extra.
 //
@@ -8,7 +8,7 @@
 // - Subscriptions: the incident's (as the log has folded them up to this event), plus the workspace's
 //   standing `surface` rows for the incident's surface and `all` rows.
 // - Channel members, when known: kv key `channel-members:{channelId}` holding a JSON array of user ids.
-//   The Slack channel members module writes it (`app/src/adapters/slack/channel-members.ts`, #337); a
+//   The Slack channel members module writes it (`app/src/adapters/slack/channel-members.ts`); a
 //   channel it could not list has no key, so a watcher there is mentioned in the thread unless their
 //   subscription says DM.
 // - The window: `windowFromRows` over the incident's `notify` outbox rows, including rows an earlier

@@ -1,4 +1,4 @@
-// Slack channel members for the notification policy (A 4.4, #329, #337). A watcher who is in the
+// Slack channel members for the notification policy (A 4.4). A watcher who is in the
 // incident's channel is mentioned in the thread; anyone else gets a DM. The policy reads the member
 // list from kv `channel-members:{channel}` (`channelMembersKey`, a JSON array of user ids) inside the
 // append; this module is what writes it.

@@ -1,7 +1,7 @@
 // Operational routes every API process mounts (B 10):
 //
 //   GET /healthz   JSON `{ ok: true, platforms? }` (capture-client's `HealthResult`, which `snapwing
-//                  status` reads, #385) once the state store is open and migrated and answers a query;
+//                  status` reads, #3) once the state store is open and migrated and answers a query;
 //                  `platforms` is each configured chat platform as compose reports it (`health`).
 //                  503 `{ ok: false, detail }` before. Unauthenticated, like `/metrics`
 //   GET /metrics   Prometheus text format 0.0.4: outbox depth and oldest undrained row age per

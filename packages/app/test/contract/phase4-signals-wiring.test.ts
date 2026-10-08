@@ -1,4 +1,4 @@
-// Signal side effects, escalation ladders, and active monitoring on the composed app (#348; A 1.4,
+// Signal side effects, escalation ladders, and active monitoring on the composed app (A 1.4,
 // A 1.6, A 3, A 4.5, A 6.2), on MSW with the e2e world of #160 (fixtures/e2e/): the real `compose`,
 // worker, projectors, and routes, Slack events and taps signed as Slack sends them.
 //
@@ -427,7 +427,7 @@ describe('signal side effects, escalation ladders, and active monitoring on the 
       const taken = (await events(w, incidentId, 'text-signal')).filter((e) => e.payload.kind === 'handoff' && e.payload.phase === 'accepted');
       expect(taken.map((e) => [e.payload.to, e.payload.via])).toEqual([[OWNER, 'reaction']]);
     });
-    // Reassigned on the ticket by the map's email (the #323 row the projector resolves).
+    // Reassigned on the ticket by the map's email (the row the projector resolves).
     const assignees = (await outboxRowsOf(w.booted.state.ctx, incidentId, 'update-fields')).filter((r) => r.batchKey === jiraFieldBatchKey(incidentId, 'assignee'));
     expect(assignees.map((r) => r.payload)).toContainEqual({ issueKey: ISSUE, fields: { assignee: { email: 'hana@example.com' } } });
 
@@ -461,7 +461,7 @@ describe('signal side effects, escalation ladders, and active monitoring on the 
     clean(w);
   }, 60_000);
 
-  it('A 3: a tap on the scope-change card that lands before its proposal is recorded waits for it (#354)', async () => {
+  it('A 3: a tap on the scope-change card that lands before its proposal is recorded waits for it', async () => {
     // Slack's answer to the card's post is held 1.5 s, so the app records the proposal that much after
     // the card is visible; the tap comes straight away.
     const w = await world({ scopeCardDelayMs: 1500 });

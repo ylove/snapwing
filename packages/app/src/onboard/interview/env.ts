@@ -1,4 +1,4 @@
-// The one `.env` writer (main 22.3, #386): onboarding and the bootstrap scripts
+// The one `.env` writer (main 22.3): onboarding and the bootstrap scripts
 // (`scripts/github-bootstrap.ts`, `scripts/slack-test-users.ts`) set keys through `upsertEnv`, so a
 // value is quoted one way and reads back through `parseDotenv` (`providers/local/secrets.ts`, the
 // local SecretsPort) unchanged. Secrets go to `.env` in the working directory, where `snapwing

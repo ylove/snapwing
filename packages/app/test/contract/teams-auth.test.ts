@@ -1,4 +1,4 @@
-// Teams authentication on MSW (main 15.2 Auth, 16; #369). The signing keys are a locally generated pair served
+// Teams authentication on MSW (main 15.2 Auth, 16). The signing keys are a locally generated pair served
 // as the Bot Framework JWKS; an unhandled request fails the test, so no Microsoft endpoint is ever called.
 
 import { generateKeyPairSync, sign } from 'node:crypto';

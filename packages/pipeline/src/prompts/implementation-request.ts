@@ -1,9 +1,9 @@
-// Implementation request (main 9.2, Companion B 6.2): build, parse, and validate.
+// Implementation request (main 9.2, B 6.2): build, parse, and validate.
 // Written by triage, read by the fixer and the review agent. Schema: schemas/implementation-request.xsd.
 //
 // Text content is whitespace-normalized (runs of whitespace collapse to one space, ends trimmed)
 // on both build and parse, so build -> parse round-trips and the XML never depends on indentation.
-// The one exception is `<workspace-instructions>` (INSTRUCTIONS.md, Companion A 6.3), the fixer's
+// The one exception is `<workspace-instructions>` (INSTRUCTIONS.md, A 6.3), the fixer's
 // copy of the workspace's prose rules: its line breaks are kept and only its ends are trimmed.
 
 import { parseXmlDocument, type Element } from 'slimdom';

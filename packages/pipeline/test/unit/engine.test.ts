@@ -387,7 +387,7 @@ describe('levels (main 14.1)', () => {
     expect(h.adapter.statuses).toEqual([{ issueKey: 'APP-101', stage: 'filed', text: 'Filed as APP-101, assigned to @mobDev.' }]);
   });
 
-  it("an engineer's trigger on someone else's post: captured keeps both, and the post's author is the incident's reporter (#363)", async () => {
+  it("an engineer's trigger on someone else's post: captured keeps both, and the post's author is the incident's reporter", async () => {
     const h = setup({ level: 0 });
     h.payload.reporter = { id: 'U-FAKE-ENG', name: 'mobDev', role: 'engineer' };
     h.payload.anchorAuthor = { id: REPORTER.id, name: 'Pat', role: 'reporter' };
@@ -820,7 +820,7 @@ describe('unresolved surface (#115)', () => {
     expect(h.adapter.cards.at(-1)).toMatchObject({ kind: 'clarify', question: { asks: 'surface', options: SURFACE_QUESTION.options } });
   }
 
-  it("an experiential question on a post an engineer flagged waits on the post's author (#365)", async () => {
+  it("an experiential question on a post an engineer flagged waits on the post's author", async () => {
     const h = setup(scene());
     h.payload.reporter = { id: 'U-FAKE-ENG', name: 'mobDev', role: 'engineer' };
     h.payload.anchorAuthor = { id: REPORTER.id, name: 'Pat', role: 'reporter' };
@@ -828,7 +828,7 @@ describe('unresolved surface (#115)', () => {
     expect((await state.getIncident(h.payload.eventId))?.waitingOn).toMatchObject({ kind: 'human', who: REPORTER.id });
   });
 
-  it('with no anchorAuthor the question waits on the reporter as before (#365)', async () => {
+  it('with no anchorAuthor the question waits on the reporter as before', async () => {
     const h = setup(scene());
     await toQuestion(h);
     expect((await state.getIncident(h.payload.eventId))?.waitingOn).toMatchObject({ kind: 'human', who: REPORTER.id });

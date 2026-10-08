@@ -1,4 +1,4 @@
-// Slack signals (A 1.2, A 1.3, A 1.4; #335): reactions and short thread replies, classified and handed
+// Slack signals (A 1.2, A 1.3, A 1.4): reactions and short thread replies, classified and handed
 // to the signal handler (`handleSignal`, pipeline/src/signals/handler.ts, #288).
 //
 // - `reaction_added` and `reaction_removed` by anyone but the bot are looked up with `classifyReaction`
@@ -12,7 +12,7 @@
 //   root is an incident's anchor or a message Snapwing posted. A top-level message, a bot's message
 //   (Snapwing's own included), an edit or deletion, and a message that mentions the bot (the status
 //   query answers those, A 4.3) are ignored. A person posting through an app (`bot_id` on a person's
-//   message) is a person (`authorship.ts`, #360).
+//   message) is a person (`authorship.ts`).
 // - A reply goes through the lexicon (`classifyLexicon`) first. One that misses it and sits in an
 //   active incident's thread (the root resolves and the incident is not terminal) goes to the model
 //   (`classifyLlm`, task `segmentation`) with the earlier thread messages as context, when `model` is
@@ -23,7 +23,7 @@
 //   before the lexicon, so "stop notifying me on web" never reads as a Stop. Only inside an incident's
 //   thread, like every message signal; "keep me posted" with no surface is the incident's `watch`.
 //
-// - Text signals beyond the intents (A 3, #294, wired in #348), when `text` is given: every thread reply
+// - Text signals beyond the intents (A 3), when `text` is given: every thread reply
 //   a person posts (the standing watch aside) also goes to `handleTextSignal`, after the intent path,
 //   since one message can be both ("works now" is an `accept` and a resolution). A `claim` reaction the
 //   handler applied goes to `acceptHandoff` (the person a handoff named took it). The two cards are
@@ -33,7 +33,7 @@
 //   taps (`answerResolution`, `answerScopeChange`) and resolves to false for any other payload, which
 //   the caller hands to the interactivity. The scope card is posted before its proposal is recorded (the
 //   record carries the card's message id), so a tap can land first: `answerScopeChange` waits for the
-//   proposal for a bounded time (`TextSignalDeps.proposalWait`, #354) instead of refusing. The resolution
+//   proposal for a bounded time (`TextSignalDeps.proposalWait`) instead of refusing. The resolution
 //   question is recorded before it is shown, and the mid-flight and interactivity cards read no record
 //   on a tap, so only the scope card has the gap.
 //
@@ -102,7 +102,7 @@ export interface SlackSignalsOptions {
   getMap: () => Promise<WorkspaceMap>;
   /** The bot's own user id: its reactions and messages are ignored, and a mention of it is the status query's. */
   botUserId: string;
-  /** Who wrote a thread reply (`authorship.ts`, #360). Default: the map and `botUserId` only. */
+  /** Who wrote a thread reply (`authorship.ts`). Default: the map and `botUserId` only. */
   authorOf?: SlackAuthorOf;
   /** The Slack subdomain for permalinks (`<domain>.slack.com`). Absent: no deep link. */
   workspaceDomain?: string;

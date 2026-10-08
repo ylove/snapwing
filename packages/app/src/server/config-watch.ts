@@ -1,4 +1,4 @@
-// Hot reload of `playbook.xml` and `INSTRUCTIONS.md` (Companion A 6.1, 6.3).
+// Hot reload of `playbook.xml` and `INSTRUCTIONS.md` (A 6.1, 6.3).
 //
 // `createConfigWatch` loads both files once, then watches their directories. A changed file is read,
 // validated (the playbook against the XSD and Schematron with the current map, the instructions against

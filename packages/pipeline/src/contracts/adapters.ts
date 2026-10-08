@@ -31,7 +31,7 @@ export type InteractiveCard =
   | FileConfirmCard;
 
 /**
- * main 15.3, 15.4 (#377): a capture source's lookup when dedupe found nothing and the surface resolved:
+ * main 15.3, 15.4: a capture source's lookup when dedupe found nothing and the surface resolved:
  * "New. Looks like the website (from src/cart/... in the trace). File it?" Choices `FILE_CONFIRM_CHOICES`:
  * File it files, Not this surface asks the surface question, Cancel ends the capture unfiled. Only the
  * capture adapter holds it for its client; chat adapters render it for exhaustiveness and never post it.
@@ -51,7 +51,7 @@ export type FileConfirmChoice = (typeof FILE_CONFIRM_CHOICES)[number];
 
 /**
  * The choice that cancels a capture source's surface question (a `clarify` card whose options are the
- * map's surface labels). Any capture card's timeout files nothing either (#377).
+ * map's surface labels). Any capture card's timeout files nothing either.
  */
 export const CAPTURE_CANCEL_CHOICE = 'cancel';
 

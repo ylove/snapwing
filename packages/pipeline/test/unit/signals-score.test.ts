@@ -420,7 +420,7 @@ describe(`the reaction ladder (${TEST_DIALECT})`, () => {
     expect((await state.getIncident(INC))?.status).toBe('filed');
   });
 
-  // #360, the live escalation row: the engine adopts the waiting reactions right after `captured`
+  // the live escalation row: the engine adopts the waiting reactions right after `captured`
   // (`EngineDeps.onCaptured`), before `resolved` names an owner, so `mention="owner"` named nobody and
   // the post went out without the owner. The map's owner of the channel's surface stands in.
   it('adopted at capture, before resolution: the owner of the channel surface in the map is mentioned', async () => {

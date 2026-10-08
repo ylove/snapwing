@@ -1,4 +1,4 @@
-// `snapwing config check` (Companion A 6.1, 6.3): validates the workspace map, the playbook, and
+// `snapwing config check` (A 6.1, 6.3): validates the workspace map, the playbook, and
 // INSTRUCTIONS.md the way `serve` loads them, and prints every finding. Errors (an invalid map or
 // playbook, instructions over the cap) exit 1. Instruction lint findings are printed as warnings:
 // the pipeline ignores an instruction where a guardrail disagrees, so they do not fail the check.

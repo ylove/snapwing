@@ -1,5 +1,5 @@
 // Graph change-notification subscriptions for Teams channel messages (main 15.2 emoji trigger row,
-// ADR 0005, #379). Bot Framework `messageReaction` fires only for messages the bot sent, so reactions on
+// ADR 0005). Bot Framework `messageReaction` fires only for messages the bot sent, so reactions on
 // human messages arrive as `chatMessage` change notifications and the emoji trigger diffs `reactions`.
 //
 // - One subscription per team in the map: `/teams/{id}/channels/getAllMessages`, change types `created`

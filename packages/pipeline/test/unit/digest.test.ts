@@ -1,4 +1,4 @@
-// Digests (A 4.6, #302). A seeded log on the dialect `SNAPWING_DB` selects, the in-process workflow,
+// Digests (A 4.6). A seeded log on the dialect `SNAPWING_DB` selects, the in-process workflow,
 // and a fake clock: the digest is what the log and projections say, posted by the cron job.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

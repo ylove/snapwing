@@ -13,7 +13,7 @@
 // failure goes to `onError` and never fails the post.
 //
 // A status update with an empty `issueKey` is a note about an incident that has no issue (the A 5.2
-// "That fixed it" note, #305, #360): a plain reply in the thread, without the stage emoji (a 🐛 on
+// "That fixed it" note): a plain reply in the thread, without the stage emoji (a 🐛 on
 // "no bug then" reads wrong), never pinned, never remembered as the incident's status message, and
 // recorded with role `other`.
 
@@ -63,7 +63,7 @@ export interface SlackAdapterOptions {
   signingSecret: string;
   /** The bot's own user id (`auth.test`); its reactions and messages are ignored. */
   botUserId: string;
-  /** Who wrote a direct message (`authorship.ts`, #360). Default: the map and `botUserId` only. */
+  /** Who wrote a direct message (`authorship.ts`). Default: the map and `botUserId` only. */
   authorOf?: SlackAuthorOf;
   /** The current workspace map; read per request so a config change is picked up. */
   getMap: () => Promise<WorkspaceMap>;

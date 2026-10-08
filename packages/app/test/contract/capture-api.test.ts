@@ -1,4 +1,4 @@
-// The capture API on the composed app (#385; main 15.3, 15.4, 16; ADR 0007, ADR 0022), driven the way
+// The capture API on the composed app (#3; main 15.3, 15.4, 16; ADR 0007, ADR 0022), driven the way
 // Raycast and the CLI drive it: through capture-client against the real `compose`, worker, projectors,
 // and routes (fixtures/e2e/world.ts), with MSW standing in for Slack, Jira, and GitHub (the git trees
 // API included) and a scripted model. Tokens are real ones from `issueCaptureToken`.

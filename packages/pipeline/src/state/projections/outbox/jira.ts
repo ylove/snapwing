@@ -4,7 +4,7 @@
 //
 // - `Agent Status` (`update-fields`): whenever its one line changes, which is every status change
 //   (the status leads the line) plus a new PR number or a new wait. `filed` writes the first line.
-// - Assignee (`update-fields`, #323): on a `claimed` event whose payload carries the claimer's email
+// - Assignee (`update-fields`): on a `claimed` event whose payload carries the claimer's email
 //   (the map's), to an issue that already exists; before `filed` the engine's create payload names the
 //   claimer as `suggestedAssigneeEmail`. The row carries `fields.assignee.email`; the projector resolves
 //   the Jira account id. Its batch key is `field:{incident}:assignee`, so a human's assignee edit drops it.
@@ -108,7 +108,7 @@ export interface UpdateFieldsRow {
   customFields: Partial<Record<typeof CUSTOM_FIELD_AGENT_STATUS | typeof CUSTOM_FIELD_AUTONOMY_LEVEL, string | number>>;
 }
 
-/** `update-fields` on the assignee: the person by email; the projector resolves the Jira account id (#323). */
+/** `update-fields` on the assignee: the person by email; the projector resolves the Jira account id. */
 export interface AssigneeRow {
   issueKey: string;
   fields: { assignee: { email: string } };

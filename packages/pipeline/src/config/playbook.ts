@@ -1,4 +1,4 @@
-// Playbook, playbook.xml (Companion A 6.2). Schemas: schemas/playbook.xsd and schemas/playbook.sch.
+// Playbook, playbook.xml (A 6.2). Schemas: schemas/playbook.xsd and schemas/playbook.sch.
 // Every element has a default, so an empty <playbook/> loads; `loadPlaybook` always returns a
 // complete Playbook or a list of typed errors, never a partial playbook.
 
@@ -159,7 +159,7 @@ export interface PlaybookError {
 
 export type PlaybookResult = { ok: true; playbook: Playbook } | { ok: false; errors: PlaybookError[] };
 
-// Defaults (Companion A 1.1, 1.2, 1.4, 2.4, 4.4, 4.5, 5.3, 6.2). Emoji are reaction names per platform.
+// Defaults (A 1.1, 1.2, 1.4, 2.4, 4.4, 4.5, 5.3, 6.2). Emoji are reaction names per platform.
 
 function emoji(slack: string, teams: string = slack): PlaybookEmoji {
   return { slack, teams };

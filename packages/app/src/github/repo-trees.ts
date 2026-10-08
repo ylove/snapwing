@@ -1,4 +1,4 @@
-// GitHub-backed RepoTrees (main 15.3, #375, #377): every file path in a map repo at its default branch,
+// GitHub-backed RepoTrees (main 15.3): every file path in a map repo at its default branch,
 // for the resolve step's file-path match. Read-only (`contents: read`, one repository per token), through
 // the default branch's tree sha and the git trees API with `recursive=1`. Trees are cached per repo, so a
 // burst of captures reads each tree once; a failure is cached briefly and reads as undefined (the step

@@ -15,7 +15,7 @@
 //   Only when `standing` is given.
 //
 // `handle(activity)` and `intercepts(activity)` are the shape the transport's `status` route takes
-// (`TeamsActivityRoute`, #390).
+// (`TeamsActivityRoute`).
 //
 // Only a person's message is a question: Snapwing's own and another bot's (a `28:` id, role `bot`, or no
 // AAD object id) are ignored.

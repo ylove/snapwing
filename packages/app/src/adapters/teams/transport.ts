@@ -1,9 +1,9 @@
-// Teams transport (main 14.1, 15.2, ADR 0016, #390): the HTTP handlers for the Bot Framework messaging
+// Teams transport (main 14.1, 15.2, ADR 0016): the HTTP handlers for the Bot Framework messaging
 // endpoint and the Graph change notifications, mirroring `adapters/slack/transport.ts`. Teams has no
 // Socket Mode, so a local run needs a dev tunnel (`devtunnel` or `ngrok`, main 15.2 local development row)
 // pointing at these routes.
 //
-// - `POST /teams/messages`: authenticates first (the adapter's Bot Framework JWT check, #369, with the
+// - `POST /teams/messages`: authenticates first (the adapter's Bot Framework JWT check, with the
 //   activity's `serviceUrl` and `channelId: 'msteams'`; any other channel, a body that is not an activity,
 //   or a token that fails is 401 and touches nothing), then dispatches by activity type to injected handlers:
 //   - `message`: the bot's own messages are dropped; then the status pull (@mention status questions,
@@ -22,10 +22,10 @@
 //   interactivity is told (`TeamsInvokeBudget`), so a refusal that lands after "Working on it" reaches the
 //   tapper in their personal chat instead of on a card nobody sees. Handlers
 //   that answer nothing (status, commands, signals, mode check) run after the 200, as Slack's do.
-// - `POST /teams/notifications` and `POST /teams/lifecycle` (Graph, #379): the `validationToken` handshake
+// - `POST /teams/notifications` and `POST /teams/lifecycle` (Graph): the `validationToken` handshake
 //   is answered with the token; otherwise only notifications whose `clientState` matches are kept (a body
 //   where none matches is 403 and touches nothing) and Graph gets its 202 at once. Change notifications go
-//   to the signals (#392 diffs the reactions); lifecycle notifications to `handleLifecycle`, whose outcomes
+//   to the signals (#7 diffs the reactions); lifecycle notifications to `handleLifecycle`, whose outcomes
 //   (a `missed` one means resync) go to `onLifecycle`.
 //
 // The RSC mode check writes kv `teams-mode:{teamId}` (`full` or `reduced`, `conversations.ts`), which puts
@@ -83,7 +83,7 @@ export interface TeamsInvokeBudget {
   expired(): boolean;
 }
 
-/** Universal Actions taps (#391). */
+/** Universal Actions taps (#6). */
 export interface TeamsInteractivity {
   /**
    * The refreshed card (who chose what, or the same card with a one-line reason); undefined answers with no
@@ -92,7 +92,7 @@ export interface TeamsInteractivity {
   onAction(activity: unknown, budget?: TeamsInvokeBudget): Promise<TeamsInvokeCard | undefined>;
 }
 
-/** Signals (#392): reactions on the bot's messages, channel thread replies, and the Graph reaction diff. */
+/** Signals (#7): reactions on the bot's messages, channel thread replies, and the Graph reaction diff. */
 export interface TeamsSignalsRoute {
   /** True for a `message` activity the signals read (a person's channel thread reply). */
   observes(activity: unknown): boolean;
@@ -112,15 +112,15 @@ export interface TeamsDispatcherOptions {
   adapter: Pick<TeamsAdapter, 'authenticateRequest' | 'normalizeResult'>;
   /** `IncidentOrchestrator.handleInbound`: authenticate, normalize, dedupe, enqueue, acknowledge (a `TeamsAck`). */
   handleInbound: (source: ChannelSource, raw: TeamsInbound) => Promise<unknown>;
-  /** Status questions (#394): @mentions, status-shaped personal messages, the `status` command. */
+  /** Status questions (#9): @mentions, status-shaped personal messages, the `status` command. */
   status?: TeamsActivityRoute;
-  /** Bot commands (`queue`, #384), checked in order after the status pull. */
+  /** Bot commands (`queue`), checked in order after the status pull. */
   commands?: readonly TeamsActivityRoute[];
   interactivity?: TeamsInteractivity;
   signals?: TeamsSignalsRoute;
   /** Installation and conversation updates: the RSC mode check, the queue's install card. Every match runs. */
   installs?: readonly TeamsActivityRoute[];
-  /** Graph change-notification subscriptions (#379). Absent: the notification routes answer 404. */
+  /** Graph change-notification subscriptions. Absent: the notification routes answer 404. */
   subscriptions?: Pick<TeamsSubscriptions, 'handleValidation' | 'verifyNotification' | 'handleLifecycle'>;
   /** Lifecycle outcomes (a `missed` one means the signals should resync). */
   onLifecycle?: (outcomes: readonly LifecycleOutcome[]) => Promise<void> | void;
@@ -133,7 +133,7 @@ export interface TeamsDispatcher {
   /** `POST /teams/messages`: the Authorization header and the exact body. */
   dispatch(raw: { headers: Headers; body: string }): Promise<TeamsDispatchResult>;
   /**
-   * Routes an activity that is already authenticated. Test seam for the e2e world (#405), which hands
+   * Routes an activity that is already authenticated. Test seam for the e2e world (#20), which hands
    * activities past authentication as the Slack e2e hands envelopes to Socket Mode; never mounted.
    */
   route(inbound: Extract<TeamsInbound, { transport: 'http' }>): Promise<TeamsDispatchResult>;
@@ -410,7 +410,7 @@ export function createTeamsTransport(options: TeamsDispatcherOptions): TeamsTran
   return { dispatcher, routes: createTeamsRoutes(dispatcher), start: () => Promise.resolve(), stop: () => dispatcher.idle() };
 }
 
-/** The queue (#384) as the dispatcher's routes: the `queue` command and the personal install card. */
+/** The queue as the dispatcher's routes: the `queue` command and the personal install card. */
 export function teamsQueueRoutes(queue: Pick<TeamsQueue, 'isQueueCommand' | 'handleCommand' | 'isInstall' | 'handleInstall'>): {
   command: TeamsActivityRoute;
   install: TeamsActivityRoute;

@@ -1,4 +1,4 @@
-// The A 8 parity row (#392): a recorded Slack `reaction_added` and a Teams Graph reaction diff for the
+// The A 8 parity row (#7): a recorded Slack `reaction_added` and a Teams Graph reaction diff for the
 // same intent, actor, and target produce identical `SignalEvent`s (A 7) apart from `platform`.
 //
 // Each platform runs on its own fresh store holding the same incident (same id, same report time), one

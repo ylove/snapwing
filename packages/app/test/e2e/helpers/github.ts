@@ -93,7 +93,7 @@ export interface HookDelivery {
  * The App webhook's recent deliveries (`GET /app/hook/deliveries`, the App's JWT), newest first, for a
  * diagnosis: an App whose webhook was never switched on (`pnpm github:bootstrap webhook` prints the
  * one-time browser step only while the URL is the placeholder) has none at all, and a delivery the
- * server refused shows its status code (401 is the webhook secret). #360.
+ * server refused shows its status code (401 is the webhook secret).
  */
 export async function appHookDeliveries(secrets: SecretsPort, perPage = 100): Promise<HookDelivery[]> {
   const [appId, pem] = await Promise.all([secrets.get('GITHUB_APP_ID'), secrets.get('GITHUB_APP_PRIVATE_KEY')]);

@@ -1,4 +1,4 @@
-// State store factory and Kysely table types (Companion B 2, B 3, B 10; ADR 0011).
+// State store factory and Kysely table types (B 2, B 3, B 10; ADR 0011).
 //
 // `openState(options)` opens SQLite (`better-sqlite3`, WAL mode) or Postgres (`pg`), runs pending
 // migrations before it resolves, and returns the StatePort plus `dialect` and `close()`. Tests pick
@@ -235,7 +235,7 @@ export interface LinkedIdentitiesTable {
   updated_at: TsDefault;
 }
 
-/** A per-user capture token (#374): its SHA-256, never the token. Not a projection. */
+/** A per-user capture token: its SHA-256, never the token. Not a projection. */
 export interface CaptureTokensTable {
   id: string;
   workspace_id: string;

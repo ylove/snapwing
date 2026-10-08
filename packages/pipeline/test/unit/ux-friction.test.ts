@@ -1,5 +1,5 @@
-// UX friction (#306; A 5.3). Real state on the dialect `SNAPWING_DB` selects, a fake clock, a fake
-// TTL cache on that clock, and a fake filer. Events are `user-side` rows as #305 records them.
+// UX friction (A 5.3). Real state on the dialect `SNAPWING_DB` selects, a fake clock, a fake
+// TTL cache on that clock, and a fake filer. Events are `user-side` rows as the signals code records them.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { defaultPlaybook, type Playbook } from '../../src/config/playbook.ts';

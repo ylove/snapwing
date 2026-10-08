@@ -1,4 +1,4 @@
-// Environment holds and claim expiry (Companion A 2.3 and 2.4, B 5 timers).
+// Environment holds and claim expiry (A 2.3 and 2.4, B 5 timers).
 //
 // Everything is read from the incident's event log; the three durable timers only wake a handler that
 // re-reads the log and decides, so a timer that fires early, late, or twice does no harm.

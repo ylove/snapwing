@@ -1,4 +1,4 @@
-// Slack signals (#335; A 1.2, A 1.3, A 1.4): recorded Events API payloads through the real HTTP
+// Slack signals (A 1.2, A 1.3, A 1.4): recorded Events API payloads through the real HTTP
 // dispatcher, the adapter wrapped by `observeSignals`, and the real signal handler over the dialect
 // `SNAPWING_DB` selects. The engine, the stop, and the fixer start are recording fakes in the first
 // part; the last test boots the real `compose` (fixtures/e2e/world.ts) to show the engine's
@@ -274,7 +274,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     });
   });
 
-  // #360: the e2e people post through the "Snapwing Test Driver" app with their own user tokens, so
+  // The e2e people post through the "Snapwing Test Driver" app with their own user tokens, so
   // Slack stamps `bot_id` and `app_id` on their replies. A person posting through an app is a person.
   it('"on it" from a mapped person posting through an app (bot_id and app_id on the reply) is their claim', async () => {
     await filed();

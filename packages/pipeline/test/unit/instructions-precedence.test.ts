@@ -1,4 +1,4 @@
-// Workspace instructions applied at the autopilot merge and the fixer start (#307; Companion A 6.3,
+// Workspace instructions applied at the autopilot merge and the fixer start (A 6.3,
 // A 6.4; main 11.3). A scripted model answers the instructions check per step; the fixer job, the
 // merge job, and a human Merge tap run for real on the in-process workflow over the dialect
 // `SNAPWING_DB` selects, with fake GitHub, runner, and identity links. The status message is read off

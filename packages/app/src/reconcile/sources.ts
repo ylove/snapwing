@@ -8,7 +8,7 @@
 //   prState(pr)       open, closed, or merged with the merge commit (`GET /pulls/{n}`).
 //   issueStatus(key)  the issue's status and, from its changelog, the last status change, with
 //                     `byAgent` when the agent's own Jira account made it. Null for a deleted issue.
-//   deployments(ref)  the active monitor's deploy source (A 4.5, `MonitorSources.deployments`, #360):
+//   deployments(ref)  the active monitor's deploy source (A 4.5, `MonitorSources.deployments`):
 //                     the repository's most recent deployments (`GET /deployments`, newest first),
 //                     staged by environment name as the `deployment_status` webhook stages them
 //                     (`deployStageOf`), and per stage the newest whose latest status is `success` and

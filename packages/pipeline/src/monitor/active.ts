@@ -1,5 +1,5 @@
 // src/monitor/active.ts: active monitoring for critical incidents (A 4.5, B 5 heartbeat and stall
-// timers, B 8), #301. A factory over injected interfaces and a clock; compose wires it (#337).
+// timers, B 8). A factory over injected interfaces and a clock; compose wires it.
 //
 // Qualifying. An open incident qualifies while its priority is Highest (`priority`), the A 1.4
 // reaction ladder reached its outage step (`outage-score`, `escalationState`), or its surface is one

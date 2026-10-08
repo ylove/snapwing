@@ -5,7 +5,7 @@
 // holds (every attribute on that element must match; none at all means it never applies on its own)
 // and the incident is not in a terminal status. The facts it matches come from the incidents row
 // (`priority`, `monitored`, `status`) plus two injected predicates: `outage` (the A 1.4 reaction
-// ladder's outage step, #290) and `stalled` (A 4.5, #301). Without them both read false.
+// ladder's outage step, #290) and `stalled` (A 4.5). Without them both read false.
 //
 // The log is the ladder's state, one event type `escalation-ladder` (contracts/events.ts):
 //   started   `evaluate` found the ladder applying and not running. Its `occurredAt` is the anchor:
@@ -39,7 +39,7 @@
 // neither the step logs once per service and does not page; its other actions still run. One dedup
 // key per incident and ladder (`pagerDedupKey`); a stop resolves it on every service the run paged.
 //
-// Stall detection (#301) should not count `escalation-ladder` events as progress, or a ladder's own
+// Stall detection should not count `escalation-ladder` events as progress, or a ladder's own
 // step would unstall the incident it escalates.
 
 import type { EscalationLadderPayload, IncidentEvent, NewEvent } from '../contracts/events.ts';
@@ -103,13 +103,13 @@ export interface LadderDeps {
   clock: () => Date;
   /** The A 1.4 outage step has been reached (#290). Default: never. */
   outage?: (incident: IncidentView) => boolean | Promise<boolean>;
-  /** The incident is stalled (A 4.5, #301). Default: never. */
+  /** The incident is stalled (A 4.5). Default: never. */
   stalled?: (incident: IncidentView) => boolean | Promise<boolean>;
   /** A link back to the incident for the page. */
   link?: (incident: IncidentView) => string | undefined;
   /**
    * The workspace map: `mention="owner"` falls back to the owner of the channel's surface while
-   * nothing names one yet (a ladder started at adoption, before resolution, #360). Absent: no fallback.
+   * nothing names one yet (a ladder started at adoption, before resolution). Absent: no fallback.
    */
   map?: () => WorkspaceMap | Promise<WorkspaceMap>;
   /** Default `console.warn`. Never given a secret. */

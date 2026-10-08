@@ -118,7 +118,7 @@ afterEach(() => {
 });
 afterAll(() => server.close());
 
-/** The #369 verifier's shape: a good token for this app and this serviceUrl passes. */
+/** The verifier's shape: a good token for this app and this serviceUrl passes. */
 const verify = vi.fn<TeamsJwtVerifier>((authorization, opts) =>
   Promise.resolve({ ok: authorization === GOOD && opts.appId === APP_ID && opts.serviceUrl === SERVICE_URL }),
 );

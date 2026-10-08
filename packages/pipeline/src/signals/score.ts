@@ -27,7 +27,7 @@
 //   note         "3 people are reporting this", posted to the incident's thread.
 //   mentionOwner the same post mentions the owner (the Jira assignee, else the resolved owner, else,
 //                before resolution has run, the owner of the channel's surface in the map: steps
-//                reached at adoption fire while the incident is only captured, #360).
+//                reached at adoption fire while the incident is only captured).
 //   suppressAskBack  the ask-back gate is suppressed from here on (`escalationState`, which the
 //                engine's clarify step passes to the gate as `escalated`): it is an incident, not a
 //                question. The user-side check is a question too, and is suppressed with it.

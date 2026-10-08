@@ -1,4 +1,4 @@
-// INSTRUCTIONS.md (Companion A 6.1, 6.3, 6.4): the workspace's prose rules for the model.
+// INSTRUCTIONS.md (A 6.1, 6.3, 6.4): the workspace's prose rules for the model.
 //
 // `loadInstructions` caps the file at 4,000 characters and turns it into one `<workspace-instructions>`
 // block, escaped for XML. The block goes into the triage, clarify, fixer (the implementation request),
@@ -48,7 +48,7 @@ export function loadInstructions(text: string | null | undefined, previous?: Wor
   if (characters > INSTRUCTIONS_MAX_CHARS) {
     return {
       ok: false,
-      reason: `INSTRUCTIONS.md is ${formatCount(characters)} characters; the cap is ${formatCount(INSTRUCTIONS_MAX_CHARS)} (Companion A 6.3). Shorten it; the previous version stays live.`,
+      reason: `INSTRUCTIONS.md is ${formatCount(characters)} characters; the cap is ${formatCount(INSTRUCTIONS_MAX_CHARS)}. Shorten it; the previous version stays live.`,
       instructions: previous,
     };
   }
@@ -93,7 +93,7 @@ function formatCount(n: number): string {
 
 /**
  * The part of the playbook (A 6.2) the lint reads. Structural, so the full `Playbook` from the
- * playbook loader satisfies it. Absent sections take Companion A's defaults.
+ * playbook loader satisfies it. Absent sections take the playbook defaults.
  */
 export interface InstructionsLintPlaybook {
   readonly claims?: {

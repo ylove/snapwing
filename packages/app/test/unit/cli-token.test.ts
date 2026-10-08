@@ -1,4 +1,4 @@
-// `snapwing token issue | list | revoke` (#388): on a temp SQLite file and a temp copy of the example map.
+// `snapwing token issue | list | revoke`: on a temp SQLite file and a temp copy of the example map.
 
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

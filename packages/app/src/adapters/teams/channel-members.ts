@@ -1,4 +1,4 @@
-// Teams channel members for the notification policy (A 4.4, #395). A watcher who is in the incident's
+// Teams channel members for the notification policy (A 4.4, #10). A watcher who is in the incident's
 // channel is mentioned in the thread; anyone else gets a personal message. The policy reads the member
 // list from kv `channel-members:{channel}` (`channelMembersKey`, a JSON array of user ids) inside the
 // append; this module writes it, as `adapters/slack/channel-members.ts` does for Slack.

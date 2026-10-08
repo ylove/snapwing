@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Instructions hold prompt (Companion A 6.3, 6.4; main 11.3). src/merge/instructions.ts reads the
+<!-- Instructions hold prompt (A 6.3, 6.4; main 11.3). src/merge/instructions.ts reads the
      system prompt below, appends the workspace instructions block after it (withInstructions), and
      builds the request itself (<instructions-check>). Prose inside <system> is what the model applies;
      the element names are for humans and tests. -->

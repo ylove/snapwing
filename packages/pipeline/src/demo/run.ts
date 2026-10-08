@@ -1,4 +1,4 @@
-// `pnpm demo` (phase 2 proof; main 14.3 reviewer demo mode, BUILDING 6): the merged orchestrator
+// `pnpm demo` (phase 2 proof; main 14.3 reviewer demo mode): the merged orchestrator
 // end to end, in one process on the `local` provider, with MSW standing in for Slack, Jira, and
 // GitHub and a recorded model. No keys, no network: a request no mock handles fails the run.
 //

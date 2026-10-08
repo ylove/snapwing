@@ -1,4 +1,4 @@
-// Ticket synthesis (main 9.1, 9.2; Companion B 7.2 field map). Pure data in, Jira create payload out.
+// Ticket synthesis (main 9.1, 9.2; B 7.2 field map). Pure data in, Jira create payload out.
 // Nothing here calls Jira: the payload goes to the outbox (phase 3), which maps custom field names to site ids.
 
 import type { WorkspaceInstructions } from '../config/instructions.ts';

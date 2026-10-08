@@ -1,4 +1,4 @@
-// The Teams chat surface (#395): Teams' side of the chat seam (`server/chat.ts`), the outbound effects
+// The Teams chat surface (#10): Teams' side of the chat seam (`server/chat.ts`), the outbound effects
 // compose performs outside the adapter's own inbound path, as `adapters/slack/chat-surface.ts` does for
 // Slack. Thread posts, channel posts, and personal posts through the Bot Connector; `<at>` mentions from
 // the map; the PR card and the GitHub link prompt (`createTeamsPrReadyChat`); the text-signal cards; the
@@ -14,12 +14,12 @@
 //   authenticated activity), else `options.serviceUrl`.
 // - A channel is a map channel by name or id (`#web-bugs-teams`, or `19:...@thread.tacv2`).
 // - A person is reached in their personal chat with the bot, which Teams opens only where the app is
-//   installed for them (`createPersonalConversation`; main 15.2, #384). Without it, a person post is
+//   installed for them (`createPersonalConversation`; main 15.2). Without it, a person post is
 //   dropped with an info log (it has no thread to mention them in), and a card meant for one person goes to the thread with a
 //   mention (a link prompt says so without the link: see `pr-ready.ts`).
 // - Opening a personal chat sends the user's `29:` Teams id in `members[].id` when an inbound activity
 //   gave one (kv `teams-user:{aadObjectId}`, written by `rememberUser`), the AAD object id in
-//   `aadObjectId`, and the bot's app id as `botId` (#370). Real Teams may want that `29:` id; there is no
+//   `aadObjectId`, and the bot's app id as `botId`. Real Teams may want that `29:` id; there is no
 //   tenant to confirm it on in this build.
 // - A mention is `<at>handle</at>` text plus a `mention` entity keyed by the AAD object id (`teamsId`);
 //   a person the map does not list is `<at>` the name Teams gave them (`from.name`, kept in their user

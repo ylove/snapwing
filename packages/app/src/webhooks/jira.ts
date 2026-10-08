@@ -9,7 +9,7 @@
 //      sign). Anything else is 401, before the body is trusted for anything.
 //   2. Parse. A body that is not a JSON object is 400.
 //   3. Mapping. Only `jira:issue_updated` changes anything (comments with intent phrases go to the
-//      signal path in phase 4, Companion A 1.2). The issue maps to an incident by `incidents.jira_key`;
+//      signal path in phase 4, A 1.2). The issue maps to an incident by `incidents.jira_key`;
 //      no incident, nothing to do.
 //   4. Dedupe (B 8): `seenWebhook('jira', key, 7 days)`, the key being `webhookEvent`, the issue id,
 //      and the issue's `updated` timestamp (a SHA-256 of the body when a payload lacks them). For an

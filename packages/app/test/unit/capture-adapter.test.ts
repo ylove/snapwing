@@ -1,4 +1,4 @@
-// The capture adapter's pieces (#385, ADR 0022): one capture per idempotency key, the screenshot as the
+// The capture adapter's pieces (#3, ADR 0022): one capture per idempotency key, the screenshot as the
 // anchor's attachment and never in the payload, the image loaders and their release, the client's
 // choice ids by role, and the status loopback's assignee.
 

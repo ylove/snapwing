@@ -1,4 +1,4 @@
-// Phrase lexicon for the lexicon pass (Companion A 1.2): normalize, light stemming, word-boundary match.
+// Phrase lexicon for the lexicon pass (A 1.2): normalize, light stemming, word-boundary match.
 import { PLAYBOOK_INTENTS, type PlaybookIntent, type PlaybookSignals } from '../config/playbook.ts';
 
 /** Light stemming: "looking" and "looks" both reduce to "look". Short words are left alone. */

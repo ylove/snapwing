@@ -1,5 +1,5 @@
-// Teams interactivity (#391; main 8.2, 11.2, 15.2, 16; A 2.1, A 2.2; B 5). `adaptiveCard/action` invokes
-// as Teams sends them for taps on cards the #372 builders made and the remembering connector posted on
+// Teams interactivity (#6; main 8.2, 11.2, 15.2, 16; A 2.1, A 2.2; B 5). `adaptiveCard/action` invokes
+// as Teams sends them for taps on cards the card builders made and the remembering connector posted on
 // MSW, over a real state store (SNAPWING_DB picks the dialect), the real `stopIncident` and
 // `answerMidFlight`; the orchestrator and the PR actions are recording fakes.
 
@@ -388,7 +388,7 @@ async function tapOn(user: string, input: TeamsCardInput, verb: string) {
   return { card, id, outcome: result.outcome, response: result.card };
 }
 
-/** The card the invoke is answered with (the transport, #390, puts it in the Universal Actions response). */
+/** The card the invoke is answered with (the transport, puts it in the Universal Actions response). */
 function answeredCard(answer: AdaptiveCard | undefined): AdaptiveCard {
   if (answer === undefined) throw new Error('answered with no card');
   return answer;
@@ -926,7 +926,7 @@ describe('the text-signal cards through answerResolution and answerScopeChange (
 
 // onAction, the transport's handler --------------------------------------------------------------
 
-describe('onAction, as the transport (#390) calls it', () => {
+describe('onAction, as the transport calls it', () => {
   it('an accepted tap edits the shared message for everyone, answers with the same card, and is reported to onOutcome', async () => {
     await seedPrOpen(2);
     linked.add(SAM);

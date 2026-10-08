@@ -1,4 +1,4 @@
-// The live tier's `.env.live` lookup stops at the checkout root (#357): a worktree under
+// The live tier's `.env.live` lookup stops at the checkout root: a worktree under
 // `.claude/worktrees/` must not find the main checkout's file above it.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

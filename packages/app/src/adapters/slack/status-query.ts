@@ -18,7 +18,7 @@
 // the whole answer stays well under a second.
 //
 // Only a person's message is a question: Snapwing's own and other bots' are ignored, and a person posting
-// through an app (Slack stamps `bot_id` on it) is still a person (`authorship.ts`, #360).
+// through an app (Slack stamps `bot_id` on it) is still a person (`authorship.ts`).
 //
 // The asker's role comes from the workspace map (`people[].slackId`); an unmapped user is `unknown`
 // and so gets the reporter or lead shape, never the engineer one.
@@ -57,7 +57,7 @@ export interface SlackStatusQueryOptions {
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
   /** The bot's own user id (`auth.test`): its messages are ignored and its mention is stripped. */
   botUserId: string;
-  /** Who wrote a message (`authorship.ts`, #360). Default: the map and `botUserId` only. */
+  /** Who wrote a message (`authorship.ts`). Default: the map and `botUserId` only. */
   authorOf?: SlackAuthorOf;
   clock?: () => Date;
   /** IANA zone for the wall-clock times in an answer. Default UTC. */

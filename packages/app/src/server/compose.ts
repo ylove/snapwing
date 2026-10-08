@@ -11,7 +11,7 @@
 //                `handleInbound` and hands taps to the Slack interactivity; `observeReactionRemoval`
 //                wraps the adapter so a removed trigger reaction reaches the interactivity too, and
 //                `observeSignals` hands every reaction and channel thread reply to the Slack signals
-//                (`handleSignal`, A 1.2 to 1.4, #335). The engine's `onCaptured` adopts the reactions
+//                (`handleSignal`, A 1.2 to 1.4). The engine's `onCaptured` adopts the reactions
 //                that landed on the anchor before the incident existed (`adoptPendingSignals`).
 //                `POST /webhooks/jira` (inbound sync, fixer trigger), `POST /webhooks/github` (bot
 //                login `${GITHUB_APP_SLUG}[bot]`; it starts `merge.evaluate` with the merge step's
@@ -41,7 +41,7 @@
 //                enters a container; a provider whose key is unset has no proxy routes.
 //   Reconciler   follow-ups after a reconciled event: `ci-green` starts `merge.evaluate`, `ci-red` the
 //                fixer retry (`retryFixerAfterCiRed`), a transition to In Progress the fixer.
-//   Phase 4      (#337, the "Phase 4 wiring" section) claims mid-flight (A 2.2): after each claim
+//   Phase 4      (the "Phase 4 wiring" section) claims mid-flight (A 2.2): after each claim
 //                commits, `handleMidFlightClaim` posts the Slack card, whose taps reach `answerMidFlight`
 //                (Stop assigns the claimer through the Jira outbox). Holds and claim expiry (A 2.3, 2.4):
 //                `holds.onEvent` after each claim and each signal, thread nudges through `say`, the
@@ -51,7 +51,7 @@
 //                membership events. Modules that register their own handlers (`register()`,
 //                `registerMidFlightJobs`, `registerDigestJobs`) get a port whose `work` becomes a job
 //                module here and whose `cron` waits for the worker (`registrar`).
-//   Signals      (#348, the "Signal side effects, ladders, monitoring" section) the reaction ladder (A
+//   Signals      (the "Signal side effects, ladders, monitoring" section) the reaction ladder (A
 //                1.4) is the signal handler's `escalation`, posting through the escalation chat; a
 //                removed reaction is reversed by the handler's `planRemoval` (A 1.6). Thread replies
 //                also reach `handleTextSignal` and claim reactions `acceptHandoff` (A 3) through the
@@ -62,13 +62,13 @@
 //                service `active monitoring` reads the log and evaluates both after every event that
 //                can change their facts (a priority, a surface, a close, monitoring starting or
 //                stopping, an outage step), and the monitor's stall timer evaluates the ladders.
-//   Capture API  (#385, the "Capture API" section; ADR 0022) Raycast and the CLI: the capture adapters
+//   Capture API  (#3, the "Capture API" section; ADR 0022) Raycast and the CLI: the capture adapters
 //                (`cli`, `raycast`) and their context source in the engine, their images in the
 //                vision pass and on the Jira issue (deleted from kv once attached, or by the worker's
 //                `capture images` once a capture ends unfiled), and the bearer-token routes at
 //                capture-client's `CAPTURE_ROUTES`. `/healthz` reports each chat platform through
 //                `health()`.
-//   Chat seam    (#368, `server/chat.ts`) every outbound chat effect outside an adapter's inbound path and
+//   Chat seam    (`server/chat.ts`) every outbound chat effect outside an adapter's inbound path and
 //                the status projectors (thread, channel, and person posts, mentions, the PR card, the
 //                text-signal cards, the mid-flight card, channel members, the GitHub link check) goes
 //                through the chat router, which picks the platform's `ChatSurface` by incident source
@@ -246,7 +246,7 @@ export const DEFAULT_MAP_FILE = 'workspace-context.xml';
 const MAP_REFRESH_MS = 5_000;
 /** How often the worker scans the log for ux friction (A 5.3); the pattern window is days, so this is often enough. */
 export const UX_FRICTION_SCAN_MS = 15 * 60_000;
-/** How often the worker reads new events for active monitoring and the escalation ladders (#348). */
+/** How often the worker reads new events for active monitoring and the escalation ladders. */
 export const MONITOR_TRIGGER_POLL_MS = 2_000;
 /** Where the worker keeps its place in the log for them (kv). */
 export const MONITOR_CURSOR_KEY = 'monitor:triggers-cursor';
@@ -275,7 +275,7 @@ export const MONITOR_TRIGGERS: ReadonlySet<EventType> = new Set<EventType>([
 
 /**
  * The Slack group (CONTEXT.md 6b), required together whenever Slack is configured: any of them set, or
- * `SNAPWING_SLACK_TRANSPORT` set. Socket Mode also requires `SLACK_APP_TOKEN` (#368).
+ * `SNAPWING_SLACK_TRANSPORT` set. Socket Mode also requires `SLACK_APP_TOKEN`.
  */
 export const SLACK_SECRETS: readonly string[] = Object.freeze(['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET']);
 
@@ -336,7 +336,7 @@ export class MissingSecretsError extends Error {
     readonly missing: readonly string[],
     why?: string,
   ) {
-    super(`${why === undefined ? '' : `${why}: `}missing secrets: ${missing.join(', ')} (set them in the env file or the provider's secret store; names in build/CONTEXT.md 6b)`);
+    super(`${why === undefined ? '' : `${why}: `}missing secrets: ${missing.join(', ')} (set them in the env file or the provider's secret store)`);
   }
 }
 
@@ -388,7 +388,7 @@ export interface ComposeOverrides {
   /** The Slack side of the PR card. Default `createSlackPrReadyChat`. */
   prReadyChat?: PrReadyChat;
   /**
-   * Chat surfaces besides Slack's (the chat seam, #368), routed by incident source like Slack's. One of
+   * Chat surfaces besides Slack's (the chat seam), routed by incident source like Slack's. One of
    * them counts as a configured chat platform, so Slack may then be left unconfigured.
    */
   chatSurfaces?: readonly ChatSurface[];
@@ -428,7 +428,7 @@ export interface Composed {
   readonly workerServices?: readonly ComposedService[];
   /** Prometheus text appended to `/metrics` (projector pauses and parked rows, B 10). */
   metrics?(): Promise<string>;
-  /** Each configured chat platform for `/healthz` (capture-client's `PlatformHealth`, #385). */
+  /** Each configured chat platform for `/healthz` (capture-client's `PlatformHealth`, #3). */
   health?(): Promise<readonly PlatformHealth[]>;
   /** The wired fixer and review deps and the chat router, so tests can check what points at what. */
   readonly deps?: { readonly fixer: FixerDeps; readonly review: ReviewDeps; readonly chat: ChatRouter };
@@ -628,7 +628,7 @@ function job(name: JobName, handler: JobModule['handler']): JobModule {
 }
 
 /**
- * The port a module that registers its own handlers is given (#337): `work` adds a job module (the
+ * The port a module that registers its own handlers is given: `work` adds a job module (the
  * worker registers it, as it does compose's own), `cron` is kept until the worker starts it, and
  * everything else is the real port.
  */
@@ -694,7 +694,7 @@ export const compose: ComposeFn = async (deps) => {
   if (transportChoice !== undefined && transportChoice !== '' && transportChoice !== 'http' && transportChoice !== 'socket') {
     throw new Error(`SNAPWING_SLACK_TRANSPORT must be http or socket, not ${transportChoice}`);
   }
-  // Slack is configured when any of its secrets is set or its transport is named (#368); then the whole
+  // Slack is configured when any of its secrets is set or its transport is named; then the whole
   // group is required. With no chat platform at all, startup names the Slack group.
   const otherSurfaces = overrides.chatSurfaces ?? [];
   // The exception is an app created but not yet installed (#240): onboarding writes the signing secret and
@@ -847,7 +847,7 @@ export const compose: ComposeFn = async (deps) => {
     github: createFixerGitHub(auth),
     config: { harness: fixerChoice },
     clock,
-    // A 6.4 (#307, #337): the live INSTRUCTIONS.md may hold a fixer start the agent makes on its own.
+    // A 6.4: the live INSTRUCTIONS.md may hold a fixer start the agent makes on its own.
     instructionsGate: { instructions: configWatch.instructions, model },
   };
   const reviewDeps: ReviewDeps = {
@@ -865,7 +865,7 @@ export const compose: ComposeFn = async (deps) => {
     config: { testCommand: (): string | undefined => env['SNAPWING_TEST_COMMAND']?.trim() || undefined, harness: reviewChoice },
     clock,
   };
-  // A 6.4 (#307, #337): the live INSTRUCTIONS.md may hold an autopilot merge (level 3 to 2).
+  // A 6.4: the live INSTRUCTIONS.md may hold an autopilot merge (level 3 to 2).
   const mergeDeps: MergeDeps = { workspaceId, state, workflow, github, merge: config.merge, map: getMap, clock, instructionsGate: { instructions: configWatch.instructions, model } };
 
   const oauth = createGitHubOAuth({ state, secrets: deps.secrets, workspaceId });
@@ -875,7 +875,7 @@ export const compose: ComposeFn = async (deps) => {
 
   // Slack, when configured. One `auth.test` at startup gives the bot user id, the workspace's team id,
   // and its subdomain (the Conversation Link). Who wrote a message is shared by every inbound path that
-  // reads people's messages (#360): a person posting through an app carries `bot_id` and is still a person.
+  // reads people's messages: a person posting through an app carries `bot_id` and is still a person.
   const slack = web === undefined ? undefined : await (async (slackWeb: SlackWeb) => {
     const identity =
       overrides.slackBotUserId !== undefined && overrides.slackWorkspaceDomain !== undefined ? undefined : await slackIdentity(secret('SLACK_BOT_TOKEN'));
@@ -901,7 +901,7 @@ export const compose: ComposeFn = async (deps) => {
       onError: (e) => log.error(`slack: ${message(e)}`),
       clock,
     });
-    // Slack's outbound chat effects (#368): thread, channel, and direct posts, the cards, channel members.
+    // Slack's outbound chat effects: thread, channel, and direct posts, the cards, channel members.
     const surface: SlackChatSurface = createSlackChatSurface({
       web: slackWeb,
       state,
@@ -961,7 +961,7 @@ export const compose: ComposeFn = async (deps) => {
       ? undefined
       : { ...teams.adapter, authenticateRequest: (raw: TeamsInbound) => (injectedTeams.has(raw) ? Promise.resolve(true) : teams.adapter.authenticateRequest(raw)) };
 
-  // The chat seam (#368): every outbound chat effect below goes through the router, which picks the
+  // The chat seam: every outbound chat effect below goes through the router, which picks the
   // surface by the incident's source (or by a channel's or a person's platform). Slack first: the default.
   const chat: ChatRouter = createChatRouter({
     surfaces: [...(slack === undefined ? [] : [slack.surface]), ...(teams === undefined ? [] : [teams.surface]), ...otherSurfaces],
@@ -1004,7 +1004,7 @@ export const compose: ComposeFn = async (deps) => {
     return actions;
   };
 
-  // Capture API (#385, main 15.3, 15.4; ADR 0022) ---------------------------------------------------
+  // Capture API (#3, main 15.3, 15.4; ADR 0022) ---------------------------------------------------
   // Raycast and the CLI share one adapter shape (per source, for idempotency keys and metrics only), a
   // context source that makes a screenshot the anchor's image, and the bearer-token routes. Their cards
   // wait in kv for the client to read; their images live in kv until the Jira projector attaches them,
@@ -1064,7 +1064,7 @@ export const compose: ComposeFn = async (deps) => {
     // `deps.instructions?.()` in engine/steps.ts and pass it to plan, maybeAsk, and SynthesisContext.
     playbook: configWatch.playbook,
     instructions: configWatch.instructions,
-    // main 15.3 (#375, #377): file paths in pasted text resolve against the map repos' trees.
+    // main 15.3: file paths in pasted text resolve against the map repos' trees.
     repoTrees: createRepoTrees(auth),
     repoReader: (resolution) => (resolution.repo === undefined || resolution.repo === '' ? undefined : createGitHubRepoReader(auth, { repo: repoFullName(resolution.repo) })),
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
@@ -1074,12 +1074,12 @@ export const compose: ComposeFn = async (deps) => {
     options: { loadImage: captureImageLoader(cache, chatImages), ...(chatRecordings === undefined ? {} : { loadRecording: chatRecordings }) },
     // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
-    // A 1.4: reactions on the anchor before the incident existed count from its creation (#335).
+    // A 1.4: reactions on the anchor before the incident existed count from its creation.
     onCaptured: (incidentId) => adoptPendingSignals(signalDeps, incidentId),
   };
   const engine = new IncidentOrchestrator(engineDeps);
 
-  // Phase 4 wiring (#337) ------------------------------------------------------------------------
+  // Phase 4 wiring ------------------------------------------------------------------------
   // Mid-flight claims (A 2.2), holds and claim expiry (A 2.3, 2.4), digests (A 4.6), ux friction
   // (A 5.3), channel members (A 4.4). The instructions gate (A 6.4) is on `fixerDeps` and `mergeDeps`.
   const phase4Jobs: JobModule[] = [];
@@ -1089,7 +1089,7 @@ export const compose: ComposeFn = async (deps) => {
   // posts in the incident's thread on its platform and records the post (role `other`), so a reaction on
   // it counts as activity.
 
-  /** The claimer as the Jira assignee: the `update-fields` row #323 added, which the projector resolves by email. */
+  /** The claimer as the Jira assignee: the `update-fields` row added earlier, which the projector resolves by email. */
   async function assignClaimer(incidentId: string, claimerId: string): Promise<void> {
     const incident = await state.getIncident(incidentId);
     const email = personByChatId(await liveMap(), claimerId)?.email;
@@ -1251,7 +1251,7 @@ export const compose: ComposeFn = async (deps) => {
   ];
   // End of phase 4 wiring --------------------------------------------------------------------------
 
-  // Signal side effects, ladders, monitoring (#348) ------------------------------------------------
+  // Signal side effects, ladders, monitoring ------------------------------------------------
   // The reaction ladder (A 1.4), text signals (A 3), the escalation ladders (A 6.2), and active
   // monitoring (A 4.5). Removals (A 1.6) are the signal handler's own (`planRemoval`).
 
@@ -1271,7 +1271,7 @@ export const compose: ComposeFn = async (deps) => {
     playbook: configWatch.playbook,
     clock,
     chat: escalationChat,
-    // Steps reached at adoption fire before resolution names the owner: the map's owner of the channel's surface (#360).
+    // Steps reached at adoption fire before resolution names the owner: the map's owner of the channel's surface.
     map: liveMap,
     // After a step fires: a Highest priority or the outage step's `monitoring-started` arms the monitor.
     ladders: { evaluate: evaluateMonitoring },
@@ -1445,13 +1445,13 @@ export const compose: ComposeFn = async (deps) => {
       // The resolution question and the scope card, on the incident's chat surface.
       ...chat.textCards,
       fileLinked,
-      // The handoff's taker as the Jira assignee (the #323 row, by the map's email).
+      // The handoff's taker as the Jira assignee (the `update-fields` row, by the map's email).
       assign: assignClaimer,
     },
   };
   // End of signal side effects, ladders, monitoring --------------------------------------------------
 
-  // Signals (A 1.2 to 1.4, #335): reactions and thread replies, applied by `handleSignal`.
+  // Signals (A 1.2 to 1.4): reactions and thread replies, applied by `handleSignal`.
   const signalDeps: SignalDeps = {
     workspaceId,
     state,
@@ -1461,13 +1461,13 @@ export const compose: ComposeFn = async (deps) => {
     engine: claimAwareEngine,
     stopIncident: (input) => stopIncident(fixerDeps, input),
     startFixer: (input) => startFixer(fixerDeps, input),
-    // A 1.4 (#290, #348): the reaction ladder after each counted signal and once after adoption.
+    // A 1.4 (#290): the reaction ladder after each counted signal and once after adoption.
     escalation: reactionEscalation,
     clock,
   };
 
   // Slack's inbound side, when Slack is configured: signals, taps, the status query, Home, and the
-  // transport. A tap's PR actions and the GitHub link check are Slack's (per tap source, #368).
+  // transport. A tap's PR actions and the GitHub link check are Slack's (per tap source).
   const slackInbound =
     slack === undefined
       ? undefined
@@ -1483,7 +1483,7 @@ export const compose: ComposeFn = async (deps) => {
             web: slackWeb,
             model,
             standing: state,
-            // A 3 (#294, #348): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
+            // A 3 (#294): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
             text: textSignalDeps,
             onOutcome: afterSignal,
             onError: (e) => log.error(`slack signals: ${message(e)}`),
@@ -1528,7 +1528,7 @@ export const compose: ComposeFn = async (deps) => {
           const transportBase = {
             adapter: observeChannelMembers(observeSignals(observeReactionRemoval(slack.adapter, interactivity, slackError), slackSignals, slackError), surface.channelMembers, slackError),
             handleInbound: (from: Parameters<IncidentOrchestrator['handleInbound']>[0], raw: unknown) => engine.handleInbound(from, raw),
-            // The text-signal cards' taps (#348) are the Slack signals'; every other tap is the interactivity's.
+            // The text-signal cards' taps are the Slack signals'; every other tap is the interactivity's.
             onAction: async (payload: Parameters<typeof interactivity.onAction>[0]) => {
               if (!(await slackSignals.onAction(payload))) await interactivity.onAction(payload);
             },
@@ -1690,7 +1690,7 @@ export const compose: ComposeFn = async (deps) => {
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`jira projector: ${message(e)}`),
   });
-  // PR comments (B 7.1): `target='github'` `add-comment` rows, batched per incident within 60 s (#336).
+  // PR comments (B 7.1): `target='github'` `add-comment` rows, batched per incident within 60 s.
   const githubProjector = createGitHubProjector({
     state,
     auth,

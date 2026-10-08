@@ -1,4 +1,4 @@
-// The chat seam (#368, main 15.2 parity rule): every outbound chat effect compose performs outside an
+// The chat seam (main 15.2 parity rule): every outbound chat effect compose performs outside an
 // adapter's own inbound path and the status projectors, named once per platform, and a router that picks
 // the platform for each effect. Compose builds one `ChatSurface` per configured chat platform (Slack in
 // `adapters/slack/chat-surface.ts`; Teams plugs in the same way) and reaches chat only through the router.
@@ -9,7 +9,7 @@
 //     incident whose source has no surface (a CLI capture on an install without one) is logged and skipped,
 //     as is one with no thread to post in;
 //   - a channel (`#name`, a name, or an id: a digest, a ladder step's channel, the ux-friction post) goes
-//     to the platform of that map channel; until the map names a channel's platform (#367), the default
+//     to the platform of that map channel; until the map names a channel's platform, the default
 //     surface, which is Slack whenever Slack is configured;
 //   - a person (`@handle`, an email, or a chat user id: a digest) goes to the first surface, in configured
 //     order, on which the map gives them an id, else the default surface.
@@ -128,7 +128,7 @@ function mapChannel(map: WorkspaceMap, ref: string): MapChannel | undefined {
 }
 
 /**
- * The platform a map channel lives on. The map names it once #367 lands (`platform`); until then every
+ * The platform a map channel lives on. The map names it once the map carries a `platform`; until then every
  * channel belongs to the default surface.
  */
 function channelPlatform(channel: MapChannel | undefined): ChatPlatform | undefined {
