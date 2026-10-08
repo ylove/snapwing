@@ -379,7 +379,7 @@ describe('onboarding step 5: the words people use', () => {
     const { result, lines } = await interview(['keep', 'keep', 'keep', '', '', 'drop'], { env: { ...BASE_ENV, ...TEAMS_ENV } });
     expect(result.outcome).toBe('complete');
     expect(lines).toContain(
-      'Teams has not let Snapwing read #Mobile bugs yet (a team owner grants that when the app is added to the team), so I skipped it.',
+      'Teams has not let Snapwing read Mobile bugs yet (a team owner grants that when the app is added to the team), so I skipped it.',
     );
     expect(proposed(lines)).not.toContain('the app');
     expect(vocabularyOf(result)).toHaveLength(3);

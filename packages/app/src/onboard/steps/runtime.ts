@@ -26,6 +26,11 @@ const PROVIDER_NAMES: Readonly<Record<ModelProvider, string>> = {
   google: 'Google (Gemini)',
 };
 
+/** The name with its indefinite article: "an Anthropic (Claude)", "an OpenAI", "a Google (Gemini)". */
+function withArticle(name: string): string {
+  return `${/^[AEIOU]/i.test(name) ? 'an' : 'a'} ${name}`;
+}
+
 /** One read-only call per provider: list the models. It costs nothing and fails on a bad key. */
 const KEY_CHECKS: Readonly<Record<ModelProvider, (key: string) => { url: string; headers: Record<string, string> }>> = {
   anthropic: (key) => ({
@@ -218,7 +223,7 @@ async function askKeys(ctx: StepContext): Promise<ProviderKey[]> {
       }
       const have = await ctx.io.choose({
         id: `${provider}-have`,
-        text: `Do you have a ${name} API key?`,
+        text: `Do you have ${withArticle(name)} API key?`,
         choices: [
           { id: 'yes', label: 'Yes, I will paste it' },
           { id: 'no', label: 'No' },
