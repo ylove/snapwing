@@ -75,13 +75,23 @@ export function buildDedupe(incidentId: string, c: Extract<InteractiveCard, { ki
   );
 }
 
-/** Two to four actions whose verb is the option text, or text alone for a screenshot request. */
+/** The action `data` key that names a clarify card, whose verbs are free text and may be any other card's. */
+export const CLARIFY_DATA = { card: 'clarify' } as const;
+
+/**
+ * Two to four actions whose verb is the option text, or text alone for a screenshot request. The option
+ * is free text (it may read `stop` or `merge`), so the card's kind rides in the data (`CLARIFY_DATA`).
+ */
 export function buildClarify(incidentId: string, c: Extract<InteractiveCard, { kind: 'clarify' }>, opts: CommonOptions = {}): AdaptiveCard {
   const { text, options } = c.question;
   let actions: AdaptiveCard['actions'];
   if (options !== undefined) {
     if (options.length < 2 || options.length > 4) throw new RangeError('a clarify card has 2 to 4 options');
-    actions = actionSet(incidentId, options.map((o) => ({ title: o, verb: o })));
+    actions = actionSet(
+      incidentId,
+      options.map((o) => ({ title: o, verb: o })),
+      CLARIFY_DATA,
+    );
   }
   return card(text, [compose([free(text)], opts.mentions)], actions ?? [], opts);
 }

@@ -30,6 +30,7 @@ import {
   teamsQueueRoutes,
   type TeamsActivityRoute,
   type TeamsDispatcherOptions,
+  type TeamsInvokeBudget,
   type TeamsInvokeCard,
   type TeamsSignalsRoute,
   type TeamsTransport,
@@ -201,7 +202,7 @@ interface World {
   status: { intercepts: ReturnType<typeof vi.fn>; handle: ReturnType<typeof vi.fn> };
   signals: { observes: ReturnType<typeof vi.fn>; onActivity: ReturnType<typeof vi.fn>; onNotifications: ReturnType<typeof vi.fn> };
   queue: { command: ReturnType<typeof vi.fn>; install: ReturnType<typeof vi.fn> };
-  action: ReturnType<typeof vi.fn<(activity: unknown) => Promise<TeamsInvokeCard | undefined>>>;
+  action: ReturnType<typeof vi.fn<(activity: unknown, budget?: TeamsInvokeBudget) => Promise<TeamsInvokeCard | undefined>>>;
   lifecycle: LifecycleOutcome[][];
   errors: unknown[];
   graphSubscriptions: { renewed: string[]; created: number };
@@ -285,7 +286,7 @@ function world(overrides: Partial<TeamsDispatcherOptions> = {}): World {
     getMap: () => Promise.resolve(map),
     onError: (e) => errors.push(e),
   });
-  const action = vi.fn((_a: unknown): Promise<TeamsInvokeCard | undefined> => Promise.resolve(REFRESHED));
+  const action = vi.fn((_a: unknown, _budget?: TeamsInvokeBudget): Promise<TeamsInvokeCard | undefined> => Promise.resolve(REFRESHED));
   const lifecycle: LifecycleOutcome[][] = [];
   const transport = createTeamsTransport({
     adapter,
@@ -457,15 +458,19 @@ describe('invokes', () => {
     const res = await post(w, cardTap);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ statusCode: 200, type: ADAPTIVE_CARD_CONTENT_TYPE, value: REFRESHED });
-    expect(w.action).toHaveBeenCalledWith(expect.objectContaining({ name: 'adaptiveCard/action' }));
+    expect(w.action).toHaveBeenCalledWith(expect.objectContaining({ name: 'adaptiveCard/action' }), expect.objectContaining({ expired: expect.any(Function) }));
+    // Answered with its card: the budget never ran out.
+    expect(w.action.mock.calls[0]?.[1]?.expired()).toBe(false);
     expect(w.inbound).not.toHaveBeenCalled();
   });
 
-  it('answers a card tap inside the budget when the interactivity is slow, and lets it finish', async () => {
+  it('answers a card tap inside the budget when the interactivity is slow, lets it finish, and tells it the budget ran out', async () => {
     let release: () => void = () => undefined;
+    let budget: TeamsInvokeBudget | undefined;
     const slow = vi.fn(
-      () =>
+      (_a: unknown, b?: TeamsInvokeBudget) =>
         new Promise<TeamsInvokeCard>((resolve) => {
+          budget = b;
           release = () => resolve(REFRESHED);
         }),
     );
@@ -477,6 +482,8 @@ describe('invokes', () => {
     expect(await res.json()).toEqual({ statusCode: 200, type: 'application/vnd.microsoft.activity.message', value: TEAMS_BUSY_TEXT });
     expect(elapsed).toBeLessThan(1000);
     expect(slow).toHaveBeenCalledTimes(1);
+    // "Working on it" went out: the card the tap ends with is never shown.
+    expect(budget?.expired()).toBe(true);
     release();
     await w.transport.stop();
     expect(w.errors).toEqual([]);

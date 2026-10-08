@@ -11,8 +11,11 @@ import type { EventPayloads, EventType, NewEvent } from '@snapwing/pipeline/cont
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
+import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
+import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createTeamsConnector } from '../../src/adapters/teams/connector.ts';
+import { teamsUserKey } from '../../src/adapters/teams/conversations.ts';
 import { createTeamsStatusQuery, type TeamsStatusQuery } from '../../src/adapters/teams/status-query.ts';
 
 const exampleXml = readFileSync(new URL('../../../../examples/workspace-context.example.xml', import.meta.url), 'utf8');
@@ -53,7 +56,7 @@ interface Sent {
   conversationId: string;
   /** Set for a reply (`/activities/{id}`), absent for a plain send. */
   replyTo?: string;
-  body: { type: string; text?: string; attachments?: { contentType: string; content: { fallbackText: string; body: { text: string }[]; actions?: { verb: string }[] } }[] };
+  body: { type: string; text?: string; attachments?: { contentType: string; content: { fallbackText: string; body: { text: string }[]; actions?: { verb: string }[]; msteams?: { entities?: unknown[] } } }[] };
 }
 
 let tdb: TestDatabase;
@@ -245,6 +248,27 @@ describe('a mention in a thread', () => {
     sent.length = 0;
     await answerTo(mention(REPORTER, 'where are we with this?', { root: NAV.anchor }));
     expect(sent[0]?.body.attachments?.[0]?.content.actions).toBeUndefined();
+  });
+
+  it('names a person outside the map as Teams names them, never by their raw id', async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    const last = (await state.read(NAV.id)).at(-1)?.seq ?? 0;
+    await state.append(NAV.id, [{ ...ev(NAV.id, 'claimed', { claimerId: STRANGER, expiresAt: new Date(T0 + 3_600_000).toISOString() }), actor: { id: STRANGER, role: 'unknown' } }], last);
+    const cache = createKvCache(state as unknown as StateStore);
+    await cache.set(teamsUserKey(STRANGER), JSON.stringify({ aadObjectId: STRANGER, name: 'Stranger Danger', serviceUrl: SERVICE_URL, updatedAt: new Date(T0).toISOString() }));
+    teams = createTeamsStatusQuery({
+      connector: createTeamsConnector({ token: async () => 'teams-test-token', botId: BOT }),
+      state,
+      workspaceId: WS,
+      getMap: () => Promise.resolve(map),
+      cache,
+      clock: () => new Date(T0),
+      onError: (e) => errors.push(e),
+    });
+    const answer = await answerTo(mention(ENGINEER, 'where are we with this?', { root: NAV.anchor }));
+    expect(answer).toContain('claimed by <at>Stranger Danger</at>');
+    expect(answer).not.toContain(STRANGER);
+    expect(sent[0]?.body.attachments?.[0]?.content.msteams?.entities).toContainEqual({ type: 'mention', text: '<at>Stranger Danger</at>', mentioned: { id: STRANGER, name: 'Stranger Danger' } });
   });
 });
 

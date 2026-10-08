@@ -11,6 +11,11 @@
 // the RSC permissions (ADR 0005); every card the adapter posts in such a team carries the reduced-mode
 // banner. The mode check (installation and conversation updates, onboarding) and the Graph subscriptions both write
 // it through `writeTeamsMode`, as JSON `{ mode, since, retryAt?, reason? }`; absent is `full`.
+//
+// kv `teams-user:{aadObjectId}` is the same for a person: every authenticated activity they send refreshes
+// their `29:` id, serviceUrl, tenant, and the name Teams shows for them (`rememberUser` on the chat
+// surface). A personal chat opens with that `29:` id, and a person the map does not list is mentioned by
+// that name (`rememberedNames`).
 
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 
@@ -110,6 +115,78 @@ export async function readTeamsConversation(cache: Pick<CachePort, 'get'>, chann
     ...optional('threadRootId'),
     updatedAt: str(parsed['updatedAt']),
   };
+}
+
+// People ------------------------------------------------------------------------------------------
+
+/** What is kept about a person from the last authenticated activity they sent (kv `teams-user:{aadObjectId}`). */
+export interface TeamsUserRecord {
+  aadObjectId: string;
+  /** The `29:` Teams id from `from.id`, when the activity carried one: a personal chat opens with it. */
+  teamsUserId?: string;
+  /** The name Teams shows for them (`from.name`): how a person outside the map is named, never by a raw id. */
+  name?: string;
+  serviceUrl: string;
+  tenantId?: string;
+  updatedAt: string;
+}
+
+export const teamsUserKey = (aadObjectId: string): string => `teams-user:${aadObjectId}`;
+
+/** The user record an inbound activity implies, or undefined without an AAD id or a serviceUrl. */
+export function userFromActivity(activity: unknown, now: Date): TeamsUserRecord | undefined {
+  const a = rec(activity);
+  const from = rec(a['from']);
+  const aadObjectId = str(from['aadObjectId']);
+  const serviceUrl = str(a['serviceUrl']);
+  if (aadObjectId === '' || serviceUrl === '') return undefined;
+  const fromId = str(from['id']);
+  const name = str(from['name']).trim();
+  const tenantId = str(rec(rec(a['channelData'])['tenant'])['id']) || str(rec(a['conversation'])['tenantId']);
+  return {
+    aadObjectId,
+    ...(fromId.startsWith('29:') ? { teamsUserId: fromId } : {}),
+    ...(name === '' ? {} : { name }),
+    serviceUrl,
+    ...(tenantId === '' ? {} : { tenantId }),
+    updatedAt: now.toISOString(),
+  };
+}
+
+/** The stored user record, or undefined when there is none or it does not parse. */
+export async function readTeamsUser(cache: Pick<CachePort, 'get'>, aadObjectId: string): Promise<TeamsUserRecord | undefined> {
+  const raw = await cache.get(teamsUserKey(aadObjectId));
+  if (raw === null) return undefined;
+  try {
+    const p = rec(JSON.parse(raw));
+    const serviceUrl = str(p['serviceUrl']);
+    if (serviceUrl === '') return undefined;
+    const optional = (k: 'teamsUserId' | 'name' | 'tenantId') => (str(p[k]) === '' ? {} : { [k]: str(p[k]) });
+    return { aadObjectId, ...optional('teamsUserId'), ...optional('name'), serviceUrl, ...optional('tenantId'), updatedAt: str(p['updatedAt']) };
+  } catch {
+    return undefined;
+  }
+}
+
+const AAD_OBJECT_IDS = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * The names Teams gave the people `text` names by AAD object id, from their user records, for each id
+ * `known` (the map) cannot name: so a mention reads `<at>Dana Lee</at>`, never the raw id. An id with no
+ * record, or a record with no name, is left out. Best effort: a read that fails names nobody.
+ */
+export async function rememberedNames(
+  cache: Pick<CachePort, 'get'>,
+  text: string,
+  known: (id: string) => boolean = () => false,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const id of new Set(text.match(AAD_OBJECT_IDS) ?? [])) {
+    if (known(id)) continue;
+    const name = (await readTeamsUser(cache, id).catch(() => undefined))?.name;
+    if (name !== undefined) out.set(id, name);
+  }
+  return out;
 }
 
 /**

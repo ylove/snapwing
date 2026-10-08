@@ -91,6 +91,14 @@ export function mentionsFromMap(people: readonly MapPersonLike[]): MentionFor {
   };
 }
 
+/** `first`, then `names` (an AAD object id to the name Teams gave that person) for a ref `first` does not know. */
+export function mentionsOr(first: MentionFor, names: ReadonlyMap<string, string>): MentionFor {
+  return (ref) => {
+    const name = names.get(ref);
+    return first(ref) ?? (name === undefined ? undefined : { id: ref, name });
+  };
+}
+
 /** Escapes what a TextBlock treats as markdown or markup. */
 export function esc(text: string): string {
   return text.replace(/[\\*_`[\]<>]/g, (c) => (c === '<' ? '&lt;' : c === '>' ? '&gt;' : `\\${c}`));

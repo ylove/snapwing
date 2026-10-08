@@ -35,8 +35,11 @@
 //   deferred with a doubling delay and parked after `maxAttempts` sends.
 //
 // Opening a personal chat sends `members: [{ id, aadObjectId }]`: the `29:` Teams id when an activity
-// gave one (the reporter's, from the capture's snapshot), else the AAD object id (the connector's
-// `createPersonalConversation`), with the bot's app id as `bot.id` (the connector's `botId`).
+// gave one (the watcher's own, from their user record in kv `teams-user:{aadObjectId}`, so a standing
+// watch from anyone opens with it; else the reporter's, from the capture's snapshot), else the AAD
+// object id (the connector's `createPersonalConversation`), with the bot's app id as `bot.id` (the
+// connector's `botId`). A person the map does not list is mentioned by the name Teams gave them (the same
+// record), never by a raw id.
 
 import type { StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
@@ -58,7 +61,7 @@ import {
 } from '../slack/status-projector.ts';
 import { cardActivity, createKvTeamsStatusStore, type TeamsStatusRef, type TeamsStatusStore } from './adapter.ts';
 import { buildStatusCard } from './cards/status.ts';
-import { card as adaptiveCard, mentionsFromMap, renderText, type MentionFor } from './cards/elements.ts';
+import { card as adaptiveCard, mentionsFromMap, mentionsOr, renderText, type MentionFor } from './cards/elements.ts';
 import {
   TeamsApiError,
   TeamsForbiddenError,
@@ -68,7 +71,7 @@ import {
   type TeamsConnector,
   type TeamsOutgoingActivity,
 } from './connector.ts';
-import { readTeamsConversation, readTeamsMode, type TeamsConversationType } from './conversations.ts';
+import { readTeamsConversation, readTeamsMode, readTeamsUser, rememberedNames, type TeamsConversationType } from './conversations.ts';
 
 export { DEFAULT_BATCH_SIZE, DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_RETRY_DELAY_MS, DEFAULT_POLL_INTERVAL_MS, DEFAULT_RETRY_DELAY_MS, NOTIFY_OP, STATUS_OP };
 export type { StatusDrainReport };
@@ -157,9 +160,9 @@ function parseNotify(row: OutboxItem): NotifyPayload {
   return { delivery: p['delivery'], mentions, text: p['text'], reason: p['reason'] };
 }
 
-/** The notification fallback of a message: the text with each mention token as `@ref`. */
-function plain(text: string): string {
-  return text.replace(MENTION_TOKEN, '@$1');
+/** The notification fallback of a message: the text with each mention token as `@name` (`@ref` when nobody knows the name). */
+function plain(text: string, mentions: MentionFor): string {
+  return text.replace(MENTION_TOKEN, (_token, ref: string) => `@${mentions(ref)?.name ?? ref}`);
 }
 
 export function mirrorKey(incidentId: string): string {
@@ -357,7 +360,7 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
     const incident = await state.getIncident(row.incidentId);
     if (incident === null) throw new TeamsStatusRowError(row, `unknown incident ${row.incidentId}`);
     const at = await whereOf(row, incident);
-    const mentions: MentionFor = mentionsFromMap(map?.people ?? []);
+    const mentions = await mentionsIn(JSON.stringify(status), map);
     const activity = cardActivity(buildStatusCard(incident.id, status, { mentions, reduced: await reduced(at) }));
     if (incident.statusMsgId === undefined) {
       // A message posted by an earlier try whose append failed: edit it, never post a second one.
@@ -389,13 +392,33 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
     });
   }
 
-  /** The AAD object id and `29:` id a watcher ref names, or undefined when the ref resolves to nobody. */
-  function watcherIds(ref: string, at: Where | undefined, map: WorkspaceMap | undefined): { aadObjectId: string; userId?: string } | undefined {
+  /** The map's people, then the names Teams gave the people `text` names whom the map does not list. */
+  async function mentionsIn(text: string, map: WorkspaceMap | undefined): Promise<MentionFor> {
+    const fromMap = mentionsFromMap(map?.people ?? []);
+    return mentionsOr(fromMap, await rememberedNames(cache, text, (id) => fromMap(id) !== undefined));
+  }
+
+  /**
+   * The AAD object id and `29:` id a watcher ref names, or undefined when the ref resolves to nobody. The
+   * `29:` id is the one their last activity gave (their user record, so a standing watch from anyone opens
+   * the chat with it), else the reporter's from the capture; the record's serviceUrl and tenant come along.
+   */
+  async function watcherIds(
+    ref: string,
+    at: Where | undefined,
+    map: WorkspaceMap | undefined,
+  ): Promise<{ aadObjectId: string; userId?: string; serviceUrl?: string; tenantId?: string } | undefined> {
     const person = mentionsFromMap(map?.people ?? [])(ref);
     const aadObjectId = person?.id ?? (AAD_OBJECT_ID.test(ref) ? ref : undefined);
     if (aadObjectId === undefined) return undefined;
-    const userId = at?.reporterTeamsId !== undefined && at.reporterAadId === aadObjectId ? at.reporterTeamsId : undefined;
-    return { aadObjectId, ...(userId === undefined ? {} : { userId }) };
+    const user = await readTeamsUser(cache, aadObjectId).catch(() => undefined);
+    const userId = user?.teamsUserId ?? (at?.reporterTeamsId !== undefined && at.reporterAadId === aadObjectId ? at.reporterTeamsId : undefined);
+    return {
+      aadObjectId,
+      ...(userId === undefined ? {} : { userId }),
+      ...(user === undefined ? {} : { serviceUrl: user.serviceUrl }),
+      ...(user?.tenantId === undefined ? {} : { tenantId: user.tenantId }),
+    };
   }
 
   /** Sends the rows of one notify batch (one thread message, or one DM) as a single message. */
@@ -405,22 +428,23 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
     const parsed = rows.map(parseNotify);
     if (new Set(parsed.map((p) => p.delivery)).size > 1) throw new TeamsStatusRowError(head, 'one batch mixes thread and DM rows');
     const delivery = parsed[0]?.delivery ?? 'thread';
-    const mentions = mentionsFromMap(map?.people ?? []);
-    const bodyOf = (text: string, opts: { reduced?: boolean } = {}) => cardActivity(adaptiveCard(plain(text), [renderText(text, mentions)], [], opts));
     if (head.incidentId === undefined) throw new TeamsStatusRowError(head, 'no incident');
     const incident = await state.getIncident(head.incidentId);
     if (incident === null) throw new TeamsStatusRowError(head, `unknown incident ${head.incidentId}`);
     const text = mergeNotifyText(parsed);
+    // The watchers too: a DM that falls back to the thread mentions its watcher.
+    const mentions = await mentionsIn([text, ...parsed.flatMap((p) => p.mentions)].join(' '), map);
+    const bodyOf = (body: string, opts: { reduced?: boolean } = {}) => cardActivity(adaptiveCard(plain(body, mentions), [renderText(body, mentions)], [], opts));
 
     if (delivery === 'dm') {
       const ref = parsed[0]?.mentions[0];
       if (ref === undefined) throw new TeamsStatusRowError(head, 'a DM notification needs a watcher');
       // An incident from another platform (a Teams watcher of a Slack incident) has no Teams
-      // conversation: the install's serviceUrl and tenant open the watcher's chat.
+      // conversation: the watcher's own record, else the install's serviceUrl and tenant, opens their chat.
       const at = incident.source === 'teams' ? await whereOf(head, incident) : undefined;
-      const serviceUrl = at?.serviceUrl ?? options.defaultServiceUrl;
-      const tenantId = at === undefined ? options.tenantId : at.tenantId;
-      const ids = watcherIds(ref, at, map);
+      const ids = await watcherIds(ref, at, map);
+      const serviceUrl = ids?.serviceUrl ?? at?.serviceUrl ?? options.defaultServiceUrl;
+      const tenantId = ids?.tenantId ?? (at === undefined ? options.tenantId : at.tenantId);
       let why: string | undefined;
       if (ids === undefined) why = 'it resolves to no Teams user';
       else if (serviceUrl === undefined) why = 'no serviceUrl is known to open a personal chat';

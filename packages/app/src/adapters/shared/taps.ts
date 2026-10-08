@@ -86,6 +86,16 @@ export const DENY_TEXT: Readonly<Record<DenyReason, string>> = {
 };
 
 export const NOT_PENDING_TEXT = 'This card already has an answer.';
+
+const TEXT_SIGNAL_REFUSALS: Readonly<Partial<Record<string, string>>> = {
+  'not-allowed': 'Only the person it asked, the reporter, or an engineer can answer this.',
+  closed: 'This incident is already closed.',
+};
+
+/** Why a tap on a text-signal card (A 3: the resolution question, the scope-change card) did nothing, for the tapper. */
+export function textSignalRefusal(reason: string): string {
+  return TEXT_SIGNAL_REFUSALS[reason] ?? 'This question already has an answer.';
+}
 export const TERMINAL_TEXT = 'This incident is already closed.';
 
 /** Why a mid-flight tap did nothing, for the tapper. */
@@ -113,6 +123,11 @@ export interface ChatTap {
   label: string;
   /** With card `mid-flight`: the offer the tap answers and the choice, if the action is one. */
   midFlight?: { runId: string; claimerId: string; choice: MidFlightChoice | undefined };
+  /**
+   * The tap itself names its card (Teams' clarify card says so in its data), so the action is that card's
+   * choice even when it reads like a routed verb (`stop`, `merge`). Absent: those verbs route first.
+   */
+  cardDecides?: boolean;
 }
 
 /** How a platform writes a mention and bold text in the lines below. */
@@ -360,13 +375,15 @@ export function createTapCore(options: TapCoreOptions): TapCore {
     async run(tap) {
       if (tap.midFlight !== undefined) return midFlightTap(tap, tap.midFlight);
       const map = await options.getMap();
-      switch (tap.action) {
-        case 'stop':
-          return stopTap(tap, map, false);
-        case 'merge':
-        case 'request_changes':
-        case 'revert':
-          return prTap(tap, map, tap.action);
+      if (tap.cardDecides !== true) {
+        switch (tap.action) {
+          case 'stop':
+            return stopTap(tap, map, false);
+          case 'merge':
+          case 'request_changes':
+          case 'revert':
+            return prTap(tap, map, tap.action);
+        }
       }
       const card = tap.card;
       if (card === 'pr-ready' || card === 'status' || card === 'mid-flight') return ignored('unknown-action');

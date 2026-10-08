@@ -1486,6 +1486,8 @@ export const compose: ComposeFn = async (deps) => {
             getMap,
             botAppId: appId,
             graph,
+            // A mention in an RSC reply may carry only the `29:` id: the member lookup names the person.
+            connector,
             handleInbound: (source, raw) => engine.handleInbound(source, raw),
             githubLinked: surface.githubLinked,
             model,
@@ -1508,12 +1510,14 @@ export const compose: ComposeFn = async (deps) => {
             stopIncident: (input) => stopIncident(fixerDeps, input),
             prActions: prActionsFor('teams'),
             midFlight: (input) => answerMidFlight(midFlightDeps, input),
+            // The resolution question and the scope-change card (A 3), answered as Slack's signals answer them.
+            text: textSignalDeps,
             getMap,
             githubLinked: surface.githubLinked,
             clock,
             onError: teamsError('interactivity'),
           });
-          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, clock, onError: teamsError('status query') });
+          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, cache, clock, onError: teamsError('status query') });
           const queue = teamsQueueRoutes(
             createTeamsQueue({
               connector,

@@ -18,7 +18,9 @@
 // - Budget: Teams waits 5 s for an invoke. The dispatcher only authenticates, normalizes, and hands off; an
 //   invoke's downstream is raced against `invokeBudgetMs` (default 4 s, leaving room for the network), and
 //   when it is slower the invoke is answered anyway (the interactivity with "Working on it", the action
-//   command with the adapter's "On it" task message) while the work finishes behind the answer. Handlers
+//   command with the adapter's "On it" task message) while the work finishes behind the answer. The
+//   interactivity is told (`TeamsInvokeBudget`), so a refusal that lands after "Working on it" reaches the
+//   tapper in their personal chat instead of on a card nobody sees. Handlers
 //   that answer nothing (status, commands, signals, mode check) run after the 200, as Slack's do.
 // - `POST /teams/notifications` and `POST /teams/lifecycle` (Graph, #379): the `validationToken` handshake
 //   is answered with the token; otherwise only notifications whose `clientState` matches are kept (a body
@@ -75,10 +77,19 @@ export interface TeamsActivityRoute {
   handle(activity: unknown): Promise<void> | void;
 }
 
+/** What the dispatcher tells a tap's handler about the invoke it is answering. */
+export interface TeamsInvokeBudget {
+  /** True once the invoke was answered without the handler's card ("Working on it", past the budget). */
+  expired(): boolean;
+}
+
 /** Universal Actions taps (#391). */
 export interface TeamsInteractivity {
-  /** The refreshed card (who chose what, or the same card with a one-line reason); undefined answers with no card. */
-  onAction(activity: unknown): Promise<TeamsInvokeCard | undefined>;
+  /**
+   * The refreshed card (who chose what, or the same card with a one-line reason); undefined answers with no
+   * card. `budget` says whether that card can still be shown: past it, a refusal must reach the tapper another way.
+   */
+  onAction(activity: unknown, budget?: TeamsInvokeBudget): Promise<TeamsInvokeCard | undefined>;
 }
 
 /** Signals (#392): reactions on the bot's messages, channel thread replies, and the Graph reaction diff. */
@@ -194,12 +205,18 @@ export function createTeamsDispatcher(options: TeamsDispatcherOptions): TeamsDis
     track(Promise.resolve().then(work)).catch(onError);
   }
 
-  /** Races `work` against the invoke budget. A throw inside the budget rejects; one after it goes to `onError`. */
-  async function withinBudget<T>(work: Promise<T>): Promise<Raced<T>> {
+  /**
+   * Races `work` against the invoke budget; `onExpired` runs the moment the budget wins. A throw inside the
+   * budget rejects; one after it goes to `onError`.
+   */
+  async function withinBudget<T>(work: Promise<T>, onExpired?: () => void): Promise<Raced<T>> {
     const tracked = track(work);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<Raced<T>>((resolve) => {
-      timer = setTimeout(() => resolve({ done: false }), budgetMs);
+      timer = setTimeout(() => {
+        onExpired?.();
+        resolve({ done: false });
+      }, budgetMs);
     });
     try {
       const finished = tracked.then((value): Raced<T> => ({ done: true, value }));
@@ -245,8 +262,16 @@ export function createTeamsDispatcher(options: TeamsDispatcherOptions): TeamsDis
   async function cardAction(activity: unknown): Promise<TeamsDispatchResult> {
     const interactivity = options.interactivity;
     if (interactivity === undefined) return empty(501);
+    // Set before "Working on it" goes out, so a refusal that lands later knows its card will never be shown.
+    let expired = false;
+    const budget: TeamsInvokeBudget = { expired: () => expired };
     try {
-      const raced = await withinBudget(Promise.resolve().then(() => interactivity.onAction(activity)));
+      const raced = await withinBudget(
+        Promise.resolve().then(() => interactivity.onAction(activity, budget)),
+        () => {
+          expired = true;
+        },
+      );
       if (!raced.done) return { status: 200, body: messageResponse(TEAMS_BUSY_TEXT) };
       return { status: 200, body: raced.value === undefined ? messageResponse('') : cardResponse(raced.value) };
     } catch (e) {
