@@ -6,6 +6,7 @@ import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { GRAPH_BASE_URL, createTeamsGraph } from '../../src/adapters/teams/graph.ts';
+import { readTeamsMode, teamsModeKey, writeTeamsMode } from '../../src/adapters/teams/conversations.ts';
 import {
   REDUCED_RETRY_MS,
   SUBSCRIPTION_LIFETIME_MS,
@@ -13,7 +14,6 @@ import {
   subscriptionIdKey,
   subscriptionKey,
   teamIdsInMap,
-  teamsModeKey,
   type TeamsSubscriptions,
 } from '../../src/adapters/teams/subscriptions.ts';
 
@@ -311,5 +311,43 @@ describe('validation and clientState', () => {
     expect(subs.verifyNotification({})).toEqual([]);
     expect(subs.verifyNotification(null)).toEqual([]);
     expect(subs.verifyNotification('x')).toEqual([]);
+  });
+});
+
+describe('one written format for teams-mode', () => {
+  it('both writers write the shared JSON shape', async () => {
+    server.use(http.post(`${G}/subscriptions`, forbidden));
+    await subs.ensure('T1');
+    expect(JSON.parse((await cache.get(teamsModeKey('T1'))) ?? '')).toEqual({ mode: 'reduced', since: iso(clock), retryAt: iso(clock + REDUCED_RETRY_MS), reason: 'missing ChannelMessage.Read.Group' });
+
+    await writeTeamsMode(cache, 'T2', 'reduced', { since: iso(clock) });
+    expect(JSON.parse((await cache.get(teamsModeKey('T2'))) ?? '')).toEqual({ mode: 'reduced', since: iso(clock) });
+    await writeTeamsMode(cache, 'T2', 'full', { since: iso(clock) });
+    expect(JSON.parse((await cache.get(teamsModeKey('T2'))) ?? '')).toEqual({ mode: 'full', since: iso(clock) });
+  });
+
+  it('still reads a row written as the old bare string', async () => {
+    await cache.set(teamsModeKey('T1'), 'reduced');
+    expect(await readTeamsMode(cache, 'T1')).toBe('reduced');
+    expect(await subs.mode('T1')).toMatchObject({ mode: 'reduced' });
+    await cache.set(teamsModeKey('T1'), 'full');
+    expect(await readTeamsMode(cache, 'T1')).toBe('full');
+    expect(await subs.mode('T1')).toMatchObject({ mode: 'full' });
+  });
+
+  it("lifts a reduced mark set by either path with the other path's full write", async () => {
+    // The subscriptions mark reduced; the mode check writes full.
+    server.use(http.post(`${G}/subscriptions`, forbidden));
+    await subs.ensure('T1');
+    expect(await readTeamsMode(cache, 'T1')).toBe('reduced');
+    await writeTeamsMode(cache, 'T1', 'full');
+    expect((await subs.mode('T1')).mode).toBe('full');
+
+    // The mode check marks reduced; the next subscription that succeeds writes full.
+    await writeTeamsMode(cache, 'T2', 'reduced');
+    expect((await subs.mode('T2')).mode).toBe('reduced');
+    grantingGraph();
+    expect(await subs.ensure('T2')).toMatchObject({ kind: 'created' });
+    expect(await readTeamsMode(cache, 'T2')).toBe('full');
   });
 });

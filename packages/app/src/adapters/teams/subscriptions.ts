@@ -21,6 +21,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import { readTeamsModeMark, writeTeamsMode } from './conversations.ts';
 import { GraphApiError, GraphPermissionError, GraphRateLimitError, type GraphSubscription, type TeamsGraph } from './graph.ts';
 
 /** Graph caps a channel-message subscription at 60 minutes. */
@@ -37,7 +38,6 @@ export const SUBSCRIPTION_CHANGE_TYPES = 'created,updated';
 
 export const subscriptionKey = (teamId: string): string => `teams-subscription:${teamId}`;
 export const subscriptionIdKey = (subscriptionId: string): string => `teams-subscription-id:${subscriptionId}`;
-export const teamsModeKey = (teamId: string): string => `teams-mode:${teamId}`;
 export const subscriptionResource = (teamId: string): string => `/teams/${teamId}/channels/getAllMessages`;
 
 export type TeamsMode = { mode: 'full'; since: string } | { mode: 'reduced'; since: string; retryAt: string; reason: string };
@@ -178,23 +178,17 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
   }
 
   async function mode(teamId: string): Promise<TeamsMode> {
-    const raw = await cache.get(teamsModeKey(teamId));
-    // The RSC mode check (`transport.ts`) writes the bare word; no retry time, so the next tick tries Graph.
-    if (raw === 'reduced') return { mode: 'reduced', since: '', retryAt: '', reason: 'RSC permissions not granted' };
-    const v = parseJson(raw);
-    if (typeof v === 'object' && v !== null) {
-      const rec = v as Record<string, unknown>;
-      if (rec['mode'] === 'reduced' && typeof rec['since'] === 'string' && typeof rec['retryAt'] === 'string') {
-        return { mode: 'reduced', since: rec['since'], retryAt: rec['retryAt'], reason: typeof rec['reason'] === 'string' ? rec['reason'] : '' };
-      }
-      if (rec['mode'] === 'full' && typeof rec['since'] === 'string') return { mode: 'full', since: rec['since'] };
+    const mark = await readTeamsModeMark(cache, teamId);
+    if (mark?.mode === 'reduced') {
+      // A mark without a retry time (the RSC mode check writes none) is retried on the next tick.
+      return { mode: 'reduced', since: mark.since, retryAt: mark.retryAt ?? '', reason: mark.reason ?? 'RSC permissions not granted' };
     }
-    return { mode: 'full', since: '' };
+    return { mode: 'full', since: mark?.since ?? '' };
   }
 
   async function markFull(teamId: string): Promise<void> {
-    if ((await mode(teamId)).mode === 'full' && (await cache.get(teamsModeKey(teamId))) !== null) return;
-    await cache.set(teamsModeKey(teamId), JSON.stringify({ mode: 'full', since: now().toISOString() } satisfies TeamsMode));
+    if ((await readTeamsModeMark(cache, teamId))?.mode === 'full') return;
+    await writeTeamsMode(cache, teamId, 'full', { since: now().toISOString() });
   }
 
   async function markReduced(teamId: string, reason: string): Promise<EnsureOutcome> {
@@ -202,7 +196,7 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
     const retryAt = new Date(at.getTime() + REDUCED_RETRY_MS).toISOString();
     const prior = await mode(teamId);
     const since = prior.mode === 'reduced' && prior.since !== '' ? prior.since : at.toISOString();
-    await cache.set(teamsModeKey(teamId), JSON.stringify({ mode: 'reduced', since, retryAt, reason } satisfies TeamsMode));
+    await writeTeamsMode(cache, teamId, 'reduced', { since, retryAt, reason });
     await cache.set(subscriptionKey(teamId), '');
     return { kind: 'reduced', teamId, reason, retryAt };
   }
