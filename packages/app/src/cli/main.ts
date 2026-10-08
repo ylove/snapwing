@@ -1,22 +1,17 @@
 #!/usr/bin/env -S npx tsx
 // The `snapwing` CLI. Minimal on purpose: `node:util` parseArgs, one module per command group, and
 // one row per command in `COMMANDS` below. A new command appends its row and keeps the others; the
-// usage text is built from the table. `serve` is the server composition root (server/serve.ts).
+// usage text is built from the table. Every command that reaches the server, the state store or a
+// native module imports it inside its own row, so `npx snapwing say` never loads them. `serve` is
+// the server composition root (server/serve.ts).
 // Bare `snapwing` (no command) prints the usage and is otherwise left unclaimed on purpose: a later
 // local-first mode may give it a meaning.
 
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { runServe } from '../server/serve.ts';
 import { defaultCaptureEnv, runLog, runSay, runShot, runStatus, runStop, type CaptureEnv } from './capture.ts';
-import { runConfig } from './config.ts';
 import { runLogin, runLogout } from './login.ts';
-import { runMap } from './map.ts';
-import { runMetrics } from './metrics.ts';
-import { runOnboard } from './onboard.ts';
-import { runState, type CliIo } from './state.ts';
-import { runToken } from './token.ts';
-import { runTrace } from './trace.ts';
+import type { CliIo } from './state.ts';
 
 /** What commands reach beyond `CliIo`. Tests pass their own; the real CLI builds the defaults lazily. */
 export interface CliDeps {
@@ -35,17 +30,26 @@ export interface CliCommand {
 export const COMMANDS: Readonly<Record<string, CliCommand>> = {
   serve: {
     summary: 'run the API and worker processes',
-    run: (args, io) => runServe(args, io),
+    run: async (args, io) => {
+      const { runServe } = await import('../server/serve.ts');
+      return runServe(args, io);
+    },
   },
   config: {
     label: 'config check',
     summary: 'validate the map, playbook, and instructions',
-    run: (args, io) => runConfig(args, io),
+    run: async (args, io) => {
+      const { runConfig } = await import('./config.ts');
+      return runConfig(args, io);
+    },
   },
   state: {
     label: 'state rebuild',
     summary: 'rebuild projections from the event log',
-    run: (args, io) => runState(args, io),
+    run: async (args, io) => {
+      const { runState } = await import('./state.ts');
+      return runState(args, io);
+    },
   },
   login: {
     summary: 'store the capture endpoint and your token',
@@ -83,26 +87,41 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
   map: {
     label: 'map show|set-level|set-trigger',
     summary: 'read and edit the workspace map (validated, written atomically)',
-    run: (args, io) => runMap(args, io),
+    run: async (args, io) => {
+      const { runMap } = await import('./map.ts');
+      return runMap(args, io);
+    },
   },
   token: {
     label: 'token issue|list|revoke',
     summary: 'issue, list, and revoke per-user capture tokens',
-    run: (args, io) => runToken(args, io),
+    run: async (args, io) => {
+      const { runToken } = await import('./token.ts');
+      return runToken(args, io);
+    },
   },
   onboard: {
     summary: 'set Snapwing up by interview; picks up where it stopped',
-    run: (args, io) => runOnboard(args, io),
+    run: async (args, io) => {
+      const { runOnboard } = await import('./onboard.ts');
+      return runOnboard(args, io);
+    },
   },
   trace: {
     label: 'trace KEY',
     summary: 'the incident in order: bundle, stack result, gates, taps, fixer, merge',
-    run: (args, io) => runTrace(args, io),
+    run: async (args, io) => {
+      const { runTrace } = await import('./trace.ts');
+      return runTrace(args, io);
+    },
   },
   metrics: {
     label: 'metrics',
     summary: 'incidents, time to PR and merge, autopilot, ask-back rate',
-    run: (args, io) => runMetrics(args, io),
+    run: async (args, io) => {
+      const { runMetrics } = await import('./metrics.ts');
+      return runMetrics(args, io);
+    },
   },
 };
 
