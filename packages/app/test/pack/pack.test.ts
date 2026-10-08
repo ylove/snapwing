@@ -134,6 +134,8 @@ describe.skipIf(NPM === undefined)(title, () => {
       const pipelineListing = (await run('tar', ['-tzf', dirty.pipeline], root, env)).stdout;
       expect(pipelineListing).not.toContain('test-driver.manifest.yaml');
       expect(pipelineListing).not.toContain('package/demo/');
+      expect(pipelineListing).toContain('package/manifests/teams/manifest.json');
+      expect(pipelineListing).not.toContain('make-icons.mjs');
     } finally {
       for (const f of dummies) await rm(f, { force: true });
       for (const d of madeDirs) await rm(d, { recursive: true, force: true });
@@ -172,7 +174,7 @@ describe.skipIf(NPM === undefined)(title, () => {
       const { existsSync } = await import('node:fs');
       const a = await import('@snapwing/pipeline/util/assets.ts');
       const h = await import('@snapwing/pipeline/harness/untrusted-host.ts');
-      const assets = ['schemas/playbook.xsd', 'manifests/github-app.json'].map((p) => a.assetPath(p));
+      const assets = ['schemas/playbook.xsd', 'manifests/github-app.json', 'manifests/teams/manifest.json', 'manifests/teams/color.png'].map((p) => a.assetPath(p));
       const app = (await import('node:path')).join(process.cwd(), 'node_modules', '@snapwing', 'app');
       console.log(JSON.stringify({
         installed: a.INSTALLED_PACKAGE,

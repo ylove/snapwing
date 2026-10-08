@@ -1,0 +1,73 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/teams/v1.30/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.30",
+  "version": "${APP_VERSION}",
+  "id": "${TEAMS_APP_ID}",
+  "developer": {
+    "name": "Snapwing",
+    "websiteUrl": "https://${PUBLIC_HOST}",
+    "privacyUrl": "https://${PUBLIC_HOST}",
+    "termsOfUseUrl": "https://${PUBLIC_HOST}"
+  },
+  "name": {
+    "short": "Snapwing",
+    "full": "Snapwing: fix it from here"
+  },
+  "description": {
+    "short": "Turns a bug-shaped message into a Jira ticket, a fix, and a pull request.",
+    "full": "Snapwing turns a bug-shaped message and its thread into a Jira ticket, a fix, and a pull request. Use Fix it from here on any message, or ask the bot for the status of a report and the queue."
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "accentColor": "#1F2A44",
+  "bots": [
+    {
+      "botId": "${TEAMS_APP_ID}",
+      "scopes": ["personal", "team"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal", "team"],
+          "commands": [
+            { "title": "status", "description": "Where are we with a report? Give a key or a few words." },
+            { "title": "queue", "description": "What is waiting, running, or ready for review." },
+            { "title": "help", "description": "What Snapwing can do from here." }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeExtensions": [
+    {
+      "botId": "${TEAMS_APP_ID}",
+      "commands": [
+        {
+          "id": "fixItFromHere",
+          "type": "action",
+          "title": "Fix it from here",
+          "description": "Turn this message and its thread into a ticket and a fix.",
+          "context": ["message"],
+          "fetchTask": true
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["${PUBLIC_HOST}"],
+  "webApplicationInfo": {
+    "id": "${TEAMS_APP_ID}",
+    "resource": "api://botid-${TEAMS_APP_ID}"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        { "name": "ChannelMessage.Read.Group", "type": "Application" },
+        { "name": "TeamMember.Read.Group", "type": "Application" },
+        { "name": "ChannelSettings.Read.Group", "type": "Application" }
+      ]
+    }
+  }
+}
