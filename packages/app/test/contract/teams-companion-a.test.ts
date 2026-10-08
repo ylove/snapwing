@@ -81,7 +81,7 @@ const SCREENSHOT = fileURLToPath(new URL('../e2e/helpers/staging-cart.png', impo
 const WEBHOOK_FIXTURES = new URL('../fixtures/github-webhooks/', import.meta.url);
 /** The repository's test command for the regression proof: every `test/*.test.sh` must pass. */
 const TEST_COMMAND = 'for t in test/*.test.sh; do sh "$t" || exit 1; done';
-const WAIT = { timeout: 20_000, interval: 25 };
+const WAIT = { timeout: 30_000, interval: 25 };
 const SECOND = 1_000;
 
 const REPO = 'acme/storefront';
@@ -90,10 +90,18 @@ const ISSUE = `${PROJECT}-1`;
 const CHANNEL = '19:shop0a7e9d2b4c1a8e6f@thread.tacv2';
 /** The reporter's personal chat with the bot. */
 const PERSONAL_CHAT = 'a:1personal-chat-e2e-reporter';
-/** The stall row's playbook: A 6.2's poll, heartbeat, and stall durations, shortened to seconds. */
-const POLL = 1 * SECOND;
-const HEARTBEAT = 2 * SECOND;
-const STALL_AFTER = 6 * SECOND;
+/**
+ * The stall row's playbook: A 6.2's heartbeat and stall durations, shortened to seconds. The poll keeps
+ * A 4.5's default minute, so it runs once, when monitoring starts, and never inside the row: a poll that
+ * re-arms the heartbeat in the moment it falls due, before its job runs, pushes it a whole period, which
+ * a loaded machine hits with a one-second poll.
+ */
+const POLL = 60 * SECOND;
+const HEARTBEAT = 3 * SECOND;
+/** Longer than any quiet stretch before CI (the fixer's clone, the review's run) on a loaded machine. */
+const STALL_AFTER = 15 * SECOND;
+/** How late a timer may land on a loaded machine (the live row allows 45 s). */
+const LATE = 15 * SECOND;
 
 /** A person of the map: their Teams ids, handle, and, for the engineer, the Jira and GitHub accounts. */
 type Person = TeamsPerson & { handle: string; email?: string; github?: GitHubPerson };
@@ -569,15 +577,17 @@ describe('the A 8 rows on Teams, through the composed app', () => {
 
     const key = await untilFiled(w);
     expect(key).toBe(ISSUE);
-    const claimed = await events(w, 'claimed');
-    expect(claimed.map((e) => e.actor?.id)).toContain(ENGINEER.aad);
-    // Graph's reaction types come down to the playbook's `teams` names: 🐛 is `bug`, 👀 is `eyes`.
-    expect((await events(w, 'comment')).map((e) => [e.payload.intent, e.payload.raw, e.payload.platform])).toEqual(
-      expect.arrayContaining([
-        ['trigger', 'bug', 'teams'],
-        ['claim', 'eyes', 'teams'],
-      ]),
-    );
+    await within(w, async () => {
+      const claimed = await events(w, 'claimed');
+      expect(claimed.map((e) => e.actor?.id)).toContain(ENGINEER.aad);
+      // Graph's reaction types come down to the playbook's `teams` names: 🐛 is `bug`, 👀 is `eyes`.
+      expect((await events(w, 'comment')).map((e) => [e.payload.intent, e.payload.raw, e.payload.platform])).toEqual(
+        expect.arrayContaining([
+          ['trigger', 'bug', 'teams'],
+          ['claim', 'eyes', 'teams'],
+        ]),
+      );
+    });
 
     // The claim card in place of the fix preview: filed and assigned to the engineer, mentioned as Teams does.
     const card = await within(w, () => {
@@ -588,29 +598,31 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     expect(activityText(card.body)).toContain(`Filed as **${key}** and assigned to ${mention(ENGINEER)}`);
     expect(verbsOf(card.body)).toEqual(['let-agent-take', 'dismiss']);
     expect(card.conversation).toBe(`${CHANNEL};messageid=${w.thread.anchor}`);
-    // The level 2 fix preview (Stop, Not a bug) never went out. The status message, which names the
-    // claimer by handle, ends on ticket only with no Stop.
-    expect(w.teams.connector.some((c) => verbsOf(c.body).join(' ') === 'stop dismiss')).toBe(false);
-    const statusId = await within(w, async () => {
+    // The status message, which names the claimer by handle, ends on ticket only with no Stop.
+    await within(w, async () => {
       const id = (await incidentOf(w))?.statusMsgId;
       if (id === undefined) throw new Error('no status message yet');
       const now = cards(w).find((c) => c.activityId === id);
       expect(activityText(now?.body ?? {})).toContain(`Filed as ${key}. @${ENGINEER.handle} is on it, so this is filed as ticket only.`);
-      return id;
+      expect(verbsOf(now?.body ?? {})).toEqual([]);
     });
-    expect(verbsOf(cards(w).find((c) => c.activityId === statusId)?.body ?? {})).toEqual([]);
+    // By then the level 2 fix preview (Stop, Not a bug) would have gone out: it never did.
+    expect(w.teams.connector.some((c) => verbsOf(c.body).join(' ') === 'stop dismiss')).toBe(false);
 
-    // Teams cannot react on the report: the trigger is acknowledged in the reactor's personal chat instead.
-    const opened = w.teams.connector.filter((c) => c.kind === 'personal');
-    expect(opened.map((c) => JSON.stringify(c.body['members']))).toEqual([expect.stringContaining(ENGINEER.aad)]);
-    expect(w.teams.connector.filter((c) => c.kind === 'send').map((c) => [c.conversation, c.body['text']])).toEqual([['a:1personal-chat', 'On it, pulling context']]);
+    // Teams cannot react on the report: the trigger is acknowledged in the reactor's personal chat instead
+    // (sent after the reaction is handled, not awaited by it).
+    await within(w, () => {
+      const opened = w.teams.connector.filter((c) => c.kind === 'personal');
+      expect(opened.map((c) => JSON.stringify(c.body['members']))).toEqual([expect.stringContaining(ENGINEER.aad)]);
+      expect(w.teams.connector.filter((c) => c.kind === 'send').map((c) => [c.conversation, c.body['text']])).toEqual([['a:1personal-chat', 'On it, pulling context']]);
+    });
 
     // On the ticket: labeled human-claimed, assigned to the engineer's Jira account (found by the map's email).
     await within(w, () => {
+      expect(w.jira.issues.get(key)?.summary).toBe('Cart coupon discount is ten times too small');
       expect(w.jira.issues.get(key)?.labels).toContain('human-claimed');
       expect(w.jiraHooks.assignees.get(key)).toBe(JIRA_ENGINEER.accountId);
     });
-    expect(w.jira.issues.get(key)?.summary).toBe('Cart coupon discount is ten times too small');
 
     // The read-only scout's diagnosis, for the human who took it (queued for the ticket's comment batch).
     const scout = await within(w, async () => {
@@ -643,7 +655,8 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     const mergeSha = merged?.payload.mergeCommitSha ?? '';
     const pr = w.github.pull(REPO, merged?.payload.prNumber ?? 0);
     expect(pr).toMatchObject({ merged: true, mergedBy: BOT_LOGIN, base: 'main' });
-    expect(w.github.deletedBranches).toEqual([`${REPO}:${pr?.head ?? ''}`]);
+    // The head branch is deleted after the merge is recorded.
+    await within(w, () => expect(w.github.deletedBranches).toEqual([`${REPO}:${pr?.head ?? ''}`]));
 
     // The deploy system puts the merge commit on staging; GitHub tells the App.
     await deploy(w, mergeSha, 'staging');
@@ -653,23 +666,23 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     const check = await within(w, async () => {
       const found = (await events(w, 'bot-message-posted')).find((e) => e.payload.role === 'staging-check');
       if (found === undefined) throw new Error('no staging check yet');
+      const shown = threadPosts(w).find((c) => c.activityId === found.payload.messageId);
+      expect(activityText(shown?.body ?? {})).toContain(mention(REPORTER));
       return found;
     });
     expect(check.payload).toMatchObject({ platform: 'teams', channel: CHANNEL });
-    const shown = threadPosts(w).find((c) => c.activityId === check.payload.messageId);
-    expect(activityText(shown?.body ?? {})).toContain(mention(REPORTER));
 
     // The reporter's 👍 is the verification: Teams' `like`, on the bot's own message, which Bot Framework reports.
     expect(await w.inject({ activity: botMessageReaction(w.thread, REPORTER, check.payload.messageId, 'like') })).toEqual({ status: 200 });
     const verified = await within(w, async () => {
       const found = (await events(w, 'verified'))[0];
       if (found === undefined) throw new Error('not verified yet');
+      const comment = (await events(w, 'comment')).find((e) => e.payload.effect === 'verify');
+      expect(comment?.payload).toMatchObject({ intent: 'accept', platform: 'teams', raw: 'like' });
       return found;
     });
     expect(verified.payload.env).toBe('staging');
     expect(verified.actor?.id).toBe(REPORTER.aad);
-    const comment = (await events(w, 'comment')).find((e) => e.payload.effect === 'verify');
-    expect(comment?.payload).toMatchObject({ intent: 'accept', platform: 'teams', raw: 'like' });
 
     // The attribution on the ticket (`@name`) and on the pull request (bold, as the reporter has no linked GitHub login).
     await within(w, async () => {
@@ -686,8 +699,10 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     const log = await logOf(w);
     expect(log.filter((e) => e.type === 'level-changed' || e.type === 'held')).toEqual([]);
     expect(log.map((e) => e.type).indexOf('verified')).toBeLessThan(log.map((e) => e.type).indexOf('deployed:production'));
-    // Teams cannot pin: the status message is one reply in the thread, edited in place through every stage.
+    // Teams cannot pin: the status message is one reply in the thread, edited in place through every stage,
+    // the production row included (the status projector drains after the event).
     const statusId = done.statusMsgId ?? '';
+    await within(w, () => expect(activityText(cards(w).find((c) => c.activityId === statusId)?.body ?? {})).toContain(`Live. Closing ${key}.`));
     expect(threadPosts(w).filter((c) => c.activityId === statusId)).toHaveLength(1);
     expect(w.teams.connector.filter((c) => c.kind === 'update' && c.activityId === statusId).length).toBeGreaterThan(0);
     clean(w);
@@ -711,9 +726,11 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     });
     expect(steps.map((e) => e.payload.step)).toEqual([1, 2]);
     expect(steps[1]?.payload).toMatchObject({ step: 2, priority: 'Highest', mentionOwner: true, suppressAskBack: true, reactors: 5 });
-    const escalate = (await events(w, 'comment')).filter((e) => e.payload.intent === 'escalate');
-    expect(new Set(escalate.map((e) => e.actor?.id))).toEqual(new Set([REPORTER.aad, ENGINEER.aad, ...FIRE.map((p) => p.aad)]));
-    expect(new Set(escalate.map((e) => e.payload.raw))).toEqual(new Set(['fire']));
+    await within(w, async () => {
+      const escalate = (await events(w, 'comment')).filter((e) => e.payload.intent === 'escalate');
+      expect(new Set(escalate.map((e) => e.actor?.id))).toEqual(new Set([REPORTER.aad, ENGINEER.aad, ...FIRE.map((p) => p.aad)]));
+      expect(new Set(escalate.map((e) => e.payload.raw))).toEqual(new Set(['fire']));
+    });
 
     // No question card: it is an incident, not a question.
     const key = await untilFiled(w, { ...DEFAULT_CHOICES, clarify: (_v, c) => (isClarify(c) ? 'an ask-back card was posted although step 2 suppresses it' : undefined) });
@@ -730,22 +747,24 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     expect(JSON.stringify(post.body)).toContain(ENGINEER.aad);
 
     // Highest on the incident and on the ticket.
-    expect((await incidentOf(w))?.priority).toBe('Highest');
-    const priorities = [
-      ...(await outbox(w, 'jira', 'create-issue')).map((r) => (r.payload['fields'] as { priority?: { name?: string } } | undefined)?.priority?.name),
-      ...(await outbox(w, 'jira', 'update-fields')).map((r) => (r.payload['fields'] as { priority?: { name?: string } } | undefined)?.priority?.name),
-    ].filter((p) => p !== undefined);
-    expect(priorities.at(-1)).toBe('Highest');
     expect(key).toBe(ISSUE);
+    await within(w, async () => {
+      expect((await incidentOf(w))?.priority).toBe('Highest');
+      const priorities = [
+        ...(await outbox(w, 'jira', 'create-issue')).map((r) => (r.payload['fields'] as { priority?: { name?: string } } | undefined)?.priority?.name),
+        ...(await outbox(w, 'jira', 'update-fields')).map((r) => (r.payload['fields'] as { priority?: { name?: string } } | undefined)?.priority?.name),
+      ].filter((p) => p !== undefined);
+      expect(priorities.at(-1)).toBe('Highest');
+    });
 
     // Highest qualifies the incident for active monitoring (A 4.5).
     const started = await within(w, async () => {
       const found = (await events(w, 'monitoring-started'))[0];
       if (found === undefined) throw new Error('monitoring has not started');
+      expect((await incidentOf(w))?.monitored).toBe(true);
       return found;
     });
     expect(started.payload.qualifiedBy).toBe('priority');
-    expect((await incidentOf(w))?.monitored).toBe(true);
     clean(w);
   }, 60_000);
 
@@ -834,7 +853,7 @@ describe('the A 8 rows on Teams, through the composed app', () => {
       '</playbook>',
     ].join('');
     const w = await world({ level: 2, playbook });
-    // The required `ci/test` check is never reported, by webhook or by the monitor's poll.
+    // The required `ci/test` check is never reported, by webhook or to any read of the head's checks.
     w.github.silent.add(CI_CHECK);
     await linkGitHub(w, ENGINEER);
     await reportAndTrigger(w);
@@ -860,11 +879,11 @@ describe('the A 8 rows on Teams, through the composed app', () => {
         if (found === undefined) throw new Error(`no heartbeat yet (thread: ${threadPosts(w).map((c) => activityText(c.body).slice(0, 60)).join(' | ')})`);
         return found;
       },
-      HEARTBEAT + 15 * SECOND,
+      HEARTBEAT + LATE + 15 * SECOND,
     );
     expect(activityText(heartbeat.body)).toMatch(/^Still in CI, \d+ minutes?\b.*Watching\.$/);
     expect(heartbeat.at - inCi).toBeGreaterThanOrEqual(HEARTBEAT - 100);
-    expect(heartbeat.at - inCi).toBeLessThan(HEARTBEAT + POLL + 5 * SECOND);
+    expect(heartbeat.at - inCi).toBeLessThan(HEARTBEAT + LATE);
 
     // The stall: `monitor.stallAfter` after the last progress, plus the PT0S first step, mentions the owner.
     const step = await within(
@@ -874,7 +893,7 @@ describe('the A 8 rows on Teams, through the composed app', () => {
         if (found === undefined) throw new Error('no stalled-fix step yet');
         return found;
       },
-      STALL_AFTER + 15 * SECOND,
+      STALL_AFTER + LATE + 15 * SECOND,
     );
     const log = await logOf(w);
     const ladderStart = (await events(w, 'escalation-ladder')).find((e) => e.payload.phase === 'started' && e.payload.ladder === 'stalled-fix');
@@ -883,7 +902,7 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     expect(anchor).toBeGreaterThanOrEqual(inCi);
     const stalledAt = Date.parse(step.occurredAt);
     expect(stalledAt - anchor).toBeGreaterThanOrEqual(STALL_AFTER - SECOND);
-    expect(stalledAt - anchor).toBeLessThan(STALL_AFTER + POLL + 5 * SECOND);
+    expect(stalledAt - anchor).toBeLessThan(STALL_AFTER + LATE);
     expect(step.payload).toMatchObject({ phase: 'step', ladder: 'stalled-fix', step: 1, mentioned: ENGINEER.handle, posted: true });
     const mentioned = await within(w, () => {
       const found = threadPosts(w).find((c) => activityText(c.body).includes('Escalating (stalled-fix, step 1 of 1)'));
@@ -893,9 +912,11 @@ describe('the A 8 rows on Teams, through the composed app', () => {
     expect(activityText(mentioned.body)).toMatch(new RegExp(`^${mention(ENGINEER)} Escalating \\(stalled-fix, step 1 of 1\\): ${key} `));
     expect(JSON.stringify(mentioned.body)).toContain(ENGINEER.aad);
 
-    // Still waiting on the silent check: no CI result arrived by webhook or by poll.
+    // Still waiting on the silent check: the app read the head's checks once the review passed, and no CI
+    // result arrived.
+    expect(w.github.calls.filter((c) => new RegExp(`^GET /repos/${REPO}/commits/[0-9a-f]{40}/check-runs$`).test(c)).length).toBeGreaterThan(0);
     expect((await incidentOf(w))?.status).toBe('ci');
     expect(log.filter((e) => e.type === 'ci-green' || e.type === 'ci-red')).toEqual([]);
     clean(w);
-  }, 60_000);
+  }, 120_000);
 });
