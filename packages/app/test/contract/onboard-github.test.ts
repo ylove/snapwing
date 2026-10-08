@@ -205,7 +205,17 @@ describe('onboarding step 3: the GitHub App', () => {
 
   it('offers to try again when the installer cancels, and a retry with another name creates the App', async () => {
     browser = (local) => (attempts === 1 ? cancel(local) : createApp(local));
-    const first = await interview(['org', 'acme', '', 'rename', 'Snapwing Two'], { env: PUBLIC, steps: [runtime, step(GIVES_UP)] });
+    // Only the cancelled first attempt gets a short wait; the attempt that must succeed gets the long one. The
+    // step reads createWaitMs as each wait starts, before openUrl counts the attempt, so a getter tells them apart
+    // (passed straight in, because step() would spread it and read it once).
+    const retryStep = createGitHubStep({
+      pollMs: 5,
+      installWaitMs: 60_000,
+      get createWaitMs() {
+        return attempts === 0 ? 300 : 60_000;
+      },
+    });
+    const first = await interview(['org', 'acme', '', 'rename', 'Snapwing Two'], { env: PUBLIC, steps: [runtime, retryStep] });
     expect(errors).toEqual([]);
     expect(first.result.state.steps['github']?.status).toBe('done');
     expect(attempts).toBe(2);
