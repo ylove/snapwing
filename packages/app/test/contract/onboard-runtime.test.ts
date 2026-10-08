@@ -202,6 +202,13 @@ describe('step 0: runtime, model keys, public URL', () => {
     expect(result.state.steps['runtime']?.data).toMatchObject({ runtime: 'docker', fixerImage: false });
   });
 
+  it('defaults to Docker, and says local runs untrusted code as the server user', async () => {
+    const { result, lines } = await interview(['', 'have', 'ghcr.io/acme/snapwing-fixer:1', 'yes', KEYS.anthropic, 'no', 'no', 'no']);
+    expect(result.outcome).toBe('complete');
+    expect(loadAppConfig(await readConfig()).runtime.provider).toBe('docker');
+    expect(lines.join('\n')).toContain('it runs untrusted code as the server user');
+  });
+
   it('docker with a fixer image writes it', async () => {
     await interview(['docker', 'have', 'ghcr.io/acme/snapwing-fixer:1', 'yes', KEYS.anthropic, 'no', 'no', 'no']);
     expect((await readEnv()).get('SNAPWING_FIXER_IMAGE')).toBe('ghcr.io/acme/snapwing-fixer:1');
@@ -211,8 +218,8 @@ describe('step 0: runtime, model keys, public URL', () => {
     const { result, lines } = await interview(['aws', 'gcp', '3']);
     expect(result.outcome).toBe('aborted');
     const text = lines.join('\n');
-    expect(text).toContain('1. On this machine (local)');
-    expect(text).toContain('2. In Docker');
+    expect(text).toContain('1. In Docker');
+    expect(text).toContain('2. On this machine (local)');
     expect(text).not.toMatch(/AWS|Google Cloud/);
     expect(lines.filter((l) => l.includes('Type a number from 1 to 2'))).toHaveLength(3);
     await expect(readConfig()).rejects.toThrow();
