@@ -22,7 +22,7 @@ export interface StandingWatchRequest {
 const KEEP =
   /^(?:please\s+|pls\s+|can you\s+|could you\s+)?(?:(?:keep|have)\s+me\s+(?:posted|updated|in the loop)|let me know|notify me|ping me|subscribe me)\s+(?:on|about|for|to|when|of)\s+(.+)$/i;
 const STOP =
-  /^(?:please\s+|pls\s+)?(?:stop\s+(?:keeping me posted|notifying me|pinging me|watching|telling me)|unsubscribe me from|unwatch)\s*(?:on|about|for|to|from|of)?\s*(.+)$/i;
+  /^(?:please\s+|pls\s+|can you\s+|could you\s+)?(?:(?:stop|quit)\s+(?:keeping me posted|notifying me|pinging me|watching|telling me|updating me\b)|unsubscribe me from|unwatch)\s*(?:on|about|for|to|from|of)?\s*(.+)$/i;
 const WATCH_CMD = /^(?:\/snapwing\s+)?watch\s+(.+)$/i;
 
 /** The standing-watch request a text makes, or undefined. Pure; does not consult the map. */

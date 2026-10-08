@@ -393,6 +393,19 @@ describe('standing watches (A 4.4)', () => {
     expect((await state.getSubscriptions(NAV.id)).filter((s) => s.userId === REPORTER)).toEqual([]);
   });
 
+  it('the shared parser takes "stop updating me", also unanchored, with no Teams-local rewrite', async () => {
+    await teams.handle(chat(REPORTER, 'keep me posted on the website'));
+    sent.length = 0;
+    await teams.handle(chat(REPORTER, 'can you stop updating me on web'));
+    expect(sent.map((s) => s.body.text)).toEqual(['Okay, I will stop updating you on every incident on Website.']);
+  });
+
+  it('a personal-chat "status ..." report is captured, not answered; "status" with a key, "?" or "of/on/for" is a question', () => {
+    expect(teams.intercepts(chat(REPORTER, 'status page is down after deploy'))).toBe(false);
+    expect(teams.intercepts(chat(REPORTER, 'status code 500 on checkout'))).toBe(false);
+    for (const q of ['status', 'status?', 'status on WEB-1042', 'status of the cart bug']) expect(teams.intercepts(chat(REPORTER, q)), q).toBe(true);
+  });
+
   it('asks which surface is meant when the target is unknown, and writes nothing', async () => {
     await teams.handle(chat(REPORTER, 'keep me posted on the moon'));
     expect(sent[0]?.body.text).toContain('could not tell which surface');

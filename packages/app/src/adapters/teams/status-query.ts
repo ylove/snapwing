@@ -8,7 +8,8 @@
 // - A personal-chat message that reads as a status question ("what's open on the website?", a bare key):
 //   answered in the personal chat. Any other personal-chat message is a capture and is not intercepted.
 // - The `status [key or words]` bot command in the personal chat: answered there. With no words it lists
-//   the open incidents on the surface, as Slack's `/snapwing-status` does.
+//   the open incidents on the surface, as Slack's `/snapwing-status` does. `status` counts only alone or
+//   with a `?`, a key, or "of/on/for" after it: "status page is down" is a report and is captured.
 // - A personal-chat message that asks to be kept posted ("keep me posted on the website", "stop updating
 //   me on web"): a standing surface subscription (A 4.4, `signals/standing.ts`), confirmed in the chat.
 //   Only when `standing` is given.
@@ -82,15 +83,6 @@ function str(v: unknown): string {
 }
 
 const STATUS_COMMAND = /^status(?:\s+(.*))?$/i;
-
-/**
- * A 4.4 words the shared parser does not know: "stop updating me on web" is "stop keeping me posted on
- * web". Rewritten here (the parser is the pipeline's, `signals/standing.ts`) so both the check and the
- * write see the phrase it matches.
- */
-function standingPhrase(text: string): string {
-  return text.replace(/^(?:(?:please|pls)\s+)?(?:stop|quit)\s+updating me\b/i, 'stop keeping me posted');
-}
 
 interface Request {
   asker: string;
@@ -230,12 +222,11 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     const base = { asker, serviceUrl, activityId };
 
     if (conversationType === 'personal') {
-      const standing = standingPhrase(text);
-      if (options.standing !== undefined && parseStandingWatch(standing)?.command === false) {
-        return { ...base, channelId: conversationId, text: standing, kind: 'standing' };
+      if (options.standing !== undefined && parseStandingWatch(text)?.command === false) {
+        return { ...base, channelId: conversationId, text, kind: 'standing' };
       }
       const command = STATUS_COMMAND.exec(text);
-      if (command !== null) return { ...base, channelId: conversationId, text: (command[1] ?? '').trim(), kind: 'command' };
+      if (command !== null && looksLikeStatusQuestion(text)) return { ...base, channelId: conversationId, text: (command[1] ?? '').trim(), kind: 'command' };
       if (looksLikeStatusQuestion(text)) return { ...base, channelId: conversationId, text, kind: 'personal' };
       return undefined;
     }

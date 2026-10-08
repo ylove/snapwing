@@ -326,6 +326,17 @@ describe('a direct message', () => {
     expect(looksLikeStatusQuestion('WEB-1042?')).toBe(true);
     expect(looksLikeStatusQuestion('any update on the nav thing')).toBe(true);
   });
+
+  it('answers "status" only with a key, a "?", "of/on/for", or nothing after it; a "status ..." report is captured', () => {
+    for (const q of ['status', 'status?', 'Status on WEB-1042', 'status WEB-1042', 'status of the cart bug', 'status for checkout', "what's the status"]) {
+      expect(looksLikeStatusQuestion(q), q).toBe(true);
+    }
+    for (const r of ['status page is down after deploy', 'status code 500 on checkout', 'status badge is blank']) {
+      expect(looksLikeStatusQuestion(r), r).toBe(false);
+      expect(sq.intercepts(dm(REPORTER, r)), r).toBe(false);
+    }
+    expect(sq.intercepts(dm(REPORTER, 'status of the cart bug'))).toBe(true);
+  });
 });
 
 describe('/snapwing-status (A 4.3 `/status`, a name Slack reserves)', () => {

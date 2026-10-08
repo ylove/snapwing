@@ -105,9 +105,12 @@ function str(v: unknown): string {
 const SLACK_ID = /^[UW][A-Z0-9]{2,}$/;
 const JIRA_KEY_ONLY = /^[A-Z][A-Z0-9]+-\d+\s*[?!.]*$/i;
 const STATUS_WORDS =
-  /^(?:(?:hey|hi|hello|please|pls|can you|could you|tell me|do you know)[,\s]+)*(?:status\b|what'?s (?:the )?(?:status|open|up|going on|happening|left|blocking)|what is (?:the )?(?:status|open|going on|happening|left|blocking)|what are we|where (?:are|do) we|where'?s |where is |how'?s |how is |how are we|any (?:update|news|progress)|updates? on|progress on|is .+ (?:fixed|done|live|merged|deployed)\b|did .+ (?:merge|ship|deploy|land)\b)/i;
+  /^(?:(?:hey|hi|hello|please|pls|can you|could you|tell me|do you know)[,\s]+)*(?:status(?=\s*[?!.]*$|\s+(?:of|on|for)\b|\s+[A-Z][A-Z0-9]+-\d+)|what'?s (?:the )?(?:status|open|up|going on|happening|left|blocking)|what is (?:the )?(?:status|open|going on|happening|left|blocking)|what are we|where (?:are|do) we|where'?s |where is |how'?s |how is |how are we|any (?:update|news|progress)|updates? on|progress on|is .+ (?:fixed|done|live|merged|deployed)\b|did .+ (?:merge|ship|deploy|land)\b)/i;
 
-/** Whether DM text reads as a status question rather than a bug report to capture. */
+/**
+ * Whether DM text reads as a status question rather than a bug report to capture. `status` counts only
+ * as the whole text, with a `?`, a Jira key, or "of/on/for" after it: "status page is down" is a report.
+ */
 export function looksLikeStatusQuestion(text: string): boolean {
   const t = text.replace(/<@[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   if (t === '') return false;
