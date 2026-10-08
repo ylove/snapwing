@@ -1,5 +1,5 @@
 // `snapwing state rebuild --verify` must exit 1 with a readable diff when a projection row has
-// drifted from the log (#35 review). SQLite only, like cli-state.test.ts; the dialects are #20's tests.
+// drifted from the log. SQLite only, like cli-state.test.ts; the dialects have their own tests.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

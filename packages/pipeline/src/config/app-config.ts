@@ -1,5 +1,5 @@
 // Application config, snapwing.config.xml (main 14.3 provider selection, main 14.5 models and harness).
-// Schema: schemas/app-config.xsd. The types here are plain data; the model router (#26) consumes ModelsConfig.
+// Schema: schemas/app-config.xsd. The types here are plain data; the model router consumes ModelsConfig.
 
 import { parseXmlDocument, type Element } from 'slimdom';
 import { JIRA_LOGICAL_STATUSES, type JiraLogicalStatus, type JiraStatusOverrides } from '../jira/statuses.ts';
@@ -36,7 +36,7 @@ export interface ModelRow {
   name: string;
   /**
    * Sampling temperature for the task, 0 to 2. Absent: the router sends none and the model's default
-   * applies, whatever a stage asks for (gpt-5, Claude Opus 5.5 and Sonnet 5.5 reject other values, #275).
+   * applies, whatever a stage asks for (gpt-5, Claude Opus 5.5 and Sonnet 5.5 reject other values).
    */
   temperature?: number;
 }
@@ -116,7 +116,7 @@ export const DEFAULT_MERGE_CONFIG: MergeConfig = {
 };
 
 /**
- * Jira (main 9.1, #268). `statuses` names the project status for a logical lifecycle target
+ * Jira (main 9.1). `statuses` names the project status for a logical lifecycle target
  * (`<status logical="backlog" name="Selected for Development"/>`); a target without one resolves by
  * status category (`jira/statuses.ts`).
  */

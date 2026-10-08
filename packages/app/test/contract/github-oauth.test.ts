@@ -1,4 +1,4 @@
-// Linking a GitHub identity (#153; main 11.2, main 16, ADR 0007): the GitHub App user authorization
+// Linking a GitHub identity (main 11.2, main 16, ADR 0007): the GitHub App user authorization
 // routes against MSW, state binding and expiry, token refresh, and sealed tokens at rest. Runs on the
 // dialect `SNAPWING_DB` selects; CI runs it on both SQLite and Postgres.
 

@@ -150,7 +150,7 @@ it('ack clears a deferred error, so a sent row is never listed as parked', async
   expect(await f.state().listParkedOutbox('github', 10)).toEqual([]);
   expect(await f.state().drainOutbox('github', 10)).toEqual([]);
 });
-it('drops the undone rows of one batch key and target, a deferred one too, without parking them (#143)', async () => {
+it('drops the undone rows of one batch key and target, a deferred one too, without parking them', async () => {
   const incident = id();
   const key = `field:${incident}:priority`;
   const first = outbox({ incidentId: incident, op: 'update-fields', batchKey: key });

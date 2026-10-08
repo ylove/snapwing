@@ -1,4 +1,4 @@
-// `pnpm demo:state` (#36, the phase 1 proof): the recordings in demo/state/ validate against the
+// `pnpm demo:state` (the phase 1 proof): the recordings in demo/state/ validate against the
 // event catalog, replay to their expected final status, and rebuild identically. Runs on the
 // dialect `SNAPWING_DB` selects; CI runs it once per dialect.
 

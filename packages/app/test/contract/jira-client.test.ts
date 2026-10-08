@@ -86,7 +86,7 @@ describe('operations', () => {
     expect(body).toEqual({ transition: { id: '21' } });
   });
 
-  it('projectStatuses flattens the issue types, each status once, with its category (#268)', async () => {
+  it('projectStatuses flattens the issue types, each status once, with its category', async () => {
     server.use(http.get(`${BASE}/rest/api/3/project/OAJ/statuses`, () => HttpResponse.json(fixture('project-statuses'))));
     expect(await client.projectStatuses('OAJ')).toEqual([
       { name: 'In Progress', category: 'indeterminate' },

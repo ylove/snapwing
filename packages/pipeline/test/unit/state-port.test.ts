@@ -77,7 +77,7 @@ describe('contract types match the B 3 columns', () => {
     expectTypeOf<OptionalKeys<OutboxItem>>().toEqualTypeOf<Camel<OutboxNullable>>();
   });
 
-  it('LinkedIdentity is the linked_identities row (#153); NewLinkedIdentity leaves linkedAt and updatedAt to the store', () => {
+  it('LinkedIdentity is the linked_identities row; NewLinkedIdentity leaves linkedAt and updatedAt to the store', () => {
     type NotNull = 'workspace_id' | 'chat' | 'chat_user_id' | 'github_login' | 'github_user_id' | 'access_token' | 'linked_at' | 'updated_at';
     type Nullable = 'access_token_expires_at' | 'refresh_token' | 'refresh_token_expires_at';
     expectTypeOf<RequiredKeys<LinkedIdentity>>().toEqualTypeOf<Camel<NotNull>>();

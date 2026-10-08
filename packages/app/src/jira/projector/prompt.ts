@@ -1,4 +1,4 @@
-// The placeholder issue key (main 9.1, #113). Synthesis cannot know the Jira key when it writes the
+// The placeholder issue key (main 9.1). Synthesis cannot know the Jira key when it writes the
 // implementation request, so `@issue` holds `<PROJECT>-0` (and each screenshot ref
 // `attachment:<PROJECT>-0/name`). Once Jira has created the issue and `filed` is appended, the
 // projector rewrites those, validates the result against the XSD, stores it as a new version of the

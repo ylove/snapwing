@@ -4,7 +4,7 @@
 // retry times (the projector passes them to `deferOutbox`).
 //
 // A parked row is a done row with an error: `parkOutbox` sets `done_at` and `last_error`, and
-// `ackOutbox` clears `last_error`, so the two never mix and no column is needed (#140).
+// `ackOutbox` clears `last_error`, so the two never mix and no column is needed.
 
 import type { Selectable } from 'kysely';
 import { OUTBOX_TARGETS, type OutboxItem, type OutboxTarget } from '../contracts/state.ts';

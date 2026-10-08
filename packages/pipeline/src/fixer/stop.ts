@@ -5,7 +5,7 @@
 // see it, then cancels a queued `fixer.run` and the budget timer, cancels the running run through the
 // RunnerPort, and closes an open PR with a comment through `FixerGitHub.closePr`: the latest
 // `pr-opened`, or, for a run stopped mid-fix before it reported `done`, the PR its `pr-opened`
-// checkpoint names (#160). Anything already pushed stays on the branch. A second stop (a `stopped` already newer than the last `filed`) appends
+// checkpoint names. Anything already pushed stays on the branch. A second stop (a `stopped` already newer than the last `filed`) appends
 // nothing and does nothing else. `stopped` is not terminal (B 5); a stop on a terminal incident is a
 // no-op.
 
@@ -51,7 +51,7 @@ export async function stopIncident(deps: FixerDeps, input: StopInput): Promise<S
 
   const before = appended.before;
   // Nothing filed yet: a create-issue row still waiting in the outbox is dropped, so a Stop before
-  // filing files nothing. A row already sent lands as `filed` later, which stays and is tracked (#206).
+  // filing files nothing. A row already sent lands as `filed` later, which stays and is tracked.
   if (lastSeqOf(before, 'filed') === 0) await deps.state.dropOutbox('jira', jiraCreateBatchKey(incidentId));
   await deps.workflow.cancel(fixerRunKey(incidentId));
   await deps.workflow.cancel(fixerBudgetKey(incidentId));

@@ -1,5 +1,5 @@
 // Signal side effects, escalation ladders, and active monitoring on the composed app (A 1.4,
-// A 1.6, A 3, A 4.5, A 6.2), on MSW with the e2e world of #160 (fixtures/e2e/): the real `compose`,
+// A 1.6, A 3, A 4.5, A 6.2), on MSW with the e2e world (fixtures/e2e/): the real `compose`,
 // worker, projectors, and routes, Slack events and taps signed as Slack sends them.
 //
 // - Five reporters and the surface owner react 🔥 on the report: the reaction ladder reaches step 2
@@ -377,7 +377,7 @@ describe('signal side effects, escalation ladders, and active monitoring on the 
       ['resolution', 'asked', 'Cannot Reproduce'],
       ['resolution', 'confirmed', 'Cannot Reproduce'],
     ]);
-    // The close carries its resolution to Jira through the outbox (#193), with a comment saying why.
+    // The close carries its resolution to Jira through the outbox, with a comment saying why.
     const transitions = (await outboxRowsOf(w.booted.state.ctx, incidentId, 'transition')).map((r) => r.payload);
     expect(transitions).toContainEqual({ issueKey: ISSUE, to: 'done', resolution: 'Cannot Reproduce' });
     const comments = (await outboxRowsOf(w.booted.state.ctx, incidentId, 'add-comment')).map((r) => String(r.payload['text']));

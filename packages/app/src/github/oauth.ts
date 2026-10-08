@@ -1,4 +1,4 @@
-// Linking a chat user to a GitHub account (main 11.2, main 16, ADR 0007, #153): GitHub App user
+// Linking a chat user to a GitHub account (main 11.2, main 16, ADR 0007): GitHub App user
 // authorization (the OAuth web flow with the App's client id and secret), so a `Merge` tap acts as
 // that human and GitHub's audit log names them. fetch and node:crypto only.
 //

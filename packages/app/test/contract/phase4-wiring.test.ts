@@ -1,5 +1,5 @@
 // Phase 4 wiring on the composed app (A 2.2, A 2.3, A 2.4, A 4.4, A 4.6, A 5.3, A 6.4, main
-// 11.3), on MSW with the e2e world of #160 (fixtures/e2e/): the real `compose`, worker, projectors, and
+// 11.3), on MSW with the e2e world (fixtures/e2e/): the real `compose`, worker, projectors, and
 // routes, Slack events and taps signed as Slack sends them, local bare repositories behind a fake
 // GitHub, and the fake agent behind the generic harness.
 //

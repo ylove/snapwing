@@ -2,7 +2,7 @@
 // and that is what an incident records; GitHub's REST paths, installation tokens, clone URLs, webhook
 // payloads (`repository.full_name`), and the fixer checkout all use `owner/name`. Every GitHub call
 // goes through `repoFullName` first, and a webhook compares repos with `sameRepo`. Moved here from
-// the app (#159) so the fixer and review checkouts (`fixer/workdir`) take the map's form too (#160).
+// the app so the fixer and review checkouts (`fixer/workdir`) take the map's form too.
 
 /** `owner/name` for `owner/name`, `github.com/owner/name`, `https://github.com/owner/name(.git)`, or `git@github.com:owner/name.git`. */
 export function repoFullName(repo: string): string {

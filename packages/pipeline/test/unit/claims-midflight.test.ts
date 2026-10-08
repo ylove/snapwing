@@ -1,4 +1,4 @@
-// Claims arriving mid-flight (#292; A 2.2). Same world as fixer-job.test.ts: in-process workflow over
+// Claims arriving mid-flight (A 2.2). Same world as fixer-job.test.ts: in-process workflow over
 // the dialect `SNAPWING_DB` selects, a fake runner and GitHub. The card, the notice, and the assignee
 // write are recorded by fake MidFlightPorts.
 

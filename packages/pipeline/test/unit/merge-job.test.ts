@@ -1,4 +1,4 @@
-// Merge step (`merge.evaluate`), autopilot, and Revert (#152; main 11.3, main 14.1, B 5). Runs on the
+// Merge step (`merge.evaluate`), autopilot, and Revert (main 11.3, main 14.1, B 5). Runs on the
 // in-process workflow over the dialect `SNAPWING_DB` selects, with a fake MergeGitHub whose answers
 // each test sets. The log is built up to `ci` (review passed) the way the fixer and review jobs leave it.
 
@@ -357,7 +357,7 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
       expect((await evaluateMerge(w.deps, { incidentId: INC })).outcome).toBe('merged');
     });
 
-    it('ci: a failing required check is ci-red and the fixer retry, never a hold (#214, main 10)', async () => {
+    it('ci: a failing required check is ci-red and the fixer retry, never a hold (main 10)', async () => {
       const w = await setup();
       w.github.required = [
         { name: 'ci', state: 'success', source: 'check-run' },
@@ -442,7 +442,7 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     expect(out).toMatchObject({ outcome: 'held', reason: 'risk gate: forbidden paths touched: .github/workflows/ci.yml', gate: { ciGreen: false } });
   });
 
-  it.each([0, 1, 2] as const)('level %i never merges here; it records CI that finished before the review, so a human merge fits (#214)', async (level) => {
+  it.each([0, 1, 2] as const)('level %i never merges here; it records CI that finished before the review, so a human merge fits', async (level) => {
     const w = await setup({ level });
     const before = (await log()).length;
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'skipped', reason: 'not-autopilot', level });

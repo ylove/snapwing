@@ -1,7 +1,7 @@
-// The signal handler (A 1.3, A 1.5, A 2.1, A 4.4; #288): applies one classified reaction or short
+// The signal handler (A 1.3, A 1.5, A 2.1, A 4.4): applies one classified reaction or short
 // message to the incident it lands on.
 //
-// `handleSignal(deps, signal)` resolves the target first (`resolveTarget`, #287): a message Snapwing
+// `handleSignal(deps, signal)` resolves the target first (`resolveTarget`): a message Snapwing
 // posted (its role), an incident's anchor, or nothing. A message signal (the lexicon or the LLM pass)
 // with no resolved target is dropped: A 1.2 applies them only inside an incident's thread, never to
 // arbitrary channel messages. A reaction on a message with no incident yet is stored (below).
@@ -16,7 +16,7 @@
 //   claim      an engineer on the anchor or a Fix Preview Card (A 1.3 `hold`): `claimed` with the
 //              actor's map role and `expiresAt` from `claims.expiry`. A reporter's claim is the comment
 //              alone (A 2.1 "recorded as a comment"; the engine writes "@pat is looking into it."). Then
-//              `IncidentOrchestrator.handleClaim(incident, seq)` (#291), which wakes the engine where
+//              `IncidentOrchestrator.handleClaim(incident, seq)`, which wakes the engine where
 //              the claim changes what it does next. A claim on any other message is recorded only.
 //   release    from someone with a claim row: `released { scope: 'claim' }`, then `handleClaim`.
 //   stop       `stopIncident` (fixer/stop.ts) with the raw text as the reason, when the Stop button
@@ -51,7 +51,7 @@
 // its events (a `released`, a `held` gate) go after the comment in the same append. A released claim
 // then calls `handleClaim` like any release. A trigger removed within 60 s is the adapter's Stop
 // (`viaAdapter`), so the handler never calls `stopIncident` for it. After a counted signal commits,
-// `escalation.evaluate` (signals/score.ts, #290) walks the reaction ladder; adoption evaluates once,
+// `escalation.evaluate` (signals/score.ts) walks the reaction ladder; adoption evaluates once,
 // after every stored signal is recorded.
 //
 // Before the incident exists (A 1.4 last paragraph): a reaction on a message with no incident is
@@ -113,7 +113,7 @@ export interface SignalDeps {
   state: StatePort;
   /** Holds signals on a message no incident owns yet. */
   cache: CachePort;
-  /** The loaded playbook, or a getter for the current one (hot reload, #284). */
+  /** The loaded playbook, or a getter for the current one (hot reload). */
   playbook: Playbook | (() => Playbook | Promise<Playbook>);
   /** The workspace map, for the surface owner's weight (A 1.4). Absent: nobody weighs as an owner. */
   map?: WorkspaceMap | (() => Promise<WorkspaceMap>);
@@ -414,11 +414,11 @@ async function removal(deps: SignalDeps, signal: SignalInput, incident: Incident
   return { effect: plan.effect, events: plan.events, ...(plan.viaAdapter === true ? { viaAdapter: true as const } : {}) };
 }
 
-/** After the append commits: the claim hook (#291), a removal's release or Stop, and the reopened fixer. */
+/** After the append commits: the claim hook, a removal's release or Stop, and the reopened fixer. */
 async function afterAppend(deps: SignalDeps, signal: SignalInput, incident: IncidentView, decision: Decision, seq: number, review: ArtifactRef | undefined): Promise<void> {
   if (signal.source === 'reaction-removed') {
     if (decision.effect === 'release') await deps.engine.handleClaim(incident.id, seq);
-    // A trigger removed within 60 s is the adapter's Stop (#148): never a second one here.
+    // A trigger removed within 60 s is the adapter's Stop: never a second one here.
     else if (decision.effect === 'stop' && decision.viaAdapter !== true) await deps.stopIncident({ incidentId: incident.id, actor: actorOf(signal.actor), source: signal.platform });
     return;
   }
@@ -563,7 +563,7 @@ async function linkedLogin(deps: SignalDeps, signal: SignalInput): Promise<strin
   }
 }
 
-/** The map role is the event's `actor.role` (#291: only an engineer's `claimed` holds the fixer). */
+/** The map role is the event's `actor.role` (only an engineer's `claimed` holds the fixer). */
 function actorOf(actor: IncidentActor): EventActor {
   const name = actor.name.trim();
   return { id: actor.id, role: actor.role, ...(name === '' ? {} : { name }) };

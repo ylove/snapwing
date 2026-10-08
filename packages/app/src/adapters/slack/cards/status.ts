@@ -1,5 +1,5 @@
 // The pinned status message in Block Kit (main 12, 20.1). The copy, the emoji vocabulary, and the
-// reporter rules are platform-neutral and live in the pipeline (`status/copy.ts`, #142) so Teams and
+// reporter rules are platform-neutral and live in the pipeline (`status/copy.ts`) so Teams and
 // the CLI say the same thing; they are re-exported here for existing callers. This file only renders:
 // it escapes the plain parts of the neutral text for mrkdwn and turns each mention token into a Slack
 // mention.

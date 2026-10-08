@@ -88,7 +88,7 @@ export interface ModelRoute {
   model: string;
   /** Why this provider: a <model> row, the configured default-provider, or the first key found in env. */
   source: 'row' | 'default-provider' | 'env-key';
-  /** The row's temperature. The router sends exactly this (or none) and ignores the request's own (#275). */
+  /** The row's temperature. The router sends exactly this (or none) and ignores the request's own. */
   temperature?: number;
   /**
    * False when the config turns server-side refusal fallback off (`<models refusal-fallback="off">`);
@@ -198,7 +198,7 @@ export function createModelRouter(config: ModelsSelection, providers: ModelProvi
 
 /**
  * The request with the route's temperature, or with none. A stage's own `temperature` is dropped: gpt-5,
- * gpt-5-mini, Claude Opus 5.5 and Claude Sonnet 5.5 answer any non-default value with a 400 (#275), so a
+ * gpt-5-mini, Claude Opus 5.5 and Claude Sonnet 5.5 answer any non-default value with a 400, so a
  * temperature is sent only when the task's <model> row sets one.
  */
 function withRouteSampling<R extends CompletionRequest>(request: R, routes: Readonly<Record<ModelTask, ModelRoute>>): R {

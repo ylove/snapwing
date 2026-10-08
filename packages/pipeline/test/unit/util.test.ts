@@ -20,7 +20,7 @@ describe('ulid', () => {
     expect([...ids].sort()).toEqual(ids);
   });
 
-  it('decodes its creation time, and nothing from anything else (#266)', () => {
+  it('decodes its creation time, and nothing from anything else', () => {
     // The time part of the ULID spec's example, 1469918176385 ms.
     expect(ulidTime('01ARYZ6S41TSV4RRFFQ69G5FAV')).toBe(1_469_918_176_385);
     const now = Date.now();

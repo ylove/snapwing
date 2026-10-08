@@ -1,8 +1,8 @@
-// `pnpm demo` (#48, main 14.3 reviewer demo mode, the phase 2 proof): runs the demo over the
+// `pnpm demo` (main 14.3 reviewer demo mode, the phase 2 proof): runs the demo over the
 // recordings in demo/levels/ on the dialect SNAPWING_DB selects, with an environment that holds no
 // model or platform key, and checks each recording's final status and the Jira writes its outbox
 // produced. The expectations are written out here, not read from the recordings, so a recording
-// edited to match a regression still fails. Event type names are not asserted (#117 renames some).
+// edited to match a regression still fails. Event type names are not asserted (some are renamed).
 
 import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

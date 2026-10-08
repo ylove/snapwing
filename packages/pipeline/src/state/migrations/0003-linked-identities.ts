@@ -1,4 +1,4 @@
-// 0003: `linked_identities` (main 11.2, ADR 0007, #153). A chat user's linked GitHub account, so a
+// 0003: `linked_identities` (main 11.2, ADR 0007). A chat user's linked GitHub account, so a
 // `Merge` tap acts as that human. The token columns hold sealed values (AES-256-GCM under
 // `SNAPWING_ENCRYPTION_KEY`, util/seal.ts), never a token. No foreign key to `workspaces`: a link is
 // made from an OAuth callback, which may come before the install's first config load.

@@ -1,4 +1,4 @@
-// Rebuild and upcasting (#20; B 4, B 11 row 2): truncate the projections, replay the log through
+// Rebuild and upcasting (B 4, B 11 row 2): truncate the projections, replay the log through
 // `upcast` and `applyProjections`, and compare canonical snapshots. Runs on the dialect
 // `SNAPWING_DB` selects; CI runs it once per dialect.
 
@@ -20,7 +20,7 @@ vi.mock('../../src/state/projections/index.ts', async (importOriginal) => {
 });
 
 // `outboxFor` behind a switch: off, the real hook; on, one outbox row per event, as the Jira
-// projector will fill it (#89). Row ids come from the event, so a second enqueue would collide.
+// projector will fill it. Row ids come from the event, so a second enqueue would collide.
 const outboxHook = vi.hoisted(() => ({ rowPerEvent: false }));
 vi.mock('../../src/state/projections/outbox.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/state/projections/outbox.ts')>();
@@ -342,7 +342,7 @@ describe(`rebuild and the outbox (${TEST_DIALECT})`, () => {
     return ctx.db.selectFrom('outbox').selectAll().orderBy('id').execute();
   }
 
-  it('#89: with outboxFor giving a row per event, a rebuild leaves the outbox table unchanged', async () => {
+  it('with outboxFor giving a row per event, a rebuild leaves the outbox table unchanged', async () => {
     await appendFixture();
     // Appends enqueue in their transaction: one row per event.
     expect(await outboxRows()).toHaveLength(22);

@@ -1,5 +1,5 @@
 // src/merge/ci.ts: recording the CI result of a pull request, and the fixer retry it starts
-// (B 5, B 8, main 10, main 11; #214).
+// (B 5, B 8, main 10, main 11).
 //
 // B 5 takes `ci-green` and `ci-red` only in `ci` and `ci-retry`, that is, after `review-passed`. CI
 // finishes whenever it finishes, often before the review does, so the result is asked for at each

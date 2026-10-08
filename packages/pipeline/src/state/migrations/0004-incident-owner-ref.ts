@@ -1,4 +1,4 @@
-// 0004: `incidents.owner_ref` (#191, main 4.4, main 12). The resolved owner: the map handle the
+// 0004: `incidents.owner_ref` (main 4.4, main 12). The resolved owner: the map handle the
 // confidence stack named in the latest `resolved` event (`ownerId`), so the status message can
 // say "assigned to @owner" before anyone is assigned in Jira. Nullable; the projection fills it.
 //

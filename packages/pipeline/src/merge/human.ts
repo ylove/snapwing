@@ -3,7 +3,7 @@
 //
 // `requestHumanReview(deps, incidentId)` runs when a PR is ready for a human: after `review-passed`
 // for the open PR at level 1 or 2, and after a level 3 `held` (merge/job.ts degrades the incident to
-// level 2 and the card is how the human path starts, main 11.3). Compose (#159) calls it from the
+// level 2 and the card is how the human path starts, main 11.3). Compose calls it from the
 // code that appends those events. It re-reads everything and is safe to call again:
 //
 // 1. Reviewers (`resolveReviewers`): `CODEOWNERS` owners of the PR's touched paths (users, `@org/team`
@@ -114,7 +114,7 @@ export interface ChatTarget {
   threadId?: string;
 }
 
-/** Posts the `pr-ready` card (main 11.2). The Slack side builds it with `buildPrReady` (#129). */
+/** Posts the `pr-ready` card (main 11.2). The Slack side builds it with `buildPrReady`. */
 export interface PrReadyChat {
   /** Posts the card; with `canMerge` false it offers `Open PR` only. */
   postPrReady(target: ChatTarget, incidentId: string, card: PrReadyCard, opts: { canMerge: boolean }): Promise<void>;

@@ -1,4 +1,4 @@
-// #268: logical Jira lifecycle targets resolve to a project's statuses by category, with config overrides.
+// Logical Jira lifecycle targets resolve to a project's statuses by category, with config overrides.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -73,7 +73,7 @@ describe('resolveJiraStatuses', () => {
 });
 
 describe('toJiraLogicalStatus', () => {
-  it('reads a logical target and the status names rows carried before #268', () => {
+  it('reads a logical target and the status names rows carried before logical targets', () => {
     expect(toJiraLogicalStatus('in-review')).toBe('in-review');
     expect(toJiraLogicalStatus('In Progress')).toBe('in-progress');
     expect(toJiraLogicalStatus(' Backlog ')).toBe('backlog');

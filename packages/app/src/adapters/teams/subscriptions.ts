@@ -14,7 +14,7 @@
 //   `handleLifecycle(body)` runs the verified lifecycle events: `reauthorizationRequired` renews,
 //   `subscriptionRemoved` recreates, `missed` is reported so the caller can resync.
 // - Degraded mode. Whether channel-message notifications also need Microsoft's protected-API approval or
-//   metered billing is unverified (open question on #8). Graph answers such a gap with 403 (no RSC grant,
+//   metered billing is unverified (an open question). Graph answers such a gap with 403 (no RSC grant,
 //   no approval) or 402 (metered API not enabled); both mark the team reduced in kv `teams-mode:{teamId}`
 //   (JSON `{ mode: 'reduced', since, retryAt, reason }`) and the team is retried hourly, so a grant that
 //   appears later lifts the mode on the next retry (`{ mode: 'full', since }`). In reduced mode the

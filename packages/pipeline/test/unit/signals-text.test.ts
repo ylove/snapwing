@@ -1,4 +1,4 @@
-// Text signals after filing (#294, A 3): resolution with one confirmation, environment mentions and the
+// Text signals after filing (A 3): resolution with one confirmation, environment mentions and the
 // production priority raise, scope changes as a linked incident behind a card, and handoffs that
 // reassign only when the named person takes it within 15 minutes. Runs on the dialect `SNAPWING_DB`
 // selects (CI runs both); the ports are recording fakes and the model is a fake ModelPort.

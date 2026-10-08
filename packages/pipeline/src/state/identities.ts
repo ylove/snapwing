@@ -1,4 +1,4 @@
-// `linked_identities` (main 11.2, ADR 0007, #153): a chat user's linked GitHub account and its
+// `linked_identities` (main 11.2, ADR 0007): a chat user's linked GitHub account and its
 // sealed GitHub App user-to-server and refresh tokens. One row per (workspace, chat, chat user).
 // The store never sees a token: it stores the sealed strings the caller gives it (`util/seal.ts`)
 // and refuses anything that is not sealed, so a caller that forgets to seal fails loudly instead of

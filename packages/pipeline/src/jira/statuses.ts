@@ -1,4 +1,4 @@
-// Logical Jira lifecycle targets (main 9.1, main 14.4, B 7.2; #268). Outbox `transition` rows name one
+// Logical Jira lifecycle targets (main 9.1, main 14.4, B 7.2). Outbox `transition` rows name one
 // of four logical targets, never a status name: Jira Cloud's default workflows say To Do, In Progress,
 // (In Review), Done, while older or customized ones say Backlog, Selected for Development, and so on.
 // The Jira projector resolves a target against the project's own statuses (`GET /project/{key}/statuses`)
@@ -34,7 +34,7 @@ export function isJiraLogicalStatus(v: unknown): v is JiraLogicalStatus {
 
 /**
  * A logical target from a row's `to`: the target itself, or a status name that spells one (`In
- * Progress`, `backlog`), which rows written before #268 carried. Undefined for anything else.
+ * Progress`, `backlog`), which rows written before logical targets carried. Undefined for anything else.
  */
 export function toJiraLogicalStatus(v: unknown): JiraLogicalStatus | undefined {
   if (typeof v !== 'string') return undefined;

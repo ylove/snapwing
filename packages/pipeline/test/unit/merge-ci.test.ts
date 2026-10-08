@@ -1,4 +1,4 @@
-// Recording the CI result (#214; B 5, B 8, main 10, main 11): `recordCiResult`, the one place the
+// Recording the CI result (B 5, B 8, main 10, main 11): `recordCiResult`, the one place the
 // GitHub webhook, the review job, and `merge.evaluate` record `ci-green` or `ci-red`, and the fixer
 // retry `ci-red` starts. Runs on the in-process workflow over the dialect `SNAPWING_DB` selects, with a
 // fake CiGitHub whose answers each test sets.

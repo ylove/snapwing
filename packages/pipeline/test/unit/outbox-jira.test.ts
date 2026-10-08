@@ -1,4 +1,4 @@
-// #141: `outboxFor` as a registry, and the Jira rows B 7.2 asks for that the engine does not enqueue
+// `outboxFor` as a registry, and the Jira rows B 7.2 asks for that the engine does not enqueue
 // itself. The pure part folds a scripted log with `foldIncident` and asks the hook for each event's
 // rows; the store part appends through the state port on the dialect SNAPWING_DB selects; the last
 // part replays the `pnpm demo` level recordings and checks no row repeats one the engine enqueued.
@@ -63,7 +63,7 @@ class Script {
   seq = 0;
   readonly events: IncidentEvent[] = [];
 
-  /** Folds `d` as the next event and returns the Jira rows the hook gives for it (chat rows are #142's). */
+  /** Folds `d` as the next event and returns the Jira rows the hook gives for it (chat rows are the status loopback's). */
   push<T extends EventType>(d: Draft<T>): OutboxItem[] {
     this.seq += 1;
     const at = new Date(Date.parse('2026-10-01T09:00:00.000Z') + this.seq * 60_000).toISOString();
@@ -430,7 +430,7 @@ describe(`outboxFor through append and rebuild (${TEST_DIALECT})`, () => {
     );
   }
 
-  it('an append enqueues the rows in its transaction; a rebuild enqueues nothing (#89)', async () => {
+  it('an append enqueues the rows in its transaction; a rebuild enqueues nothing', async () => {
     await state.append(INC, events([...prefix(2), draft('filed', { jiraKey: KEY })]), 0);
     now = new Date('2026-10-01T12:05:00.000Z');
     await state.append(INC, events([draft('fixer-started', { runId: 'run-1', harness: 'claude-code', attempt: 1 }), draft('stopped', { reason: 'wrong repo' }, DANA)]), 6);

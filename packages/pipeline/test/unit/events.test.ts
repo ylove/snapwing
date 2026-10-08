@@ -243,7 +243,7 @@ describe('decision events (ADR 0015)', () => {
     expectTypeOf<EventPayloads['clarify-answered']['appliesTo']>().toEqualTypeOf<{ field: 'surface' | 'component'; id: string } | undefined>();
   });
 
-  it('references the full triage plan from planned (#114)', () => {
+  it('references the full triage plan from planned', () => {
     const planned: EventPayloads['planned'] = { ...SAMPLES.planned, labels: [...SAMPLES.planned.labels], plan: ART, degraded: 'unresolved-surface' };
     expect(planned.plan).toEqual(ART);
   });

@@ -1,6 +1,6 @@
-// What the end to end contract test (#160) adds to the demo Jira world (`JiraWorld`, pnpm demo): the
+// What the end to end contract test adds to the demo Jira world (`JiraWorld`, pnpm demo): the
 // agent's own account (`GET /myself`, which the inbound sync compares against), a workflow (Backlog, In
-// Progress, Done, with the status categories the projector resolves logical targets by, #268), and the
+// Progress, Done, with the status categories the projector resolves logical targets by), and the
 // issue-updated webhook Jira sends on a
 // transition. Deliveries are queued, not sent: the test releases them (`deliver`), as a real webhook
 // arrives some time after the transition, so each status row is on screen before the next stage runs.

@@ -20,19 +20,19 @@
 //      which `parseReviewVerdict` validates. Its environment carries no git credential: a reviewer
 //      never pushes. A harness that fails, stops, throws, or writes no valid verdict is `escalate`.
 //      With a runner that has an isolation boundary (`runner.runReview`: docker), the agent runs
-//      inside it and no host process runs the review harness (ADR 0017, #239): the job builds a
+//      inside it and no host process runs the review harness (ADR 0017): the job builds a
 //      self-contained copy of the checkout at the head (no remote, no credential, no alternates),
 //      writes the review input into its `.git/snapwing/`, hands that tree to the runner as the only
 //      mount, and afterwards only reads the verdict file back, refusing a symlink or anything but a
 //      small regular file inside the tree; it never runs git in that tree again. The `local` runner
-//      has no boundary, and the harness runs on the host with #233's guards (development only).
+//      has no boundary, and the harness runs on the host with its guards (development only).
 //   3. Runs `checkConstraints` on the PR's changed files as GitHub lists them. The fixer's git hooks
 //      are advisory (a harness can push with `--no-verify`), so nothing the fixer reported is used.
 //   4. When the request requires tests, runs `proveRegression` on the PR's test files (plus the
 //      reviewer's `regressionTest`), from the merge base to the head, with the configured command.
 //      With a runner that has an isolation boundary (`runner.runTests`: docker), both test runs
-//      happen inside it and no host process runs the PR's test command (ADR 0017, #234); the
-//      `local` runner has none, and the proof runs on the host with #233's guards (development only).
+//      happen inside it and no host process runs the PR's test command (ADR 0017); the
+//      `local` runner has none, and the proof runs on the host with its guards (development only).
 //   5. Combines them: a scope or forbidden violation, or a regression test that is missing, passes
 //      without the fix, fails with it, or times out, turns an `approve` into `request-changes`. A
 //      proof that cannot run (no test command for the repo, a git error, no checkout) turns an
@@ -49,7 +49,7 @@
 //   fixer once more (`startFixer` attempt 2 with the review artifact, which the runner hands the
 //   harness as `SNAPWING_PRIOR_REVIEW_FILE`). After `review-passed` the lifecycle waits for CI (B 5),
 //   and CI often finished first, with no check delivery left to report it: `recordCiResult`
-//   (merge/ci.ts, #214) records it for the reviewed head now, and a `ci-red` starts the fixer retry
+//   (merge/ci.ts) records it for the reviewed head now, and a `ci-red` starts the fixer retry
 //   there. Otherwise `approve` and `escalate` start `merge.evaluate` (main 14.1), which merges or
 //   holds at level 3 and below it records nothing but a CI result.
 //
@@ -87,7 +87,7 @@ export const DEFAULT_REVIEW_ATTEMPTS = 1;
 export const DEFAULT_REGRESSION_TIMEOUT = 'PT10M';
 /** Largest diff handed to the review agent, in UTF-16 code units; the rest is cut with a note. */
 export const MAX_REVIEW_DIFF = 512 * 1024;
-/** Where the review input and the verdict live in the tree a runner's review run gets (#239). */
+/** Where the review input and the verdict live in the tree a runner's review run gets. */
 export const REVIEW_INPUT_PATH = `.git/${SNAPWING_GIT_DIR}/review-input.xml`;
 export const REVIEW_VERDICT_PATH = `.git/${SNAPWING_GIT_DIR}/verdict.json`;
 /** The review harness a runner's container starts when the config names none (main 14.5's default). */
@@ -204,7 +204,7 @@ export interface ReviewDeps {
    * The RunnerPort the fixer runs on. When it can run tests inside its boundary (`runTests`, the
    * docker provider), the regression proof's test command runs there, never on this host (ADR 0017).
    * Without one (the `local` runner, development only), the proof runs on the host. Likewise, when it
-   * can run the review harness inside its boundary (`runReview`), the agent runs there (#239).
+   * can run the review harness inside its boundary (`runReview`), the agent runs there.
    */
   runner?: RunnerPort;
 }
@@ -348,7 +348,7 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
     return { outcome: 'reviewed', verdict, review, fixerRestarted: true };
   }
   if (verdict.verdict === 'approve') {
-    // CI that finished before the review did (#214).
+    // CI that finished before the review did.
     const ci = await recordCiResult(deps, incidentId, { headSha });
     if (ci.recorded === 'ci-red') return { outcome: 'reviewed', verdict, review, fixerRestarted: ci.fixerRestarted };
   }
@@ -453,7 +453,7 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
 }
 
 /**
- * Runs the review harness inside the runner's boundary (#239). The tree is a self-contained copy at the
+ * Runs the review harness inside the runner's boundary. The tree is a self-contained copy at the
  * head; afterwards nothing here runs in it, and only the verdict file is read back from it.
  */
 async function runAgentIsolated(

@@ -1,4 +1,4 @@
-// Target resolution (A 1.3, #287): the same reaction means different things on different messages.
+// Target resolution (A 1.3): the same reaction means different things on different messages.
 // A signal resolves as `(intent, target role, reactor role)` to one effect, or to nothing.
 //
 // The A 1.3 matrix is data (`SIGNAL_MATRIX`), read top to bottom: the first rule whose intent,
@@ -40,7 +40,7 @@ import { StateStore } from '../state/store.ts';
 
 export type { MessageRef, MessageTarget } from '../state/projections/bot-messages.ts';
 
-/** What a target-dependent signal does. The signal handler (#288) applies it. */
+/** What a target-dependent signal does. The signal handler applies it. */
 export type SignalEffect =
   // Anchor
   | 'agree'

@@ -7,7 +7,7 @@
 // map handle. Interpolated free text never contains `<` or `>`, so a token is the only angle bracket
 // in the text. Each platform renders the text itself: `statusTextParts` splits it, the platform
 // escapes the plain parts and turns each ref into its own mention (Slack `<@U..>`, a Teams `<at>`).
-// Moved here from the Slack cards (#129, #142).
+// Moved here from the Slack cards.
 
 import type { StatusStage, StatusUpdate } from '../contracts/adapters.ts';
 import { isInstructionsHoldSentence } from '../merge/instructions.ts';

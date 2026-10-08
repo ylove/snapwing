@@ -1,4 +1,4 @@
-// Escalation by weight of reactions (#290, A 1.4, A 8): the ladder math (pure), and the reaction
+// Escalation by weight of reactions (A 1.4, A 8): the ladder math (pure), and the reaction
 // ladder over the signal handler on a real store (SNAPWING_DB picks the dialect): `escalated` steps,
 // the priority on the incidents row and as a Jira field row through the outbox, the thread post, the
 // outage (monitoring and the playbook ladders), reactions counted when the incident is created, and

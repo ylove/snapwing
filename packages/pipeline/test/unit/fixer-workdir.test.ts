@@ -1,4 +1,4 @@
-// Fixer workdir preparation and its guardrails (#134, main 10.2, 16), against a local bare repository
+// Fixer workdir preparation and its guardrails (main 10.2, 16), against a local bare repository
 // standing in for GitHub, and the local runner's use of it.
 
 import { execFileSync } from 'node:child_process';
@@ -94,7 +94,7 @@ describe('prepareWorkdir', () => {
     expect((await readFile(join(p.workdir, 'dev.txt'), 'utf8')).trim()).toBe('dev');
   });
 
-  it("takes the workspace map's github.com/owner/name form of the repo an incident records (#160)", async () => {
+  it("takes the workspace map's github.com/owner/name form of the repo an incident records", async () => {
     const p = await prepare({ repo: 'github.com/acme/web' });
     expect(harnessGit(p, ['branch', '--show-current'])).toBe(BRANCH);
     await rm(p.workdir, { recursive: true, force: true });

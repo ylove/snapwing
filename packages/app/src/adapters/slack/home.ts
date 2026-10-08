@@ -1,4 +1,4 @@
-// Slack App Home: the engineer's queue (main 20.2, #297). `app_home_opened` publishes a Home view for
+// Slack App Home: the engineer's queue (main 20.2). `app_home_opened` publishes a Home view for
 // the user who opened it, shaped by their role in the workspace map:
 //
 // - An engineer sees four sections: Assigned to me (open incidents whose resolved owner is them),

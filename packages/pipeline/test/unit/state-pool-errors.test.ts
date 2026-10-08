@@ -1,4 +1,4 @@
-// Postgres idle-client errors never become uncaught, and the store reconnects (#122; B 2).
+// Postgres idle-client errors never become uncaught, and the store reconnects (B 2).
 // Skipped on SQLite: there is no pool.
 
 import pg from 'pg';

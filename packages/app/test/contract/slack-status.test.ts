@@ -1,4 +1,4 @@
-// Slack status projector (#149; main 12, 15.1, B 7.1): drains `target='slack'` `update-status` rows
+// Slack status projector (main 12, 15.1, B 7.1): drains `target='slack'` `update-status` rows
 // against an in-memory Slack behind MSW, on the dialect `SNAPWING_DB` selects. The clock is shared by
 // the store and the projector, so pauses and backoff move only when a test moves it.
 
@@ -225,7 +225,7 @@ describe('first post', () => {
     expect(message!.text).toContain('A fix is being written');
     const posted = await postedEvents(incidentId);
     expect(posted.map((e) => [e.source, e.payload])).toEqual([['slack', { messageId: message!.ts }]]);
-    // A 1.3 (#287): the same append records the message's role.
+    // A 1.3: the same append records the message's role.
     const record = (await state.read(incidentId)).find((e) => e.type === 'bot-message-posted');
     expect(record?.payload).toEqual({ platform: 'slack', channel: 'C0WEB', messageId: message!.ts, role: 'status' });
     expect(record?.seq).toBe(posted[0]!.seq + 1);
@@ -381,7 +381,7 @@ describe('direct message mirror (main 15.1)', () => {
     expect(slack.in('C0WEBBUGS')[0]).toMatchObject({ pinned: false });
     expect(slack.in('C0WEBBUGS')[0]!.text).toContain('A fix is being written');
     expect(await cache.get(mirrorKey(incidentId))).not.toBeNull();
-    // Both the DM message and its mirror are status messages a reaction can land on (A 1.3, #287).
+    // Both the DM message and its mirror are status messages a reaction can land on (A 1.3).
     const records = (await state.read(incidentId)).flatMap((e) => (e.type === 'bot-message-posted' ? [[e.payload.channel, e.payload.role]] : []));
     expect(records).toEqual([
       ['D0REPORTER', 'status'],

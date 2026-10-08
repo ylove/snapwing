@@ -1,4 +1,4 @@
-// PgBossWorkflow (#24): WorkflowPort on pg-boss in the state database (B 2, B 5, ADR 0012).
+// PgBossWorkflow: WorkflowPort on pg-boss in the state database (B 2, B 5, ADR 0012).
 // Postgres only: the suite skips on the SQLite leg. pg-boss polls on a real clock, so tests poll
 // for effects with `until` instead of sleeping for fixed times.
 

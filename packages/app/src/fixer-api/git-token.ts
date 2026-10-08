@@ -1,4 +1,4 @@
-// src/fixer-api/git-token.ts: a fresh git credential for a running fixer container (#266, B 9,
+// src/fixer-api/git-token.ts: a fresh git credential for a running fixer container (B 9,
 // main 10.2, ADR 0017, docs/harness-generic.md sections 7 and 8).
 //
 // GitHub App installation tokens live one hour, and a fixer's wall clock budget may be longer, so a

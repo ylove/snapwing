@@ -35,7 +35,7 @@
 // is not retried by the next run (the event is in the log); the error says which.
 //
 // Spec silent on the source shapes; they are the smallest answers the decisions above need. The app
-// implements them over GitHub (#145) and Jira.
+// implements them over GitHub and Jira.
 
 import type { AutonomyLevel, EventActor, EventPayloads, IncidentEvent, NewEvent } from '../contracts/events.ts';
 import type { IncidentView, IncidentWaitingOn } from '../contracts/state.ts';

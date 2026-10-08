@@ -1,4 +1,4 @@
-// GitHub webhooks to incident events (#158; B 8, B 11, main 11, main 12). Payloads shaped from GitHub's
+// GitHub webhooks to incident events (B 8, B 11, main 11, main 12). Payloads shaped from GitHub's
 // webhook documentation (test/fixtures/github-webhooks, trimmed, ids and shas fake) go through the
 // route handler against the state store on the dialect `SNAPWING_DB` selects and the in-process
 // workflow. The GitHub REST calls the handler makes (the pull request, the base branch's required

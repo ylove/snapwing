@@ -24,7 +24,7 @@
 //     merged it), once per pull request. The App's own merges are recorded by `merge.evaluate`
 //     (merge/job.ts), which may still be appending when this delivery lands.
 //   check_suite or check_run completed, or a status that is not pending, for the open pull request's
-//     current head: `recordCiResult` (pipeline merge/ci.ts, #214), the one place that records CI for
+//     current head: `recordCiResult` (pipeline merge/ci.ts), the one place that records CI for
 //     the webhook, the review job, and `merge.evaluate` alike. Once every check the base branch
 //     requires has completed it appends one `ci-green`, or `ci-red` with the failing check names, per
 //     head sha, and only while the lifecycle awaits CI (`ci`, `ci-retry`; B 5 takes no result while
@@ -40,7 +40,7 @@
 //   deployment_status success: `deployed:staging` or `deployed:production`, by the environment name
 //     (`environments`, case-insensitive; else GitHub's `production_environment` flag), for every merged
 //     incident of the repository whose merge commit is the deployed sha or is contained in it (a later
-//     commit on the base branch: `compareCommits`, #215, one call per distinct merge commit, none for
+//     commit on the base branch: `compareCommits`, one call per distinct merge commit, none for
 //     an incident that already took the event), once per incident and environment. A commit GitHub
 //     does not know, or one that does not contain the merge, appends nothing.
 //

@@ -64,7 +64,7 @@ export interface Cursor {
    * `create-issue` row already queued lands as `filed` afterwards.
    */
   stoppedBeforeFiling?: number;
-  /** Seq of the latest `stopped` newer than `filed` (a Stop between filing and the after-filed step, #206). */
+  /** Seq of the latest `stopped` newer than `filed` (a Stop between filing and the after-filed step). */
   stoppedAfterFiled?: number;
   linkedTo?: string;
   /** True while the last `waiting-changed` set a wait and no status change has ended it. */
@@ -94,7 +94,7 @@ export interface ClarifyRound {
   endedAt?: number;
 }
 
-/** True once a round has an answer or has ended without one (including #47's corrected fields). */
+/** True once a round has an answer or has ended without one (including corrected fields). */
 export function roundClosed(round: ClarifyRound): boolean {
   return round.answer !== undefined || round.endedAt !== undefined || round.payload.answer !== undefined || round.payload.timedOut;
 }

@@ -1,4 +1,4 @@
-// Human in the loop (#154; main 11.2, main 16, main 20.2): reviewer resolution from CODEOWNERS and the
+// Human in the loop (main 11.2, main 16, main 20.2): reviewer resolution from CODEOWNERS and the
 // map, the pr-ready card, and the PR buttons acting as the linked human. Runs over the dialect
 // `SNAPWING_DB` selects with the in-process workflow, and fakes for GitHub, CODEOWNERS, linked
 // identities, and chat. The log is built up to `ci` (review passed) the way the fixer and review jobs

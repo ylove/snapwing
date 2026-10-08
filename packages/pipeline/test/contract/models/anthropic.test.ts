@@ -1,7 +1,7 @@
-// Anthropic request shape per model family (#275), through the real SDK and the router on MSW.
+// Anthropic request shape per model family, through the real SDK and the router on MSW.
 // Opus 5.5 and Sonnet 5.5 reject a forced tool_choice, `thinking: {type: "disabled"}`, and sampling
 // parameters with a 400, so classify and vision use structured outputs on every model. On those two
-// the request also carries server-side refusal fallback (#281): the beta endpoint, the
+// the request also carries server-side refusal fallback: the beta endpoint, the
 // `server-side-fallback-2026-07-01` header and `fallbacks: "default"`, unless the config turns it off.
 import { readFileSync } from 'node:fs';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';

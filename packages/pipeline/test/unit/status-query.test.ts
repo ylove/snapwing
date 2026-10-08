@@ -1,4 +1,4 @@
-// #295: status queries (A 4.3, A 7). Resolving which incident a question means (a thread, a key,
+// Status queries (A 4.3, A 7). Resolving which incident a question means (a thread, a key,
 // words, a tie, a surface) and the answer shapes per audience, over rows folded from scripted logs as
 // the projector folds them, plus a 500-incident benchmark.
 

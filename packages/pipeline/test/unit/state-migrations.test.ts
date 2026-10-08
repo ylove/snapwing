@@ -1,4 +1,4 @@
-// Migrations, the dialect factory, and transactions (#16; B 2, B 3, B 10; ADR 0011). Runs on the
+// Migrations, the dialect factory, and transactions (B 2, B 3, B 10; ADR 0011). Runs on the
 // dialect `SNAPWING_DB` selects; CI runs it once per dialect.
 
 import BetterSqlite3 from 'better-sqlite3';

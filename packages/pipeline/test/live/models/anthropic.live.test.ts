@@ -1,7 +1,7 @@
-// Live check for the default Anthropic models (#275): one small call each, through the router, so a
+// Live check for the default Anthropic models: one small call each, through the router, so a
 // request shape the model rejects (forced tool_choice, disabled thinking, temperature) fails here.
 // Classify runs on Claude Opus 5.5 and vision on Claude Sonnet 5.5; both use structured outputs, and both
-// go to the beta endpoint with `fallbacks: "default"` and `server-side-fallback-2026-07-01` (#281), so a
+// go to the beta endpoint with `fallbacks: "default"` and `server-side-fallback-2026-07-01`, so a
 // rejected fallback shape fails here too. Vision sends a 64x64 PNG (images.ts).
 // Reads ANTHROPIC_API_KEY from the environment, else from the `.env.live` at SNAPWING_ENV_LIVE or at this
 // checkout's root (never above it, env-file.ts); skips without it.

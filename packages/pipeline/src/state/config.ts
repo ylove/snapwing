@@ -1,6 +1,6 @@
 // Config cache (B 1, B 3 `config_versions`): the map, playbook, and instructions as last loaded.
 //
-// Two gaps between B 1 and B 3, closed here (ADR 0011 left them to #19):
+// Two gaps between B 1 and B 3, closed here (ADR 0011 left them open):
 // - `putConfigVersion` takes no validity flag. Loaders validate before they put, so every row is
 //   written `valid` true with null `errors`, and reads consider only valid rows.
 // - `putConfigVersion` takes no workspace, but `config_versions.workspace_id` references

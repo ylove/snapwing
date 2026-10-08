@@ -23,7 +23,7 @@
 //                is not refused here: polling is cheap and harmless, and a fixer whose run already
 //                ended learns at its next report (`run-finished`). `fixer.run` mints the run id and
 //                appends `fixer-started` before it calls `RunnerPort.runFixer` (pipeline/src/fixer/
-//                job.ts, #173), so a fixer's first report always finds its run.
+//                job.ts), so a fixer's first report always finds its run.
 //
 // `onDone` and `onFailed` must be idempotent (compose.ts points `onDone` at `handleFixerDone` and
 // then `startReview`, `onFailed` at `handleFixerFailed`, in pipeline/src/fixer/job.ts). An error they

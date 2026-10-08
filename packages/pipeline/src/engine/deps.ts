@@ -1,5 +1,5 @@
 // What the orchestrator runs on (main 14.1): every port and stage input it needs, as one `EngineDeps`
-// object, so tests pass fakes for each and #48 can drive the same engine end to end with MSW.
+// object, so tests pass fakes for each and a test can drive the same engine end to end with MSW.
 
 import { createHash } from 'node:crypto';
 import type { ClarifyEvidence } from '../clarify/index.ts';
@@ -108,7 +108,7 @@ export interface EngineDeps {
   /**
    * The live playbook (A 6.2) and INSTRUCTIONS.md (A 6.3). Getters, never captured copies: a hot reload
    * swaps what they return, so call them at the point of use. Absent means the defaults and no
-   * instructions. The instructions go to `plan(...)`, `maybeAsk(...)`, and `SynthesisContext` (#283).
+   * instructions. The instructions go to `plan(...)`, `maybeAsk(...)`, and `SynthesisContext`.
    */
   playbook?: () => Playbook;
   instructions?: () => WorkspaceInstructions | undefined;

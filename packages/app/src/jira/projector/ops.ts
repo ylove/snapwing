@@ -3,11 +3,11 @@
 // makes. The drain loop (drain.ts) decides order, batching, retries, and what to do on success.
 //
 // Payloads, as the engine (`pipeline/src/engine/steps.ts`) and the lifecycle rows
-// (`pipeline/src/state/projections/outbox/jira.ts`, #141) write them:
+// (`pipeline/src/state/projections/outbox/jira.ts`) write them:
 //
 //   create-issue   { fields, customFields, suggestedAssigneeEmail?, promptErrors?, screenshots? }
 //   transition     { issueKey, to, resolution? }            to is a logical target (backlog, in-progress,
-//                                                           in-review, done; #268) the projector maps to the
+//                                                           in-review, done) the projector maps to the
 //                                                           project's status (statuses.ts); resolution is a
 //                                                           name, e.g. "Won't Do"
 //   add-comment    { issueKey, text }                       batched by `batch_key` (drain.ts)
@@ -44,7 +44,7 @@ import {
 } from '../client/index.ts';
 import type { StatusResolver } from './statuses.ts';
 
-/** The label `create-issue` adds so a retry finds the issue an earlier attempt created (#140). */
+/** The label `create-issue` adds so a retry finds the issue an earlier attempt created. */
 export function incidentLabel(incidentId: string): string {
   return `snapwing-${incidentId}`;
 }
@@ -81,7 +81,7 @@ export interface CreateIssueOp {
 export interface TransitionOp {
   op: 'transition';
   issueKey: string;
-  /** A logical target; a row written before #268 that names a status spelling one (`In Progress`) reads as it. */
+  /** A logical target; a row written before logical targets that names a status spelling one (`In Progress`) reads as it. */
   to: JiraLogicalStatus;
   /** A resolution name sent with the transition (`fields.resolution`); the client falls back to none if the screen lacks it. */
   resolution?: string;
@@ -329,7 +329,7 @@ export function textToAdf(text: string): Adf {
 
 /**
  * The Implementation Prompt as the multi-line text custom field takes it on REST v3: an ADF document (a plain
- * string is a 400 "not valid Atlassian Document Format", found by the live tier, #155). One code block, so
+ * string is a 400 "not valid Atlassian Document Format", found by the live tier). One code block, so
  * the XML's line breaks and indentation survive.
  */
 export function promptToAdf(text: string): Adf {

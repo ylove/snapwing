@@ -1,4 +1,4 @@
-// createWorker and the ops routes (#125) on the dialect the run selects: the in-process scheduler
+// createWorker and the ops routes on the dialect the run selects: the in-process scheduler
 // on SQLite, pg-boss on Postgres, as `snapwing serve` picks them. Both poll on a real clock, so the
 // tests poll for effects with `until`.
 

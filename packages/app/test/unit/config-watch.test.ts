@@ -1,4 +1,4 @@
-// Hot reload of the playbook and INSTRUCTIONS.md (#284, A 6.1) and `snapwing config check`, on a temp dir.
+// Hot reload of the playbook and INSTRUCTIONS.md (A 6.1) and `snapwing config check`, on a temp dir.
 
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

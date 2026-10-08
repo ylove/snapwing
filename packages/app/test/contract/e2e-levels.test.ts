@@ -1,4 +1,4 @@
-// Levels 1 and 2 end to end through the real app on MSW (#160; main 3, main 12, main 14.4, B 11): the
+// Levels 1 and 2 end to end through the real app on MSW (main 3, main 12, main 14.4, B 11): the
 // pre-live proof that everything composes. It extends the compose contract test's level 0 run
 // (compose.test.ts) past filing, through the same composed routes, jobs, and projectors: a Slack
 // shortcut, card taps as interactivity payloads, the Jira projector filing with custom fields, the In

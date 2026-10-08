@@ -1,6 +1,6 @@
 // src/webhooks/jira.ts: Jira inbound sync (B 7.3, B 8) and the fixer trigger (main 10.1, main 10.4),
 // as one web-standard handler (ADR 0016) for `POST /webhooks/jira` (the URL `pnpm jira:bootstrap`
-// registers, #144).
+// registers).
 //
 // Per delivery, in order:
 //   1. Secret. When `secret` (`JIRA_WEBHOOK_SECRET`) is set, the request carries either Jira's
@@ -21,7 +21,7 @@
 //      actor role `human`) and drop the agent's pending outbox write to the same field (batch key
 //      `field:{incident}:{field}`, `jiraFieldBatchKey`): last human write wins.
 //   6. Triggers, after the commit. A transition to the project's in-progress status (the logical
-//      `in-progress` target resolved per project by `deps.statuses`, #269: a config override such as
+//      `in-progress` target resolved per project by `deps.statuses`: a config override such as
 //      `Doing`, else the category rule; the literal name `In Progress` when no resolver is wired or
 //      the project's statuses cannot be read or resolved) with a non-empty `Implementation
 //      Prompt` calls `startFixer` (attempt 1). This one fires on the agent's own transition too: at
@@ -66,7 +66,7 @@ export interface JiraWebhookDeps {
   /** `JIRA_WEBHOOK_SECRET`; when absent, deliveries are not authenticated. */
   secret?: string;
   /**
-   * Resolves the `in-progress` logical status to the issue's project's own status name (#269). When
+   * Resolves the `in-progress` logical status to the issue's project's own status name. When
    * absent, or when it rejects, the trigger compares against `In Progress`.
    */
   statuses?: Pick<StatusResolver, 'resolve'>;

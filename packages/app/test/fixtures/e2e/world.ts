@@ -1,5 +1,5 @@
-// The composed app on MSW, shared by the compose contract test (#159, level 0) and the levels 1 and 2
-// end to end test (#160): fake secrets, the Slack Web API over one channel's recorded messages,
+// The composed app on MSW, shared by the compose contract test (level 0) and the levels 1 and 2
+// end to end test: fake secrets, the Slack Web API over one channel's recorded messages,
 // signed Slack and GitHub deliveries, and `bootComposed`, which runs the real `compose` with the real
 // worker, projectors, and API routes on the dialect `SNAPWING_DB` selects. Every value here is a fake;
 // none looks like a real credential.

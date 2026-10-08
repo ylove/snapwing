@@ -16,7 +16,7 @@
 //                        the append's read), schedules `timer.fixer-budget` (key
 //                        `fixer-budget:{incident}`) at now plus the configured wall clock (default
 //                        PT30M), and only then calls `RunnerPort.runFixer`, so the fixer's first report
-//                        always finds its run in the log (B 9, #173). When `runFixer` rejects it
+//                        always finds its run in the log (B 9). When `runFixer` rejects it
 //                        appends `fixer-failed { reason: 'runner-error: ...', attempts: 0 }` and runs
 //                        `handleFixerFailed`. When a stop or a budget expiry landed while the runner
 //                        was starting (its cancel found no run then), it cancels the new run.

@@ -38,7 +38,7 @@ export const DEFAULT_BOT_IDENTITY: GitIdentity = Object.freeze({
 });
 
 export interface PrepareWorkdirInput {
-  /** `owner/name` of the target repository; the map's `github.com/owner/name` is reduced to it (#160). */
+  /** `owner/name` of the target repository; the map's `github.com/owner/name` is reduced to it. */
   repo: string;
   /** The branch the pull request targets (handoff/@base); the remote's default branch when omitted. */
   base?: string | undefined;

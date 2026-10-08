@@ -1,6 +1,6 @@
 // Lifecycle state machine as a pure reducer. B 5.
 //
-// `incidents.status` is derived from the last state-changing event. The projector (#18) calls
+// `incidents.status` is derived from the last state-changing event. The projector calls
 // `nextStatus` for every event and logs when `isValidTransition` says the event did not fit.
 //
 // Data-driven: one transition table, no switch forest. Neither function throws or touches the clock,
@@ -239,7 +239,7 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
   },
   'deployed:staging': {
     verified: 'deployed:staging',
-    // A 1.3: a reject on the staging check reopens the incident and re-enqueues the fixer (#288).
+    // A 1.3: a reject on the staging check reopens the incident and re-enqueues the fixer.
     'fixer-started': 'fixing',
     'deployed:production': 'deployed:production',
     reverted: 'reverted',
@@ -312,11 +312,11 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'clarify-answered',
   // A 1.3: a record of a message the bot posted, for target resolution.
   'bot-message-posted',
-  // A 6.2 escalation ladders (#299): mentions, posts, pages; never a status change.
+  // A 6.2 escalation ladders: mentions, posts, pages; never a status change.
   'escalation-ladder',
-  // A 3 text signals (#294): the steps are records; `closed` and `jira-priority-changed` move state.
+  // A 3 text signals: the steps are records; `closed` and `jira-priority-changed` move state.
   'text-signal',
-  // A 1.4 reaction ladder (#290, ADR 0018): priority, owner mention, outage; the work goes on as it was.
+  // A 1.4 reaction ladder (ADR 0018): priority, owner mention, outage; the work goes on as it was.
   'escalated',
 ]);
 

@@ -1,4 +1,4 @@
-// Logical lifecycle targets to the project's own statuses (#268; main 9.1, B 7.2). A `transition` row
+// Logical lifecycle targets to the project's own statuses (main 9.1, B 7.2). A `transition` row
 // names `backlog`, `in-progress`, `in-review`, or `done`; the projector reads each project's statuses
 // once (`GET /project/{key}/statuses`, cached for the projector's life, a failed read is not cached)
 // and resolves the target by status category plus the `<jira><status/></jira>` config override, with

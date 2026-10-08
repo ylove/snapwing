@@ -1,4 +1,4 @@
-// Jira inbound sync and the fixer trigger (#143; B 7.3, B 8, B 11, main 10.1, main 10.4). Recorded-shape
+// Jira inbound sync and the fixer trigger (B 7.3, B 8, B 11, main 10.1, main 10.4). Recorded-shape
 // Jira Cloud webhook payloads (test/fixtures/jira-webhooks) go through the route handler against the
 // state store on the dialect `SNAPWING_DB` selects, the in-process workflow, a fake RunnerPort, and the
 // real Jira client whose `myself` is served by MSW (test/fixtures/jira/myself.json: the agent's account).
@@ -329,7 +329,7 @@ describe('fixer trigger (main 10.1) and Stop (main 10.4)', () => {
     expect((await state.read(dup)).map((e) => e.type)).not.toContain('fixer-started');
   });
 
-  describe('the in-progress status is the project\u2019s own (#269)', () => {
+  describe('the in-progress status is the project\u2019s own', () => {
     const DOING: JiraProjectStatus[] = [
       { name: 'To Do', category: 'new' },
       { name: 'Doing', category: 'indeterminate' },

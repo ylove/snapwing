@@ -1,4 +1,4 @@
-// Sampling on the OpenAI defaults (#275): gpt-5 and gpt-5-mini answer any non-default `temperature` with a
+// Sampling on the OpenAI defaults: gpt-5 and gpt-5-mini answer any non-default `temperature` with a
 // 400, and the stages ask for `temperature: 0`. The router sends a temperature only when the task's <model>
 // row sets one. Real SDK through the router, on MSW.
 import { readFileSync } from 'node:fs';

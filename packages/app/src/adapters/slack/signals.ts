@@ -1,11 +1,11 @@
 // Slack signals (A 1.2, A 1.3, A 1.4): reactions and short thread replies, classified and handed
-// to the signal handler (`handleSignal`, pipeline/src/signals/handler.ts, #288).
+// to the signal handler (`handleSignal`, pipeline/src/signals/handler.ts).
 //
 // - `reaction_added` and `reaction_removed` by anyone but the bot are looked up with `classifyReaction`
 //   (the playbook's Slack emoji, a channel-scoped emoji matching the channel's id or map name) and
 //   handed over as `reaction` or `reaction-removed`, the target being the message reacted to. The
 //   trigger path is untouched: a trigger emoji still normalizes to an incident and reaches
-//   `handleInbound`, and a removed trigger reaction is still the interactivity's Stop (#148); the
+//   `handleInbound`, and a removed trigger reaction is still the interactivity's Stop; the
 //   handler also counts that reaction as a `trigger` signal (A 1.4).
 // - A message in a channel (`message.channels`, `message.groups`) is never a capture. Only a thread
 //   reply by a person is read, with the thread root as the target; the handler drops it unless that

@@ -201,7 +201,7 @@ describe('re-run', () => {
   });
 });
 
-describe('workflow check (#268)', () => {
+describe('workflow check', () => {
   const NO_CONFIG = '/nonexistent/snapwing.config.xml';
 
   it('passes on a default Scrum project by category and prints the mapping', async () => {
@@ -244,7 +244,7 @@ describe('workflow check (#268)', () => {
   });
 });
 
-describe('team-managed project (#268)', () => {
+describe('team-managed project', () => {
   it('fails up front with one line asking for a company-managed project, before any field or screen call', async () => {
     jira.style = 'next-gen';
     const report = await runBootstrap({ env: ENV, envFilePath: envFile(ORIGINAL) });

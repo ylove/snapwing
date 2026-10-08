@@ -98,9 +98,9 @@
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
 // touches `.github/workflows`, the real guard; the workdir hooks can be skipped). With docker the
 // container holds no git token: `GET /fixer/:workItemId/git-token` mints one with those scopes
-// whenever its git asks, so a run may outlive a token's hour (#266), and the fixer token's TTL is the
+// whenever its git asks, so a run may outlive a token's hour, and the fixer token's TTL is the
 // run's wall clock plus a margin (`fixerTokenTtl`). The worker's first service sweeps the runner's
-// stale scratch directories (`sweep`, older than the fixer wall clock plus a margin, #266). The review's
+// stale scratch directories (`sweep`, older than the fixer wall clock plus a margin). The review's
 // checkout gets `contents: read` and `metadata: read` only; the review posts through the server's own
 // client, never from inside the harness.
 //
@@ -809,11 +809,11 @@ export const compose: ComposeFn = async (deps) => {
           image: fixerImage,
           env: {
             apiUrl: fixerApiUrl,
-            // Valid for the whole run plus the final report, however long its wall clock (#266).
+            // Valid for the whole run plus the final report, however long its wall clock.
             token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, ttl: fixerTokenTtl(j.budget.wallClock) }, fixerTokenKeys),
             modelProxy,
           },
-          // The work item is prepared on the host before the container starts (#256).
+          // The work item is prepared on the host before the container starts.
           artifacts: store,
           git: { token: gitToken(FIXER_GIT_PERMISSIONS), remoteUrl },
           workdirRoot: join(workRoot, 'fixer'),
@@ -1060,7 +1060,7 @@ export const compose: ComposeFn = async (deps) => {
     jiraSearch: jiraSearch(jira),
     cache,
     map: getMap,
-    // Getters, so a hot reload (config-watch.ts) reaches the next call. #291's successor: read
+    // Getters, so a hot reload (config-watch.ts) reaches the next call. The follow-up: read
     // `deps.instructions?.()` in engine/steps.ts and pass it to plan, maybeAsk, and SynthesisContext.
     playbook: configWatch.playbook,
     instructions: configWatch.instructions,
@@ -1670,7 +1670,7 @@ export const compose: ComposeFn = async (deps) => {
 
   // Projectors.
   const pollIntervalMs = overrides.projectorPollMs;
-  // The webhook and the reconciler resolve the in-progress status the way the projector does (#269).
+  // The webhook and the reconciler resolve the in-progress status the way the projector does.
   const jiraStatuses = createStatusResolver(jira, config.jira.statuses);
   const slackScreenshots: LoadScreenshot = web === undefined ? fetchScreenshot : screenshotLoader(web);
   const chatScreenshots: LoadScreenshot = teams === undefined ? slackScreenshots : teamsScreenshotLoader(teams.context.loadImage, slackScreenshots);
@@ -1783,7 +1783,7 @@ export const compose: ComposeFn = async (deps) => {
       }),
     },
     // With docker the container holds no git token: its wrapper asks for a fresh one per git
-    // operation (`GET /fixer/:workItemId/git-token`, #266), with the fixer's scopes on its one repo.
+    // operation (`GET /fixer/:workItemId/git-token`), with the fixer's scopes on its one repo.
     ...createFixerRoutes(
       reporter,
       fixerTokenVerifier(fixerTokenKeys),
@@ -1863,7 +1863,7 @@ export const compose: ComposeFn = async (deps) => {
   ];
   const workerServices: ComposedService[] = [
     {
-      // Scratch directories a crashed or restarted server left behind (#266). Never fails startup.
+      // Scratch directories a crashed or restarted server left behind. Never fails startup.
       name: 'fixer scratch sweep',
       start: async () => {
         try {

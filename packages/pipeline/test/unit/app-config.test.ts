@@ -79,7 +79,7 @@ describe('loadAppConfig', () => {
     expect(() => loadAppConfig(example.replace(/<generic [^>]*\/>/, ''))).toThrow(/declares no <generic>/);
   });
 
-  it('reads an optional <model> temperature from 0 to 2, in the XSD and the loader (#275)', async () => {
+  it('reads an optional <model> temperature from 0 to 2, in the XSD and the loader', async () => {
     const withTemp = (t: string) => example.replace('task="triage"', `task="triage" temperature="${t}"`);
     expect(loadAppConfig(withTemp('0.2')).models.rows.find((r) => r.task === 'triage')).toMatchObject({ temperature: 0.2 });
     expect(loadAppConfig(example).models.rows.find((r) => r.task === 'triage')).not.toHaveProperty('temperature');
@@ -90,7 +90,7 @@ describe('loadAppConfig', () => {
     }
   });
 
-  it('reads <models refusal-fallback>, on by default, in the XSD and the loader (#281)', async () => {
+  it('reads <models refusal-fallback>, on by default, in the XSD and the loader', async () => {
     const withMode = (m: string) => example.replace('<models ', `<models refusal-fallback="${m}" `);
     expect(loadAppConfig(example).models.refusalFallback).toBe(true);
     expect(loadAppConfig(withMode('on')).models.refusalFallback).toBe(true);
@@ -102,7 +102,7 @@ describe('loadAppConfig', () => {
     }
   });
 
-  it('reads <jira> status overrides and defaults to none (#268)', async () => {
+  it('reads <jira> status overrides and defaults to none', async () => {
     expect(loadAppConfig(example).jira).toEqual({ statuses: {} });
     expect(loadAppConfig(example.replace('<jira/>', '')).jira).toEqual({ statuses: {} });
     const xml = example.replace(

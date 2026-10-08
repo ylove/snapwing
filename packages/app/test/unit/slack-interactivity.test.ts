@@ -1,4 +1,4 @@
-// Slack interactivity, PR button refusals (#229; main 11.2). A refusal from `createPrActions` is posted
+// Slack interactivity, PR button refusals (main 11.2). A refusal from `createPrActions` is posted
 // to the tapper ephemerally; the card is left alone. Stubs for state, orchestrator, and the Web API.
 
 import { describe, expect, it } from 'vitest';

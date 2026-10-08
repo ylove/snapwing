@@ -1,4 +1,4 @@
-// createApiServer (#125, ADR 0016): web-standard handlers mounted by path on plain node:http.
+// createApiServer (ADR 0016): web-standard handlers mounted by path on plain node:http.
 // No database: these run the same on both legs of the CI matrix.
 
 import { request as httpRequest } from 'node:http';

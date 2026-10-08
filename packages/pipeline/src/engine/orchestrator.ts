@@ -77,7 +77,7 @@
 // `link_existing` plan is filed as a new issue because the dedupe card already decided. Card answers
 // are decision events, never `corrected` (ADR 0015).
 //
-// A pre-filing Stop appends no terminal event (decided in #192): the incident stays `stopped`. B 5 says
+// A pre-filing Stop appends no terminal event (decided): the incident stays `stopped`. B 5 says
 // `stopped` is not terminal, no event type means "ended unfiled" (`not-filed` is reached only by
 // `resolution-signal`, and only from `captured` or `assembling`), and staying in `stopped` lets a
 // create-issue row already queued still land as `filed` (`stopped` accepts it), so its Jira issue is
@@ -231,7 +231,7 @@ export class IncidentOrchestrator {
       try {
         if (phase.kind === 'capture') {
           await captureStep({ deps: this.deps, map, job, cursor, delivery }, initial);
-          // A 1.4: reactions on the anchor before the incident existed count from now (#288).
+          // A 1.4: reactions on the anchor before the incident existed count from now.
           await this.deps.onCaptured?.(incidentId).catch(() => undefined);
           continue;
         }

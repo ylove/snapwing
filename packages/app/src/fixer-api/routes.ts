@@ -7,7 +7,7 @@
 //   POST /fixer/{workItemId}/failed       { reason, partialBranch?, attempts }
 //   GET  /fixer/{workItemId}/stop         204 when a stop is pending, else 200 { stop: false }
 //   GET  /fixer/{workItemId}/git-token    200 { token, expiresAt }: a fresh installation token for the
-//                                         incident's repository (git-token.ts, #266); mounted only
+//                                         incident's repository (git-token.ts); mounted only
 //                                         with `options.gitToken` (the docker runner)
 //
 // Every call carries `Authorization: Bearer <token>` from `issueFixerToken` for that work item; the
@@ -26,7 +26,7 @@ import type { FixerInputError } from './validate.ts';
 export type FixerOperation = 'checkpoint' | 'artifact' | 'done' | 'failed' | 'stop' | 'git-token';
 
 export interface FixerRouteOptions {
-  /** Serves `GET /fixer/{workItemId}/git-token` (#266). Absent: the route is not mounted. */
+  /** Serves `GET /fixer/{workItemId}/git-token`. Absent: the route is not mounted. */
   gitToken?: FixerGitTokenSource;
 }
 

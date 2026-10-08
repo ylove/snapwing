@@ -1,5 +1,5 @@
 // Sealing secrets at rest (main 16, ADR 0007): AES-256-GCM under `SNAPWING_ENCRYPTION_KEY`, used for
-// the linked GitHub identities' user-to-server and refresh tokens (#153). node:crypto only.
+// the linked GitHub identities' user-to-server and refresh tokens. node:crypto only.
 //
 // Sealed form: `swenc1.<iv>.<ciphertext>.<tag>`, each part base64url, with a fresh random 12-byte IV
 // per seal, so sealing one value twice gives two different strings and a sealed value never equals

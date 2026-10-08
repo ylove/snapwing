@@ -1,4 +1,4 @@
-// Linked identities (#153; main 11.2, ADR 0007) and the AES-256-GCM sealing their tokens use. Runs on
+// Linked identities (main 11.2, ADR 0007) and the AES-256-GCM sealing their tokens use. Runs on
 // the dialect `SNAPWING_DB` selects; CI runs the file on both SQLite and Postgres.
 
 import { randomBytes } from 'node:crypto';

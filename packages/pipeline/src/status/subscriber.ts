@@ -1,7 +1,7 @@
 // The engine's `status` dependency (main 12): subscribing the reporter to the status loopback records
 // the subscription and posts nothing. The status message itself comes from the outbox: `filed` and
 // every later lifecycle event that changes the message imply an `update-status` row
-// (`state/projections/outbox/status.ts`), which the chat projector posts and edits (#149).
+// (`state/projections/outbox/status.ts`), which the chat projector posts and edits.
 //
 // The subscription is a `comment` event with intent `watch` by the reporter, recorded by the agent on
 // their behalf; the `subscriptions` projection folds it into an incident-scoped `thread` row (A 1.6),

@@ -38,7 +38,7 @@
 // on the incidents row, which follows Jira edits). The risk limits are the stricter of
 // `AppConfig.merge` and the map's `policies/riskGate`, and the built-in forbidden paths always apply.
 //
-// CI first, at every level (#214): while the lifecycle waits for CI (`ci`, `ci-retry`), the job calls
+// CI first, at every level: while the lifecycle waits for CI (`ci`, `ci-retry`), the job calls
 // `recordCiResult` (ci.ts) before anything else, so CI that finished before the review passed is
 // recorded without waiting for another check delivery or the reconciler: `ci-green` moves the
 // incident to `mergeable` (where a human merge at levels 0 to 2 fits B 5), and `ci-red` starts the
@@ -204,7 +204,7 @@ const HEAD_MOVED = Symbol('head-moved');
 async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeOutcome | typeof HEAD_MOVED> {
   let log = await deps.state.read(incidentId);
   if (awaitingCi(log)) {
-    // At every level: CI that finished before the review is recorded here (#214).
+    // At every level: CI that finished before the review is recorded here.
     const ci = await recordCiResult(deps, incidentId);
     if (ci.recorded !== false) log = await deps.state.read(incidentId);
   }

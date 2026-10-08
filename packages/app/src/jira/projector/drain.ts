@@ -1,6 +1,6 @@
 // The Jira projector (B 7.1): the one writer to Jira for a workspace. It drains `target='jira'`
 // outbox rows in order, validates each before sending (ops.ts), and then acks, holds, defers, or
-// parks it. The composition root (#159) builds one per workspace and runs exactly one loop for it.
+// parks it. The composition root builds one per workspace and runs exactly one loop for it.
 //
 // Order. The state port returns rows oldest first and withholds any row behind an undone, not yet
 // due row of the same incident; within a pass, a row that is held or deferred also stops the rest
@@ -10,7 +10,7 @@
 // label only when none is found, append `filed { jiraKey }` with `expectedSeq` (a conflict is
 // retried from a fresh read; an incident already filed is left alone), rewrite the implementation
 // request's placeholder `@issue` to the real key and write the `Implementation Prompt` field
-// (prompt.ts, #113; `prompt-failed` when it no longer validates), call `continueIncident`,
+// (prompt.ts; `prompt-failed` when it no longer validates), call `continueIncident`,
 // upload the screenshots not yet attached, tell `screenshotsAttached`, then ack. A crash anywhere in
 // that sequence repeats it without a second issue; `continueIncident` is a singleton job, so a second
 // call is harmless.
@@ -21,7 +21,7 @@
 // (held with `deferOutbox` and no error, so it is not a failure); then every pending comment row
 // with that key created inside the window becomes one comment, one paragraph block per row.
 //
-// Transitions (#268). A row names a logical target; `statuses.ts` maps it to the project's status by
+// Transitions. A row names a logical target; `statuses.ts` maps it to the project's status by
 // category (read once per project) and the config override, and the client finds the transition by
 // that status's name.
 //
@@ -81,7 +81,7 @@ export interface JiraProjectorOptions {
   customFieldIds: Readonly<Record<string, string>>;
   /**
    * The status a logical target maps to in place of the category guess, from `AppConfig.jira.statuses`
-   * (`<jira><status logical="backlog" name="..."/></jira>`, #268). Default none.
+   * (`<jira><status logical="backlog" name="..."/></jira>`). Default none.
    */
   statusOverrides?: JiraStatusOverrides;
   /** Fetches a screenshot for upload; default a plain GET (`fetchScreenshot`). */

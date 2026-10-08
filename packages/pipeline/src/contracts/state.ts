@@ -1,5 +1,5 @@
 // State contracts: the types the StatePort (B 1) reads and writes, one per B 3 table it
-// exposes. Interface only; implementations live in pipeline/src/state (#16 onward). Storage choices
+// exposes. Interface only; implementations live in pipeline/src/state. Storage choices
 // (query builder, migrations, how jsonb, timestamptz, and boolean map on SQLite) are ADR 0011.
 //
 // Mapping rules, the same for every type in this file:
@@ -100,7 +100,7 @@ export const LOG_START = '';
 
 // Projections: incidents --------------------------------------------------------------------------
 
-/** `incidents.status`: a B 5 lifecycle state, the `LifecycleStatus` union of the reducer (#11). */
+/** `incidents.status`: a B 5 lifecycle state, the `LifecycleStatus` union of the reducer. */
 export type IncidentStatus = LifecycleStatus;
 
 export type IncidentKind = 'incident' | 'work-item';

@@ -1,4 +1,4 @@
-// Projections (#18; B 3, B 4, B 5, A 7): incidents, claims, subscriptions, and escalation scores,
+// Projections (B 3, B 4, B 5, A 7): incidents, claims, subscriptions, and escalation scores,
 // folded in the append transaction, and the store reads over them. Runs on the dialect
 // `SNAPWING_DB` selects; CI runs it once per dialect.
 
@@ -296,7 +296,7 @@ describe(`incidents projection (${TEST_DIALECT})`, () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it('keeps the resolved owner apart from the Jira assignee; a later resolution replaces it, absent included (#191)', async () => {
+  it('keeps the resolved owner apart from the Jira assignee; a later resolution replaces it, absent included', async () => {
     await state.append(INC, toFiled(), 0);
     expect(await state.getIncident(INC)).toMatchObject({ ownerRef: OWNER });
 
@@ -312,7 +312,7 @@ describe(`incidents projection (${TEST_DIALECT})`, () => {
     expect(cleared !== null && 'ownerRef' in cleared).toBe(false);
   });
 
-  it('a correction to the resolved owner rewrites owner_ref, and a rebuild reproduces it (#191)', async () => {
+  it('a correction to the resolved owner rewrites owner_ref, and a rebuild reproduces it', async () => {
     await state.append(INC, toFiled(), 0);
     await appendAll(INC, [ev('corrected', { correctsSeq: 3, fields: { ownerId: 'lee' }, reason: 'wrong owner' }, { actor: DANA })]);
     const live = await state.getIncident(INC);
@@ -539,12 +539,12 @@ describe(`determinism (${TEST_DIALECT})`, () => {
 
     clock = () => new Date('2031-01-01T00:00:00.000Z');
     await clearProjections();
-    // A replay, as rebuild runs it: the outbox already holds the rows these events implied (#89).
+    // A replay, as rebuild runs it: the outbox already holds the rows these events implied.
     await state.transaction(async (tx) => applyProjections((tx as StateStore).ctx, await tx.read(INC), { outbox: false }));
     expect(await snapshot()).toEqual(live);
   });
 
-  it('an append enqueues the rows the outbox hook implies, and only once the issue is filed (#141)', async () => {
+  it('an append enqueues the rows the outbox hook implies, and only once the issue is filed', async () => {
     const [first] = toFiled();
     const captured = { ...first, seq: 1, recordedAt: '2026-10-01T10:00:00.000Z' } as IncidentEvent;
     const opened = foldIncident(undefined, captured).view;
