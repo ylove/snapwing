@@ -31,7 +31,8 @@
     "@snapwing/capture-client": "workspace:*",
     "@snapwing/pipeline": "workspace:*",
     "slimdom": "4.3.5",
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
