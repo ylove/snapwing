@@ -1,13 +1,17 @@
 // #393: a Teams incident gets `target='teams'` rows, as a Slack one gets `target='slack'` (main 12, 15.2,
 // A 4.4). Both platforms run through a real store on the dialect `SNAPWING_DB` selects, so the rows are
-// the ones the projections write, and each platform's rows stay off the other's queue.
+// the ones the projections write, and each platform's rows stay off the other's queue. A DM is the
+// exception: it goes to the platform the watcher subscribed from, whatever the incident's.
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { NewEvent } from '../../src/contracts/events.ts';
 import type { OutboxItem, OutboxTarget } from '../../src/contracts/state.ts';
+import type { WorkspaceMap } from '../../src/map/types.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
+import { applyStandingWatch } from '../../src/signals/standing.ts';
 import type { NotifyRow } from '../../src/state/projections/outbox/notify.ts';
 import { statusBatchKey, statusTargets, UPDATE_STATUS_OP } from '../../src/state/projections/outbox/status.ts';
+import { rebuild, snapshotProjections } from '../../src/state/rebuild.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
 
 const T0 = Date.parse('2026-10-01T15:00:00.000Z');
@@ -109,5 +113,66 @@ describe.each(['slack', 'teams'] as const)('%s incident', (platform) => {
     expect(notify).toHaveLength(1);
     expect(notify[0]).toMatchObject({ target: platform });
     expect(notify[0]?.payload as unknown as NotifyRow).toMatchObject({ delivery: 'thread', mentions: ['U-PAT'], milestone: 'filed', reason: 'watch' });
+  });
+});
+
+describe('a DM goes to the platform the watcher subscribed from', () => {
+  const map = { surfaces: [{ id: 'web', label: 'Website' }] } as unknown as WorkspaceMap;
+  const shape = (r: OutboxItem) => [r.target, (r.payload as unknown as NotifyRow).delivery, (r.payload as unknown as NotifyRow).mentions];
+
+  it.each([
+    ['teams', 'slack', 'U-FAKE-SLACK-ONLY'],
+    ['slack', 'teams', 'AAD-FAKE-TEAMS-ONLY'],
+  ] as const)('a %s incident sends its DM to a watcher who asked on %s (%s) there', async (incident, asked, userId) => {
+    time += 3_600_000;
+    const outcome = await applyStandingWatch(state, map, { workspaceId, userId, text: 'keep me posted on the website', channel: 'dm', platform: asked, now: new Date(time) });
+    expect(outcome).toMatchObject({ handled: true, changed: true });
+    const id = await filedIncident(incident);
+
+    const dms = (await drain(asked)).filter((r) => r.incidentId === id && r.op === 'notify');
+    const onIncident = (await drain(incident)).filter((r) => r.incidentId === id && r.op === 'notify');
+    await state.unsubscribe({ workspaceId, userId, scopeKind: 'surface', scopeId: 'web' });
+
+    expect(dms.map(shape)).toEqual([[asked, 'dm', [userId]]]);
+    expect(onIncident).toEqual([]);
+  });
+
+  it('a standing watch asked again from the other platform moves there; one written with no platform keeps it', async () => {
+    const at = new Date(time).toISOString();
+    const userId = 'U-FAKE-MOVER';
+    await state.subscribe({ workspaceId, userId, scopeKind: 'all', channel: 'dm', platform: 'slack', createdAt: at });
+    await state.subscribe({ workspaceId, userId, scopeKind: 'all', channel: 'dm', platform: 'teams', createdAt: at });
+    const id = await filedIncident('slack');
+    const mine = async () => (await state.getSubscriptions(id)).filter((s) => s.userId === userId).map((s) => [s.scopeKind, s.channel, s.platform]);
+    expect(await mine()).toEqual([['all', 'dm', 'teams']]);
+    await state.subscribe({ workspaceId, userId, scopeKind: 'all', channel: 'thread', createdAt: at });
+    expect(await mine()).toEqual([['all', 'thread', 'teams']]);
+    await state.unsubscribe({ workspaceId, userId, scopeKind: 'all' });
+    await drain('slack');
+    await drain('teams');
+  });
+
+  it('a watch on a Teams incident records teams, and a rebuild writes the same rows', async () => {
+    time += 3_600_000;
+    const id = await filedIncident('teams');
+    const log = await state.read(id);
+    const watch = {
+      workspaceId,
+      incidentId: id,
+      type: 'comment',
+      v: 1,
+      source: 'teams',
+      actor: { id: 'AAD-FAKE-WATCHER', role: 'engineer' },
+      occurredAt: iso(),
+      payload: { intent: 'watch', platform: 'teams', signalSource: 'reaction', confidence: 1, raw: 'eyes' },
+    } as unknown as NewEvent;
+    await state.append(id, [watch], log.at(-1)?.seq ?? 0);
+    expect((await state.getSubscriptions(id)).map((s) => [s.userId, s.scopeKind, s.platform])).toEqual([['AAD-FAKE-WATCHER', 'incident', 'teams']]);
+
+    const before = await snapshotProjections(state);
+    await rebuild(state, { all: true });
+    expect(await snapshotProjections(state)).toBe(before);
+    expect((await state.getSubscriptions(id)).map((s) => s.platform)).toEqual(['teams']);
+    await drain('teams');
   });
 });

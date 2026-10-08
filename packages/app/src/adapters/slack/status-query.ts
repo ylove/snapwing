@@ -328,6 +328,7 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
             userId: request.asker,
             text: request.text,
             channel: 'dm',
+            platform: 'slack',
             now: clock(),
           });
           if (outcome.handled) await web.postMessage({ channel: request.channelId, text: outcome.reply });

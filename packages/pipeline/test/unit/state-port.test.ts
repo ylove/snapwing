@@ -38,9 +38,9 @@ type IncidentsNullable =
 type ClaimsNotNull = 'incident_id' | 'claimer_id' | 'since' | 'last_activity' | 'expires_at';
 type ClaimsNullable = 'hold_env' | 'hold_expires_at';
 // `scope_id` is in the primary key, so it is stored as a sentinel for scope `all` (ADR 0011) and
-// surfaces as an optional property.
+// surfaces as an optional property. `platform` is null when it was never recorded (0007).
 type SubscriptionsNotNull = 'workspace_id' | 'user_id' | 'scope_kind' | 'channel' | 'created_at';
-type SubscriptionsNullable = 'scope_id';
+type SubscriptionsNullable = 'scope_id' | 'platform';
 type ArtifactsNotNull = 'id' | 'version' | 'workspace_id' | 'incident_id' | 'kind' | 'content_type' | 'sha256' | 'body' | 'created_by' | 'created_at';
 type OutboxNotNull = 'id' | 'workspace_id' | 'target' | 'op' | 'payload' | 'attempts' | 'next_attempt' | 'created_at';
 type OutboxNullable = 'incident_id' | 'batch_key' | 'last_error' | 'done_at';

@@ -346,7 +346,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     await w.post(variant('signal-thread-reply', 'Ev0SIGWATCH1', { user: PAT, text: 'keep me posted on the website' }));
     expect(w.outcomes).toEqual([{ kind: 'standing', changed: true }]);
     const subs = await state.getSubscriptions(INC);
-    expect(subs).toMatchObject([{ userId: PAT, scopeKind: 'surface', scopeId: 'web', channel: 'thread' }]);
+    expect(subs).toMatchObject([{ userId: PAT, scopeKind: 'surface', scopeId: 'web', channel: 'thread', platform: 'slack' }]);
     expect(w.web.postEphemeral).toHaveBeenCalledWith(expect.objectContaining({ channel: CHANNEL, user: PAT, thread_ts: ANCHOR, text: 'Done. I will keep you posted on every incident on Website.' }));
     await w.post(variant('signal-thread-reply', 'Ev0SIGWATCH2', { user: PAT, text: 'stop notifying me on the website' }));
     expect(w.outcomes.at(-1)).toEqual({ kind: 'standing', changed: true });

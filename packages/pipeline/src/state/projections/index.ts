@@ -112,7 +112,8 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
   for (const step of steps) {
     claims = foldClaims(claims, step.event, step.status);
     scores = foldScores(scores, step.event);
-    subs = foldIncidentSubscriptions(subs, step.event);
+    // A watch records the incident's chat platform, so a DM to the watcher goes to that platform.
+    subs = foldIncidentSubscriptions(subs, step.event, step.change.after.source);
     step.subs = subs;
   }
   if (claims !== claimsBefore) {

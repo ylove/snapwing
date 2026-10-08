@@ -88,7 +88,10 @@ describe('removing watch', () => {
   });
 
   it('leaves other watchers subscribed', () => {
-    const subs = [comment(pat, 'watch', 'reaction', 0), comment(sam, 'watch', 'reaction', 1_000)].reduce(foldIncidentSubscriptions, [] as ReturnType<typeof foldIncidentSubscriptions>);
+    const subs = [comment(pat, 'watch', 'reaction', 0), comment(sam, 'watch', 'reaction', 1_000)].reduce(
+      (acc, e) => foldIncidentSubscriptions(acc, e),
+      [] as ReturnType<typeof foldIncidentSubscriptions>,
+    );
     const after = foldIncidentSubscriptions(subs, comment(pat, 'watch', 'reaction-removed', 2_000));
     expect(after.map((s) => s.userId)).toEqual([sam.id]);
   });

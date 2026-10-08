@@ -62,6 +62,8 @@ export interface StandingWatchInput {
   text: string;
   /** Where the updates go: the thread, or a DM. A DM request asks for DMs. */
   channel: 'thread' | 'dm';
+  /** The chat platform the person asked from; their DMs go there. */
+  platform: 'slack' | 'teams';
   now: Date;
 }
 
@@ -89,6 +91,13 @@ export async function applyStandingWatch(
     const removed = await state.unsubscribe({ workspaceId: input.workspaceId, userId: input.userId, ...scope });
     return { handled: true, changed: removed, reply: removed ? `Okay, I will stop updating you on ${what}.` : `You were not subscribed to ${what}.` };
   }
-  await state.subscribe({ workspaceId: input.workspaceId, userId: input.userId, ...scope, channel: input.channel, createdAt: input.now.toISOString() });
+  await state.subscribe({
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    ...scope,
+    channel: input.channel,
+    platform: input.platform,
+    createdAt: input.now.toISOString(),
+  });
   return { handled: true, changed: true, reply: `Done. I will keep you posted on ${what}.` };
 }

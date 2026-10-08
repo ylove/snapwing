@@ -5,7 +5,8 @@
 //   the incident's surface ("keep me posted on the website", `<cli> watch web`), or one to everything
 //   (scope `all`) are mentioned on every milestone. They are mentioned in the incident's thread, or
 //   sent a DM when their subscription is a DM one or they are not in the channel (`channelMembers`,
-//   when the caller knows it).
+//   when the caller knows it). A watcher who subscribed from the other chat platform cannot read the
+//   thread, so they get a DM too. A DM goes to the platform the watcher subscribed from.
 // - The playbook's `forcePush` (6.2): an incident whose priority is at least a forced priority, or on
 //   a forced surface, is pushed even with no watchers; the reporter is mentioned with the watchers.
 // - The reporter, on the staging check, always. That is a request, not a notification, so it skips
@@ -60,6 +61,8 @@ export interface NotifyIncident {
   priority?: string;
   reporterId?: string;
   jiraKey?: string;
+  /** The chat platform of the incident's thread; absent for an incident with no thread. */
+  platform?: 'slack' | 'teams';
 }
 
 export type NoticeReason = 'watch' | 'policy' | 'request';
@@ -76,6 +79,11 @@ export interface Notice {
   deliveryKey: string;
   /** ISO time the row may be sent. */
   sendAt: string;
+  /**
+   * A DM's platform: the one the watcher subscribed from. Absent for a thread message, and for a
+   * subscription with no platform recorded; such a DM goes to the incident's platform.
+   */
+  platform?: 'slack' | 'teams';
 }
 
 const MILESTONE_TEXT: Readonly<Record<Milestone, (key: string) => string>> = {
@@ -202,15 +210,17 @@ export function planNotices(input: PlanInput): Notice[] {
   const forced = isForcePush(context.playbook, incident);
   const watchers = watchersOf(incident, context.subscriptions).filter((s) => !(request && s.userId === reporter));
   const threadUsers: string[] = [];
-  const dmUsers: string[] = [];
+  const dms: Subscription[] = [];
   for (const s of watchers) {
-    const inChannel = context.channelMembers === undefined || context.channelMembers.has(s.userId);
-    (s.channel === 'dm' || !inChannel ? dmUsers : threadUsers).push(s.userId);
+    const elsewhere = s.platform !== undefined && incident.platform !== undefined && s.platform !== incident.platform;
+    const inChannel = !elsewhere && (context.channelMembers === undefined || context.channelMembers.has(s.userId));
+    if (s.channel === 'dm' || !inChannel) dms.push(s);
+    else threadUsers.push(s.userId);
   }
-  if (forced && reporter !== undefined && !request && !threadUsers.includes(reporter) && !dmUsers.includes(reporter)) {
+  if (forced && reporter !== undefined && !request && !threadUsers.includes(reporter) && !dms.some((s) => s.userId === reporter)) {
     threadUsers.push(reporter);
   }
-  if (threadUsers.length === 0 && dmUsers.length === 0 && !forced) return notices;
+  if (threadUsers.length === 0 && dms.length === 0 && !forced) return notices;
 
   // The burst window, and the time its batch goes out.
   const open = context.window !== undefined && at < Date.parse(context.window.sendAt) ? context.window : undefined;
@@ -241,8 +251,18 @@ export function planNotices(input: PlanInput): Notice[] {
       sendAt,
     });
   }
-  for (const userId of dmUsers) {
-    notices.push({ delivery: 'dm', mentions: [userId], milestone, text, reason: forced ? 'policy' : 'watch', windowKey, deliveryKey: `dm:${userId}`, sendAt });
+  for (const { userId, platform } of dms) {
+    notices.push({
+      delivery: 'dm',
+      mentions: [userId],
+      milestone,
+      text,
+      reason: forced ? 'policy' : 'watch',
+      windowKey,
+      deliveryKey: `dm:${userId}`,
+      sendAt,
+      ...(platform === undefined ? {} : { platform }),
+    });
   }
   return notices;
 }

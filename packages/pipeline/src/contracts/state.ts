@@ -200,6 +200,11 @@ export interface Subscription {
   /** The incident or surface id; absent for scope `all` (stored as a sentinel, ADR 0011). */
   scopeId?: string;
   channel: 'thread' | 'dm';
+  /**
+   * The chat platform the person subscribed from, where a DM to them goes. Absent on a row written
+   * before it was recorded, or by a writer that has no platform; a DM then goes to the incident's.
+   */
+  platform?: 'slack' | 'teams';
   createdAt: string;
 }
 

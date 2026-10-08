@@ -500,8 +500,9 @@ describe(`subscriptions (${TEST_DIALECT})`, () => {
 
     expect(await state.getSubscriptions(INC)).toEqual([
       { workspaceId: WS, userId: 'U-FAKE-ALL', scopeKind: 'all', channel: 'dm', createdAt: '2026-10-01T08:00:00.000Z' },
-      { workspaceId: WS, userId: DANA, scopeKind: 'incident', scopeId: INC, channel: 'thread', createdAt: '2026-10-01T09:06:00.000Z' },
-      { workspaceId: WS, userId: LEE, scopeKind: 'incident', scopeId: INC, channel: 'thread', createdAt: '2026-10-01T09:08:00.000Z' },
+      // A watch records the incident's chat platform (this one came from Slack).
+      { workspaceId: WS, userId: DANA, scopeKind: 'incident', scopeId: INC, channel: 'thread', platform: 'slack', createdAt: '2026-10-01T09:06:00.000Z' },
+      { workspaceId: WS, userId: LEE, scopeKind: 'incident', scopeId: INC, channel: 'thread', platform: 'slack', createdAt: '2026-10-01T09:08:00.000Z' },
       { workspaceId: WS, userId: 'U-FAKE-SURFACE', scopeKind: 'surface', scopeId: 'web', channel: 'dm', createdAt: '2026-10-01T08:00:00.000Z' },
     ]);
 

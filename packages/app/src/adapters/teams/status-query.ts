@@ -306,6 +306,7 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
             userId: request.asker,
             text: request.text,
             channel: 'dm',
+            platform: 'teams',
             now: clock(),
           });
           if (outcome.handled) await post(request, { type: 'message', text: outcome.reply });

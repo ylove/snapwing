@@ -152,9 +152,9 @@ export interface StatePort {
   getSubscriptions(incidentId: string): Promise<Subscription[]>;
   /**
    * Writes a standing subscription: scope `surface` ("keep me posted on the website") or `all`. One row
-   * per person and scope; writing again changes its `channel`. Rebuild keeps these rows (they are not
-   * derived from events). Rejects with a TypeError for scope `incident` (the `watch` signal writes
-   * those) or a surface scope without `scopeId`.
+   * per person and scope; writing again changes its `channel`, and its `platform` when one is given.
+   * Rebuild keeps these rows (they are not derived from events). Rejects with a TypeError for scope
+   * `incident` (the `watch` signal writes those) or a surface scope without `scopeId`.
    */
   subscribe(sub: Subscription): Promise<void>;
   /** Removes a standing subscription; true when there was one. */

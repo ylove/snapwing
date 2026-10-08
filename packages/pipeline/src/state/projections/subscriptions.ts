@@ -2,10 +2,12 @@
 // signal (a `comment` event with intent `watch`) subscribes its actor to the incident in the thread;
 // removing the reaction unsubscribes (A 1.6). Standing surface and workspace subscriptions ("keep
 // me posted on the website", `<cli> watch web`) are not incident events and are written elsewhere.
-// `created_at` is the watch event's `occurredAt`; watching again keeps the first one.
+// `created_at` is the watch event's `occurredAt`; watching again keeps the first one. `platform` is
+// the incident's chat platform (the thread the watch was made in), so a DM to the watcher goes there.
 
 import type { Selectable } from 'kysely';
 import type { IncidentEvent } from '../../contracts/events.ts';
+import type { ChannelSource } from '../../contracts/incident.ts';
 import type { Subscription } from '../../contracts/state.ts';
 import type { StateContext } from '../context.ts';
 import type { SubscriptionsTable } from '../db.ts';
@@ -19,11 +21,17 @@ const codeOrder = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0)
 export const bySubscription = (a: Subscription, b: Subscription): number =>
   codeOrder(a.userId, b.userId) || codeOrder(a.scopeKind, b.scopeKind) || codeOrder(a.scopeId ?? ALL_SCOPE_ID, b.scopeId ?? ALL_SCOPE_ID);
 
+/** The chat platform of an incident from `source`; undefined for one with no chat thread (CLI, Raycast, an alert). */
+export function chatPlatformOf(source: ChannelSource | undefined): 'slack' | 'teams' | undefined {
+  return source === 'slack' || source === 'teams' ? source : undefined;
+}
+
 /**
  * The incident-scoped subscriptions (`scope_kind` `incident` on this incident) after `e`. Pure;
- * sorted by user; the input array when nothing changed.
+ * sorted by user; the input array when nothing changed. `incidentSource` is the incident's
+ * `source`: a new row records its chat platform, and none for an incident with no chat thread.
  */
-export function foldIncidentSubscriptions(subs: readonly Subscription[], e: IncidentEvent): readonly Subscription[] {
+export function foldIncidentSubscriptions(subs: readonly Subscription[], e: IncidentEvent, incidentSource?: ChannelSource): readonly Subscription[] {
   if (e.type !== 'comment' || e.payload.intent !== 'watch' || e.actor === undefined) {
     return subs;
   }
@@ -35,12 +43,14 @@ export function foldIncidentSubscriptions(subs: readonly Subscription[], e: Inci
   if (has) {
     return subs;
   }
+  const platform = chatPlatformOf(incidentSource);
   const added: Subscription = {
     workspaceId: e.workspaceId,
     userId,
     scopeKind: 'incident',
     scopeId: e.incidentId,
     channel: 'thread',
+    ...(platform === undefined ? {} : { platform }),
     createdAt: e.occurredAt,
   };
   return [...subs, added].sort(bySubscription);
@@ -55,6 +65,7 @@ export function rowToSubscription(ctx: StateContext, r: Selectable<Subscriptions
     scopeKind: r.scope_kind,
     ...(r.scope_kind !== 'all' ? { scopeId: r.scope_id } : {}),
     channel: r.channel,
+    ...(r.platform === null ? {} : { platform: r.platform }),
     createdAt: ctx.codec.fromTimestamp(r.created_at),
   };
 }
@@ -90,6 +101,7 @@ export async function writeIncidentSubscriptions(ctx: StateContext, workspaceId:
         scope_kind: s.scopeKind,
         scope_id: s.scopeId ?? ALL_SCOPE_ID,
         channel: s.channel,
+        platform: s.platform ?? null,
         created_at: ctx.codec.timestamp(s.createdAt),
       })),
     )
@@ -102,7 +114,9 @@ export async function writeIncidentSubscriptions(ctx: StateContext, workspaceId:
 
 /**
  * Writes a standing subscription (scope `surface` or `all`). The person's earlier row for the same scope
- * is replaced, so changing `thread` to `dm` keeps one row; `createdAt` stays the first one's.
+ * is replaced, so changing `thread` to `dm` keeps one row; `createdAt` stays the first one's. A write
+ * with a `platform` takes it (asking again from the other platform moves the DMs there); one without
+ * keeps the platform already recorded.
  */
 export async function putStandingSubscription(ctx: StateContext, sub: Subscription): Promise<void> {
   if (sub.scopeKind === 'incident') {
@@ -120,9 +134,14 @@ export async function putStandingSubscription(ctx: StateContext, sub: Subscripti
       scope_kind: sub.scopeKind,
       scope_id: scopeId,
       channel: sub.channel,
+      platform: sub.platform ?? null,
       created_at: ctx.codec.timestamp(sub.createdAt),
     })
-    .onConflict((oc) => oc.columns(['workspace_id', 'user_id', 'scope_kind', 'scope_id']).doUpdateSet({ channel: sub.channel }))
+    .onConflict((oc) =>
+      oc
+        .columns(['workspace_id', 'user_id', 'scope_kind', 'scope_id'])
+        .doUpdateSet({ channel: sub.channel, ...(sub.platform === undefined ? {} : { platform: sub.platform }) }),
+    )
     .execute();
 }
 

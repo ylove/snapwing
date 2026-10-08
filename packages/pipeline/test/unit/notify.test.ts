@@ -12,6 +12,7 @@ import { planNotices, priorityAtLeast, quietEnd, type NotifyContext } from '../.
 import { foldIncident } from '../../src/state/projections/incidents.ts';
 import { outboxFor } from '../../src/state/projections/outbox.ts';
 import { NOTIFY_OP, notifyRows, windowFromRows, type NotifyRow } from '../../src/state/projections/outbox/notify.ts';
+import { foldIncidentSubscriptions } from '../../src/state/projections/subscriptions.ts';
 
 const WS = '01JZ0000000000000000000001';
 const INC = '01JZ00000000000000000000A1';
@@ -26,7 +27,7 @@ function draft<T extends EventType>(type: T, payload: EventPayloads[T], actor?: 
   return { type, payload, ...(actor === undefined ? {} : { actor }), ...(source === undefined ? {} : { source }) };
 }
 
-const prefix = (source: 'slack' | 'cli' = 'slack', priority: JiraPriorityName = 'High'): Draft<EventType>[] => [
+const prefix = (source: 'slack' | 'teams' | 'cli' = 'slack', priority: JiraPriorityName = 'High'): Draft<EventType>[] => [
   draft('captured', {
     kind: 'incident',
     idempotencyKey: `${source}:${INC}`,
@@ -92,8 +93,8 @@ class Script {
 const started = () => draft('fixer-started', { runId: 'run-1', harness: 'claude-code', attempt: 1 });
 const prOpened = () => draft('pr-opened', { prNumber: 418, branch: 'fix/WEB-1042' }, undefined, 'github');
 
-/** An incident filed from Slack at `priority`, ready for the next event. */
-function filedScript(source: 'slack' | 'cli' = 'slack', priority: JiraPriorityName = 'High'): Script {
+/** An incident captured from `source` (Slack by default) at `priority`, ready for the next event. */
+function filedScript(source: 'slack' | 'teams' | 'cli' = 'slack', priority: JiraPriorityName = 'High'): Script {
   const s = new Script();
   s.all(prefix(source, priority));
   return s;
@@ -101,8 +102,22 @@ function filedScript(source: 'slack' | 'cli' = 'slack', priority: JiraPriorityNa
 
 const filed = () => draft('filed', { jiraKey: KEY });
 
-function sub(userId: string, scopeKind: Subscription['scopeKind'], scopeId: string | undefined, channel: Subscription['channel'] = 'thread'): Subscription {
-  return { workspaceId: WS, userId, scopeKind, ...(scopeId === undefined ? {} : { scopeId }), channel, createdAt: '2026-10-01T00:00:00.000Z' };
+function sub(
+  userId: string,
+  scopeKind: Subscription['scopeKind'],
+  scopeId: string | undefined,
+  channel: Subscription['channel'] = 'thread',
+  platform?: Subscription['platform'],
+): Subscription {
+  return {
+    workspaceId: WS,
+    userId,
+    scopeKind,
+    ...(scopeId === undefined ? {} : { scopeId }),
+    channel,
+    ...(platform === undefined ? {} : { platform }),
+    createdAt: '2026-10-01T00:00:00.000Z',
+  };
 }
 
 function context(patch: Partial<NotifyContext> = {}, notifications: Partial<NotifyContext['playbook']> = {}): NotifyContext {
@@ -213,6 +228,90 @@ describe('notify rows: watchers (A 4.4)', () => {
     expect(s.push(started(), ctx)).toEqual([]);
     expect(s.push(prOpened(), ctx)).toHaveLength(1);
     expect(s.push(draft('review-passed', { prNumber: 418 }), ctx)).toEqual([]);
+  });
+});
+
+describe('notify rows: a DM goes to the platform the watcher subscribed from', () => {
+  const targets = (rows: readonly OutboxItem[]) => rows.map((r) => [r.target, payloadOf(r).delivery, payloadOf(r).mentions]);
+
+  it('sends a Slack-only watcher of a Teams incident a slack DM row, and keeps the thread row on teams', () => {
+    const s = filedScript('teams');
+    const rows = s.push(filed(), context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'dm', 'slack'), sub('AAD-IN', 'incident', INC, 'thread', 'teams')] }));
+    expect(targets(rows)).toEqual([
+      ['teams', 'thread', ['AAD-IN']],
+      ['slack', 'dm', ['U-SLACK']],
+    ]);
+    expect(rows[1]?.batchKey).toBe(`notify:${INC}:${String(s.seq)}:dm:U-SLACK`);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(2);
+  });
+
+  it('sends a Teams-only watcher of a Slack incident a teams DM row', () => {
+    const s = filedScript('slack');
+    const rows = s.push(filed(), context({ subscriptions: [sub('AAD-TEAMS', 'surface', 'web', 'dm', 'teams'), sub('U-PAT', 'incident', INC, 'thread', 'slack')] }));
+    expect(targets(rows)).toEqual([
+      ['slack', 'thread', ['U-PAT']],
+      ['teams', 'dm', ['AAD-TEAMS']],
+    ]);
+  });
+
+  it('tells a thread watcher from the other platform by DM there, not by a mention in a thread they cannot read', () => {
+    // No member list is known, which would otherwise put every thread watcher in the thread.
+    const s = filedScript('teams');
+    const rows = s.push(filed(), context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'thread', 'slack'), sub('AAD-PAT', 'surface', 'web', 'thread', 'teams')] }));
+    expect(targets(rows)).toEqual([
+      ['teams', 'thread', ['AAD-PAT']],
+      ['slack', 'dm', ['U-SLACK']],
+    ]);
+  });
+
+  it('keeps the old target for a subscription with no platform: the thread, or the incident\'s platform for a DM', () => {
+    const teams = filedScript('teams');
+    const rows = teams.push(filed(), context({ subscriptions: [sub('U-OLD-DM', 'surface', 'web', 'dm'), sub('U-OLD-THREAD', 'surface', 'web')] }));
+    expect(targets(rows)).toEqual([
+      ['teams', 'thread', ['U-OLD-THREAD']],
+      ['teams', 'dm', ['U-OLD-DM']],
+    ]);
+    const cli = filedScript('cli');
+    expect(targets(cli.push(filed(), context({ subscriptions: [sub('U-OLD-DM', 'surface', 'web', 'dm')] })))).toEqual([['slack', 'dm', ['U-OLD-DM']]]);
+  });
+
+  it('sends the DM of an incident with no thread (the CLI) to the watcher\'s platform too', () => {
+    const s = filedScript('cli');
+    expect(targets(s.push(filed(), context({ subscriptions: [sub('AAD-TEAMS', 'surface', 'web', 'dm', 'teams')] })))).toEqual([['teams', 'dm', ['AAD-TEAMS']]]);
+  });
+
+  it('plans a DM with the watcher\'s platform and a thread message without one', () => {
+    const notices = planNotices({
+      milestone: 'live',
+      incident: { id: INC, jiraKey: KEY, surfaceId: 'web', platform: 'teams' },
+      at: new Date(T0).toISOString(),
+      seq: 1,
+      context: context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'dm', 'slack'), sub('AAD-PAT', 'surface', 'web', 'thread', 'teams'), sub('U-OLD', 'all', undefined, 'dm')] }),
+    });
+    expect(notices.map((n) => [n.delivery, n.mentions, n.platform])).toEqual([
+      ['thread', ['AAD-PAT'], undefined],
+      ['dm', ['U-OLD'], undefined],
+      ['dm', ['U-SLACK'], 'slack'],
+    ]);
+  });
+
+  it('records the incident\'s chat platform on a watch, and none for an incident with no thread', () => {
+    const at = new Date(T0).toISOString();
+    const watch = {
+      workspaceId: WS,
+      incidentId: INC,
+      seq: 9,
+      v: 1,
+      type: 'comment',
+      source: 'teams',
+      actor: DANA,
+      occurredAt: at,
+      recordedAt: at,
+      payload: { intent: 'watch', platform: 'teams', signalSource: 'reaction', confidence: 1, raw: 'eyes' },
+    } as unknown as IncidentEvent;
+    expect(foldIncidentSubscriptions([], watch, 'teams').map((s) => s.platform)).toEqual(['teams']);
+    expect(foldIncidentSubscriptions([], watch, 'slack').map((s) => s.platform)).toEqual(['slack']);
+    expect(foldIncidentSubscriptions([], watch, 'cli')).toEqual([{ workspaceId: WS, userId: DANA.id, scopeKind: 'incident', scopeId: INC, channel: 'thread', createdAt: at }]);
   });
 });
 

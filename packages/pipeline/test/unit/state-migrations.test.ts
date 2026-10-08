@@ -237,6 +237,50 @@ describe(`0004 incident owner_ref (${TEST_DIALECT})`, () => {
   });
 });
 
+describe(`0007 subscription platform (${TEST_DIALECT})`, () => {
+  it('backfills incident-scoped rows from their incident\'s chat platform, leaves standing rows null, and allows only slack or teams', async () => {
+    const db = bareDb();
+    try {
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 6))).toEqual(MIGRATIONS.slice(0, 6).map((m) => m.name));
+      const at = '2026-10-01T10:00:00.000Z';
+      const incident = (id: string, source: string) => ({ id, workspace_id: WS, kind: 'incident', status: 'filed', source, opened_at: at, updated_at: at });
+      const sub = (user: string, scopeKind: string, scopeId: string) => ({ workspace_id: WS, user_id: user, scope_kind: scopeKind, scope_id: scopeId, channel: 'thread', created_at: at });
+      const legacy = db as unknown as Kysely<Record<'incidents', ReturnType<typeof incident>> & Record<'subscriptions', ReturnType<typeof sub>>>;
+      await legacy
+        .insertInto('incidents')
+        .values([incident('01JZ00000000000000000000A1', 'slack'), incident('01JZ00000000000000000000B1', 'teams'), incident('01JZ00000000000000000000C1', 'cli')])
+        .execute();
+      await legacy
+        .insertInto('subscriptions')
+        .values([
+          sub('U-A', 'incident', '01JZ00000000000000000000A1'),
+          sub('U-B', 'incident', '01JZ00000000000000000000B1'),
+          sub('U-C', 'incident', '01JZ00000000000000000000C1'),
+          sub('U-D', 'surface', 'web'),
+          sub('U-E', 'all', ''),
+        ])
+        .execute();
+      expect(await migrateState(db, TEST_DIALECT)).toEqual(['0007-subscription-platform']);
+      const rows = await db.selectFrom('subscriptions').select(['user_id', 'platform']).orderBy('user_id').execute();
+      expect(rows.map((r) => [r.user_id, r.platform])).toEqual([
+        ['U-A', 'slack'],
+        ['U-B', 'teams'],
+        ['U-C', null],
+        ['U-D', null],
+        ['U-E', null],
+      ]);
+      const bad = db
+        .updateTable('subscriptions')
+        .set({ platform: 'jira' as never })
+        .where('user_id', '=', 'U-D')
+        .execute();
+      await expect(bad).rejects.toThrow(/check constraint/i);
+    } finally {
+      await db.destroy();
+    }
+  });
+});
+
 describe(`codec round trip through the schema (${TEST_DIALECT})`, () => {
   it('jsonb, timestamptz, boolean, and numeric read back the same on both dialects', async () => {
     const state = await tdb.open();

@@ -439,7 +439,7 @@ describe(`status rows and the subscriber through the state port (${TEST_DIALECT}
     });
 
     expect(await state.getSubscriptions(INC)).toEqual([
-      { workspaceId: WS, userId: REPORTER, scopeKind: 'incident', scopeId: INC, channel: 'thread', createdAt: later.toISOString() },
+      { workspaceId: WS, userId: REPORTER, scopeKind: 'incident', scopeId: INC, channel: 'thread', platform: 'slack', createdAt: later.toISOString() },
     ]);
     const rows = await state.drainOutbox('slack', 50);
     expect(rows.map((r) => (r.payload['status'] as StatusUpdate).text)).toEqual([`Filed as ${KEY}.`, `Filed as ${KEY}. ${note}`]);
