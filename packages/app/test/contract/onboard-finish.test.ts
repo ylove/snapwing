@@ -59,9 +59,8 @@ const people: JsonObject = {
   people: [{ slackId: 'U1', handle: 'webDev1', email: 'dana@example.com', role: 'engineer', owns: [{ surface: 'web', primary: true }] }],
 };
 
-const stub = (id: string, number: number, data: JsonObject | undefined, needs: OnboardStep['needs'] = []): OnboardStep => ({
+const stub = (id: string, data: JsonObject | undefined, needs: OnboardStep['needs'] = []): OnboardStep => ({
   id,
-  number,
   title: id,
   needs,
   run: () => Promise.resolve(data === undefined ? { status: 'skipped', reason: 'not used' } : { status: 'done', data }),
@@ -77,11 +76,11 @@ interface Seed {
 
 function steps(seed: Seed = {}): OnboardStep[] {
   return [
-    stub('slack', 1, seed.slack === false ? undefined : { workspace: 'acme' }),
-    stub('teams', 1, seed.teams === true ? { tenant: 'acme' } : undefined),
-    stub('surfaces', 4, seed.surfaces ?? surfaces),
-    stub('words', 5, seed.words ?? words),
-    stub('people', 6, seed.people ?? people),
+    stub('slack', seed.slack === false ? undefined : { workspace: 'acme' }),
+    stub('teams', seed.teams === true ? { tenant: 'acme' } : undefined),
+    stub('surfaces', seed.surfaces ?? surfaces),
+    stub('words', seed.words ?? words),
+    stub('people', seed.people ?? people),
     triggerStep,
     autonomyStep,
     finishStep,

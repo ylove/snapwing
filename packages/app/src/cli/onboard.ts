@@ -64,14 +64,14 @@ const STATUS_WORDS: Readonly<Record<StepStatus, string>> = {
   failed: 'failed, will retry',
 };
 
-/** One line per step: number, title, status. */
+/** One line per step: its number (its place in the registry, the runtime 0), title, status. */
 export function statusLines(steps: readonly OnboardStep[], state: OnboardingState | undefined): string[] {
   const width = Math.max(...steps.map((s) => s.title.length));
-  return steps.map((s) => {
+  return steps.map((s, number) => {
     const record = state?.steps[s.id];
     const words = STATUS_WORDS[record?.status ?? 'pending'];
     const detail = record?.status === 'blocked' && record.blocked !== undefined ? ` (${record.blocked.on})` : '';
-    return `  ${String(s.number).padStart(2)}  ${s.title.padEnd(width)}  ${words}${detail}`;
+    return `  ${String(number).padStart(2)}  ${s.title.padEnd(width)}  ${words}${detail}`;
   });
 }
 

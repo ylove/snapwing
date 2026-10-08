@@ -281,7 +281,6 @@ function warnRowsWithoutKey(ctx: StepContext, rows: readonly ModelRowRef[], with
 
 export const runtimeStep: OnboardStep = {
   id: 'runtime',
-  number: 0,
   title: 'Where Snapwing runs',
   needs: [],
   async run(ctx) {

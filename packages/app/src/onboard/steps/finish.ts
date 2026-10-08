@@ -195,7 +195,6 @@ async function runAndSay(ctx: StepContext, run: (io: { env: Record<string, strin
 
 export const finishStep: OnboardStep = {
   id: 'finish',
-  number: 8,
   title: 'Write the workspace map',
   needs: ['surfaces', 'words', 'people', 'trigger', 'autonomy'],
   async run(ctx): Promise<StepOutcome> {

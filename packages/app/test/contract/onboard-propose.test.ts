@@ -137,7 +137,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-const fake = (id: string, needs: StepNeed[] = []): OnboardStep => ({ id, number: 0, title: id, needs, run: () => Promise.resolve({ status: 'done' }) });
+const fake = (id: string, needs: StepNeed[] = []): OnboardStep => ({ id, title: id, needs, run: () => Promise.resolve({ status: 'done' }) });
 const EARLIER: readonly OnboardStep[] = [fake('runtime'), fake('slack', ['runtime']), fake('teams', ['runtime']), fake('jira', ['runtime']), fake('github', ['runtime'])];
 
 const REPOS = ['acme/web', 'acme/mobile', 'acme/admin'];

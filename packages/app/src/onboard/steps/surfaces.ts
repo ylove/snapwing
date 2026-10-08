@@ -347,7 +347,7 @@ export function createSurfacesStep(deps: SurfacesStepDeps = {}): OnboardStep {
     return { status: 'done', data: savedSurfacesJson(final) };
   }
 
-  return { id: 'surfaces', number: 4, title: 'Name your products', needs: ['jira', 'github'], run };
+  return { id: 'surfaces', title: 'Name your products', needs: ['jira', 'github'], run };
 }
 
 export const surfacesStep: OnboardStep = createSurfacesStep();

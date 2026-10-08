@@ -336,7 +336,7 @@ export function createJiraStep(deps: JiraStepDeps = {}): OnboardStep {
     return { status: 'done', data };
   }
 
-  return { id: 'jira', number: 2, title: 'Connect Jira', needs: ['runtime'], run };
+  return { id: 'jira', title: 'Connect Jira', needs: ['runtime'], run };
 }
 
 export const jiraStep: OnboardStep = createJiraStep();

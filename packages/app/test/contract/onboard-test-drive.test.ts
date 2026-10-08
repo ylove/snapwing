@@ -35,7 +35,7 @@ import { createTerminalIO } from '../../src/onboard/interview/terminal.ts';
 import { createTestDriveStep, parseTeamsChannelLink, printable, sampleBug, type TestDriveDeps } from '../../src/onboard/steps/test-drive.ts';
 import { compose, type TeamsInject } from '../../src/server/compose.ts';
 import { runServe } from '../../src/server/serve.ts';
-import { FakeGitHub } from '../fixtures/e2e/github.ts';
+import { FakeGitHub, INSTALLATION_TOKEN } from '../fixtures/e2e/github.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
 import {
   blockIds,
@@ -53,6 +53,7 @@ import {
   type SlackPostCall,
   type SlackWorld,
 } from '../fixtures/e2e/world.ts';
+import { pullState, slackSampleHandlers } from '../fixtures/onboard/drive.ts';
 
 const HARNESS = fileURLToPath(new URL('../fixtures/e2e/fake-harness.mjs', import.meta.url));
 /** The repository's test command for the regression proof: every `test/*.test.sh` must pass. */
@@ -220,22 +221,7 @@ function slackDrive(channel: string, scopes: string): SlackDrive {
       created.push(String(body.name));
       return HttpResponse.json({ ok: true, channel: { id: CREATED_CHANNEL, name: body.name } });
     }),
-    http.post(`${SLACK_API}/chat.postMessage`, async ({ request }) => {
-      const body = (await request.clone().json()) as Record<string, unknown>;
-      // Cards and thread replies go on to the recording world.
-      if (body['channel'] !== channel || body['thread_ts'] !== undefined || body['blocks'] !== undefined) return undefined;
-      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
-      samples.push(body);
-      messages.push({ type: 'message', ts: SAMPLE_TS, text: body['text'], user: BOT_USER, bot_id: 'B0SNAPWING' });
-      return HttpResponse.json({ ok: true, channel, ts: SAMPLE_TS });
-    }),
-    http.get(`${SLACK_API}/reactions.get`, ({ request }) => {
-      if (!authorized(request)) return HttpResponse.json({ ok: false, error: 'not_authed' });
-      const q = new URL(request.url).searchParams;
-      const message = messages.find((m) => m['ts'] === q.get('timestamp'));
-      if (q.get('channel') !== channel || message === undefined) return HttpResponse.json({ ok: false, error: 'message_not_found' });
-      return HttpResponse.json({ ok: true, type: 'message', channel, message: { ...message, reactions: [{ name: 'bug', users: [INSTALLER], count: 1 }] } });
-    }),
+    ...slackSampleHandlers(channel, messages, samples, { token: 'xoxb-test', ts: SAMPLE_TS, reactor: INSTALLER }),
   );
   return { world, samples, created };
 }
@@ -276,9 +262,8 @@ async function until<T>(installer: Installer, what: string, find: () => T | unde
   }
 }
 
-const stub = (id: string, number: number, data: JsonObject | undefined): OnboardStep => ({
+const stub = (id: string, data: JsonObject | undefined): OnboardStep => ({
   id,
-  number,
   title: id,
   needs: [],
   run: () => Promise.resolve(data === undefined ? { status: 'skipped', reason: 'not used' } : { status: 'done', data }),
@@ -323,11 +308,11 @@ async function drive(
   const answers = new Map(Object.entries(options.answers).map(([k, v]) => [`test-drive.${k}`, Array.isArray(v) ? v : [v]]));
   const io = createTerminalIO({ prompter: { line: () => Promise.resolve(undefined), hidden: () => Promise.resolve(undefined) }, say: (l) => lines.push(l), answers });
   const steps: OnboardStep[] = [
-    stub('slack', 1, options.teams === true ? undefined : { installed: true, botUserId: BOT_USER, channels: [{ id: SAVED_CHANNEL, name: 'snapwing-sandbox', private: false }] }),
-    stub('teams', 1, options.teams === true ? { tenant: TENANT } : undefined),
-    stub('jira', 2, { site: JIRA_BASE, projects: ['ADM'], webhook: 'registered' }),
-    stub('github', 3, { repos: [REPO, 'acme/web'] }),
-    stub('finish', 8, { map: 'workspace-context.xml', written: true }),
+    stub('slack', options.teams === true ? undefined : { installed: true, botUserId: BOT_USER, channels: [{ id: SAVED_CHANNEL, name: 'snapwing-sandbox', private: false }] }),
+    stub('teams', options.teams === true ? { tenant: TENANT } : undefined),
+    stub('jira', { site: JIRA_BASE, projects: ['ADM'], webhook: 'registered' }),
+    stub('github', { repos: [REPO, 'acme/web'] }),
+    stub('finish', { map: 'workspace-context.xml', written: true }),
     step,
   ];
   const installer: Installer = { url, done: () => finished, lines };
@@ -542,7 +527,7 @@ describe('the test drive on Slack', () => {
     expect(slack.created).toEqual(['snapwing-test-drive']);
     expect(slack.samples).toEqual([expect.objectContaining({ channel: CREATED_CHANNEL, text: SAMPLE })]);
     // The pull request is in the sample repository.
-    expect(w.github.pull(REPO, 1)?.state).toBe('open');
+    expect(await pullState(REPO, 1, INSTALLATION_TOKEN)).toBe('open');
     expect(w.jira.issues.get(ISSUE)?.custom['Autonomy Level']).toBe(1);
     inOrder(d.lines, [
       'Created #snapwing-test-drive.',
@@ -608,7 +593,7 @@ describe('the test drive on Teams', () => {
       lifted: true,
       drives: [{ platform: 'teams', channel: TEAMS_CHANNEL, channelName: 'snapwing-sandbox', incident: expect.any(String), jiraKey: ISSUE, pr: PR }],
     });
-    expect(w.github.pull(REPO, 1)?.state).toBe('open');
+    expect(await pullState(REPO, 1, INSTALLATION_TOKEN)).toBe('open');
     // Lifted for the drive only: the ticket ran at Fix now, the written map still says Ask.
     expect(w.jira.issues.get(ISSUE)?.custom['Autonomy Level']).toBe(2);
     const written = await parseWorkspaceMap(await readFile(join(dir, 'workspace-context.xml'), 'utf8'));

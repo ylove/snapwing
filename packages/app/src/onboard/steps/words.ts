@@ -372,7 +372,7 @@ export function createWordsStep(deps: WordsStepDeps = {}): OnboardStep {
     return { status: 'done', data: { vocabulary: vocabulary.map(termJson) } };
   }
 
-  return { id: 'words', number: 5, title: 'Learn the words people use', needs: ['surfaces'], run };
+  return { id: 'words', title: 'Learn the words people use', needs: ['surfaces'], run };
 }
 
 export const wordsStep: OnboardStep = createWordsStep();

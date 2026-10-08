@@ -218,7 +218,6 @@ async function askReaction(
 
 export const triggerStep: OnboardStep = {
   id: 'trigger',
-  number: 7,
   title: 'Pick the bug reaction',
   needs: [['slack', 'teams']],
   async run(ctx): Promise<StepOutcome> {

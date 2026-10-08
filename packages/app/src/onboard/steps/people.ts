@@ -406,7 +406,7 @@ export function createPeopleStep(deps: PeopleStepDeps = {}): OnboardStep {
     return { status: 'done', data: peopleJson(people, { emails: askedEmail, teams: askedTeam }) };
   }
 
-  return { id: 'people', number: 6, title: 'Find who owns what', needs: ['surfaces'], run };
+  return { id: 'people', title: 'Find who owns what', needs: ['surfaces'], run };
 }
 
 export const peopleStep: OnboardStep = createPeopleStep();

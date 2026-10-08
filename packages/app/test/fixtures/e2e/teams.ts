@@ -93,6 +93,8 @@ export interface TeamsWorldOptions {
   members?: readonly string[];
   /** The status Graph answers a subscription with; 201 (default) is granted, 403 is a missing RSC grant. */
   subscriptionStatus?: number;
+  /** Where the Bot Connector answers; default the fixtures' `SERVICE_URL`. */
+  serviceUrl?: string;
 }
 
 /** A Graph channel message by `user` (an AAD object id), HTML body `text`. */
@@ -132,6 +134,7 @@ export function teamsWorld(server: SetupServer, messages: readonly GraphChannelM
     },
   };
   let n = 0;
+  const service = options.serviceUrl ?? SERVICE_URL;
   const authorized = (request: Request): boolean => request.headers.get('authorization') === `Bearer ${ACCESS_TOKEN}`;
   const denied = (): Response => HttpResponse.json({ error: { code: 'Unauthorized', message: 'no token' } }, { status: 401 });
   const id = (params: Record<string, unknown>, key: string): string => decodeURIComponent(String(params[key]));
@@ -147,24 +150,24 @@ export function teamsWorld(server: SetupServer, messages: readonly GraphChannelM
       return HttpResponse.json(teamsFixture('openid/token-response.json'));
     }),
     // The Bot Connector.
-    http.post(`${SERVICE_URL}v3/conversations`, async ({ request }) => {
+    http.post(`${service}v3/conversations`, async ({ request }) => {
       if (!authorized(request)) return denied();
       world.connector.push({ kind: 'personal', conversation: '', activityId: '', body: await json(request) });
       return HttpResponse.json({ id: 'a:1personal-chat' });
     }),
-    http.post(`${SERVICE_URL}v3/conversations/:conversation/activities`, async ({ request, params }) => {
+    http.post(`${service}v3/conversations/:conversation/activities`, async ({ request, params }) => {
       if (!authorized(request)) return denied();
       const activityId = `teams-act-${String(++n)}`;
       world.connector.push({ kind: 'send', conversation: id(params, 'conversation'), activityId, body: await json(request) });
       return HttpResponse.json({ id: activityId });
     }),
-    http.post(`${SERVICE_URL}v3/conversations/:conversation/activities/:activity`, async ({ request, params }) => {
+    http.post(`${service}v3/conversations/:conversation/activities/:activity`, async ({ request, params }) => {
       if (!authorized(request)) return denied();
       const activityId = `teams-act-${String(++n)}`;
       world.connector.push({ kind: 'reply', conversation: id(params, 'conversation'), activityId, body: await json(request) });
       return HttpResponse.json({ id: activityId });
     }),
-    http.put(`${SERVICE_URL}v3/conversations/:conversation/activities/:activity`, async ({ request, params }) => {
+    http.put(`${service}v3/conversations/:conversation/activities/:activity`, async ({ request, params }) => {
       if (!authorized(request)) return denied();
       world.connector.push({ kind: 'update', conversation: id(params, 'conversation'), activityId: id(params, 'activity'), body: await json(request) });
       return HttpResponse.json({ id: id(params, 'activity') });

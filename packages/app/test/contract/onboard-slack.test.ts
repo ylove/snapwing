@@ -2,7 +2,6 @@
 // install that needs an admin, an existing Snapwing bot, an invite to a private channel, an expired
 // configuration token asked again, and a saved connection checked again on a resume.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -15,6 +14,7 @@ import { createTerminalIO } from '../../src/onboard/interview/terminal.ts';
 import type { OnboardStep } from '../../src/onboard/interview/step.ts';
 import type { RedirectListener } from '../../src/onboard/slack/install.ts';
 import { createSlackStep } from '../../src/onboard/steps/slack.ts';
+import { slackOnboardHandlers, slackSandbox, type SlackSandbox } from '../fixtures/onboard/slack.ts';
 
 const API = 'https://slack.test/api';
 const CONFIG = 'xoxe-1-good-config-token';
@@ -25,77 +25,26 @@ const OTHER_BOT = 'xoxb-second-bot-token-5555';
 const APP = 'xapp-1-good-app-token-0123';
 const BAD_APP = 'xapp-1-bad-app-token-9876';
 
-interface FakeSlack {
-  configTokens: Set<string>;
-  botTokens: Set<string>;
-  appTokens: Set<string>;
-  channels: { id: string; name: string; is_private: boolean; is_member: boolean }[];
-  members: Record<string, unknown>[];
-  created: { manifest: Record<string, unknown> }[];
-  joined: string[];
-  exchanged: Record<string, string>[];
-}
-let slack: FakeSlack;
-
-const bearer = (request: Request): string => (request.headers.get('authorization') ?? '').replace(/^Bearer /, '');
+let slack: SlackSandbox;
 
 const server = setupServer();
 beforeAll(() => server.listen());
 afterAll(() => server.close());
 
 beforeEach(() => {
-  slack = {
+  slack = slackSandbox({
     configTokens: new Set([CONFIG]),
     botTokens: new Set([BOT, OTHER_BOT]),
     appTokens: new Set([APP]),
+    oauthToken: BOT,
     channels: [
       { id: 'C1', name: 'bugs', is_private: false, is_member: false },
       { id: 'C2', name: 'general', is_private: false, is_member: false },
       { id: 'G1', name: 'secret-bugs', is_private: true, is_member: false },
     ],
     members: [{ id: 'UBOT', is_bot: true, name: 'snapwing', real_name: 'Snapwing' }],
-    created: [],
-    joined: [],
-    exchanged: [],
-  };
-  server.use(
-    http.post(`${API}/apps.manifest.validate`, ({ request }) =>
-      slack.configTokens.has(bearer(request)) ? HttpResponse.json({ ok: true }) : HttpResponse.json({ ok: false, error: 'token_expired' }),
-    ),
-    http.post(`${API}/apps.manifest.create`, async ({ request }) => {
-      if (!slack.configTokens.has(bearer(request))) return HttpResponse.json({ ok: false, error: 'token_expired' });
-      const form = new URLSearchParams(await request.text());
-      slack.created.push({ manifest: JSON.parse(form.get('manifest') ?? 'null') as Record<string, unknown> });
-      return HttpResponse.json({
-        ok: true,
-        app_id: 'A0APP',
-        credentials: { client_id: '111.222', client_secret: 'client-secret-xyz', verification_token: 'v', signing_secret: 'signing-secret-abc' },
-        oauth_authorize_url: 'https://slack.com/oauth/v2/authorize?client_id=111.222',
-      });
-    }),
-    http.post(`${API}/oauth.v2.access`, async ({ request }) => {
-      slack.exchanged.push(Object.fromEntries(new URLSearchParams(await request.text())));
-      return HttpResponse.json({ ok: true, access_token: BOT, bot_user_id: 'UBOT', team: { id: 'T1', name: 'Acme' } });
-    }),
-    http.post(`${API}/auth.test`, ({ request }) =>
-      slack.botTokens.has(bearer(request))
-        ? HttpResponse.json({ ok: true, user_id: 'UBOT', team_id: 'T1', team: 'Acme' })
-        : HttpResponse.json({ ok: false, error: 'invalid_auth' }),
-    ),
-    http.post(`${API}/apps.connections.open`, ({ request }) =>
-      slack.appTokens.has(bearer(request)) ? HttpResponse.json({ ok: true, url: 'wss://example.test/link' }) : HttpResponse.json({ ok: false, error: 'invalid_auth' }),
-    ),
-    http.post(`${API}/users.list`, () => HttpResponse.json({ ok: true, members: slack.members })),
-    http.post(`${API}/conversations.list`, () => HttpResponse.json({ ok: true, channels: slack.channels.filter((c) => !c.is_private || c.is_member) })),
-    http.post(`${API}/conversations.join`, async ({ request }) => {
-      const id = new URLSearchParams(await request.text()).get('channel') ?? '';
-      const c = slack.channels.find((x) => x.id === id);
-      if (c === undefined || c.is_private) return HttpResponse.json({ ok: false, error: 'method_not_supported_for_channel_type' });
-      c.is_member = true;
-      slack.joined.push(c.name);
-      return HttpResponse.json({ ok: true });
-    }),
-  );
+  });
+  server.use(...slackOnboardHandlers(API, slack));
 });
 afterEach(() => server.resetHandlers());
 
@@ -107,8 +56,8 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-const runtime: OnboardStep = { id: 'runtime', number: 0, title: 'Runtime', needs: [], run: () => Promise.resolve({ status: 'done' }) };
-const later: OnboardStep = { id: 'later', number: 2, title: 'Later', needs: ['runtime'], run: () => Promise.resolve({ status: 'done' }) };
+const runtime: OnboardStep = { id: 'runtime', title: 'Runtime', needs: [], run: () => Promise.resolve({ status: 'done' }) };
+const later: OnboardStep = { id: 'later', title: 'Later', needs: ['runtime'], run: () => Promise.resolve({ status: 'done' }) };
 
 interface MemoryStore {
   readonly store: OnboardingStore;
@@ -326,7 +275,6 @@ describe('onboarding step 1: Slack', () => {
   it('hands the generated secrets to the redactor, so a later step cannot leak them', async () => {
     const leak: OnboardStep = {
       id: 'leak',
-      number: 3,
       title: 'Leak',
       needs: ['slack'],
       run: async () => {

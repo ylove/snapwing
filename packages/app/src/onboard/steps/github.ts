@@ -10,8 +10,8 @@
 //
 // It then prints the install link, waits for the installation, and lists the repositories the App can reach.
 // An installation with no repository selected is not a failure: the step says where to add some and
-// checks again, or stops blocked on that. Without a public address the App gets the inactive placeholder
-// webhook and Snapwing polls for pull-request changes instead.
+// checks again, or stops blocked on that. Without a public https address the App gets the inactive
+// placeholder webhook and Snapwing polls for pull-request changes instead.
 //
 // A saved App is re-checked with its own credentials on a rerun and kept on a yes. Secrets go to `.env`
 // only; the step's data holds `{ appId, slug, name, owner, ownerType, installationId, repos }`.
@@ -136,7 +136,10 @@ export function createGitHubStep(deps: GitHubStepDeps = {}): OnboardStep {
         ).trim();
       name = await ask();
 
-      const publicUrl = ((await ctx.readEnv('SNAPWING_PUBLIC_URL'))?.reveal() ?? '').trim().replace(/\/+$/, '');
+      // Only an https address reaches Snapwing from GitHub. Without one the runtime step leaves
+      // http://localhost:<port>, which is no public address: the App then gets the inactive webhook.
+      const given = ((await ctx.readEnv('SNAPWING_PUBLIC_URL'))?.reveal() ?? '').trim().replace(/\/+$/, '');
+      const publicUrl = /^https:\/\//.test(given) ? given : '';
       if (publicUrl === '') {
         io.say('Snapwing has no public address yet, so the App is made with its webhook switched off, and Snapwing checks GitHub on a timer instead. Set a public address later and run onboarding again to switch the webhook on.');
       }
@@ -271,7 +274,7 @@ export function createGitHubStep(deps: GitHubStepDeps = {}): OnboardStep {
     return { status: 'done', data: appData(appId, slug, name, owner, ownerType, installationId, repos) };
   }
 
-  return { id: 'github', number: 3, title: 'Connect GitHub', needs: ['runtime'], run };
+  return { id: 'github', title: 'Connect GitHub', needs: ['runtime'], run };
 }
 
 function appData(appId: string, slug: string, name: string | undefined, owner: string | undefined, ownerType: string | undefined, installationId: string | undefined, repos: readonly string[]): JsonObject {
