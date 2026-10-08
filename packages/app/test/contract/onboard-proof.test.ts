@@ -32,6 +32,7 @@ import {
   siteHost,
   USAGE,
   writeProofDir,
+  type Platform,
   type ProofDeps,
   type ProofDir,
   type Sandbox,
@@ -60,6 +61,8 @@ const SANDBOX: Sandbox = {
   slackWorkspace: 'Acme',
   teams: { tenantId: TENANT, appId: APP_ID, team: TEAM_NAME },
 };
+/** The phase 5 proof's sandboxes: `.env.onboard` without the Teams values. */
+const { teams: _noTeams, ...SLACK_SANDBOX } = SANDBOX;
 /** Who the run's GitHub App opens pull requests as (the fixture App's slug). */
 const RUN_BOT = 'snapwing-acme[bot]';
 /** The fresh configuration token the maintainer pastes at teardown. */
@@ -293,8 +296,10 @@ function standInDrive(): OnboardStep {
     id: real.id,
     title: real.title,
     needs: real.needs,
-    run: () => {
-      const drives: JsonObject[] = (['slack', 'teams'] as const).map((platform, i) => {
+    run: (ctx) => {
+      // A drive on each platform the interview connected, as the real drive does.
+      const connected = (['slack', 'teams'] as const).filter((p) => (p === 'slack' ? ctx.data('slack')?.['installed'] === true : ctx.data('teams') !== undefined));
+      const drives: JsonObject[] = connected.map((platform, i) => {
         const number = i + 1;
         const jiraKey = `${PROJECT}-${number}`;
         const incident = `01JPR00FDR1VE0000000000${number}`;
@@ -308,8 +313,12 @@ function standInDrive(): OnboardStep {
   };
 }
 
+/** The interview's output and the questions that fell back to the keyboard (none: every answer is scripted). */
+let interview: { out: string[]; asked: readonly string[] };
+
 /** One proof run: the sandboxes, the proof directory, and the interview in its work directory. */
-async function proofRun(): Promise<void> {
+async function proofRun(platform: Platform): Promise<void> {
+  const sandbox = platform === 'slack' ? SLACK_SANDBOX : SANDBOX;
   tdb = await createTestDatabase();
   scratch = await mkdtemp(join(tmpdir(), 'snapwing-onboard-proof-scratch-'));
   world = await emptySandboxes(server, scratch);
@@ -327,23 +336,25 @@ async function proofRun(): Promise<void> {
     ...teamsRemovalHandlers(world, teamsRemoved, others),
   );
 
-  // The proof directory, as `pnpm onboard:proof --platform both` makes it (the tarballs are not used
-  // here). Its name does not start with the script's prefix, so a real --teardown never finds it.
+  // The proof directory, as `pnpm onboard:proof --platform <platform>` makes it (the tarballs are not
+  // used here). Its name does not start with the script's prefix, so a real --teardown never finds it.
   const root = await mkdtemp(join(tmpdir(), 'snapwing-proof-test-'));
   proof = await writeProofDir(root, {
     kind: 'snapwing-onboard-proof',
     version: 1,
-    platform: 'both',
+    platform,
     createdAt: new Date().toISOString(),
-    sandbox: SANDBOX,
+    sandbox,
     tarballs: { pipeline: join(root, 'tarballs', 'pipeline.tgz'), app: join(root, 'tarballs', 'app.tgz') },
   });
 
-  // The interview, with the script's scripted answers for the sandbox names and ids.
+  // The interview, with the script's scripted answers: the chat platforms and the sandbox names and ids.
   const answers = join(scratch, 'answers.json');
-  await writeFile(answers, JSON.stringify({ ...ANSWERS, ...answersFor(SANDBOX) }, null, 2));
+  await writeFile(answers, JSON.stringify({ ...ANSWERS, ...answersFor(sandbox, platform) }, null, 2));
   const out: string[] = [];
   const err: string[] = [];
+  const keyboard = scriptedPrompter([]);
+  interview = { out, asked: keyboard.asked };
   const code = await runOnboard(
     ['--answers', answers],
     {
@@ -359,10 +370,11 @@ async function proofRun(): Promise<void> {
       stdout: (l) => out.push(l),
       stderr: (l) => err.push(l),
     },
-    { cwd: proof.work, prompter: NOBODY, steps: ONBOARD_STEPS.map((s) => (s.id === 'test-drive' ? standInDrive() : s)), openUrl: world.browser.openUrl },
+    { cwd: proof.work, prompter: keyboard, steps: ONBOARD_STEPS.map((s) => (s.id === 'test-drive' ? standInDrive() : s)), openUrl: world.browser.openUrl },
   );
   expect(err).toEqual([]);
   expect(code, out.join('\n')).toBe(0);
+  expect(keyboard.asked).toEqual([]);
 
   // What the sandboxes hold besides the run's: another engineer's pull request, an older issue,
   // another Slack app, and another Teams app in the team and the catalog.
@@ -425,7 +437,7 @@ const verdicts = (lines: readonly string[]): string[] => lines.filter((l) => /^(
 // ---- The checks ------------------------------------------------------------------------------------
 
 describe('onboard:proof checks', () => {
-  beforeEach(proofRun, 120_000);
+  beforeEach(() => proofRun('both'), 120_000);
   afterEach(closeRun);
 
   it('passes every item after the interview, names the platforms each proof checks, and fails an item the sandbox lacks', async () => {
@@ -484,10 +496,56 @@ describe('onboard:proof checks', () => {
   }, 120_000);
 });
 
+// ---- The phase 5 proof: Slack only -----------------------------------------------------------------
+
+describe('onboard:proof --platform slack', () => {
+  beforeEach(() => proofRun('slack'), 120_000);
+  afterEach(closeRun);
+
+  it('leaves Teams out without asking: no Teams question is reached, the Slack checks pass, and the teardown has nothing in Teams', async () => {
+    // The scripted `teams.use` no skips the step before its first real question; nothing fell back to the keyboard.
+    expect(interview.asked).toEqual([]);
+    expect(interview.out).toContain('Leaving Teams out. Run `snapwing onboard --step teams` if your team starts using it.');
+    const teamsQuestions = ["What is the bot's app (client) id?", 'What is your tenant id?', 'Paste the client secret.', 'What public https address does Teams reach Snapwing at?'];
+    for (const q of teamsQuestions) expect(interview.out.some((l) => l.includes(q)), q).toBe(false);
+    expect(interview.out.some((l) => l.includes('Does your team report bugs in Slack?'))).toBe(true);
+    expect(world.teams.published).toBe(0);
+    expect(world.teams.installed).toEqual([{ id: 'inst-other', teamsApp: { id: 'cat-other', externalId: OTHER_BOT, displayName: 'Other bot' } }]);
+
+    const lines: string[] = [];
+    const checks = await runChecks(proof, deps(NOBODY, lines));
+    expect(checks.filter((l) => !l.ok)).toEqual([]);
+    expect(verdicts(lines)).toEqual([
+      'PASS  map and config validate',
+      'PASS  snapwing config check passes',
+      "PASS  the test drive's PR exists on the sandbox repository",
+      'PASS  the Jira fields exist on the sandbox site',
+      'PASS  the Slack app exists',
+    ]);
+    expect(lines).toContain(`PASS  the test drive's PR exists on the sandbox repository: Slack: ${REPO}#1 (open)`);
+
+    // The teardown: the Slack drive's pull request, branch and issue, the Slack app, the directory; no Teams sign-in.
+    const torn: string[] = [];
+    expect(await runTeardown(proof, deps(scriptedPrompter([TEARDOWN_CONFIG_TOKEN]), torn), { yes: true })).toBe(0);
+    expect(torn.filter((l) => l.startsWith('done  ')).map((l) => l.replace(/ \(.*$/, '').replace(proof.root, '<proof>'))).toEqual([
+      `done  close pull request ${REPO}#1`,
+      `done  delete branch snapwing/adm-1-readme-last-line on ${REPO}`,
+      'done  delete Jira issue ADM-1 on acme-demo.atlassian.net',
+      `done  delete the Slack app ${world.slack.app.appId}`,
+      'done  delete the proof directory <proof>',
+    ]);
+    expect(torn.some((l) => /Teams/.test(l))).toBe(false);
+    expect(world.teams.ownerSignIns).toBe(0);
+    expect(teamsRemoved).toEqual([]);
+    expectNoSecrets([...interview.out, ...lines, ...torn]);
+    expect(world.unhandled).toEqual([]);
+  }, 120_000);
+});
+
 // ---- The teardown ----------------------------------------------------------------------------------
 
 describe('onboard:proof --teardown', () => {
-  beforeEach(proofRun, 120_000);
+  beforeEach(() => proofRun('both'), 120_000);
   afterEach(closeRun);
 
   it("lists every deletion and deletes nothing without a yes; then closes the run's pull requests, deletes their branches, the Jira issues, the Slack app, the Teams install and catalog entry, and the directory, and lists what only a person can remove", async () => {
@@ -580,11 +638,17 @@ describe('onboard:proof sandbox values', () => {
   const values = (entries: Record<string, string>): Map<string, string> => new Map(Object.entries(entries));
   const SLACK_VALUES = { JIRA_SITE: 'acme-sandbox', JIRA_PROJECT: 'SBX', GITHUB_OWNER: 'acme', GITHUB_REPO: 'sandbox-web', SLACK_WORKSPACE: 'Acme Sandbox' };
 
-  it('reads the Slack proof from names and ids, and hands them to the interview as answers', () => {
+  it('reads the Slack proof from names and ids, and hands them to the interview as answers, with Teams left out', () => {
     const { sandbox, problems } = sandboxFrom(values(SLACK_VALUES), 'slack');
     expect(problems).toEqual([]);
     expect(sandbox).toEqual({ jiraSite: 'acme-sandbox.atlassian.net', jiraProject: 'SBX', githubOwner: 'acme', githubRepo: 'sandbox-web', slackWorkspace: 'Acme Sandbox' });
-    expect(answersFor(sandbox as Sandbox)).toEqual({ 'jira.site': 'acme-sandbox.atlassian.net', 'jira.projects': 'SBX', 'github.owner': 'acme' });
+    expect(answersFor(sandbox as Sandbox, 'slack')).toEqual({
+      'slack.use': 'yes',
+      'teams.use': 'no',
+      'jira.site': 'acme-sandbox.atlassian.net',
+      'jira.projects': 'SBX',
+      'github.owner': 'acme',
+    });
     expect(siteHost('https://Acme-Sandbox.atlassian.net/jira/your-work')).toBe('acme-sandbox.atlassian.net');
     expect(parsePullUrl('https://github.com/acme/sandbox-web/pull/12')).toEqual({ repo: 'acme/sandbox-web', number: 12 });
     expect(parsePullUrl('https://github.com/acme/sandbox-web/issues/12')).toBeUndefined();
@@ -601,7 +665,10 @@ describe('onboard:proof sandbox values', () => {
     const withTeams = sandboxFrom(values({ ...SLACK_VALUES, TEAMS_TENANT_ID: TENANT, TEAMS_APP_ID: APP_ID, TEAMS_TEAM: TEAM_NAME }), 'both');
     expect(withTeams.problems).toEqual([]);
     expect(withTeams.sandbox?.teams).toEqual({ tenantId: TENANT, appId: APP_ID, team: TEAM_NAME });
-    expect(answersFor(withTeams.sandbox as Sandbox)).toMatchObject({ 'teams.app-id': APP_ID, 'teams.tenant-id': TENANT });
+    expect(answersFor(withTeams.sandbox as Sandbox, 'both')).toMatchObject({ 'slack.use': 'yes', 'teams.use': 'yes', 'teams.app-id': APP_ID, 'teams.tenant-id': TENANT });
+    const teamsOnly = sandboxFrom(values({ ...SLACK_VALUES, TEAMS_TENANT_ID: TENANT, TEAMS_APP_ID: APP_ID, TEAMS_TEAM: TEAM_NAME }), 'teams');
+    expect(teamsOnly.sandbox?.slackWorkspace).toBeUndefined();
+    expect(answersFor(teamsOnly.sandbox as Sandbox, 'teams')).toMatchObject({ 'slack.use': 'no', 'teams.use': 'yes', 'teams.app-id': APP_ID });
   });
 
   it('refuses a missing file, missing keys, malformed values, and anything shaped like a secret', () => {

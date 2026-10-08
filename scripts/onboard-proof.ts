@@ -30,6 +30,8 @@
 // The phase 5 proof uses slack: there is no live Teams tenant in this build, so teams and both stop
 // with a clear message until the TEAMS_ values exist. The names and ids are handed to the interview as
 // scripted answers (`snapwing onboard --answers`), shown as they are used; a refused one is asked again.
+// So are the chat platforms from --platform: `slack.use` and `teams.use` answer yes for the platforms
+// the proof covers and no for the other, so its step is skipped without asking (slack: Teams is left out).
 //
 // The interview runs with an environment of its own: PATH, HOME, the locale, and proxy settings only,
 // plus an npm cache inside the proof directory. Nothing else from the shell (no token, no SNAPWING_ or
@@ -218,15 +220,21 @@ export function sandboxFrom(values: ReadonlyMap<string, string> | undefined, pla
   return { sandbox, problems };
 }
 
-/** The sandbox's names and ids as scripted answers to `snapwing onboard --answers`. */
-export function answersFor(sandbox: Sandbox): Record<string, string> {
+/**
+ * The scripted answers to `snapwing onboard --answers`: whether the team uses each chat platform, from
+ * `platform` (so the installer is never asked about the one the proof leaves out, and its step is
+ * skipped), and the sandbox's names and ids.
+ */
+export function answersFor(sandbox: Sandbox, platform: Platform): Record<string, string> {
   return {
+    'slack.use': usesSlack(platform) ? 'yes' : 'no',
+    'teams.use': usesTeams(platform) ? 'yes' : 'no',
     'jira.site': sandbox.jiraSite,
     ...(sandbox.jiraEmail === undefined ? {} : { 'jira.email': sandbox.jiraEmail }),
     'jira.projects': sandbox.jiraProject,
     ...(sandbox.githubOwnerType === undefined ? {} : { 'github.owner-type': sandbox.githubOwnerType }),
     'github.owner': sandbox.githubOwner,
-    ...(sandbox.teams === undefined ? {} : { 'teams.app-id': sandbox.teams.appId, 'teams.tenant-id': sandbox.teams.tenantId }),
+    ...(sandbox.teams === undefined || !usesTeams(platform) ? {} : { 'teams.app-id': sandbox.teams.appId, 'teams.tenant-id': sandbox.teams.tenantId }),
   };
 }
 
@@ -1049,8 +1057,9 @@ export async function main(argv: readonly string[], mainDeps: MainDeps = {}): Pr
   }
   const { sandbox, platform } = proof.marker;
   const answers = join(proof.root, 'answers.json');
-  await writeFile(answers, `${JSON.stringify(answersFor(sandbox), null, 2)}\n`, { mode: 0o600 });
+  await writeFile(answers, `${JSON.stringify(answersFor(sandbox, platform), null, 2)}\n`, { mode: 0o600 });
   out(`Sandboxes: Jira ${sandbox.jiraSite} (${sandbox.jiraProject}), GitHub ${sandboxRepo(sandbox)}${sandbox.slackWorkspace === undefined ? '' : `, Slack ${sandbox.slackWorkspace}`}${sandbox.teams === undefined ? '' : `, Teams ${sandbox.teams.team}`}.`);
+  if (platform !== 'both') out(`${PLATFORM_NAMES[platform === 'slack' ? 'teams' : 'slack']} is left out of this proof: the interview skips its step without asking.`);
   out(`Running snapwing onboard from the packed CLI in ${proof.work}. Answer at the keyboard; the sandbox names and ids are filled in from ${ONBOARD_ENV_FILE}.`);
   const code = await attachedOnboard(proof, answers);
   if (code !== 0) {
