@@ -316,7 +316,7 @@ async function env(): Promise<Record<string, string>> {
 }
 
 /** `compose` alone (nothing started): what it builds for these secrets. */
-async function composeOnly(secrets: Record<string, string>, overrides: ComposeOverrides = {}): Promise<Composed> {
+async function composeOnly(secrets: Record<string, string>, overrides: ComposeOverrides = {}, log?: { info(line: string): void; error(line: string): void }): Promise<Composed> {
   const file = join(dir, 'direct.env');
   await writeFile(file, envFile(secrets));
   const state = await tdb.open();
@@ -326,6 +326,7 @@ async function composeOnly(secrets: Record<string, string>, overrides: ComposeOv
     state,
     workflow: new InProcessWorkflow(state),
     env: await env(),
+    ...(log === undefined ? {} : { log }),
     overrides: { resolveHarness: () => idleHarness, slackBotUserId: BOT_USER, slackWorkspaceDomain: WORKSPACE_DOMAIN, ...overrides },
   });
 }
@@ -440,6 +441,22 @@ describe('compose with Teams under snapwing serve', () => {
     expect(await code).toBe(0);
     expect(unhandled).toEqual([]);
   }, 60_000);
+
+  it('counts the Slack signing secret alone as a pending install, not as Slack', async () => {
+    teamsWorld();
+    const secrets: Record<string, string> = { ...fakeSecrets(), ...TEAMS_SECRETS };
+    delete secrets['SLACK_BOT_TOKEN'];
+    expect(secrets['SLACK_SIGNING_SECRET']).toBeTruthy();
+    const lines: string[] = [];
+    const composed = await composeOnly(secrets, {}, { info: (l) => lines.push(l), error: (l) => lines.push(l) });
+    expect(composed.deps?.chat.platforms).toEqual(['teams']);
+    expect(lines.filter((l) => l.includes('install is pending approval'))).toHaveLength(1);
+    // With the bot token as well, Slack is on and nothing is pending.
+    const on: string[] = [];
+    const both = await composeOnly({ ...secrets, SLACK_BOT_TOKEN: fakeSecrets()['SLACK_BOT_TOKEN'] ?? '' }, {}, { info: (l) => on.push(l), error: (l) => on.push(l) });
+    expect(both.deps?.chat.platforms).toEqual(['slack', 'teams']);
+    expect(on.filter((l) => l.includes('pending'))).toEqual([]);
+  });
 
   it('with the Slack install pending and no other platform, fails naming the pending install and the next step', async () => {
     const pending: Record<string, string> = { ...fakeSecrets(), SLACK_CLIENT_ID: '1234.5678', SLACK_CLIENT_SECRET: 'client-secret-abc' };
