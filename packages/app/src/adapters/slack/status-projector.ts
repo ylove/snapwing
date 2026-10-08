@@ -10,6 +10,8 @@
 //   `status-message-posted { messageId }` with `expectedSeq` (a conflict is retried from a fresh read),
 //   with `bot-message-posted { role: 'status' }` in the same append (A 1.3, #287).
 //   `incidents.status_msg_id` then names the message; a later row `chat.update`s it.
+// - A try that posted but could not append leaves the ref in the cache under `slack-status:{incident}`;
+//   the retry edits that message and appends, rather than posting a second one.
 // - Deleted message (`message_not_found` on update): post a new one, pin it, append again.
 // - Direct message incidents: once the incident resolves to a surface with a bug channel, the same
 //   message is mirrored there (main 15.1) and edited in place; its ref is kept in the cache under
@@ -167,6 +169,11 @@ export function mirrorKey(incidentId: string): string {
   return `slack-status-mirror:${incidentId}`;
 }
 
+/** Where the status message was posted, kept until `status-message-posted` is recorded (and after). */
+export function statusKey(incidentId: string): string {
+  return `slack-status:${incidentId}`;
+}
+
 function parseRef(raw: string): { channel: string; ts: string } {
   return JSON.parse(raw) as { channel: string; ts: string };
 }
@@ -226,7 +233,20 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
       if (err instanceof SlackRateLimitError) throw err;
       onError(err);
     });
+    await cache.set(statusKey(incident.id), JSON.stringify({ channel: posted.channel, ts: posted.ts }));
     await recordPosted(row, incident.id, posted.channel, posted.ts);
+  }
+
+  /** Edits a message and records it as the status message; false when it was deleted. */
+  async function adopt(row: OutboxItem, incident: IncidentView, ref: { channel: string; ts: string }, body: Body): Promise<boolean> {
+    try {
+      await web.updateMessage({ channel: ref.channel, ts: ref.ts, ...body });
+    } catch (err) {
+      if (err instanceof SlackApiError && err.error === 'message_not_found') return false;
+      throw err;
+    }
+    await recordPosted(row, incident.id, ref.channel, ref.ts);
+    return true;
   }
 
   async function mirror(incident: IncidentView, body: Body, map: WorkspaceMap | undefined): Promise<void> {
@@ -261,7 +281,9 @@ export function createSlackStatusProjector(options: SlackStatusProjectorOptions)
     const message = buildStatusMessage(incident.id, status, userForMap(map));
     const body: Body = { text: message.text, blocks: message.blocks };
     if (incident.statusMsgId === undefined) {
-      await postAndPin(row, incident, channel, body);
+      // A message posted by an earlier try whose append failed: edit it, never post a second one.
+      const orphan = await cache.get(statusKey(incident.id));
+      if (orphan === null || !(await adopt(row, incident, parseRef(orphan), body))) await postAndPin(row, incident, channel, body);
     } else {
       try {
         await web.updateMessage({ channel, ts: incident.statusMsgId, ...body });

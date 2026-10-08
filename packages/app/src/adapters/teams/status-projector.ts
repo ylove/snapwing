@@ -358,7 +358,19 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
     const mentions: MentionFor = mentionsFromMap(map?.people ?? []);
     const activity = cardActivity(buildStatusCard(incident.id, status, { mentions, reduced: await reduced(at) }));
     if (incident.statusMsgId === undefined) {
-      await postStatus(row, incident, at, activity);
+      // A message posted by an earlier try whose append failed: edit it, never post a second one.
+      const orphan = await statusStore.get(incident.id);
+      let adopted = false;
+      if (orphan !== undefined) {
+        try {
+          await connector.updateActivity({ serviceUrl: at.serviceUrl, conversationId: orphan.conversationId, activityId: orphan.activityId }, activity);
+          await recordPosted(row, incident.id, orphan);
+          adopted = true;
+        } catch (err) {
+          if (!(err instanceof TeamsNotFoundError)) throw err;
+        }
+      }
+      if (!adopted) await postStatus(row, incident, at, activity);
     } else {
       const known = await statusStore.get(incident.id);
       const conversationId = known?.conversationId ?? (at.rootId === undefined ? at.channelId : `${at.channelId};messageid=${at.rootId}`);
