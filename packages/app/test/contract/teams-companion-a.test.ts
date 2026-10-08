@@ -73,7 +73,7 @@ import {
   type TeamsThread,
   type TeamsWorld,
 } from '../fixtures/e2e/teams.ts';
-import { bootComposed, EXAMPLE_CONFIG, fakeSecrets, githubSigned, type Booted } from '../fixtures/e2e/world.ts';
+import { JIRA_HOOK_SECRET, bootComposed, EXAMPLE_CONFIG, fakeSecrets, githubSigned, type Booted } from '../fixtures/e2e/world.ts';
 
 const HARNESS = fileURLToPath(new URL('../fixtures/e2e/fake-harness.mjs', import.meta.url));
 /** The live run's staging screenshot: a cart page whose URL bar shows `staging.`. */
@@ -511,7 +511,7 @@ async function deliverJira(w: World, issueKey: string): Promise<void> {
     if (!w.jiraHooks.queued.some((d) => d.issueKey === issueKey)) throw new Error(`no Jira transition of ${issueKey} yet`);
   });
   const statuses = await w.jiraHooks.deliver(issueKey, (body) =>
-    w.booted.api.fetch(new Request('http://snapwing.test/webhooks/jira', { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
+    w.booted.api.fetch(new Request(`http://snapwing.test/webhooks/jira?secret=${JIRA_HOOK_SECRET}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
   );
   expect(statuses.every((s) => s === 200)).toBe(true);
 }
