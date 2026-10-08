@@ -111,8 +111,19 @@ export async function readTeamsConversation(cache: Pick<CachePort, 'get'>, chann
   };
 }
 
+/**
+ * The team's mode. The mode check writes the bare word; the Graph subscriptions (`subscriptions.ts`) write
+ * JSON `{ mode, since, ... }` under the same key, and either one marks the team reduced.
+ */
 export async function readTeamsMode(cache: Pick<CachePort, 'get'>, teamId: string): Promise<TeamsMode> {
-  return (await cache.get(teamsModeKey(teamId))) === 'reduced' ? 'reduced' : 'full';
+  const raw = await cache.get(teamsModeKey(teamId));
+  if (raw === null || raw === 'full') return 'full';
+  if (raw === 'reduced') return 'reduced';
+  try {
+    return rec(JSON.parse(raw))['mode'] === 'reduced' ? 'reduced' : 'full';
+  } catch {
+    return 'full';
+  }
 }
 
 export async function writeTeamsMode(cache: Pick<CachePort, 'set'>, teamId: string, mode: TeamsMode): Promise<void> {

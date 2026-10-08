@@ -72,10 +72,26 @@
 //                the status projectors (thread, channel, and person posts, mentions, the PR card, the
 //                text-signal cards, the mid-flight card, channel members, the GitHub link check) goes
 //                through the chat router, which picks the platform's `ChatSurface` by incident source
-//                (Slack's is `adapters/slack/chat-surface.ts`). Deps that carry one platform (`HumanDeps.
-//                chat`, the PR actions) are built per platform. Slack is optional: its secrets are
-//                required only when one of them is set (or its transport named), and with no chat
-//                platform at all startup fails naming the Slack group.
+//                (Slack's is `adapters/slack/chat-surface.ts`, Teams' `adapters/teams/chat-surface.ts`).
+//                Deps that carry one platform (`HumanDeps.chat`, the PR actions) are built per platform.
+//                Slack is optional: its secrets are required only when one of them is set (or its
+//                transport named), and with no chat platform at all startup fails naming the Slack group.
+//   Teams        (the "Teams" sections) optional the same way: on when any of TEAMS_APP_ID,
+//                TEAMS_APP_PASSWORD, TEAMS_TENANT_ID, or TEAMS_PUBLIC_URL is set, and then the first three
+//                are required. One Bot Connector client (client credentials against the tenant), wrapped
+//                by `rememberTeamsCards` so a tap is answered with the card it came from, serves the
+//                adapter, the chat surface, the status projector, the interactivity, the status query, and
+//                the queue. The adapter and its Graph context source sit in the engine under `teams`. The
+//                transport's routes (`/teams/messages`, `/teams/notifications`, `/teams/lifecycle`) check
+//                the Bot Framework JWT, or the subscriptions' `clientState` (derived from
+//                SNAPWING_ENCRYPTION_KEY, `teamsClientState`), before anything else, and every
+//                authenticated activity refreshes its sender's record (`rememberUser`), so a personal chat
+//                opens with their `29:` id. The Teams signals share the Slack signals' deps and
+//                `afterSignal`. The worker runs the Teams status projector and keeps one Graph subscription
+//                per mapped team (notifications to TEAMS_PUBLIC_URL, else SNAPWING_PUBLIC_URL). `/healthz`
+//                reports Teams' mode: reduced while any mapped team lacks the RSC grant. A post that no
+//                activity named a serviceUrl for (a DM about a Slack incident) goes to TEAMS_SERVICE_URL,
+//                else the public Bot Framework endpoint.
 //
 // GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
@@ -89,7 +105,7 @@
 //
 // Startup fails, listing every missing secret by name (never a value), before anything is built.
 
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -98,7 +114,8 @@ import type { EventType, IncidentEvent } from '@snapwing/pipeline/contracts/even
 import { isFixerBudgetData, isFixerRunData, isReviewRunData, type JobName } from '@snapwing/pipeline/contracts/jobs.ts';
 import { LOG_START, StateNotFoundError, type IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
-import type { AnyIngestionAdapter, EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
+import type { AnyIngestionAdapter, ContextSource, EngineDeps } from '@snapwing/pipeline/engine/deps.ts';
+import type { LoadImage, LoadRecording } from '@snapwing/pipeline/context/vision/index.ts';
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
@@ -166,6 +183,28 @@ import { SLACK_SHORTCUT_CALLBACK_ID } from '../adapters/slack/normalize.ts';
 import { createPagerDutyPager } from '../pager/pagerduty.ts';
 import { createSlackTransport, type SocketLike } from '../adapters/slack/transport.ts';
 import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
+import { createTeamsAdapter, type TeamsAdapter, type TeamsInbound } from '../adapters/teams/adapter.ts';
+import { createBotTokenSource, createGraphTokenSource, verifyBotFrameworkJwt } from '../adapters/teams/auth.ts';
+import { createTeamsChatSurface, type TeamsChatSurface } from '../adapters/teams/chat-surface.ts';
+import { createTeamsConnector } from '../adapters/teams/connector.ts';
+import { conversationFromActivity, rememberTeamsConversation } from '../adapters/teams/conversations.ts';
+import { createTeamsGraph } from '../adapters/teams/graph.ts';
+import { createKvTeamsCardStore, createTeamsInteractivity, rememberTeamsCards } from '../adapters/teams/interactivity.ts';
+import { createTeamsQueue } from '../adapters/teams/queue.ts';
+import { createTeamsContextSource } from '../adapters/teams/reader.ts';
+import { createTeamsSignals, type TeamsSignalOutcome } from '../adapters/teams/signals.ts';
+import { createTeamsStatusProjector } from '../adapters/teams/status-projector.ts';
+import { createTeamsStatusQuery } from '../adapters/teams/status-query.ts';
+import { createTeamsSubscriptions, SUBSCRIPTION_TICK_MS, teamIdsInMap, type TeamsSubscriptions, type VerifiedNotification } from '../adapters/teams/subscriptions.ts';
+import {
+  createTeamsModeCheck,
+  createTeamsTransport,
+  TEAMS_LIFECYCLE_PATH,
+  TEAMS_NOTIFICATIONS_PATH,
+  teamsQueueRoutes,
+  type TeamsDispatchResult,
+} from '../adapters/teams/transport.ts';
+import { createQueue } from '../status/queue.ts';
 import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
 import { createFixerRoutes } from '../fixer-api/routes.ts';
 import { createFixerGitToken } from '../fixer-api/git-token.ts';
@@ -239,6 +278,15 @@ export const MONITOR_TRIGGERS: ReadonlySet<EventType> = new Set<EventType>([
 export const SLACK_SECRETS: readonly string[] = Object.freeze(['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET']);
 
 /**
+ * The Teams group, required together whenever Teams is configured: any of them set, or TEAMS_PUBLIC_URL
+ * set. The tenant is the authority for both the Bot Connector and the Graph tokens (single-tenant bot).
+ */
+export const TEAMS_SECRETS: readonly string[] = Object.freeze(['TEAMS_APP_ID', 'TEAMS_APP_PASSWORD', 'TEAMS_TENANT_ID']);
+
+/** Where a proactive Teams post goes when no activity has named a serviceUrl yet (public cloud); TEAMS_SERVICE_URL overrides it. */
+export const TEAMS_DEFAULT_SERVICE_URL = 'https://smba.trafficmanager.net/teams/';
+
+/**
  * Secrets every `snapwing serve` needs (CONTEXT.md 6b), whatever its chat platforms. Each configured
  * platform adds its group (`SLACK_SECRETS`); model keys and per-provider secrets are added per config.
  */
@@ -260,10 +308,17 @@ export const REQUIRED_SECRETS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * Read when present: Socket Mode, the Jira webhook's shared secret, and every model provider key (the
- * model proxy serves each provider whose key is set, whether or not a task routes to it).
+ * Read when present: Socket Mode, the Jira webhook's shared secret, Teams' public URL and default
+ * serviceUrl, and every model provider key (the model proxy serves each provider whose key is set,
+ * whether or not a task routes to it).
  */
-export const OPTIONAL_SECRETS: readonly string[] = Object.freeze(['SLACK_APP_TOKEN', 'JIRA_WEBHOOK_SECRET', ...Object.values(PROVIDER_KEY_ENV)]);
+export const OPTIONAL_SECRETS: readonly string[] = Object.freeze([
+  'SLACK_APP_TOKEN',
+  'JIRA_WEBHOOK_SECRET',
+  'TEAMS_PUBLIC_URL',
+  'TEAMS_SERVICE_URL',
+  ...Object.values(PROVIDER_KEY_ENV),
+]);
 
 /** How long a model token outlives its run's wall clock, so the run's last call is not refused. */
 export const MODEL_TOKEN_MARGIN_MS = 5 * 60_000;
@@ -283,8 +338,22 @@ export class MissingSecretsError extends Error {
   }
 }
 
-/** What startup says when no chat platform is configured: it names the Slack group, the one to set. */
-export const NO_CHAT_PLATFORM = 'no chat platform is configured (Slack needs its group of secrets)';
+/** What startup says when no chat platform is configured: it names the Slack group, and the Teams one. */
+export const NO_CHAT_PLATFORM = `no chat platform is configured (Slack needs its group of secrets; Teams needs ${TEAMS_SECRETS.join(', ')})`;
+
+/**
+ * The `clientState` of the Graph subscriptions, which Graph echoes on every notification: derived from
+ * SNAPWING_ENCRYPTION_KEY, so every replica and restart agree and no secret is added. 43 characters
+ * (Graph allows 128).
+ */
+export function teamsClientState(encryptionKey: string): string {
+  return createHmac('sha256', encryptionKey).update('snapwing teams graph client state').digest('base64url');
+}
+
+/** What the Teams test seam hands the dispatcher: an activity, or Graph change notifications. */
+export type TeamsInjectInput = { readonly activity: Record<string, unknown> } | { readonly notifications: readonly VerifiedNotification[] };
+/** The Teams test seam itself: resolves with the dispatcher's answer once the work it started has settled. */
+export type TeamsInject = (input: TeamsInjectInput) => Promise<TeamsDispatchResult>;
 
 export interface ComposeLog {
   info(line: string): void;
@@ -314,6 +383,12 @@ export interface ComposeOverrides {
   chatSurfaces?: readonly ChatSurface[];
   /** Poll interval of both projectors, in milliseconds. */
   projectorPollMs?: number;
+  /**
+   * The e2e tier's way in to Teams (no API presses a Teams card button, as with Slack): called once with a
+   * function that hands an activity or Graph notifications to the dispatcher past authentication. Only
+   * what it hands in skips the checks; the HTTP routes keep them. Ignored without Teams.
+   */
+  teamsInject?: (inject: TeamsInject) => void;
 }
 
 export interface ComposeDeps {
@@ -488,6 +563,31 @@ function screenshotLoader(web: SlackWeb): LoadScreenshot {
   };
 }
 
+/**
+ * Each chat's loader in turn, the first answer winning. Every loader refuses a host it does not own
+ * (Slack's anything but slack.com, Teams' anything but Graph, SharePoint, and the Bot Framework), so a
+ * token only ever goes to its own platform.
+ */
+function firstOf<A, R>(loaders: readonly ((input: A) => Promise<R | undefined>)[]): ((input: A) => Promise<R | undefined>) | undefined {
+  if (loaders.length === 0) return undefined;
+  return async (input) => {
+    for (const load of loaders) {
+      const out = await load(input);
+      if (out !== undefined) return out;
+    }
+    return undefined;
+  };
+}
+
+/** Teams-hosted screenshots (Graph hosted contents, SharePoint files) through the Teams image loader; anything else falls through. */
+function teamsScreenshotLoader(loadImage: LoadImage, fallback: LoadScreenshot): LoadScreenshot {
+  return async (ref) => {
+    const image = await loadImage({ kind: 'image', url: ref.url, ...(ref.contentType === undefined ? {} : { mimeType: ref.contentType }) });
+    if (image === undefined) return fallback(ref);
+    return { filename: screenshotFilename(ref), content: Buffer.from(image.data, 'base64'), contentType: image.mimeType };
+  };
+}
+
 /** The proxy's upstreams: one per provider whose key the secrets port holds. */
 function modelProxyProviders(key: (name: string) => string | undefined): Partial<Record<ModelProxyProvider, ModelProviderUpstream>> {
   const out: Partial<Record<ModelProxyProvider, ModelProviderUpstream>> = {};
@@ -587,9 +687,13 @@ export const compose: ComposeFn = async (deps) => {
   const otherSurfaces = overrides.chatSurfaces ?? [];
   const slackProbe = await readSecrets(deps.secrets, [], [...SLACK_SECRETS, 'SLACK_APP_TOKEN']);
   const slackOn = slackProbe.size > 0 || (transportChoice !== undefined && transportChoice !== '');
-  if (!slackOn && otherSurfaces.length === 0) throw new MissingSecretsError(SLACK_SECRETS, NO_CHAT_PLATFORM);
+  // Teams the same way: any of its secrets set (its public URL included) means Teams, and the whole group.
+  const teamsProbe = await readSecrets(deps.secrets, [], [...TEAMS_SECRETS, 'TEAMS_PUBLIC_URL']);
+  const teamsOn = teamsProbe.size > 0;
+  if (!slackOn && !teamsOn && otherSurfaces.length === 0) throw new MissingSecretsError(SLACK_SECRETS, NO_CHAT_PLATFORM);
   const required = [
     ...(slackOn ? SLACK_SECRETS : []),
+    ...(teamsOn ? TEAMS_SECRETS : []),
     ...REQUIRED_SECRETS,
     ...(overrides.model === undefined ? modelKeySecrets(config) : []),
     ...(transportChoice === 'socket' ? ['SLACK_APP_TOKEN'] : []),
@@ -789,10 +893,57 @@ export const compose: ComposeFn = async (deps) => {
     return { web: slackWeb, botUserId, workspaceDomain, authorOf, adapter, context: createSlackContextSource(slackWeb), surface };
   })(web);
 
+  // Teams, when configured. Client credentials against the tenant for the Bot Connector and Graph; the
+  // inbound JWT is checked against the Bot Framework's published keys. One connector, remembering every
+  // card with a button it posts or edits (`rememberTeamsCards`, kv `teams-card:*`), so a tap is answered
+  // with its card; it keeps `createPersonalConversation`, which the interactivity's GitHub link needs.
+  const teams = !teamsOn
+    ? undefined
+    : (() => {
+        const appId = secret('TEAMS_APP_ID').trim();
+        const tenantId = secret('TEAMS_TENANT_ID').trim();
+        const credentials = { appId, password: secret('TEAMS_APP_PASSWORD'), tenantId };
+        const botTokens = createBotTokenSource(credentials);
+        const graphTokens = createGraphTokenSource(credentials);
+        const serviceUrl = s.get('TEAMS_SERVICE_URL')?.trim() || TEAMS_DEFAULT_SERVICE_URL;
+        const teamsError = (what: string) => (e: unknown) => log.error(`teams ${what}: ${message(e)}`);
+        const connector = rememberTeamsCards(
+          createTeamsConnector({ token: () => botTokens.token(), botId: appId }),
+          createKvTeamsCardStore(cache),
+          teamsError('card store'),
+        );
+        const graph = createTeamsGraph({ token: () => graphTokens.token() });
+        const adapter: TeamsAdapter = createTeamsAdapter({
+          connector,
+          graph,
+          appId,
+          verify: (authorization, o) => verifyBotFrameworkJwt(authorization, o),
+          cache,
+          getMap,
+          tenantId,
+          defaultServiceUrl: serviceUrl,
+          state,
+          onError: teamsError('adapter'),
+          clock,
+        });
+        // Teams' outbound chat effects: thread, channel, and personal posts, the cards, channel members (Graph).
+        const surface: TeamsChatSurface = createTeamsChatSurface({ connector, graph, state, cache, getMap: liveMap, identity: oauth, botId: appId, tenantId, serviceUrl, now: clock, log });
+        // A channel's team, for reading around the anchor when the activity names none (the map's `team`).
+        const context = createTeamsContextSource(graph, { teamFor: (channelId) => mapSnapshot.channels.find((c) => c.id === channelId)?.teamId, botToken: () => botTokens.token() });
+        return { appId, tenantId, serviceUrl, connector, graph, adapter, surface, context, teamsError };
+      })();
+  // Activities the e2e seam hands in past authentication (`overrides.teamsInject`); empty otherwise, so
+  // the engine checks every other activity's JWT as the transport did.
+  const injectedTeams = new WeakSet<object>();
+  const teamsEngineAdapter: TeamsAdapter | undefined =
+    teams === undefined
+      ? undefined
+      : { ...teams.adapter, authenticateRequest: (raw: TeamsInbound) => (injectedTeams.has(raw) ? Promise.resolve(true) : teams.adapter.authenticateRequest(raw)) };
+
   // The chat seam (#368): every outbound chat effect below goes through the router, which picks the
   // surface by the incident's source (or by a channel's or a person's platform). Slack first: the default.
   const chat: ChatRouter = createChatRouter({
-    surfaces: [...(slack === undefined ? [] : [slack.surface]), ...otherSurfaces],
+    surfaces: [...(slack === undefined ? [] : [slack.surface]), ...(teams === undefined ? [] : [teams.surface]), ...otherSurfaces],
     state,
     map: liveMap,
     clock,
@@ -853,14 +1004,29 @@ export const compose: ComposeFn = async (deps) => {
     issueUrl: capture.issueUrl,
   });
 
+  // Chat-hosted images and recordings, through each configured chat's loader (Slack's, then Teams').
+  const chatImages: LoadImage | undefined = firstOf([...(slack === undefined ? [] : [slack.context.loadImage]), ...(teams === undefined ? [] : [teams.context.loadImage])]);
+  const chatRecordings: LoadRecording | undefined = firstOf([
+    ...(slack === undefined ? [] : [slack.context.loadRecording]),
+    ...(teams === undefined ? [] : [teams.context.loadRecording]),
+  ]);
+
   // The engine.
   const engineDeps: EngineDeps = {
     workspaceId,
     state,
     workflow,
     model,
-    adapters: new Map<ChannelSource, AnyIngestionAdapter>([...(slack === undefined ? [] : [['slack', slack.adapter] as const]), ...capture.adapters]),
-    context: new Map([...(slack === undefined ? [] : [['slack', slack.context] as const]), ...CAPTURE_SOURCES.map((source) => [source, capture.context] as const)]),
+    adapters: new Map<ChannelSource, AnyIngestionAdapter>([
+      ...(slack === undefined ? [] : [['slack', slack.adapter] as const]),
+      ...(teamsEngineAdapter === undefined ? [] : [['teams', teamsEngineAdapter] as const]),
+      ...capture.adapters,
+    ]),
+    context: new Map<ChannelSource, ContextSource>([
+      ...(slack === undefined ? [] : [['slack', slack.context] as const]),
+      ...(teams === undefined ? [] : [['teams', teams.context] as const]),
+      ...CAPTURE_SOURCES.map((source) => [source, capture.context] as const),
+    ]),
     jiraSearch: jiraSearch(jira),
     cache,
     map: getMap,
@@ -874,8 +1040,8 @@ export const compose: ComposeFn = async (deps) => {
     // With the subscriber the engine never posts `filed` itself; the status projector below posts it.
     status: createStatusSubscriber({ workspaceId, clock }),
     clock,
-    // Capture screenshots come from kv (#385); every other image through the chat's own loader.
-    options: { loadImage: captureImageLoader(cache, slack?.context.loadImage), ...(slack === undefined ? {} : { loadRecording: slack.context.loadRecording }) },
+    // Capture screenshots come from kv; every other image through its chat's own loader.
+    options: { loadImage: captureImageLoader(cache, chatImages), ...(chatRecordings === undefined ? {} : { loadRecording: chatRecordings }) },
     // A 2.1: a claim handed back on an issue already In Progress starts the fixer directly.
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
     // A 1.4: reactions on the anchor before the incident existed count from its creation (#335).
@@ -969,8 +1135,8 @@ export const compose: ComposeFn = async (deps) => {
       return woke;
     },
   };
-  /** After each signal commits: every event it appended goes through the holds (activity, a hold, a release). */
-  async function afterSignal(outcome: SlackSignalOutcome): Promise<void> {
+  /** After each signal commits (Slack's or Teams'): every event it appended goes through the holds (activity, a hold, a release). */
+  async function afterSignal(outcome: SlackSignalOutcome | TeamsSignalOutcome): Promise<void> {
     if (outcome.kind !== 'signal' || !outcome.outcome.handled) return;
     const { incidentId, seq, appended } = outcome.outcome;
     try {
@@ -1292,10 +1458,134 @@ export const compose: ComposeFn = async (deps) => {
           return { transport, signals: slackSignals, socket };
         })();
 
+  // Teams' inbound side, when Teams is configured: signals, taps, the status query, the queue, the RSC
+  // mode check, the Graph subscriptions, and the transport. A tap's PR actions and the GitHub link check
+  // are Teams' (per tap source).
+  const teamsInbound =
+    teams === undefined
+      ? undefined
+      : (() => {
+          const { appId, connector, graph, surface, teamsError } = teams;
+          // Reactions (Graph's diff and the bot's own messages) and thread replies, applied by `handleSignal`
+          // with the Slack signals' deps. Its per-message chain is per process: with several API replicas
+          // the kv reaction set can still race.
+          const teamsSignals = createTeamsSignals({
+            deps: signalDeps,
+            getMap,
+            botAppId: appId,
+            graph,
+            handleInbound: (source, raw) => engine.handleInbound(source, raw),
+            githubLinked: surface.githubLinked,
+            model,
+            standing: state,
+            // Teams has no ephemerals: a standing watch is confirmed in the person's personal chat.
+            confirmStanding: ({ aadObjectId, text }) => surface.personPost(aadObjectId, text),
+            text: textSignalDeps,
+            // In order, one signal's events after the other's, as Slack's single outcome is (never awaited there either).
+            onOutcome: (outcomes) => {
+              void outcomes.reduce<Promise<void>>((prior, outcome) => prior.then(() => afterSignal(outcome)), Promise.resolve());
+            },
+            onError: teamsError('signals'),
+          });
+          const interactivity = createTeamsInteractivity({
+            connector,
+            cache,
+            state,
+            workspaceId,
+            orchestrator: engine,
+            stopIncident: (input) => stopIncident(fixerDeps, input),
+            prActions: prActionsFor('teams'),
+            midFlight: (input) => answerMidFlight(midFlightDeps, input),
+            getMap,
+            githubLinked: surface.githubLinked,
+            clock,
+            onError: teamsError('interactivity'),
+          });
+          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, clock, onError: teamsError('status query') });
+          const queue = teamsQueueRoutes(
+            createTeamsQueue({
+              connector,
+              queue: createQueue({
+                state,
+                workspaceId,
+                getMap,
+                identity: oauth,
+                pullRequest: (repo, number) => github(repo).getPullRequest(number),
+                clock,
+                onError: teamsError('queue'),
+              }),
+              botId: appId,
+              onError: teamsError('queue'),
+            }),
+          );
+          const modeCheck = createTeamsModeCheck({ graph, cache, appId, getMap, onError: teamsError('mode check') });
+          const publicUrl = (s.get('TEAMS_PUBLIC_URL')?.trim() || secret('SNAPWING_PUBLIC_URL')).replace(/\/+$/, '');
+          log.info(`teams: the bot's messaging endpoint is ${publicUrl}/teams/messages`);
+          const subscriptions = createTeamsSubscriptions({
+            graph,
+            cache,
+            notificationUrl: `${publicUrl}${TEAMS_NOTIFICATIONS_PATH}`,
+            lifecycleUrl: `${publicUrl}${TEAMS_LIFECYCLE_PATH}`,
+            clientState: teamsClientState(secret('SNAPWING_ENCRYPTION_KEY')),
+            now: clock,
+            onError: (teamId, e) => log.error(`teams subscriptions: team ${teamId}: ${message(e)}`),
+          });
+          const transport = createTeamsTransport({
+            adapter: {
+              normalizeResult: (raw) => teams.adapter.normalizeResult(raw),
+              // Every authenticated activity refreshes its sender's record, so their personal chat opens
+              // with the `29:` id Teams expects (the AAD id alone is unconfirmed on a real tenant).
+              authenticateRequest: async (raw) => {
+                const ok = await teams.adapter.authenticateRequest(raw);
+                if (ok && raw.transport === 'http') await surface.rememberUser(raw.activity).catch(teamsError('user record'));
+                return ok;
+              },
+            },
+            handleInbound: (source, raw) => engine.handleInbound(source, raw),
+            status: statusQuery,
+            commands: [queue.command],
+            interactivity,
+            signals: teamsSignals,
+            installs: [modeCheck, queue.install],
+            subscriptions,
+            // Nothing replays what Graph dropped; say so, so a missed reaction is explainable.
+            onLifecycle: (outcomes) => {
+              for (const o of outcomes) if (o.kind === 'missed') log.info(`teams: Graph missed notifications on subscription ${o.subscriptionId}; reactions in that gap were not seen`);
+            },
+            onError: teamsError('transport'),
+          });
+          return { transport, signals: teamsSignals, subscriptions };
+        })();
+
+  // The Teams e2e seam: what it hands in is treated as authenticated, and remembered as an authenticated
+  // activity is (the conversation, the sender), then routed exactly as the messaging endpoint routes.
+  if (teams !== undefined && teamsInbound !== undefined && overrides.teamsInject !== undefined) {
+    const { dispatcher } = teamsInbound.transport;
+    overrides.teamsInject(async (input) => {
+      if ('notifications' in input) {
+        await teamsInbound.signals.onNotifications(input.notifications);
+        return { status: 202 };
+      }
+      const inbound = { transport: 'http' as const, headers: new Headers(), activity: input.activity };
+      injectedTeams.add(inbound);
+      const seen = conversationFromActivity(input.activity, clock());
+      const team = seen === undefined ? undefined : mapSnapshot.channels.find((c) => c.id === seen.channelId)?.teamId;
+      const record = conversationFromActivity(input.activity, clock(), team);
+      if (record !== undefined) await rememberTeamsConversation(cache, record);
+      await teams.surface.rememberUser(input.activity);
+      const answer = await dispatcher.route(inbound);
+      await dispatcher.idle();
+      await teamsInbound.signals.idle();
+      return answer;
+    });
+  }
+
   // Projectors.
   const pollIntervalMs = overrides.projectorPollMs;
   // The webhook and the reconciler resolve the in-progress status the way the projector does (#269).
   const jiraStatuses = createStatusResolver(jira, config.jira.statuses);
+  const slackScreenshots: LoadScreenshot = web === undefined ? fetchScreenshot : screenshotLoader(web);
+  const chatScreenshots: LoadScreenshot = teams === undefined ? slackScreenshots : teamsScreenshotLoader(teams.context.loadImage, slackScreenshots);
   const jiraProjector = createJiraProjector({
     state,
     client: jira,
@@ -1303,9 +1593,9 @@ export const compose: ComposeFn = async (deps) => {
     continueIncident: (incidentId) => engine.continueIncident(incidentId),
     customFieldIds,
     statusOverrides: config.jira.statuses,
-    // Slack-hosted screenshots need the bot token; capture screenshots come from kv (#385); anything
-    // else is a plain GET.
-    loadScreenshot: captureScreenshotLoader(cache, web === undefined ? fetchScreenshot : screenshotLoader(web)),
+    // Slack-hosted screenshots need the bot token, Teams-hosted ones Graph; capture screenshots come
+    // from kv; anything else is a plain GET.
+    loadScreenshot: captureScreenshotLoader(cache, chatScreenshots),
     // Attached, a capture screenshot lives on the issue only: its kv copy is deleted.
     screenshotsAttached: releaseCaptureScreenshots(cache),
     now: clock,
@@ -1333,6 +1623,24 @@ export const compose: ComposeFn = async (deps) => {
           now: clock,
           ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
           onError: (e) => log.error(`slack status projector: ${message(e)}`),
+        });
+  // Teams' status messages and notify rows. A DM about an incident from another platform has no Teams
+  // conversation to learn a serviceUrl from, so it opens the watcher's chat at the install's defaults.
+  const teamsStatusProjector =
+    teams === undefined
+      ? undefined
+      : createTeamsStatusProjector({
+          state,
+          connector: teams.connector,
+          cache,
+          workspaceId,
+          getMap,
+          defaultServiceUrl: teams.serviceUrl,
+          tenantId: teams.tenantId,
+          botId: teams.appId,
+          now: clock,
+          ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
+          onError: (e) => log.error(`teams status projector: ${message(e)}`),
         });
 
   // Reconciler.
@@ -1365,6 +1673,7 @@ export const compose: ComposeFn = async (deps) => {
   // Routes.
   const routes: Route[] = [
     ...(slackInbound?.transport.routes ?? []),
+    ...(teamsInbound?.transport.routes ?? []),
     { method: 'POST', path: JIRA_WEBHOOK_PATH, handler: createJiraWebhookRoute({
       fixer: fixerDeps,
       jira,
@@ -1452,6 +1761,16 @@ export const compose: ComposeFn = async (deps) => {
             stop: () => slackInbound.transport.stop().then(() => slackInbound.signals.idle()),
           },
         ]),
+    ...(teamsInbound === undefined
+      ? []
+      : [
+          {
+            // HTTP only (no socket for Teams): stopping waits for the work started behind the answers.
+            name: 'teams http transport',
+            start: () => teamsInbound.transport.start(),
+            stop: () => teamsInbound.transport.stop().then(() => teamsInbound.signals.idle()),
+          },
+        ]),
     configService,
   ];
   const workerServices: ComposedService[] = [
@@ -1473,13 +1792,43 @@ export const compose: ComposeFn = async (deps) => {
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'github projector', start: async () => githubProjector.start(), stop: () => githubProjector.stop() },
     ...(statusProjector === undefined ? [] : [{ name: 'slack status projector', start: async () => statusProjector.start(), stop: () => statusProjector.stop() }]),
+    ...(teamsStatusProjector === undefined ? [] : [{ name: 'teams status projector', start: async () => teamsStatusProjector.start(), stop: () => teamsStatusProjector.stop() }]),
+    // One Graph subscription per mapped team, renewed before Graph's 60 minute cap (reduced teams retried hourly).
+    ...(teamsInbound === undefined
+      ? []
+      : [every('teams subscriptions', SUBSCRIPTION_TICK_MS, async () => teamsInbound.subscriptions.ensureAll(teamIdsInMap(await liveMap())), log)]),
     ...phase4WorkerServices,
     ...monitorServices,
     every('capture images', overrides.projectorPollMs ?? MONITOR_TRIGGER_POLL_MS, releaseUnfiledCaptureImages, log),
     configService,
   ];
+  /**
+   * Teams in `/healthz`: reduced while any team the map names runs without the RSC grant (the action
+   * command and personal chat only), naming those teams and why; with no Teams channel in the
+   * map there is no team to say a mode for.
+   */
+  async function teamsHealth(subscriptions: Pick<TeamsSubscriptions, 'mode'>): Promise<PlatformHealth> {
+    try {
+      const teamIds = teamIdsInMap(await liveMap());
+      if (teamIds.length === 0) return { id: 'teams', ok: true, detail: 'no Teams channel in the map' };
+      const reduced: string[] = [];
+      for (const teamId of teamIds) {
+        const mode = await subscriptions.mode(teamId);
+        if (mode.mode === 'reduced') reduced.push(`team ${teamId}${mode.reason === '' ? '' : ` (${mode.reason})`}`);
+      }
+      if (reduced.length === 0) return { id: 'teams', ok: true, mode: 'full' };
+      return { id: 'teams', ok: true, mode: 'reduced', detail: `reduced in ${reduced.length} of ${teamIds.length} team${teamIds.length === 1 ? '' : 's'}: ${reduced.join('; ')}` };
+    } catch (e) {
+      return { id: 'teams', ok: false, detail: message(e) };
+    }
+  }
+
   const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
-  const chats = [...(slackInbound === undefined ? [] : [`slack ${slackInbound.socket ? 'socket mode' : 'http'}`]), ...otherSurfaces.map((x) => x.platform)];
+  const chats = [
+    ...(slackInbound === undefined ? [] : [`slack ${slackInbound.socket ? 'socket mode' : 'http'}`]),
+    ...(teamsInbound === undefined ? [] : ['teams http']),
+    ...otherSurfaces.map((x) => x.platform),
+  ];
   log.info(`composed: ${chats.join(', ')}, runner ${config.runtime.provider}${proxied}, workspace ${workspaceId}`);
 
   return {
@@ -1487,16 +1836,22 @@ export const compose: ComposeFn = async (deps) => {
     jobs,
     apiServices,
     workerServices,
-    health() {
-      // Configured means reachable here; Teams reports its reduced mode once compose wires it (#405).
+    async health() {
+      // Configured means reachable here; Teams also says which mapped teams run in reduced mode.
       const platforms: PlatformHealth[] = [
         ...(slack === undefined ? [] : [{ id: 'slack', ok: true, mode: 'full' } as const]),
+        ...(teamsInbound === undefined ? [] : [await teamsHealth(teamsInbound.subscriptions)]),
         ...otherSurfaces.map((x) => ({ id: x.platform, ok: true })),
       ];
-      return Promise.resolve(platforms);
+      return platforms;
     },
     async metrics() {
-      return mergePrometheus([await jiraProjector.metrics(), await githubProjector.metrics(), ...(statusProjector === undefined ? [] : [await statusProjector.metrics()])]);
+      return mergePrometheus([
+        await jiraProjector.metrics(),
+        await githubProjector.metrics(),
+        ...(statusProjector === undefined ? [] : [await statusProjector.metrics()]),
+        ...(teamsStatusProjector === undefined ? [] : [await teamsStatusProjector.metrics()]),
+      ]);
     },
     deps: { fixer: fixerDeps, review: reviewDeps, chat },
   };

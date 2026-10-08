@@ -178,7 +178,10 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
   }
 
   async function mode(teamId: string): Promise<TeamsMode> {
-    const v = parseJson(await cache.get(teamsModeKey(teamId)));
+    const raw = await cache.get(teamsModeKey(teamId));
+    // The RSC mode check (`transport.ts`) writes the bare word; no retry time, so the next tick tries Graph.
+    if (raw === 'reduced') return { mode: 'reduced', since: '', retryAt: '', reason: 'RSC permissions not granted' };
+    const v = parseJson(raw);
     if (typeof v === 'object' && v !== null) {
       const rec = v as Record<string, unknown>;
       if (rec['mode'] === 'reduced' && typeof rec['since'] === 'string' && typeof rec['retryAt'] === 'string') {
@@ -198,7 +201,7 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
     const at = now();
     const retryAt = new Date(at.getTime() + REDUCED_RETRY_MS).toISOString();
     const prior = await mode(teamId);
-    const since = prior.mode === 'reduced' ? prior.since : at.toISOString();
+    const since = prior.mode === 'reduced' && prior.since !== '' ? prior.since : at.toISOString();
     await cache.set(teamsModeKey(teamId), JSON.stringify({ mode: 'reduced', since, retryAt, reason } satisfies TeamsMode));
     await cache.set(subscriptionKey(teamId), '');
     return { kind: 'reduced', teamId, reason, retryAt };

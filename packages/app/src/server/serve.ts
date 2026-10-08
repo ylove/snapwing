@@ -5,8 +5,8 @@
 // open the state store (`stateOptionsFromEnv`; migrations run on open), build the workflow for the
 // dialect (in-process on SQLite, pg-boss on Postgres; an `--api` only process opens pg-boss with
 // `recoverActive: false`), call `compose`, then start the worker and its composed services (the
-// projectors, the reconcile schedule), then the API and its services (Slack Socket Mode). Any
-// startup failure closes what was opened and exits 1.
+// projectors, the reconcile schedule, the Teams Graph subscriptions), then the API and its services
+// (Slack Socket Mode, the Teams transport). Any startup failure closes what was opened and exits 1.
 //
 // The `local` runtime provider runs the fixer and the repository's tests (untrusted code) on this
 // host as the server's own OS user (ADR 0017). With NODE_ENV=production serve refuses it unless
@@ -47,6 +47,8 @@ export const SERVE_USAGE = `Usage: snapwing serve [--api] [--worker] [--port <n>
 
 Environment: SNAPWING_DB=sqlite|postgres, DATABASE_URL (postgres), SNAPWING_SQLITE_PATH (sqlite file),
 NODE_ENV (production refuses the local runner without --allow-local-runner).
+Teams has no socket mode: Microsoft reaches the API's /teams/ routes at TEAMS_PUBLIC_URL (else
+SNAPWING_PUBLIC_URL), so a local run needs a dev tunnel there.
 Stops cleanly on SIGTERM or SIGINT.`;
 
 export const DEFAULT_PORT = 3000;
