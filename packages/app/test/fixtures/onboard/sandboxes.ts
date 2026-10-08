@@ -182,6 +182,8 @@ export async function emptySandboxes(server: SetupServer, dir: string): Promise<
   });
   const harnessDir = join(dir, 'harness');
   const fakeGitHub = new FakeGitHub(harnessDir);
+  // The App the installer creates is named by the sandbox, and it opens the drive's pull requests.
+  fakeGitHub.botLogin = `${github.slug}[bot]`;
   await fakeGitHub.addRepo(REPO, repoFiles);
   await mkdir(join(harnessDir, 'plans'), { recursive: true });
   await mkdir(join(harnessDir, 'gates'), { recursive: true });

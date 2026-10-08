@@ -11,6 +11,7 @@
     "locked": false,
     "title": "WEB-1042: round the checkout total before submit",
     "user": { "login": "dana-dev", "id": 5821001, "node_id": "U_kgDOfake01", "type": "User", "site_admin": false },
+    "author_association": "COLLABORATOR",
     "body": "Fixes WEB-1042.",
     "created_at": "2026-10-02T12:05:00Z",
     "updated_at": "2026-10-02T12:05:00Z",
