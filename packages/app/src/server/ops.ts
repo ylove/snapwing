@@ -5,7 +5,8 @@
 //                  `platforms` is each configured chat platform as compose reports it (`health`).
 //                  503 `{ ok: false, detail }` before. Unauthenticated, like `/metrics`
 //   GET /metrics   Prometheus text format 0.0.4: outbox depth and oldest undrained row age per
-//                  target, the parked job count, and reconciler corrections in the last hour;
+//                  target, the parked job count, reconciler corrections in the last hour, and
+//                  the event-log watermark lag in rows (0 on SQLite);
 //                  503 until the store is open
 //
 // `openState` runs the migrations before it resolves, so "open" here means "open and migrated".
@@ -79,6 +80,9 @@ export function renderMetrics(metrics: StoreMetrics): string {
     '# HELP snapwing_reconciler_corrections_last_hour Events the reconciler emitted for missed webhooks, recorded in the last hour.',
     '# TYPE snapwing_reconciler_corrections_last_hour gauge',
     `snapwing_reconciler_corrections_last_hour ${metrics.reconcilerCorrectionsLastHour}`,
+    '# HELP snapwing_event_log_watermark_lag_rows Committed event rows the projectors cannot read yet because an older transaction is open; 0 on SQLite.',
+    '# TYPE snapwing_event_log_watermark_lag_rows gauge',
+    `snapwing_event_log_watermark_lag_rows ${metrics.watermarkLagRows}`,
   ];
   return `${lines.join('\n')}\n`;
 }

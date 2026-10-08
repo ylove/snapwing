@@ -114,7 +114,9 @@ describe('snapwing serve', () => {
     expect(await health.json()).toMatchObject({ ok: true });
     const metrics = await fetch(`${url}/metrics`);
     expect(metrics.status).toBe(200);
-    expect(await metrics.text()).toContain('snapwing_jobs_parked 0');
+    const metricsText = await metrics.text();
+    expect(metricsText).toContain('snapwing_jobs_parked 0');
+    expect(metricsText).toContain('snapwing_event_log_watermark_lag_rows 0');
 
     const body = Uint8Array.from([0x00, 0xff, 0x0d, 0x0a, 0x41]);
     const posted = await fetch(`${url}/test/echo`, { method: 'POST', body });

@@ -17,6 +17,7 @@ import {
 import { LOG_START, type OpenedState } from '../../src/ports/state.ts';
 import { InProcessWorkflow } from '../../src/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
+import { logSettled } from '../helpers/log-settled.ts';
 
 const WS = '01K6WORKSPACE0000000000000';
 const OTHER_WS = '01K6WORKSPACE0000000000009';
@@ -120,11 +121,12 @@ async function seed(id: string, ...events: NewEvent[]): Promise<void> {
 }
 
 /**
- * Waits until `readSince` returns every event seeded so far. On Postgres it withholds events at or
- * above the cluster's oldest in-flight transaction (ADR 0013), and other test files' transactions
- * count; SQLite is settled at once.
+ * Waits until `readSince` returns every event seeded so far: first for the log head to pass the
+ * per-database watermark (`logSettled`), then by paging, because on Postgres a single read can come
+ * back short while the watermark is recomputed. SQLite is settled at once.
  */
 async function settled(): Promise<void> {
+  await logSettled(state);
   let committed = 0;
   for (const id of [A, B, C, D, E, F]) committed += (await state.read(id)).length;
   const deadline = Date.now() + 15_000;

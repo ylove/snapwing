@@ -186,7 +186,7 @@ describe(`0002 event tx_order (${TEST_DIALECT})`, () => {
 
     const state = await tdb.open();
     await state.append('01JZ00000000000000000000A1', [{ workspaceId: WS, incidentId: '01JZ00000000000000000000A1', type: 'closed', v: 1, source: 'agent', occurredAt: '2026-10-01T09:00:00.000Z', payload: { reason: 'new' } }], 2);
-    // On Postgres the new event is withheld while any older transaction in the cluster is open.
+    // On Postgres the new event is withheld while any older transaction that can write this database is open (the per-database watermark).
     let events: IncidentEvent[] = [];
     for (const deadline = Date.now() + 10_000; events.length < 5 && Date.now() < deadline; ) {
       events = (await state.readSince(LOG_START, 10)).events;

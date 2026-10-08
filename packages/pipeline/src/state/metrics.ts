@@ -13,6 +13,7 @@ import { OUTBOX_TARGETS, type OutboxTarget } from '../contracts/state.ts';
 import type { OpenedState, StatePort } from '../ports/state.ts';
 import { isReconciledPayload, RECONCILED_EVENT_TYPES } from '../reconcile/marker.ts';
 import type { StateContext } from './context.ts';
+import { pgWatermark } from './events.ts';
 import { StateStore } from './store.ts';
 
 export interface OutboxTargetMetrics {
@@ -29,6 +30,12 @@ export interface StoreMetrics {
   readonly parkedJobs: number;
   /** Events the reconciler emitted (B 8) recorded in the hour before now. */
   readonly reconcilerCorrectionsLastHour: number;
+  /**
+   * Committed log rows `readSince` is withholding at or above the watermark (`pgWatermark`). A few
+   * and brief is normal; a count that keeps rising means a long-open transaction is stalling every
+   * projector. Always 0 on SQLite, which has no watermark.
+   */
+  readonly watermarkLagRows: number;
 }
 
 const HOUR_MS = 3_600_000;
@@ -61,7 +68,16 @@ export async function readStoreMetrics(state: StatePort | OpenedState): Promise<
     .where('recorded_at', '>', ctx.codec.timestamp(new Date(now - HOUR_MS)))
     .execute();
   const corrections = recent.filter((r) => isReconciledPayload(ctx.codec.fromJson(r.payload))).length;
-  return { outbox, parkedJobs: Number(parked?.n ?? 0), reconcilerCorrectionsLastHour: corrections };
+  let watermarkLagRows = 0;
+  if (ctx.dialect === 'postgres') {
+    const lag = await ctx.db
+      .selectFrom('incident_events')
+      .select(sql<number | string>`count(*)`.as('n'))
+      .where('tx_order', '>=', await pgWatermark(ctx))
+      .executeTakeFirst();
+    watermarkLagRows = Number(lag?.n ?? 0);
+  }
+  return { outbox, parkedJobs: Number(parked?.n ?? 0), reconcilerCorrectionsLastHour: corrections, watermarkLagRows };
 }
 
 /** Resolves when the store answers a trivial query; rejects with the driver's error otherwise. */

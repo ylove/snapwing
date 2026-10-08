@@ -1,13 +1,12 @@
 // UX friction (#306; A 5.3). Real state on the dialect `SNAPWING_DB` selects, a fake clock, a fake
 // TTL cache on that clock, and a fake filer. Events are `user-side` rows as #305 records them.
 
-import { sql } from 'kysely';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { defaultPlaybook, type Playbook } from '../../src/config/playbook.ts';
 import type { NewEvent } from '../../src/contracts/events.ts';
 import type { UserSideKind } from '../../src/contracts/incident.ts';
 import type { CachePort } from '../../src/ports/cache.ts';
-import type { OpenedState } from '../../src/ports/state.ts';
+import { LOG_START, type OpenedState } from '../../src/ports/state.ts';
 import {
   bugChannelFor,
   createUxFriction,
@@ -15,8 +14,8 @@ import {
   type UxFriction,
   type UxFrictionTask,
 } from '../../src/signals/ux-friction.ts';
-import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
+import { logSettled, readSettled } from '../helpers/log-settled.ts';
 
 const T0 = Date.parse('2026-10-02T09:00:00.000Z');
 const DAY = 86_400_000;
@@ -37,6 +36,7 @@ let tdb: TestDatabase;
 let state: OpenedState;
 let now: number;
 let incidentCount: number;
+let recorded: number;
 let playbook: Playbook;
 let filed: UxFrictionTask[];
 let failNext: boolean;
@@ -79,29 +79,36 @@ function userSide(reporter: string, kind: UserSideKind, surfaceId: string | unde
   };
 }
 
-/**
- * Appends the events, then waits until `readSince` can return them. On Postgres it withholds events
- * at or above the cluster's oldest in-flight transaction (ADR 0013), and other test files'
- * transactions count; on SQLite there is nothing to wait for.
- */
+/** Appends the events, then waits until `readSince` can return them (see `logSettled`). */
 async function record(...events: NewEvent<'user-side'>[]): Promise<void> {
   for (const e of events) await state.append(e.incidentId, [e], 0);
-  if (!(state instanceof StateStore) || state.dialect !== 'postgres') return;
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    const { rows } = await sql<{ settled: boolean }>`
-      select coalesce(max(tx_order) < pg_snapshot_xmin(pg_current_snapshot())::text::bigint, true) as settled from incident_events
-    `.execute(state.ctx.db);
-    if (rows[0]?.settled === true) return;
-    if (Date.now() > deadline) throw new Error('timed out waiting for the readSince watermark to pass the log');
-    await new Promise((r) => setTimeout(r, 10));
-  }
+  recorded += events.length;
+  await logSettled(state);
+}
+
+/**
+ * The state the scanners read. On Postgres one `readSince` can come back short while the watermark
+ * is recomputed (see `readSettled`), and a scanner that sees a short page would miss the row until
+ * its next scan. This knows how many events each cursor has consumed and how many were recorded,
+ * so it re-reads until the page holds what the log has.
+ */
+function settledReader(): Pick<OpenedState, 'readSince'> {
+  const consumed = new Map<string, number>([[LOG_START, 0]]);
+  return {
+    async readSince(cursor, limit) {
+      const before = consumed.get(cursor) ?? 0;
+      const page = await readSettled(state, cursor, limit, Math.min(limit, recorded - before));
+      consumed.set(page.cursor, before + page.events.length);
+      return page;
+    },
+  };
 }
 
 beforeEach(async () => {
   tdb = await createTestDatabase();
   now = T0;
   incidentCount = 0;
+  recorded = 0;
   state = await tdb.open({ now: () => new Date(now) });
   playbook = defaultPlaybook();
   filed = [];
@@ -109,7 +116,7 @@ beforeEach(async () => {
   failNext = false;
   cacheStore = new Map();
   sut = createUxFriction({
-    state,
+    state: settledReader(),
     cache,
     clock: () => new Date(now),
     playbook: () => playbook,
@@ -248,7 +255,7 @@ describe('once per pattern per window', () => {
     await threeReporters();
     await sut.scan();
     const restarted = createUxFriction({
-      state,
+      state: settledReader(),
       cache,
       clock: () => new Date(now),
       playbook: () => playbook,
