@@ -110,8 +110,8 @@ function expectNoSecrets(texts: readonly string[], ...secrets: string[]): void {
   for (const s of secrets) expect(text).not.toContain(s);
 }
 
-// App id, tenant id, client secret, then the bug channel.
-const FRESH = [APP_ID, TENANT, SECRET, 'Bugs'];
+// Use Teams (the default), app id, tenant id, client secret, then the bug channel.
+const FRESH = ['', APP_ID, TENANT, SECRET, 'Bugs'];
 
 describe('onboarding step 1: Teams', () => {
   it('reads the bot, signs the owner in, installs with the grants, and reports full mode', async () => {
@@ -150,7 +150,7 @@ describe('onboarding step 1: Teams', () => {
   });
 
   it('asks for the address when nothing names one, and saves it as the Teams address', async () => {
-    const { result, envText } = await interview([...FRESH.slice(0, 3), 'https://teams.example.test/', 'Bugs'], { env: {} });
+    const { result, envText } = await interview([...FRESH.slice(0, 4), 'https://teams.example.test/', 'Bugs'], { env: {} });
     expect(result.state.steps['teams']?.status).toBe('done');
     expect(envText).toContain('TEAMS_PUBLIC_URL=https://teams.example.test');
   });
@@ -195,7 +195,7 @@ describe('onboarding step 1: Teams', () => {
   });
 
   it('asks again after Microsoft refuses the secret, and saves only the one it accepts', async () => {
-    const { result, lines, envText, stateText } = await interview([APP_ID, TENANT, BAD_SECRET, SECRET, 'Bugs']);
+    const { result, lines, envText, stateText } = await interview(['', APP_ID, TENANT, BAD_SECRET, SECRET, 'Bugs']);
     expect(result.state.steps['teams']?.status).toBe('done');
     const text = lines.join('\n');
     expect(text).toMatch(/Microsoft did not accept that secret for this app id and tenant id/);
@@ -205,7 +205,7 @@ describe('onboarding step 1: Teams', () => {
   });
 
   it('asks again for an id that is not an id and a channel that is not in the list', async () => {
-    const { result, lines } = await interview(['not-an-id', APP_ID, TENANT, SECRET, 'Nope', 'bugs']);
+    const { result, lines } = await interview(['', 'not-an-id', APP_ID, TENANT, SECRET, 'Nope', 'bugs']);
     expect(result.state.steps['teams']?.status).toBe('done');
     expect(result.state.steps['teams']?.data).toMatchObject({ channels: [{ name: 'Bugs' }] });
     const text = lines.join('\n');
@@ -229,5 +229,29 @@ describe('onboarding step 1: Teams', () => {
     expect(refused.lines).toContain("Microsoft no longer accepts the saved bot secret, so I need the bot's details again.");
     expect(refused.envText).toContain('TEAMS_APP_PASSWORD=rotated-secret-value-4321');
     expect(refused.envText).not.toContain(`TEAMS_APP_PASSWORD=${SECRET}`);
+  });
+
+  it('leaves Teams out on a no, touches nothing, and asks again on --step', async () => {
+    const memory = memoryStore();
+    const left = await interview(['2'], { memory });
+    expect(left.result.state.steps['teams']).toMatchObject({ status: 'skipped', note: 'the installer does not use Teams' });
+    expect(left.result.state.steps['later']?.status).toBe('done');
+    expect(left.lines).toContain('Leaving Teams out. Run `snapwing onboard --step teams` if your team starts using it.');
+    expect(tenant.published).toBe(0);
+    expect(left.envText).toBe('');
+
+    // A plain rerun leaves a skipped step alone; `--step teams` offers it again.
+    const rerun = await interview([], { memory });
+    expect(rerun.asked).toEqual([]);
+    const again = await interview(FRESH, { memory, only: 'teams' });
+    expect(again.lines).toContain('Does your team report bugs in Microsoft Teams?');
+    expect(again.result.state.steps['teams']?.status).toBe('done');
+  });
+
+  it('does not ask whether the team uses Teams again once the bot is registered', async () => {
+    const memory = memoryStore();
+    await interview(FRESH, { memory });
+    const kept = await interview(['', 'Bugs'], { memory, only: 'teams' });
+    expect(kept.lines).not.toContain('Does your team report bugs in Microsoft Teams?');
   });
 });

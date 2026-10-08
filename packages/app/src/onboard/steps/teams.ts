@@ -235,7 +235,24 @@ export function createTeamsStep(deps: TeamsStepDeps = {}): OnboardStep {
   async function run(ctx: StepContext): Promise<StepOutcome> {
     const { io } = ctx;
     const saved = ctx.data('teams');
-    if (saved === undefined) io.say('Now Microsoft Teams, where bugs will be reported.');
+    if (saved === undefined) {
+      io.say('Now Microsoft Teams, where bugs will be reported.');
+      // Asked only before anything is saved: a registered (or half-registered) bot is re-checked below.
+      const use = await io.choose({
+        id: 'use',
+        text: 'Does your team report bugs in Microsoft Teams?',
+        choices: [
+          { id: 'yes', label: 'Yes' },
+          { id: 'no', label: 'No, leave Teams out' },
+        ],
+        default: 'yes',
+        why: 'Snapwing needs at least one chat platform, Slack or Teams. Leaving Teams out skips this step; run `snapwing onboard --step teams` to add it later.',
+      });
+      if (use === 'no') {
+        io.say('Leaving Teams out. Run `snapwing onboard --step teams` if your team starts using it.');
+        return { status: 'skipped', reason: 'the installer does not use Teams' };
+      }
+    }
 
     // ---- a saved bot registration, re-checked ----------------------------------------------------
     let appId: string | undefined;
