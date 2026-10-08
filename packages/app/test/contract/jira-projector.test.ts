@@ -834,3 +834,20 @@ describe('loop', () => {
     await p.stop();
   });
 });
+
+describe('abandoned screenshots', () => {
+  it('tells the abandoned hook once a filing is parked after maxAttempts failed sends (#271)', async () => {
+    const incidentId = ulid(time);
+    await state.append(incidentId, [waitingChanged(incidentId)], 0);
+    const create = row('create-issue', createIssuePayload(), { incidentId });
+    await enqueue(create);
+    for (let i = 0; i < 2; i++) jira.fail('POST /rest/api/3/issue', 503);
+    const abandoned: unknown[] = [];
+    const p = projector({ maxAttempts: 2, screenshotsAbandoned: (refs) => Promise.resolve(void abandoned.push(refs)) });
+    expect((await p.drainOnce()).deferred).toEqual([create.id]);
+    expect(abandoned).toEqual([]); // still retrying: the bytes are needed
+    time = T0 + 1000;
+    expect((await p.drainOnce()).parked).toEqual([create.id]);
+    expect(abandoned).toEqual([[{ url: `${SHOTS}/shots/cart-blank.png` }]]);
+  });
+});

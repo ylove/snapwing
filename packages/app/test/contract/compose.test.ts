@@ -162,7 +162,7 @@ describe('compose under snapwing serve', () => {
     expect(log).toContain('composed: slack http, runner local');
     // Seven phase 3 job types plus the phase 4 timers: mid-flight, hold, claim nudge, claim expiry;
     // and the escalation ladder step, the monitor poll, heartbeat, and stall.
-    expect(log).toContain('worker polling (15 job types)');
+    expect(log).toContain('worker polling (16 job types)');
     for (const service of ['fixer scratch sweep', 'reconcile schedule', 'jira projector', 'slack status projector', 'slack http transport', 'phase 4 schedules', 'ux friction scan', 'channel members refresh', 'active monitoring', 'capture images']) {
       expect(log).toContain(`${service} started`);
     }

@@ -161,12 +161,11 @@ import { createStatusSubscriber } from '@snapwing/pipeline/status/subscriber.ts'
 import type { PlatformHealth } from '@snapwing/capture-client/wire.ts';
 import {
   CAPTURE_SOURCES,
-  CAPTURE_UNFILED_ENDS,
   captureImageLoader,
   captureScreenshotLoader,
   createCaptureAdapter,
   createCaptureContextSource,
-  dropCaptureImage,
+  dropEndedCaptureImage,
   releaseCaptureScreenshots,
 } from '../adapters/capture/adapter.ts';
 import { createCaptureRoutes } from '../adapters/capture/routes.ts';
@@ -248,6 +247,8 @@ const MAP_REFRESH_MS = 5_000;
 export const UX_FRICTION_SCAN_MS = 15 * 60_000;
 /** How often the worker reads new events for active monitoring and the escalation ladders. */
 export const MONITOR_TRIGGER_POLL_MS = 2_000;
+/** When the worker deletes expired kv rows (#271): hourly, on the hour. */
+export const KV_SWEEP_CRON = '0 * * * *';
 /** Where the worker keeps its place in the log for them (kv). */
 export const MONITOR_CURSOR_KEY = 'monitor:triggers-cursor';
 /** Where the worker keeps its place in the log for capture screenshots to delete (kv). */
@@ -1347,12 +1348,7 @@ export const compose: ComposeFn = async (deps) => {
     for (;;) {
       const page = await state.readSince(captureImagesCursor, 200);
       for (const e of page.events) {
-        if (!CAPTURE_UNFILED_ENDS.has(e.type)) continue;
-        // A ticket of its own (a Not a bug after filing) keeps its image until the projector attaches it.
-        const incident = await state.getIncident(e.incidentId);
-        if (incident?.jiraKey !== undefined && incident.status !== 'linked-to-existing') continue;
-        // Any incident's: deleting an image a chat incident never had is a no-op.
-        await dropCaptureImage(cache, e.incidentId);
+        await dropEndedCaptureImage(cache, state, e);
       }
       const moved = page.cursor !== captureImagesCursor;
       captureImagesCursor = page.cursor;
@@ -1686,6 +1682,8 @@ export const compose: ComposeFn = async (deps) => {
     loadScreenshot: captureScreenshotLoader(cache, chatScreenshots),
     // Attached, a capture screenshot lives on the issue only: its kv copy is deleted.
     screenshotsAttached: releaseCaptureScreenshots(cache),
+    // A filing parked for good (maxAttempts failed sends) never attaches: its images go too (#271).
+    screenshotsAbandoned: releaseCaptureScreenshots(cache),
     now: clock,
     ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
     onError: (e) => log.error(`jira projector: ${message(e)}`),
@@ -1834,6 +1832,10 @@ export const compose: ComposeFn = async (deps) => {
         );
       }
     }),
+    job('kv.sweep', async () => {
+      const deleted = await store.kvSweepExpired();
+      if (deleted > 0) log.info(`kv sweep: deleted ${String(deleted)} expired row${deleted === 1 ? '' : 's'}`);
+    }),
     ...phase4Jobs,
   ];
 
@@ -1876,6 +1878,7 @@ export const compose: ComposeFn = async (deps) => {
       },
       stop: () => Promise.resolve(),
     },
+    { name: 'kv sweep schedule', start: () => workflow.cron('kv.sweep', KV_SWEEP_CRON), stop: () => Promise.resolve() },
     { name: 'reconcile schedule', start: () => workflow.cron(RECONCILE_JOB, DEFAULT_RECONCILE_CRON), stop: () => Promise.resolve() },
     { name: 'jira projector', start: async () => jiraProjector.start(), stop: () => jiraProjector.stop() },
     { name: 'github projector', start: async () => githubProjector.start(), stop: () => githubProjector.stop() },

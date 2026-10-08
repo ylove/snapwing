@@ -196,6 +196,11 @@ export class StateStore implements StatePort {
     return kv.kvDelete(this.ctx, k);
   }
 
+  /** Deletes expired kv rows, `batch` at a time (default 500); resolves to how many went (#271). */
+  kvSweepExpired(batch?: number): Promise<number> {
+    return kv.kvSweepExpired(this.ctx, batch);
+  }
+
   // Transactions
 
   /** See `StatePort.transaction`. Inside `fn`, use `tx`, not this store (on SQLite this store would wait on `tx`'s connection). */
