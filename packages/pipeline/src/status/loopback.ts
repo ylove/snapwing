@@ -6,7 +6,8 @@
 // The rows of main 12, by event:
 //
 // - `filed`: "Filed as KEY, assigned to @owner." at levels 0 and 1; "Filed as KEY. Working on a fix
-//   now." with Stop at levels 2 and 3.
+//   now." with Stop at levels 2 and 3. With an engineer's claim holding the fixer (A 2.1) at any
+//   level: "Filed as KEY. @claimer is on it, so this is filed as ticket only." and no Stop.
 // - `fixer-started`, when it moves the incident to `fixing` and the message does not already say so:
 //   at level 1 after Fix it, or after a stop, an escalation, or a released claim. At levels 2 and 3
 //   straight after `filed` the message already says it, so nothing changes.
@@ -60,9 +61,10 @@ function hasOwnIssue(incident: IncidentView | undefined): incident is IncidentVi
  * The status message `event` sets, or undefined when it does not change the message. `before` is the
  * incident row before the event folded; without it, an event that names a status counts as moving
  * there (a replay that only keeps the latest row may then repeat an update, which edits the message
- * to the same text).
+ * to the same text). `holdClaimerId` is the engineer whose claim holds the fixer when `filed` arrives (A 2.1):
+ * filing is then ticket only, so the first post says so, with no Stop.
  */
-export function statusFor(event: IncidentEvent, incident: IncidentView, before?: IncidentView): StatusUpdate | undefined {
+export function statusFor(event: IncidentEvent, incident: IncidentView, before?: IncidentView, holdClaimerId?: string): StatusUpdate | undefined {
   if (!hasOwnIssue(incident)) return undefined;
   const issueKey = incident.jiraKey;
   const ownerRef = incident.assigneeId ?? incident.ownerRef;
@@ -74,6 +76,9 @@ export function statusFor(event: IncidentEvent, incident: IncidentView, before?:
   switch (event.type) {
     case 'filed':
       if (!moved('filed')) return undefined;
+      if (holdClaimerId !== undefined) {
+        return makeStatusUpdate('filed', ctx({ ...(level >= FIX_NOW_LEVEL ? {} : owner), claimerUserId: holdClaimerId }));
+      }
       return level >= FIX_NOW_LEVEL ? makeStatusUpdate('fixing', ctx()) : makeStatusUpdate('filed', ctx(owner));
     case 'fixer-started':
       if (!moved('fixing')) return undefined;

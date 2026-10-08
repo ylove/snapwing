@@ -28,6 +28,11 @@ export interface IncidentChange {
   /** False when the event did not fit the status it arrived in (the status was kept), or a correction was ignored. */
   valid: boolean;
   /**
+   * `filed` only: the chat user id of the engineer whose claim holds the fixer at this point of the log
+   * (A 2.1, `claimHold` over the events before `filed`). The first status post then reads ticket only.
+   */
+  holdClaimerId?: string;
+  /**
    * What the notification policy needs (playbook, subscriptions, the open batch; notify/policy.ts).
    * Absent: no notification rows, which is the default (A 4.4: off beyond the pinned edit).
    */
