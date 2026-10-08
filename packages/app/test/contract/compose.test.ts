@@ -47,6 +47,7 @@ import {
   SLACK_API as SLACK,
   slackSigned,
   slackWorld,
+  JIRA_HOOK_SECRET,
 } from '../fixtures/e2e/world.ts';
 
 /** A harness that must never run in these tests: boot only builds it. */
@@ -186,7 +187,8 @@ describe('compose under snapwing serve', () => {
     // Every other route is mounted and refuses an unauthenticated caller.
     expect((await fetch(`${url}/webhooks/github`, { method: 'POST', body: '{}' })).status).toBe(401);
     expect((await fetch(`${url}/fixer/01K6FAKEWORKITEM0000000000/stop`)).status).toBe(401);
-    expect((await fetch(`${url}/webhooks/jira`, { method: 'POST', body: 'not json' })).status).toBe(400);
+    expect((await fetch(`${url}/webhooks/jira`, { method: 'POST', body: 'not json' })).status).toBe(401);
+    expect((await fetch(`${url}/webhooks/jira?secret=${JIRA_HOOK_SECRET}`, { method: 'POST', body: 'not json' })).status).toBe(400);
     expect((await fetch(`${url}/auth/github/start`, { redirect: 'manual' })).status).not.toBe(404);
 
     run.signals.emit('SIGTERM');
@@ -197,6 +199,19 @@ describe('compose under snapwing serve', () => {
     expect(calls[0]).toBe(`POST slack.com/api/auth.test`);
     expect([...new Set(calls.slice(1))]).toEqual([`GET slack.com/api/conversations.members`]);
     expect(unhandled).toEqual([]);
+  });
+
+  it('with no JIRA_WEBHOOK_SECRET the Jira route refuses every delivery and startup says Jira webhooks are off', async () => {
+    const secrets = fakeSecrets();
+    delete secrets['JIRA_WEBHOOK_SECRET'];
+    const run = await serve(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], secrets);
+    const { url } = await run.ready;
+    expect(run.out.filter((l) => l.includes('JIRA_WEBHOOK_SECRET is not set'))).toHaveLength(1);
+    expect(run.out.join('\n')).toContain('Jira webhooks are off');
+    expect((await fetch(`${url}/webhooks/jira`, { method: 'POST', body: '{}' })).status).toBe(401);
+    expect((await fetch(`${url}/webhooks/jira?secret=`, { method: 'POST', body: '{}' })).status).toBe(401);
+    run.signals.emit('SIGTERM');
+    expect(await run.code).toBe(0);
   });
 
   it('fails startup listing every missing secret by name, never a value', async () => {

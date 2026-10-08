@@ -33,11 +33,15 @@ export const WORKSPACE_DOMAIN = 'acme-test';
 export const TEAM_ID = 'T0001';
 
 /** Fakes only: none of these looks like a real credential. */
+/** The `JIRA_WEBHOOK_SECRET` of the fake secret set; Jira deliveries carry it as `?secret=` (#266). */
+export const JIRA_HOOK_SECRET = 'jira-hook-secret-test';
+
 export function fakeSecrets(): Record<string, string> {
   return {
     SLACK_BOT_TOKEN: 'xoxb-test',
     SLACK_SIGNING_SECRET: SIGNING_SECRET,
     JIRA_BASE_URL: 'https://fake-site.atlassian.net',
+    JIRA_WEBHOOK_SECRET: JIRA_HOOK_SECRET,
     JIRA_EMAIL: 'snapwing-bot@example.com',
     JIRA_API_TOKEN: 'test-jira-token',
     JIRA_FIELD_IMPL_PROMPT: 'customfield_10050',

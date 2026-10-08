@@ -267,9 +267,10 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
     await run('webhook', async () => {
       if (!/^https:\/\//.test(publicUrl)) throw new Error('SNAPWING_PUBLIC_URL must be an https URL (Jira only delivers to https)');
       const secret = env['JIRA_WEBHOOK_SECRET'] ?? '';
+      if (secret === '') throw new Error('JIRA_WEBHOOK_SECRET is not set; the webhook address must carry it (#266)');
       // REST-registered webhooks are not signed, so the inbound route takes the secret as ?secret= (#143).
-      const fullUrl = secret === '' ? url : `${url}?secret=${encodeURIComponent(secret)}`;
-      const shown = secret === '' ? url : `${url} (with ?secret)`;
+      const fullUrl = `${url}?secret=${encodeURIComponent(secret)}`;
+      const shown = `${url} (with ?secret)`;
       const webhookName = opts.webhookName ?? WEBHOOK_NAME;
       const list = await raw('GET', WEBHOOK_API);
       const all = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];

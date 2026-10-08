@@ -37,7 +37,7 @@ import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/he
 import { textToAdf } from '../../src/jira/projector/ops.ts';
 import { FakeGitHub } from '../fixtures/e2e/github.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
-import {
+import { JIRA_HOOK_SECRET,
   blockIds,
   bootComposed,
   DEMO_LEVELS,
@@ -312,7 +312,7 @@ async function deliverJira(w: World, issueKey: string): Promise<void> {
     if (!w.jiraHooks.queued.some((d) => d.issueKey === issueKey)) throw new Error(`no Jira transition of ${issueKey} yet`);
   }, WAIT);
   const statuses = await w.jiraHooks.deliver(issueKey, (body) =>
-    w.booted.api.fetch(new Request('http://snapwing.test/webhooks/jira', { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
+    w.booted.api.fetch(new Request(`http://snapwing.test/webhooks/jira?secret=${JIRA_HOOK_SECRET}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
   );
   expect(statuses.every((s) => s === 200)).toBe(true);
 }

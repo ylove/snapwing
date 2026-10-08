@@ -252,7 +252,8 @@ function buttons(c: SlackPostCall, blockId: string): { action_id: string; value:
 /** Jira's webhook for the In Progress transition the agent made on `issueKey`. */
 async function deliverJira(url: string, issueKey: string, wait: <T>(what: string, find: () => T | undefined) => Promise<T>): Promise<void> {
   await wait(`the In Progress transition of ${issueKey}`, () => (world.jiraHooks.queued.some((q) => q.issueKey === issueKey) ? true : undefined));
-  const statuses = await world.jiraHooks.deliver(issueKey, (body) => fetch(`${url}/webhooks/jira`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }));
+  const secret = (await readEnv()).get('JIRA_WEBHOOK_SECRET') ?? '';
+  const statuses = await world.jiraHooks.deliver(issueKey, (body) => fetch(`${url}/webhooks/jira?secret=${secret}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }));
   expect(statuses.every((s) => s === 200)).toBe(true);
 }
 
