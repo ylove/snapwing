@@ -23,15 +23,12 @@
 // The asker's role comes from the workspace map (`people[].slackId`); an unmapped user is `unknown`
 // and so gets the reporter or lead shape, never the engineer one.
 
-import type { IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
 import type { StatusAnswer, StatusQuery } from '@snapwing/pipeline/contracts/signals.ts';
-import type { Claim, IncidentView, Subscription } from '@snapwing/pipeline/contracts/state.ts';
-import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
-import { createStatusQueries, type QueryResolution } from '@snapwing/pipeline/status/query.ts';
+import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
 import { statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { actions, section, type SlackBlock } from './cards/blocks.ts';
 import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
@@ -45,8 +42,10 @@ import type { SlackWeb } from './web.ts';
 export const STATUS_COMMAND = '/snapwing-status';
 const STATUS_COMMANDS: ReadonlySet<string> = new Set([STATUS_COMMAND, '/status']);
 
-/** The slice of the state port a status question reads. */
-export type StatusReadState = Pick<StatePort, 'findIncidents' | 'read' | 'getClaims' | 'getSubscriptions'>;
+export type { StatusReadState };
+
+// Re-exported for callers that import the matcher from the Slack module.
+export { looksLikeStatusQuestion, surfaceWords };
 
 export interface SlackStatusQueryOptions {
   web: SlackWeb;
@@ -103,29 +102,6 @@ function str(v: unknown): string {
 }
 
 const SLACK_ID = /^[UW][A-Z0-9]{2,}$/;
-const JIRA_KEY_ONLY = /^[A-Z][A-Z0-9]+-\d+\s*[?!.]*$/i;
-const STATUS_WORDS =
-  /^(?:(?:hey|hi|hello|please|pls|can you|could you|tell me|do you know)[,\s]+)*(?:status(?=\s*[?!.]*$|\s+(?:of|on|for)\b|\s+[A-Z][A-Z0-9]+-\d+)|what'?s (?:the )?(?:status|open|up|going on|happening|left|blocking)|what is (?:the )?(?:status|open|going on|happening|left|blocking)|what are we|where (?:are|do) we|where'?s |where is |how'?s |how is |how are we|any (?:update|news|progress)|updates? on|progress on|is .+ (?:fixed|done|live|merged|deployed)\b|did .+ (?:merge|ship|deploy|land)\b)/i;
-
-/**
- * Whether DM text reads as a status question rather than a bug report to capture. `status` counts only
- * as the whole text, with a `?`, a Jira key, "of/on/for", or (given `surfaces`) exactly a surface id or
- * name after it: "status page is down" is a report.
- */
-export function looksLikeStatusQuestion(text: string, surfaces?: readonly string[]): boolean {
-  const t = text.replace(/<@[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  if (t === '') return false;
-  if (JIRA_KEY_ONLY.test(t) || STATUS_WORDS.test(t)) return true;
-  if (surfaces === undefined || surfaces.length === 0) return false;
-  // `status web`, `status Website?`: the words after `status` are exactly a surface id or name.
-  const named = /^(?:(?:hey|hi|hello|please|pls|can you|could you|tell me|do you know)[,\s]+)*status\s+(.+?)\s*[?!.]*$/i.exec(t);
-  return named?.[1] !== undefined && surfaces.some((name) => name.toLowerCase() === named[1]?.toLowerCase());
-}
-
-/** The ids and names of the map's surfaces, for `looksLikeStatusQuestion`. */
-export function surfaceWords(map: WorkspaceMap): string[] {
-  return map.surfaces.flatMap((s) => [s.id, s.label]);
-}
 
 /** Splits a form body into its fields. */
 function formFields(body: string): Record<string, string> {
@@ -156,11 +132,11 @@ interface Request {
 }
 
 export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackStatusQuery {
-  const { web, state } = options;
+  const { web } = options;
   const clock = options.clock ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const doFetch: typeof fetch = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-  const limit = options.incidentLimit ?? 500;
+  const ask = createStatusAsk(options);
   const seen = new Set<string>();
   const authorOf = options.authorOf ?? createSlackAuthorOf({ botUserId: options.botUserId });
 
@@ -182,57 +158,6 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
       ...(person?.email === undefined ? {} : { email: person.email }),
       role: person?.role ?? 'unknown',
     };
-  }
-
-  async function logsOf(incidents: readonly IncidentView[], into: Map<string, IncidentEvent[]>): Promise<void> {
-    const missing = incidents.filter((i) => !into.has(i.id));
-    const reads = await Promise.all(missing.map(async (i) => [i.id, await state.read(i.id)] as const));
-    for (const [id, events] of reads) into.set(id, events);
-  }
-
-  /** The incidents a resolution is about, whose logs, claims and watchers the answer reads. */
-  function involved(found: QueryResolution): IncidentView[] {
-    switch (found.kind) {
-      case 'incident':
-        return [found.incident];
-      case 'surface':
-        return found.incidents;
-      case 'tie':
-        return [];
-      case 'none':
-        return [];
-    }
-  }
-
-  async function ask(query: StatusQuery): Promise<StatusAnswer> {
-    const map = await options.getMap();
-    const incidents = await state.findIncidents({ workspaceId: options.workspaceId, limit });
-    const logs = new Map<string, IncidentEvent[]>();
-    // The asking channel's open incidents: a thread can match only through `captured.threadId` in the log.
-    const channelId = query.context.channelId;
-    await logsOf(
-      incidents.filter((i) => !isTerminalStatus(i.status) && (channelId === undefined || i.channelId === undefined || i.channelId === channelId)),
-      logs,
-    );
-    const base = { incidents, map, now: clock(), ...(options.timeZone === undefined ? {} : { timeZone: options.timeZone }) };
-    const events = (id: string): readonly IncidentEvent[] => logs.get(id) ?? [];
-    const found = createStatusQueries({ ...base, events }).resolveQuery(query);
-
-    // Second pass: what the answer itself reads, for the incidents it names.
-    const named = involved(found);
-    await logsOf(named, logs);
-    const claims: Claim[] = [];
-    const subscriptions: Subscription[] = [];
-    await Promise.all(
-      named.map(async (i) => {
-        const [c, s] = await Promise.all([state.getClaims(i.id), state.getSubscriptions(i.id)]);
-        claims.push(...c);
-        for (const sub of s) {
-          if (!subscriptions.some((x) => x.userId === sub.userId && x.scopeKind === sub.scopeKind && x.scopeId === sub.scopeId)) subscriptions.push(sub);
-        }
-      }),
-    );
-    return createStatusQueries({ ...base, events, claims, subscriptions }).respond(query);
   }
 
   function blocksFor(answer: StatusAnswer, map: WorkspaceMap): { text: string; blocks: SlackBlock[] } {
