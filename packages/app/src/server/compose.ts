@@ -1001,6 +1001,15 @@ export const compose: ComposeFn = async (deps) => {
     // Called per request, once the engine below exists.
     engine: { handleInbound: (source, raw) => engine.handleInbound(source, raw), handleTap: (tap) => engine.handleTap(tap) },
     stop: (input) => stopIncident(fixerDeps, input),
+    queue: createQueue({
+      state,
+      workspaceId,
+      getMap: liveMap,
+      identity: oauth,
+      pullRequest: (repo, number) => github(repo).getPullRequest(number),
+      clock,
+      onError: (e) => log.error(`capture queue: ${message(e)}`),
+    }).queueFor,
     issueUrl: capture.issueUrl,
   });
 

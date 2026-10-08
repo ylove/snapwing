@@ -388,6 +388,7 @@ describe('the capture API through capture-client', () => {
     const revoked = createCaptureClient({ endpoint: ENDPOINT, token: issued.token, fetch: (input, init) => w.api.fetch(new Request(input, init)) });
     await expect(revoked.sendText(VAGUE)).rejects.toBeInstanceOf(CaptureAuthError);
     await expect(revoked.status('HELP-1')).rejects.toMatchObject({ status: 401 });
+    await expect(revoked.queue()).rejects.toMatchObject({ status: 401 });
     // Nothing reached the engine.
     expect(await state.findIncidents({ workspaceId: w.workspaceId })).toEqual([]);
     // Health needs no token and names the chat platforms.
@@ -413,6 +414,19 @@ describe('the capture API through capture-client', () => {
     await expect(engineer.stop('NOPE-1')).rejects.toMatchObject({ status: 404 });
     const log = await w.booted.state.read((await w.booted.state.findIncidents({ jiraKey: 'HELP-1' }))[0]?.id ?? '');
     expect(log.some((e) => e.type === 'stopped')).toBe(false);
+    settled(w);
+  });
+
+  it("serves the caller's queue: an engineer's sections, a reporter's own reports only", { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const engineer = await w.clientFor('helpDev');
+    const reporter = await w.clientFor('salesLead');
+    const mine = await engineer.queue();
+    expect(mine.kind).toBe('engineer');
+    expect(mine.sections.map((s) => s.id)).toEqual(['assigned', 'fixing', 'waiting', 'recent']);
+    const theirs = await reporter.queue();
+    expect(theirs.kind).toBe('reporter');
+    expect(theirs.sections.map((s) => s.id)).toEqual(['reports']);
     settled(w);
   });
 

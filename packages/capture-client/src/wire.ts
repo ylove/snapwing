@@ -115,6 +115,37 @@ export interface TicketStatus {
   readonly pullRequest?: { readonly url: string; readonly state: string };
 }
 
+export type QueueSectionId = 'assigned' | 'fixing' | 'waiting' | 'recent' | 'reports';
+
+/** A button on a queue item. Only `open_pr` is a link; the others are taps in chat. */
+export type QueueButton = { readonly kind: 'open_pr'; readonly url: string } | { readonly kind: 'stop' } | { readonly kind: 'merge' };
+
+export interface QueueItem {
+  readonly incidentId: string;
+  /** The Jira key, else `incident <last six of the id>`. */
+  readonly label: string;
+  readonly summary: string;
+  readonly priority?: string;
+  /** Plain tail after the summary: the status, `PR #31`, or `merged 2026-10-02, PR #41`. */
+  readonly detail: string;
+  readonly buttons: readonly QueueButton[];
+}
+
+export interface QueueSection {
+  readonly id: QueueSectionId;
+  readonly title: string;
+  /** What an empty section says. */
+  readonly empty: string;
+  readonly items: readonly QueueItem[];
+}
+
+/** `GET /queue`: the caller's queue, as Slack Home and the Teams card show it. A reporter gets "Your reports" only. */
+export interface QueueView {
+  readonly kind: 'engineer' | 'reporter';
+  readonly title: string;
+  readonly sections: readonly QueueSection[];
+}
+
 /** `POST /issues/:key/stop`. */
 export interface StopResult {
   readonly issueKey: string;
@@ -145,6 +176,7 @@ export const CAPTURE_ROUTES = {
   poll: (captureId: string): string => `/capture/${encodeURIComponent(captureId)}`,
   status: (key: string): string => `/issues/${encodeURIComponent(key)}/status`,
   stop: (key: string): string => `/issues/${encodeURIComponent(key)}/stop`,
+  queue: '/queue',
   health: '/healthz',
 } as const;
 
@@ -389,4 +421,77 @@ export function validateHealthResult(input: unknown): Validation<HealthResult> {
     });
   }
   return ok({ ok: flag, platforms });
+}
+
+const SECTION_IDS: readonly string[] = ['assigned', 'fixing', 'waiting', 'recent', 'reports'];
+
+function text(r: Rec, key: string, at: string): Validation<string> {
+  const v = r[key];
+  return typeof v === 'string' ? ok(v) : fail(`${at}${key} must be a string`);
+}
+
+function validateQueueItem(input: unknown, at: string): Validation<QueueItem> {
+  if (!isRec(input)) return fail(`${at.replace(/\.$/, '')} must be an object`);
+  const incidentId = reqStr(input, 'incidentId', at);
+  if (!incidentId.ok) return incidentId;
+  const label = reqStr(input, 'label', at);
+  if (!label.ok) return label;
+  const summary = text(input, 'summary', at);
+  if (!summary.ok) return summary;
+  const priority = optStr(input, 'priority', at);
+  if (!priority.ok) return priority;
+  const detail = text(input, 'detail', at);
+  if (!detail.ok) return detail;
+  const raw = input['buttons'];
+  if (!Array.isArray(raw)) return fail(`${at}buttons must be an array`);
+  const buttons: QueueButton[] = [];
+  for (const [i, b] of (raw as readonly unknown[]).entries()) {
+    const bat = `${at}buttons[${i}].`;
+    if (!isRec(b)) return fail(`${at}buttons[${i}] must be an object`);
+    if (b['kind'] === 'stop' || b['kind'] === 'merge') buttons.push({ kind: b['kind'] });
+    else if (b['kind'] === 'open_pr') {
+      const url = reqStr(b, 'url', bat);
+      if (!url.ok) return url;
+      buttons.push({ kind: 'open_pr', url: url.value });
+    } else return fail(`${bat}kind must be one of open_pr, stop, merge`);
+  }
+  return ok({
+    incidentId: incidentId.value,
+    label: label.value,
+    summary: summary.value,
+    ...(priority.value === undefined ? {} : { priority: priority.value }),
+    detail: detail.value,
+    buttons,
+  });
+}
+
+export function validateQueueView(input: unknown): Validation<QueueView> {
+  if (!isRec(input)) return fail('queue must be an object');
+  const kind = input['kind'];
+  if (kind !== 'engineer' && kind !== 'reporter') return fail('kind must be engineer or reporter');
+  const title = reqStr(input, 'title', '');
+  if (!title.ok) return title;
+  const raw = input['sections'];
+  if (!Array.isArray(raw)) return fail('sections must be an array');
+  const sections: QueueSection[] = [];
+  for (const [i, s] of (raw as readonly unknown[]).entries()) {
+    const at = `sections[${i}].`;
+    if (!isRec(s)) return fail(`sections[${i}] must be an object`);
+    const id = s['id'];
+    if (typeof id !== 'string' || !SECTION_IDS.includes(id)) return fail(`${at}id must be one of ${SECTION_IDS.join(', ')}`);
+    const sTitle = reqStr(s, 'title', at);
+    if (!sTitle.ok) return sTitle;
+    const empty = text(s, 'empty', at);
+    if (!empty.ok) return empty;
+    const rawItems = s['items'];
+    if (!Array.isArray(rawItems)) return fail(`${at}items must be an array`);
+    const items: QueueItem[] = [];
+    for (const [j, it] of (rawItems as readonly unknown[]).entries()) {
+      const parsed = validateQueueItem(it, `${at}items[${j}].`);
+      if (!parsed.ok) return parsed;
+      items.push(parsed.value);
+    }
+    sections.push({ id: id as QueueSectionId, title: sTitle.value, empty: empty.value, items });
+  }
+  return ok({ kind, title: title.value, sections });
 }

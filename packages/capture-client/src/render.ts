@@ -1,4 +1,4 @@
-import type { Choice, LookupResponse } from './wire.ts';
+import type { Choice, LookupResponse, QueueItem, QueueView } from './wire.ts';
 
 export interface NumberedChoice extends Choice {
   /** One-based, as typed at a terminal prompt or shown in a list. */
@@ -58,4 +58,33 @@ export function renderChoices(response: LookupResponse): RenderedChoices {
 /** The lines and numbered choices as plain text, for terminals. */
 export function formatRendered(rendered: RenderedChoices): string {
   return [...rendered.lines, ...rendered.choices.map((c) => `${c.number}. ${c.label}`)].join('\n');
+}
+
+/** Most items a section lists; the rest are counted, as on the Slack Home and the Teams card. */
+export const QUEUE_SECTION_LIMIT = 8;
+
+const REPORTER_INTRO = 'Fix it from here. Send a bug with `snapwing say`, and `snapwing status <KEY>` shows where a report stands.';
+
+function queueLine(item: QueueItem): string {
+  const priority = item.priority === undefined ? '' : ` (${item.priority})`;
+  return `  ${item.label} ${item.summary}${priority}${item.detail === '' ? '' : ` · ${item.detail}`}`;
+}
+
+/** The queue as plain terminal lines: each section's title and count, its items, or what it says when empty. */
+export function formatQueue(queue: QueueView): string {
+  const lines: string[] = [queue.title];
+  if (queue.kind === 'reporter') lines.push(REPORTER_INTRO);
+  for (const s of queue.sections) {
+    lines.push('', `${s.title}${s.items.length === 0 ? '' : ` (${s.items.length})`}`);
+    if (s.items.length === 0) {
+      lines.push(`  ${s.empty}`);
+      continue;
+    }
+    for (const it of s.items.slice(0, QUEUE_SECTION_LIMIT)) {
+      lines.push(queueLine(it));
+      for (const b of it.buttons) if (b.kind === 'open_pr') lines.push(`    ${b.url}`);
+    }
+    if (s.items.length > QUEUE_SECTION_LIMIT) lines.push(`  and ${s.items.length - QUEUE_SECTION_LIMIT} more`);
+  }
+  return lines.join('\n');
 }

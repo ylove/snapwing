@@ -8,6 +8,8 @@
 //                                  the next lookup, waiting the same way. Only a choice the card offers
 //                                  this caller counts (a reporter is never offered Fix it)
 //   GET  /issues/:key/status       the ticket's status loopback (`TicketStatus`)
+//   GET  /queue                   the caller's queue (`QueueView`), the sections Slack Home and the Teams
+//                                  card show; a reporter gets "Your reports" only
 //   POST /issues/:key/stop         Stop, engineers only (`authorizeStopCommand`): 403 for anyone else
 //
 // A key names the incident whose ticket it is, never a report linked to that ticket later.
@@ -30,8 +32,10 @@ import type { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrato
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
 import { isTerminalStatus, OWNS_ITS_KEY, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import type { ChatUserRef } from '@snapwing/pipeline/merge/human.ts';
 import { authorizeStopCommand } from '@snapwing/pipeline/policy/authorize.ts';
 import type { Route } from '../../server/http.ts';
+import type { QueueModel } from '../../status/queue.ts';
 import { CAPTURE_IMAGE_TYPES, isCaptureAck, readCaptureRecord, type CaptureInbound } from './adapter.ts';
 import { lookupCapture, tapChoice, ticketStatus, type LookupDeps } from './lookup.ts';
 
@@ -44,6 +48,8 @@ export interface CaptureRoutesOptions {
   readonly engine: Pick<IncidentOrchestrator, 'handleInbound' | 'handleTap'>;
   /** `stopIncident` over the fixer deps. */
   readonly stop: (input: StopInput) => Promise<StopOutcome>;
+  /** The shared queue model (`createQueue`), the one Slack Home and the Teams card render. */
+  readonly queue: QueueModel['queueFor'];
   /** The Jira issue's browse URL. */
   readonly issueUrl: (issueKey: string) => string;
   /** The longest a send or an answer waits for the engine's next card or the filing. Default 8 s. */
@@ -133,6 +139,13 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
     if (person === undefined) return undefined;
     const wait = limiter?.hit(verified.tokenId, Date.now());
     return wait === undefined ? person : tooManyRequests(wait);
+  }
+
+  /** The chat identity the queue model knows `person` by: their Slack id, else their Teams id. */
+  function viewerOf(person: MapPerson): ChatUserRef {
+    if (person.slackId !== undefined) return { chat: 'slack', userId: person.slackId };
+    if (person.teamsId !== undefined) return { chat: 'teams', userId: person.teamsId };
+    return { chat: 'slack', userId: person.handle };
   }
 
   async function caller(req: Request): Promise<MapPerson | undefined> {
@@ -236,6 +249,15 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         const incident = await incidentByKey(params['key'] ?? '');
         if (incident === undefined) return json(404, { error: 'no ticket with that key' });
         return json(200, ticketStatus(incident, await options.map(), options.issueUrl));
+      },
+    },
+    {
+      method: 'GET',
+      path: CAPTURE_ROUTES.queue,
+      async handler(req) {
+        const person = await caller(req);
+        if (person === undefined) return unauthorized();
+        return json(200, await options.queue(viewerOf(person)));
       },
     },
     {
