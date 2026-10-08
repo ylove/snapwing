@@ -141,6 +141,10 @@ describe.skipIf(!hasSecrets)('Capture lookup-first live tier: the Raycast scenar
       <jira project="${projectKey}" defaultIssueType="Task" />
     </surface>
   </surfaces>
+  <channels />
+  <triggers>
+    <cli enabled="true" />
+  </triggers>
   <vocabulary>
     <term surface="fixture">the fixture</term>
   </vocabulary>
