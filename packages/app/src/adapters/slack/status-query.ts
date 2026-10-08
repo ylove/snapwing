@@ -31,6 +31,8 @@ import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signa
 import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
 import { statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { actions, section, type SlackBlock } from './cards/blocks.ts';
+import { isUnlinkGithub, unlinkGithubReply } from '../shared/unlink-github.ts';
+import type { GitHubOAuth } from '../../github/oauth.ts';
 import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
 import type { SlackWeb } from './web.ts';
 
@@ -55,6 +57,8 @@ export interface SlackStatusQueryOptions {
   getMap: () => Promise<WorkspaceMap>;
   /** Writes standing subscriptions asked for in a DM; without it such a DM is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
+  /** Answers `unlink github` in a DM (main 11.2); without it such a DM is not intercepted. */
+  identity?: Pick<GitHubOAuth, 'disconnect'>;
   /** The bot's own user id (`auth.test`): its messages are ignored and its mention is stripped. */
   botUserId: string;
   /** Who wrote a message (`authorship.ts`). Default: the map and `botUserId` only. */
@@ -129,6 +133,8 @@ interface Request {
   text: string;
   /** A DM that asks for a standing subscription rather than a status. */
   standing?: boolean;
+  /** A DM that asks to unlink the asker's GitHub account. */
+  unlink?: boolean;
 }
 
 export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackStatusQuery {
@@ -216,6 +222,9 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
     if (event['type'] === 'app_mention') {
       return { asker: user, channelId: channel, ...(threadTs === '' ? {} : { threadId: threadTs }), replyThread: threadTs === '' ? ts : threadTs, text };
     }
+    if (event['type'] === 'message' && str(event['channel_type']) === 'im' && options.identity !== undefined && isUnlinkGithub(text)) {
+      return { asker: user, channelId: channel, text, unlink: true };
+    }
     if (event['type'] === 'message' && str(event['channel_type']) === 'im' && options.standing !== undefined && parseStandingWatch(text)?.command === false) {
       return { asker: user, channelId: channel, text, standing: true };
     }
@@ -247,6 +256,10 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
         // `intercepts` is synchronous; a `bot_id` on a message from someone the map does not name is
         // settled here, and another bot's question goes unanswered (capture would drop it too).
         if ((await authorOf(rec(rec(parsed)['event']), await options.getMap())) !== 'person') return;
+        if (request.unlink === true && options.identity !== undefined) {
+          await web.postMessage({ channel: request.channelId, text: await unlinkGithubReply(options.identity, 'slack', request.asker) });
+          return;
+        }
         if (request.standing === true && options.standing !== undefined) {
           const outcome = await applyStandingWatch(options.standing, await options.getMap(), {
             workspaceId: options.workspaceId,

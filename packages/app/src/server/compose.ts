@@ -868,10 +868,10 @@ export const compose: ComposeFn = async (deps) => {
   // A 6.4: the live INSTRUCTIONS.md may hold an autopilot merge (level 3 to 2).
   const mergeDeps: MergeDeps = { workspaceId, state, workflow, github, merge: config.merge, map: getMap, clock, instructionsGate: { instructions: configWatch.instructions, model } };
 
-  const oauth = createGitHubOAuth({ state, secrets: deps.secrets, workspaceId });
   // The map as last read, for the synchronous lookups (a handle, a surface); refreshed on each use below.
   let mapSnapshot: WorkspaceMap = await getMap();
   const liveMap = async (): Promise<WorkspaceMap> => (mapSnapshot = await getMap());
+  const oauth = createGitHubOAuth({ state, secrets: deps.secrets, workspaceId, map: liveMap, onError: (e) => log.error(`github link: ${message(e)}`) });
 
   // Slack, when configured. One `auth.test` at startup gives the bot user id, the workspace's team id,
   // and its subdomain (the Conversation Link). Who wrote a message is shared by every inbound path that
@@ -1505,6 +1505,7 @@ export const compose: ComposeFn = async (deps) => {
             web: slackWeb,
             state,
             standing: state,
+            identity: oauth,
             workspaceId,
             getMap,
             botUserId,
@@ -1589,7 +1590,7 @@ export const compose: ComposeFn = async (deps) => {
             clock,
             onError: teamsError('interactivity'),
           });
-          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, cache, clock, onError: teamsError('status query') });
+          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, onError: teamsError('status query') });
           const queue = teamsQueueRoutes(
             createTeamsQueue({
               connector,

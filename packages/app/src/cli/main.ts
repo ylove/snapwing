@@ -100,6 +100,14 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
       return runToken(args, io);
     },
   },
+  github: {
+    label: 'github unlink',
+    summary: "remove a person's linked GitHub account and revoke its grant (offboarding)",
+    run: async (args, io) => {
+      const { runGithub } = await import('./github.ts');
+      return runGithub(args, io);
+    },
+  },
   onboard: {
     summary: 'set Snapwing up by interview; picks up where it stopped',
     run: async (args, io) => {

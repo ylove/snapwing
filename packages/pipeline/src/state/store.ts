@@ -156,6 +156,10 @@ export class StateStore implements StatePort {
     return identities.getLinkedIdentity(this.ctx, key);
   }
 
+  getLinkedIdentityByGithubUser(workspaceId: string, githubUserId: number): Promise<LinkedIdentity | null> {
+    return identities.getLinkedIdentityByGithubUser(this.ctx, workspaceId, githubUserId);
+  }
+
   unlinkIdentity(key: LinkedIdentityKey): Promise<boolean> {
     return identities.unlinkIdentity(this.ctx, key);
   }

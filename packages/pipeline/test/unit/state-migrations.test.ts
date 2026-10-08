@@ -260,7 +260,7 @@ describe(`0007 subscription platform (${TEST_DIALECT})`, () => {
           sub('U-E', 'all', ''),
         ])
         .execute();
-      expect(await migrateState(db, TEST_DIALECT)).toEqual(['0007-subscription-platform']);
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 7))).toEqual(['0007-subscription-platform']);
       const rows = await db.selectFrom('subscriptions').select(['user_id', 'platform']).orderBy('user_id').execute();
       expect(rows.map((r) => [r.user_id, r.platform])).toEqual([
         ['U-A', 'slack'],
@@ -275,6 +275,41 @@ describe(`0007 subscription platform (${TEST_DIALECT})`, () => {
         .where('user_id', '=', 'U-D')
         .execute();
       await expect(bad).rejects.toThrow(/check constraint/i);
+    } finally {
+      await db.destroy();
+    }
+  });
+});
+
+describe(`0008 one GitHub account, one chat user (${TEST_DIALECT})`, () => {
+  it('keeps the most recently updated row of an account two chat users held, then refuses a second holder', async () => {
+    const db = bareDb();
+    try {
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 7))).toEqual(MIGRATIONS.slice(0, 7).map((m) => m.name));
+      const row = (chat: string, user: string, githubUserId: number, updatedAt: string) => ({
+        workspace_id: WS,
+        chat,
+        chat_user_id: user,
+        github_login: 'octo',
+        github_user_id: githubUserId,
+        access_token: 'swenc1.a.b.c',
+        linked_at: updatedAt,
+        updated_at: updatedAt,
+      });
+      const legacy = db as unknown as Kysely<Record<'linked_identities', ReturnType<typeof row>>>;
+      await legacy
+        .insertInto('linked_identities')
+        .values([
+          row('slack', 'U-OLD', 41, '2026-10-01T10:00:00.000Z'),
+          row('teams', 'T-NEW', 41, '2026-10-02T10:00:00.000Z'),
+          row('slack', 'U-ALONE', 42, '2026-10-01T10:00:00.000Z'),
+        ])
+        .execute();
+      expect(await migrateState(db, TEST_DIALECT)).toEqual(['0008-linked-identity-unique-account']);
+      const rows = await db.selectFrom('linked_identities').select(['chat_user_id']).orderBy('chat_user_id').execute();
+      expect(rows.map((r) => r.chat_user_id)).toEqual(['T-NEW', 'U-ALONE']);
+      const again = legacy.insertInto('linked_identities').values(row('slack', 'U-THIRD', 41, '2026-10-03T10:00:00.000Z')).execute();
+      await expect(again).rejects.toThrow(/unique/i);
     } finally {
       await db.destroy();
     }

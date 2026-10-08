@@ -115,8 +115,8 @@ const FIXES: Readonly<Record<string, Omit<Plan, 'hangAfterPr' | 'reviewGate'>>> 
 
 /** The map's engineers and the GitHub accounts they link (main 11.2 step 3). Fakes only. */
 const PEOPLE: Readonly<Record<string, GitHubPerson>> = {
-  U0ADMDEV: { login: 'ari-acme', id: 7100001, token: 'test-user-token-ari', code: 'test-oauth-code-ari' },
-  U0WEBDEV: { login: 'dana-acme', id: 7100002, token: 'test-user-token-dana', code: 'test-oauth-code-dana' },
+  U0ADMDEV: { login: 'ari-acme', id: 7100001, token: 'test-user-token-ari', code: 'test-oauth-code-ari', email: 'ari@example.com' },
+  U0WEBDEV: { login: 'dana-acme', id: 7100002, token: 'test-user-token-dana', code: 'test-oauth-code-dana', email: 'dana@example.com' },
 };
 
 interface World {
@@ -178,6 +178,11 @@ async function world(file: string, issueKey: string, plan: Partial<Plan> = {}): 
 
 // Steps -------------------------------------------------------------------------------------------
 
+/** The start page's "Continue to GitHub" link. */
+function continueLink(html: string): string {
+  return (/<a href="([^"]+)"/.exec(html)?.[1] ?? '').replace(/&#(\d+);/g, (_m, n: string) => String.fromCharCode(Number(n)));
+}
+
 /** Links a Slack user's GitHub account through the composed OAuth routes, as at onboarding. */
 async function linkGitHub(w: World, slackUserId: string): Promise<void> {
   const person = PEOPLE[slackUserId];
@@ -186,8 +191,8 @@ async function linkGitHub(w: World, slackUserId: string): Promise<void> {
   const oauth = createGitHubOAuth({ state: w.booted.state, secrets: w.booted.secrets, workspaceId });
   const link = new URL(await oauth.linkUrl({ chat: 'slack', userId: slackUserId }));
   const start = await w.booted.api.fetch(new Request(`http://snapwing.test${link.pathname}${link.search}`));
-  expect(start.status).toBe(302);
-  const authorize = new URL(start.headers.get('location') ?? '');
+  expect(start.status).toBe(200);
+  const authorize = new URL(continueLink(await start.text()));
   expect(authorize.origin).toBe('https://github.com');
   const cookie = (start.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
   // The user approves on GitHub, which redirects back with a code and the same state.

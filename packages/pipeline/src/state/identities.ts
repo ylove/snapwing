@@ -2,9 +2,11 @@
 // sealed GitHub App user-to-server and refresh tokens. One row per (workspace, chat, chat user).
 // The store never sees a token: it stores the sealed strings the caller gives it (`util/seal.ts`)
 // and refuses anything that is not sealed, so a caller that forgets to seal fails loudly instead of
-// writing a token in the clear. The OAuth flow and the refresh live in app/src/github/oauth.ts.
+// writing a token in the clear. One GitHub account links to one chat user of a workspace, at a time
+// (main 11.2): `linkIdentity` refuses a second holder, and a unique index backs it. The OAuth flow and the refresh live in app/src/github/oauth.ts.
 
 import { sql } from 'kysely';
+import { LinkedIdentityConflictError } from '../contracts/state.ts';
 import type { LinkedIdentity, LinkedIdentityKey, NewLinkedIdentity } from '../ports/state.ts';
 import { isSealed } from '../util/seal.ts';
 import type { StateContext } from './context.ts';
@@ -19,6 +21,8 @@ function assertSealed(field: string, value: string | undefined): void {
 export async function linkIdentity(ctx: StateContext, identity: NewLinkedIdentity): Promise<void> {
   assertSealed('accessToken', identity.accessToken);
   assertSealed('refreshToken', identity.refreshToken);
+  const holder = await getLinkedIdentityByGithubUser(ctx, identity.workspaceId, identity.githubUserId);
+  if (holder !== null && (holder.chat !== identity.chat || holder.chatUserId !== identity.chatUserId)) throw new LinkedIdentityConflictError();
   const now = ctx.codec.timestamp(ctx.now());
   const tokens = {
     github_login: identity.githubLogin,
@@ -47,18 +51,11 @@ export async function linkIdentity(ctx: StateContext, identity: NewLinkedIdentit
     .execute();
 }
 
-/** See `StatePort.getLinkedIdentity`. */
-export async function getLinkedIdentity(ctx: StateContext, key: LinkedIdentityKey): Promise<LinkedIdentity | null> {
-  const row = await ctx.db
-    .selectFrom('linked_identities')
-    .selectAll()
-    .where('workspace_id', '=', key.workspaceId)
-    .where('chat', '=', key.chat)
-    .where('chat_user_id', '=', key.chatUserId)
-    .executeTakeFirst();
-  if (row === undefined) {
-    return null;
-  }
+function selectLinked(ctx: StateContext) {
+  return ctx.db.selectFrom('linked_identities').selectAll();
+}
+
+function identityOf(ctx: StateContext, row: Awaited<ReturnType<ReturnType<typeof selectLinked>['executeTakeFirstOrThrow']>>): LinkedIdentity {
   const accessTokenExpiresAt = ctx.codec.fromTimestampOpt(row.access_token_expires_at);
   const refreshTokenExpiresAt = ctx.codec.fromTimestampOpt(row.refresh_token_expires_at);
   return {
@@ -74,6 +71,22 @@ export async function getLinkedIdentity(ctx: StateContext, key: LinkedIdentityKe
     linkedAt: ctx.codec.fromTimestamp(row.linked_at),
     updatedAt: ctx.codec.fromTimestamp(row.updated_at),
   };
+}
+
+/** See `StatePort.getLinkedIdentity`. */
+export async function getLinkedIdentity(ctx: StateContext, key: LinkedIdentityKey): Promise<LinkedIdentity | null> {
+  const row = await selectLinked(ctx)
+    .where('workspace_id', '=', key.workspaceId)
+    .where('chat', '=', key.chat)
+    .where('chat_user_id', '=', key.chatUserId)
+    .executeTakeFirst();
+  return row === undefined ? null : identityOf(ctx, row);
+}
+
+/** See `StatePort.getLinkedIdentityByGithubUser`. */
+export async function getLinkedIdentityByGithubUser(ctx: StateContext, workspaceId: string, githubUserId: number): Promise<LinkedIdentity | null> {
+  const row = await selectLinked(ctx).where('workspace_id', '=', workspaceId).where('github_user_id', '=', githubUserId).executeTakeFirst();
+  return row === undefined ? null : identityOf(ctx, row);
 }
 
 /** See `StatePort.unlinkIdentity`. */

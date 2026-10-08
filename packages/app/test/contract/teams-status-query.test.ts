@@ -476,3 +476,46 @@ describe('speed and redelivery', () => {
     expect(sent).toHaveLength(1);
   });
 });
+
+describe('unlink github in the personal chat (main 11.2)', () => {
+  function withIdentity(result: { linked: boolean; revoked: boolean }): unknown[] {
+    const calls: unknown[] = [];
+    teams = createTeamsStatusQuery({
+      connector: createTeamsConnector({ token: async () => 'teams-test-token', botId: BOT }),
+      state,
+      workspaceId: WS,
+      getMap: () => Promise.resolve(map),
+      clock: () => new Date(T0),
+      identity: {
+        disconnect: (user) => {
+          calls.push(user);
+          return Promise.resolve(result);
+        },
+      },
+      onError: (e) => errors.push(e),
+    });
+    return calls;
+  }
+
+  it('unlinks the asker, and answers in the chat', async () => {
+    const calls = withIdentity({ linked: true, revoked: true });
+    const ask = chat(REPORTER, 'unlink github');
+    expect(teams.intercepts(ask)).toBe(true);
+    await teams.handle(ask);
+    expect(calls).toEqual([{ chat: 'teams', userId: REPORTER }]);
+    expect(sent.map((s) => [s.conversationId, s.body.text])).toEqual([[PERSONAL, expect.stringContaining('revoked at GitHub') as unknown]]);
+  });
+
+  it('says so when nothing was linked', async () => {
+    withIdentity({ linked: false, revoked: true });
+    await teams.handle(chat(REPORTER, 'Unlink my GitHub account.'));
+    expect(sent[0]?.body.text).toBe('Your GitHub account is not linked.');
+  });
+
+  it('leaves a bug report alone, and an install without identity links', () => {
+    withIdentity({ linked: true, revoked: true });
+    expect(teams.intercepts(chat(REPORTER, 'unlink github button is broken'))).toBe(false);
+    const plain = createTeamsStatusQuery({ connector: createTeamsConnector({ token: async () => 'teams-test-token', botId: BOT }), state, workspaceId: WS, getMap: () => Promise.resolve(map) });
+    expect(plain.intercepts(chat(REPORTER, 'unlink github'))).toBe(false);
+  });
+});
