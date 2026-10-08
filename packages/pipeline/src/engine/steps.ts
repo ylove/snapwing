@@ -491,9 +491,11 @@ export async function dedupeCardStep(env: StepEnv, phase: Extract<Phase, { kind:
   } else if (answer !== undefined || top === undefined) {
     // Nothing to link: the agent goes on as Create anyway.
     decided = newEvent(env, 'dedupe-decided', { decision: 'create-anyway' });
+  } else if (isCaptureSource(env.payload.source)) {
+    // A capture has no thread to answer in, so a tracked lookup links at once instead of waiting on
+    // a card nobody can answer; the reporter watches the ticket it was linked to.
+    return linkStep(env, top.issueKey);
   } else if (takeTimeout(env)) {
-    // A capture has no thread where silence could go on: nothing is filed (#377).
-    if (isCaptureSource(env.payload.source)) return cancelCapture(env, 'dedupe');
     decided = newEvent(env, 'dedupe-decided', { decision: 'create-anyway', timedOut: true });
   } else {
     const card: InteractiveCard = { kind: 'dedupe', issueKey: top.issueKey, summary: top.summary, ...(top.assignee === undefined ? {} : { assignee: top.assignee }) };
@@ -503,7 +505,47 @@ export async function dedupeCardStep(env: StepEnv, phase: Extract<Phase, { kind:
   return 'continue';
 }
 
-async function linkStep(env: StepEnv, issueKey: string, tap: Tap): Promise<StepResult> {
+/** How often the watcher append retries a conflict on the existing incident's log, each from a fresh read. */
+const WATCH_APPEND_TRIES = 5;
+
+/**
+ * Adds the capture's reporter as a watcher of the incident that owns `issueKey`: a `watch` comment on
+ * that incident's log, which the `subscriptions` projection folds into an incident-scoped row. A
+ * ticket no incident owns (filed by hand) has none to watch, and a reporter already watching is left
+ * alone, so a repeated step appends nothing.
+ */
+async function watchExisting(env: StepEnv, issueKey: string): Promise<void> {
+  const { state, workspaceId } = env.deps;
+  const reporter = env.payload.reporter;
+  const owner = (await state.findIncidents({ workspaceId, jiraKey: issueKey, limit: 50 })).find(
+    (i) => i.id !== env.cursor.incidentId && i.status !== 'linked-to-existing',
+  );
+  if (owner === undefined) return;
+  for (let attempt = 1; ; attempt++) {
+    const log = await state.read(owner.id);
+    const watching = log.some((e) => e.type === 'comment' && e.payload.intent === 'watch' && e.payload.signalSource !== 'reaction-removed' && e.actor?.id === reporter.id);
+    if (watching) return;
+    const watch: NewEvent<'comment'> = {
+      workspaceId,
+      incidentId: owner.id,
+      type: 'comment',
+      v: 1,
+      source: eventSource(env.payload.source),
+      actor: { id: reporter.id, role: reporter.role },
+      occurredAt: env.deps.clock().toISOString(),
+      payload: { intent: 'watch', platform: 'jira', signalSource: 'message', confidence: 1, raw: `linked from a ${env.payload.source} capture` },
+    };
+    try {
+      await state.append(owner.id, [watch], log.at(-1)?.seq ?? 0);
+      return;
+    } catch (err) {
+      if (!isExpectedSeqConflict(err) || attempt >= WATCH_APPEND_TRIES) throw err;
+    }
+  }
+}
+
+async function linkStep(env: StepEnv, issueKey: string, tap?: Tap): Promise<StepResult> {
+  if (isCaptureSource(env.payload.source)) await watchExisting(env, issueKey);
   const where = env.payload.context.deepLink ?? `${env.payload.source} channel ${env.payload.context.channelId}`;
   // Status first: a crash before the append repeats it, which beats never sending it.
   const text = `Already tracked as ${issueKey}; I added this report to it.`;

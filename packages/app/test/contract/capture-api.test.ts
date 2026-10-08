@@ -5,7 +5,7 @@
 //
 // - Abuse limits: a token over its window is a 429 with Retry-After; an image over 5 MB decoded is a 413
 //   before the vision pass or any kv write; the same words from another person are a capture of their own.
-// - Already tracked: a report that matches an open issue answers `tracked`.
+// - Already tracked: a report that matches an open issue links at once and answers `not-filed`.
 // - New, then filed: a file path in a stack trace resolves against the repo trees (`new` with the
 //   evidence); File it files through the Jira projector (`filed`).
 // - Which surface, then filed: nothing names a surface; the answer picks one by its id.
@@ -258,16 +258,42 @@ function settled(w: World): void {
 // Tests ------------------------------------------------------------------------------------------
 
 describe('the capture API through capture-client', () => {
-  it('answers tracked when an open issue already has the report', { timeout: TEST_TIMEOUT }, async () => {
+  it('links at once when an open issue already has the report', { timeout: TEST_TIMEOUT }, async () => {
     const w = await world();
     const cli = await w.clientFor('webDev');
     const first = await cli.sendText(TRACKED_TEXT);
-    expect(first).toMatchObject({ kind: 'tracked', issueKey: 'ADM-7', summary: TRACKED_TEXT, status: 'open', assignee: 'Ari', url: `${JIRA_BASE}/browse/ADM-7` });
-    expect(renderChoices(first).lines).toEqual(['Already tracked as ADM-7 (open, assigned to Ari). Open it?']);
-    // Lookup first: nothing filed, no Jira write.
+    expect(first).toEqual({ kind: 'not-filed', captureId: first.captureId, reason: 'Added this report to ADM-7.' });
+    expect(renderChoices(first).lines).toEqual(['Not filed. Added this report to ADM-7.']);
+    // Lookup first: nothing filed, no Jira write besides the comment on the ticket it found.
     expect([...w.jira.issues.keys()]).toEqual(['ADM-7']);
-    // The same text again within the window is the same capture, at the same lookup.
+    expect(await cli.poll(first.captureId)).toEqual(first);
+    expect((await w.booted.state.getIncident(first.captureId))?.status).toBe('linked-to-existing');
+    expect(await eventTypes(w, first.captureId)).toEqual(expect.arrayContaining(['dedupe-decided', 'linked-to-existing']));
+    // The same text again within the window is the same capture, at the same end.
     expect(await cli.sendText(TRACKED_TEXT)).toEqual(first);
+    settled(w);
+  });
+
+  it('a capture matching an open ticket ends linked, in no queue, and the ticket gains the reporter as a watcher', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const engineer = await w.clientFor('webDev');
+    const filed = await engineer.sendText(VAGUE, { surface: 'web' });
+    expect(await engineer.answer(filed.captureId, 'file-it')).toMatchObject({ kind: 'filed', issueKey: 'WEB-1' });
+    await expect.poll(async () => { const types = await eventTypes(w, filed.captureId); return types.slice(types.indexOf('filed')); }, { timeout: 10_000, interval: 25 }).toContain('waiting-changed');
+
+    const reporter = await w.clientFor('supportLead');
+    const duplicate = await reporter.sendText(TRIAGE.summary, { surface: 'web' });
+    expect(duplicate).toEqual({ kind: 'not-filed', captureId: duplicate.captureId, reason: 'Added this report to WEB-1.' });
+    const row = await w.booted.state.getIncident(duplicate.captureId);
+    expect(row).toMatchObject({ status: 'linked-to-existing', jiraKey: 'WEB-1' });
+    expect(await eventTypes(w, duplicate.captureId)).not.toContain('capture-cancelled');
+    // Open in no queue: nothing waits on the duplicate.
+    expect(await w.booted.state.findIncidents({ status: ['captured', 'assembling', 'resolved', 'deduped', 'planned'], limit: 50 })).toEqual([]);
+
+    const watchers = (await w.booted.state.getSubscriptions(filed.captureId)).map((s) => s.userId);
+    expect(watchers).toEqual(['supportLead']);
+    const watches = (await w.booted.state.read(filed.captureId)).filter((e) => e.type === 'comment' && e.payload.intent === 'watch');
+    expect(watches).toMatchObject([{ actor: { id: 'supportLead' }, source: 'cli' }]);
     settled(w);
   });
 
@@ -439,11 +465,13 @@ describe('the capture API through capture-client', () => {
 
     // Filing is followed by background writes to WEB-1's row (the wait moves to its owner). Let them land first, so the link below is the last write and the duplicate is the newest row.
     await expect.poll(async () => { const types = await eventTypes(w, first.captureId); return types.slice(types.indexOf('filed')); }, { timeout: 10_000, interval: 25 }).toContain('waiting-changed');
-    // A later report of the same problem, linked to WEB-1: its row carries WEB-1 too, and is newer.
+    // A later report of the same problem, linked to WEB-1: its row carries WEB-1 too.
     const reporter = await w.clientFor('supportLead');
     const duplicate = await reporter.sendText(TRIAGE.summary, { surface: 'web' });
-    expect(duplicate).toMatchObject({ kind: 'tracked', issueKey: 'WEB-1' });
-    expect(await reporter.answer(duplicate.captureId, 'link')).toEqual({ kind: 'not-filed', captureId: duplicate.captureId, reason: 'Added this report to WEB-1.' });
+    expect(duplicate).toEqual({ kind: 'not-filed', captureId: duplicate.captureId, reason: 'Added this report to WEB-1.' });
+    // The watcher write can land in the same millisecond as the link, so make the duplicate the newest WEB-1 row explicitly (test only): the lookup must then pick the owner by status, not by recency.
+    const { ctx } = w.booted.state;
+    await ctx.db.updateTable('incidents').set({ updated_at: ctx.codec.timestamp(new Date(Date.now() + 60_000)) }).where('id', '=', duplicate.captureId).execute();
     expect((await w.booted.state.findIncidents({ jiraKey: 'WEB-1', limit: 1 }))[0]?.id).toBe(duplicate.captureId);
 
     expect(await engineer.status('WEB-1')).toMatchObject({ issueKey: 'WEB-1', status: 'open' });

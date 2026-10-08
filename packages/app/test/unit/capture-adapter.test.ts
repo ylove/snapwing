@@ -128,12 +128,14 @@ describe('the client choices', () => {
     expect(tapChoice(question, 'mobile', map, 'reporter')).toBeUndefined();
   });
 
-  it('passes the file-confirm and dedupe choices through, and nothing else', () => {
+  it('passes the file-confirm choices through, and offers none on the dedupe card', () => {
     const confirm: InteractiveCard = { kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website' };
     expect(tapChoice(confirm, 'not-this-surface', map, 'engineer')).toBe('not-this-surface');
     expect(tapChoice(confirm, 'approve_fix', map, 'engineer')).toBeUndefined();
     const dedupe: InteractiveCard = { kind: 'dedupe', issueKey: 'WEB-830', summary: 'Cart total blank' };
-    expect(tapChoice(dedupe, 'create-anyway', map, 'engineer')).toBe('create-anyway');
+    // A tracked capture links at once, so the client's Open it only opens the link and nothing changes it.
+    expect(tapChoice(dedupe, 'create-anyway', map, 'engineer')).toBeUndefined();
+    expect(tapChoice(dedupe, 'link', map, 'engineer')).toBeUndefined();
     expect(tapChoice(dedupe, 'open', map, 'engineer')).toBeUndefined();
   });
 
