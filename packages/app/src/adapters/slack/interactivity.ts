@@ -238,7 +238,8 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
     const card = BLOCK_CARDS[tap.blockId.split(':')[0] ?? ''];
     if (card === undefined) return ignored('unknown-block');
     if (tap.actionId === 'open_pr') return ignored('link-button');
-    const result = await core.run({ ...base, card });
+    // The clarify card's options are free text, so one that reads like a routed verb (`stop`, `merge`) is still its answer.
+    const result = await core.run({ ...base, card, ...(card === 'clarify' && tap.blockId.split(':')[0] === 'clarify_actions' ? { cardDecides: true } : {}) });
     await render(tap, result.reply);
     return result.outcome;
   }
