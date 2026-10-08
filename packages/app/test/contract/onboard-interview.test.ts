@@ -372,6 +372,14 @@ const APPROVED = {
   'slack.app-token': { env: 'E2E_SLACK_APP_TOKEN' },
   'slack.channels': SLACK_CHANNEL.name,
   'slack.private': 'no',
+  // Slack's approval makes the steps that read it run again; each keeps what it had.
+  'surfaces.confirm': 'yes',
+  'words.saved': 'keep',
+  'words.more': 'none',
+  'people.keep': 'keep',
+  'trigger.keep': 'keep',
+  'finish.replace': 'replace',
+  'finish.token': 'none',
   'test-drive.level': 'lift',
   'test-drive.slack-channel': SLACK_CHANNEL.id,
   'test-drive.teams-channel': TEAMS_CHANNEL.id,
@@ -464,19 +472,20 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
     expect(third.out).toContain('Onboarding is finished.');
     ({ state } = await stateDocument());
     expect(Object.values(status(state)).every((s) => s === 'done')).toBe(true);
-    // Each step ran once, but Slack (blocked twice), the products (resumed), and the test drive (blocked once).
+    // Each step ran once, but Slack (blocked twice), the test drive (blocked once), the products (resumed,
+    // then again for Slack), and the steps that read Slack, which ran again when it was approved.
     expect(Object.fromEntries(ONBOARD_STEPS.map((s) => [s.id, state.steps[s.id]?.attempts]))).toEqual({
       runtime: 1,
       slack: 3,
       teams: 1,
       jira: 1,
       github: 1,
-      surfaces: 2,
-      words: 1,
-      people: 1,
-      trigger: 1,
+      surfaces: 3,
+      words: 2,
+      people: 2,
+      trigger: 2,
       autonomy: 1,
-      finish: 1,
+      finish: 2,
       'test-drive': 2,
     });
 
@@ -505,13 +514,17 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
     expect(map.surfaces).toEqual([
       { id: 'admin', label: 'Admin Portal', repo: `github.com/${REPO}`, jira: { project: PROJECT, defaultIssueType: 'Bug' }, components: [] },
     ]);
-    // Slack was approved after the products and owners were confirmed, so the written map has neither its
-    // channel nor the owner's Slack account until those steps and the map run again; the drive put the
-    // Slack channel on the product for itself.
-    expect(map.channels).toEqual([
-      expect.objectContaining({ id: TEAMS_CHANNEL.id, name: TEAMS_CHANNEL.name, surface: 'admin', platform: 'teams', teamId: TEAM }),
-    ]);
-    expect(map.people).toEqual([{ handle: OWNER.login, email: OWNER.email, teamsId: OWNER.aad, role: 'engineer', owns: [{ surface: 'admin', primary: true }] }]);
+    // Slack was approved after the products and owners were confirmed; its approval made those steps (and
+    // the map) run again, so the written map holds its channel and the owner's Slack account.
+    expect(third.out.join('\n')).toContain('Connect Slack is done, after the steps that use it.');
+    expect(map.channels).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: SLACK_CHANNEL.id, name: SLACK_CHANNEL.name, surface: 'admin' }),
+        expect.objectContaining({ id: TEAMS_CHANNEL.id, name: TEAMS_CHANNEL.name, surface: 'admin', platform: 'teams', teamId: TEAM }),
+      ]),
+    );
+    expect(map.channels).toHaveLength(2);
+    expect(map.people).toEqual([expect.objectContaining({ handle: OWNER.login, email: OWNER.email, slackId: SLACK_INSTALLER, teamsId: OWNER.aad, role: 'engineer', owns: [{ surface: 'admin', primary: true }] })]);
     expect(map.vocabulary).toEqual([{ text: 'usage export', surface: 'admin' }]);
     expect(map.triggers.emoji).toEqual([{ slack: 'bug', teams: 'bug' }]);
     expect(map.policies.autonomy).toMatchObject({ default: 1, changedBy: OWNER.email });
