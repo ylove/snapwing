@@ -356,6 +356,20 @@ describe('authorization (main 8.2, 16)', () => {
     expect(web.calls.ephemeral[0]?.text).toBe(`I've asked <@${ENGINEER}> to approve.`);
   });
 
+  it('a clarify option that reads like a routed verb stays a clarify answer', async () => {
+    await seedPrOpen(2);
+    linked.add(ENGINEER);
+    const buttons = [{ actionId: 'stop', label: 'stop' }, { actionId: 'merge', label: 'merge' }];
+    for (const option of ['stop', 'merge']) {
+      taps.length = 0;
+      await ix.handleAction(tap(ENGINEER, 'clarify_actions', option, buttons));
+      expect(taps).toMatchObject([{ card: 'clarify', choice: option }]);
+    }
+    expect(cancelled).toEqual([]);
+    expect(prCalls).toEqual([]);
+    expect(await types()).not.toContain('stopped');
+  });
+
   it('a merge without a linked GitHub identity is refused and never reaches PrActions', async () => {
     await seedPrOpen(2);
     const out = await ix.handleAction(tap(ENGINEER, 'pr_actions', 'merge', PR_READY));
