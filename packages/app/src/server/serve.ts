@@ -9,8 +9,9 @@
 // (Slack Socket Mode, the Teams transport). Any startup failure closes what was opened and exits 1.
 //
 // The `local` runtime provider runs the fixer and the repository's tests (untrusted code) on this
-// host as the server's own OS user (ADR 0017). With NODE_ENV=production serve refuses it unless
-// `--allow-local-runner` is passed; whenever it runs with it, it prints a warning to stderr.
+// host as the server's own OS user (ADR 0017). Serve refuses it when NODE_ENV=production or when any
+// production secret (PRODUCTION_SECRETS) is present in the environment or the `.env` file, unless
+// `--allow-local-runner` is passed (#265); whenever it runs with it, it prints a warning to stderr.
 //
 // Shutdown on SIGTERM or SIGINT, in order: the API's services stop, the API stops accepting and
 // finishes requests in flight; the worker's services stop, the worker stops polling and drains its
@@ -21,7 +22,7 @@ import { parseArgs } from 'node:util';
 import { loadAppConfig, validateAppConfig, type AppConfig } from '@snapwing/pipeline/config/app-config.ts';
 import { stateOptionsFromEnv, type StateOptions } from '@snapwing/pipeline/contracts/state.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
-import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets.ts';
+import { createEnvFileSecrets, parseDotenv } from '@snapwing/pipeline/providers/local/secrets.ts';
 import { openState as defaultOpenState, type OpenStateHooks } from '@snapwing/pipeline/state/db.ts';
 import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
@@ -42,11 +43,12 @@ export const SERVE_USAGE = `Usage: snapwing serve [--api] [--worker] [--port <n>
   --config <file>  app config; default $SNAPWING_CONFIG, else snapwing.config.xml
   --env-file <f>   secrets file for the local provider; default $SNAPWING_ENV_FILE, else .env
   --allow-local-runner
-                   start with <runtime provider="local"> even when NODE_ENV=production; the
-                   local runner runs untrusted fixer code on this host (ADR 0017)
+                   start with <runtime provider="local"> even when NODE_ENV=production or
+                   production secrets are present; the local runner runs untrusted fixer code
+                   on this host, which can read them (ADR 0017)
 
 Environment: SNAPWING_DB=sqlite|postgres, DATABASE_URL (postgres), SNAPWING_SQLITE_PATH (sqlite file),
-NODE_ENV (production refuses the local runner without --allow-local-runner).
+NODE_ENV (production refuses the local runner without --allow-local-runner, as do production secrets).
 Teams has no socket mode: Microsoft reaches the API's /teams/ routes at TEAMS_PUBLIC_URL (else
 SNAPWING_PUBLIC_URL), so a local run needs a dev tunnel there.
 Stops cleanly on SIGTERM or SIGINT.`;
@@ -63,14 +65,39 @@ export const LOCAL_RUNNER_WARNING =
   'OS user, able to read any file this user can. It is for development only (ADR 0017); where real secrets are ' +
   'held, use <runtime provider="docker"> or another container or VM provider.';
 
-/** The startup error for the `local` provider under NODE_ENV=production without --allow-local-runner. */
-export const LOCAL_RUNNER_REFUSED =
-  'refusing to start: runtime provider "local" runs untrusted fixer code on this host and NODE_ENV is production. ' +
-  'Use <runtime provider="docker"> (ADR 0017), or pass --allow-local-runner to accept the risk.';
+/**
+ * Secrets that mean a real deployment (#265, ADR 0017): the GitHub App key and the chat and tracker
+ * credentials. Where any is present the fixer, which runs untrusted code as the server user under the
+ * `local` provider, could read it; so the local runner is refused unless `--allow-local-runner`.
+ */
+export const PRODUCTION_SECRETS: readonly string[] = [
+  'GITHUB_APP_PRIVATE_KEY',
+  'SLACK_BOT_TOKEN',
+  'TEAMS_APP_PASSWORD',
+  'JIRA_API_TOKEN',
+];
+
+/** The startup error for the `local` provider without --allow-local-runner; `reason` says what tripped it. */
+export function localRunnerRefused(reason: string): string {
+  return (
+    `refusing to start: runtime provider "local" runs untrusted fixer code on this host as the server's OS user, ` +
+    `and ${reason}. That code could read those secrets. ` +
+    'To switch to Docker, set <runtime provider="docker"/> in the config and SNAPWING_FIXER_IMAGE in .env (ADR 0017), ' +
+    'or pass --allow-local-runner to accept the risk.'
+  );
+}
+
+/** The production secrets set (non-empty) in `env`, in PRODUCTION_SECRETS order. */
+export function productionSecretsIn(env: Readonly<Record<string, string | undefined>>): string[] {
+  return PRODUCTION_SECRETS.filter((name) => (env[name] ?? '').trim() !== '');
+}
+
+/** The refusal under NODE_ENV=production. */
+export const LOCAL_RUNNER_REFUSED = localRunnerRefused('NODE_ENV is production');
 
 /**
  * The `local` runner policy (ADR 0017): an error to refuse startup with, a warning to print, or nothing
- * for another provider.
+ * for another provider. `env` should include values from the `.env` file.
  */
 export function localRunnerCheck(
   provider: string,
@@ -78,8 +105,25 @@ export function localRunnerCheck(
   allowLocalRunner: boolean,
 ): { refuse: string } | { warn: string } | undefined {
   if (provider !== 'local') return undefined;
-  if (env['NODE_ENV']?.trim() === 'production' && !allowLocalRunner) return { refuse: LOCAL_RUNNER_REFUSED };
+  if (!allowLocalRunner) {
+    if (env['NODE_ENV']?.trim() === 'production') return { refuse: LOCAL_RUNNER_REFUSED };
+    const present = productionSecretsIn(env);
+    if (present.length > 0) return { refuse: localRunnerRefused(`production secrets are present (${present.join(', ')})`) };
+  }
   return { warn: LOCAL_RUNNER_WARNING };
+}
+
+/** `env` with the values the `.env` file holds laid under it (the environment wins, as for secrets). */
+async function envWithFile(env: Readonly<Record<string, string | undefined>>, path: string): Promise<Record<string, string | undefined>> {
+  let fromFile = new Map<string, string>();
+  try {
+    fromFile = parseDotenv(await readFile(path, 'utf8'), path);
+  } catch {
+    // Unreadable or malformed: the secrets provider reports it where it matters.
+  }
+  const merged: Record<string, string | undefined> = Object.fromEntries(fromFile);
+  for (const [k, val] of Object.entries(env)) if ((val ?? '') !== '') merged[k] = val;
+  return merged;
 }
 
 /** The part of `process` serve listens on; tests pass an EventEmitter. */
@@ -159,7 +203,7 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
   let code = 0;
   try {
     const config = await loadConfig(configPath);
-    const runnerCheck = localRunnerCheck(config.runtime.provider, io.env, v['allow-local-runner']);
+    const runnerCheck = localRunnerCheck(config.runtime.provider, await envWithFile(io.env, envFile), v['allow-local-runner']);
     if (runnerCheck !== undefined && 'refuse' in runnerCheck) throw new Error(runnerCheck.refuse);
     if (runnerCheck !== undefined) io.stderr(`snapwing serve: ${runnerCheck.warn}`);
     const secrets = createEnvFileSecrets({ path: envFile, fallbackEnv: io.env });

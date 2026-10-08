@@ -351,7 +351,7 @@ describe('compose with Teams under snapwing serve', () => {
     let markReady!: (info: { url?: string }) => void;
     const ready = new Promise<{ url?: string }>((r) => (markReady = r));
     const code = runServe(
-      ['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG],
+      ['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG, '--allow-local-runner'],
       { env: { ...dbEnv(), ...(await env()), SNAPWING_ENV_FILE: file }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
       { signals, onReady: markReady, compose: (deps) => compose({ ...deps, overrides: { resolveHarness: () => idleHarness } }) },
     );
@@ -418,7 +418,7 @@ describe('compose with Teams under snapwing serve', () => {
     const ready = new Promise<{ url?: string }>((r) => (markReady = r));
     let inject: TeamsInject | undefined;
     const code = runServe(
-      ['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG],
+      ['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG, '--allow-local-runner'],
       { env: { ...dbEnv(), ...(await env()), SNAPWING_ENV_FILE: file }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
       { signals, onReady: markReady, compose: (deps) => compose({ ...deps, overrides: { resolveHarness: () => idleHarness, teamsInject: (fn) => (inject = fn) } }) },
     );

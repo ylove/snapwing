@@ -118,7 +118,7 @@ async function serve(args: string[], secrets: Record<string, string>, overrides:
   const ready = new Promise<{ url?: string }>((r) => (markReady = r));
   const withOverrides: ComposeFn = (deps) => compose({ ...deps, overrides: { resolveHarness: () => idleHarness, ...overrides } });
   const code = runServe(
-    args,
+    ['--allow-local-runner', ...args], // local runner with secrets on purpose (#265)
     { env: { ...dbEnv(), SNAPWING_ENV_FILE: file, SNAPWING_MAP: MAP, SNAPWING_WORKDIR_ROOT: join(dir, 'work'), ...env }, stdout: (l) => out.push(l), stderr: (l) => err.push(l) },
     { signals, onReady: markReady, compose: withOverrides },
   );

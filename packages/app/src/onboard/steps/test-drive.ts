@@ -612,7 +612,9 @@ export function createTestDriveStep(deps: TestDriveDeps = {}): OnboardStep {
     let markReady: () => void = () => undefined;
     const ready = new Promise<void>((r) => (markReady = r));
     const served = serve(
-      ['--config', configPath, '--env-file', envFile],
+      // The drive runs on whatever runtime the person chose in the runtime step, which warned them about
+      // `local` and its override (#265); the flag is passed on purpose here, for this one run.
+      ['--config', configPath, '--env-file', envFile, '--allow-local-runner'],
       { env, stdout: () => undefined, stderr: (line) => stderr.push(line) },
       {
         signals,

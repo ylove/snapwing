@@ -70,8 +70,8 @@ export async function checkModelKey(
 
 /** The runtimes `serve` has a fixer runner for. AWS and Google Cloud join when their runners exist. */
 const RUNTIME_CHOICES: readonly { readonly id: 'local' | 'docker'; readonly label: string }[] = [
-  { id: 'local', label: 'On this machine (local): quickest, for trying it out; the fixer runs as you' },
   { id: 'docker', label: 'In Docker (a server or VPS): each fix runs in its own container' },
+  { id: 'local', label: 'On this machine (local): for trying it out only; it runs untrusted code as the server user' },
 ];
 
 /** The public URL as Snapwing stores it: https (http only for this machine), no trailing slash. */
@@ -93,11 +93,11 @@ async function askWhere(ctx: StepContext): Promise<RuntimeChoice> {
     id: 'where',
     text: 'Where will Snapwing run?',
     choices: RUNTIME_CHOICES.map(({ id, label }) => ({ id, label })),
-    default: 'local',
-    why: 'This sets <runtime provider="..."/> in snapwing.config.xml. local runs the fixer and tests as the server user, so use it where no real secrets are held; docker runs each fix in its own container.',
+    default: 'docker',
+    why: 'This sets <runtime provider="..."/> in snapwing.config.xml. local runs untrusted code as the server user, who can read your secrets, so snapwing serve refuses it where production secrets are present unless --allow-local-runner is passed; docker runs each fix in its own container.',
   });
   if (provider === 'docker') return { provider: 'docker' };
-  ctx.io.say('Local it is. Snapwing will warn each time it starts: this is for development, not for a server holding real secrets.');
+  ctx.io.say('Local it is. Snapwing will warn each time it starts, and snapwing serve will refuse it while production secrets are in .env unless you pass --allow-local-runner (the test drive passes it for its one run). Choose Docker for anything that holds real secrets.');
   return { provider: 'local' };
 }
 
