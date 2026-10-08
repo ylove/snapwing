@@ -118,7 +118,8 @@ function reportedBy(reporterId: string | undefined, person: MapPerson | undefine
   if (reporterId === undefined) return false;
   if (reporterId === viewer.userId) return true;
   if (person === undefined) return false;
-  return reporterId === person.slackId || reporterId === person.teamsId || reporterId.toLowerCase() === person.handle.toLowerCase();
+  // Exact, as captures store the map handle itself; handles are unique only as written (#270).
+  return reporterId === person.slackId || reporterId === person.teamsId || reporterId === person.handle;
 }
 
 function owns(person: MapPerson, incident: IncidentView): boolean {
