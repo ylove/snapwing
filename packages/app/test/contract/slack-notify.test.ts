@@ -1,7 +1,8 @@
 // Slack notifications (#329; A 4.4, A 1.3, B 7.1): the Slack projector's `notify` op against an
 // in-memory Slack behind MSW, on the dialect `SNAPWING_DB` selects. Covers one milestone, a merged
 // burst (rows of one batch_key become one message), a DM, and the staging request's record as the
-// `staging-check` role, which the A 8 verification flow resolves a reaction through.
+// `staging-check` role, which the A 8 verification flow resolves a reaction through. Also a DM about a
+// Teams incident to someone who asked on Slack: it comes to Slack, with no Slack thread behind it.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
@@ -275,10 +276,65 @@ describe('a standing subscription asked for in a DM (A 4.4)', () => {
       [{ workspaceId: WS, incidentId, type: 'resolved', v: 1, source: 'agent', occurredAt: new Date(time).toISOString(), payload: { surfaceId: 'web', componentId: 'x', repo: 'fake-org/web', resolvedBy: 'channel-explicit', confidence: 0.9 } }],
       1,
     );
-    expect((await state.getSubscriptions(incidentId)).map((s) => [s.userId, s.scopeKind, s.scopeId, s.channel])).toEqual([['U0PAT', 'surface', 'web', 'dm']]);
+    expect((await state.getSubscriptions(incidentId)).map((s) => [s.userId, s.scopeKind, s.scopeId, s.channel, s.platform])).toEqual([['U0PAT', 'surface', 'web', 'dm', 'slack']]);
 
     await query.handleEvent(dm('U0PAT', 'stop keeping me posted on the website', 'EvStanding2'));
     expect((await state.getSubscriptions(incidentId)).filter((s) => s.userId === 'U0PAT')).toEqual([]);
+  });
+
+  it('DMs the person on Slack about a Teams incident, which has no Slack thread or status message', async () => {
+    const query = createSlackStatusQuery({ web, state, standing: state, workspaceId: WS, getMap: () => Promise.resolve(dmMap), botUserId: 'U0BOT', clock: () => new Date(time) });
+    await query.handleEvent(dm('U0PAT', 'keep me posted on the website', 'EvStanding4'));
+    slack.messages = [];
+
+    const incidentId = ulid(time);
+    const at = new Date(time).toISOString();
+    const e = (type: NewEvent['type'], payload: unknown, source: NewEvent['source'] = 'agent'): NewEvent =>
+      ({ workspaceId: WS, incidentId, type, v: 1, source, occurredAt: at, payload }) as unknown as NewEvent;
+    await state.append(
+      incidentId,
+      [
+        e(
+          'captured',
+          {
+            kind: 'incident',
+            idempotencyKey: `teams-${incidentId}`,
+            source: 'teams',
+            reporter: { id: '00000000-0000-4000-8000-00000000fa11', name: 'Rae', role: 'reporter' },
+            anchorText: 'Cart total is blank',
+            anchorId: 'teams-root-1',
+            channelId: '19:fake-web-bugs@thread.tacv2',
+          },
+          'teams',
+        ),
+        e('context-assembled', { bundle: { artifactId: '01JZ00000000000000000000F1', version: 1 }, includedCount: 1, excludedCount: 0 }),
+        e('resolved', { surfaceId: 'web', componentId: 'checkout', repo: 'fake-org/web', resolvedBy: 'channel-explicit', confidence: 0.9 }),
+        e('dedupe-checked', { candidates: [], decision: 'none' }),
+        e('planned', {
+          action: 'create_issue',
+          projectKey: 'WEB',
+          issueType: 'Bug',
+          summary: 'Cart total is blank',
+          priority: 'Medium',
+          labels: ['snapwing'],
+          autonomyLevel: 2,
+          implementationRequest: { artifactId: '01JZ00000000000000000000F2', version: 1 },
+        }),
+        e('filed', { jiraKey: 'WEB-7' }),
+      ],
+      0,
+    );
+    time += 300_000; // the burst window closes
+
+    const report = await projector().drainOnce();
+
+    expect(report.parked).toEqual([]);
+    expect(report.sent).toHaveLength(1);
+    expect(slack.messages).toEqual([{ channel: 'U0PAT', ts: expect.any(String), text: 'WEB-7 is filed.' }]);
+    expect(await state.drainOutbox('slack', 10, WS)).toEqual([]);
+    // The Teams thread's own rows stay on the teams queue, with no notify row for the Slack watcher.
+    expect((await state.drainOutbox('teams', 10, WS)).filter((r) => r.incidentId === incidentId).map((r) => r.op)).toEqual(['update-status']);
+    await query.handleEvent(dm('U0PAT', 'stop keeping me posted on the website', 'EvStanding5'));
   });
 
   it('leaves an ordinary DM alone', () => {

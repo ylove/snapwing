@@ -291,7 +291,7 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     const request = standing === undefined ? undefined : parseStandingWatch(text);
     if (standing !== undefined && request !== undefined && resolveWatchTarget(map, request.target) !== undefined) {
       if ((await resolveTarget(deps.state, ref)) === null) return ignored('no-intent');
-      const outcome = await applyStandingWatch(standing, map, { workspaceId: deps.workspaceId, userId: user, text, channel: 'thread', now: deps.clock() });
+      const outcome = await applyStandingWatch(standing, map, { workspaceId: deps.workspaceId, userId: user, text, channel: 'thread', platform: 'slack', now: deps.clock() });
       if (!outcome.handled) return ignored('no-intent');
       await options.web?.postEphemeral({ channel, user, text: outcome.reply, thread_ts: threadTs }).catch(onError);
       return { kind: 'standing', changed: outcome.changed };

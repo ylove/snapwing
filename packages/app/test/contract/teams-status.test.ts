@@ -670,6 +670,77 @@ describe('notify rows (A 4.4)', () => {
   });
 });
 
+describe('a DM row for an incident from another platform (a Teams watcher of a Slack incident)', () => {
+  const SLACK_CHANNEL = 'C0WEB';
+
+  /** A Slack incident: its channel and thread are Slack's, so no Teams conversation is known for it. */
+  async function captureSlack(surfaceId?: string): Promise<string> {
+    const incidentId = ulid(time);
+    const at = new Date(time).toISOString();
+    const captured: NewEvent<'captured'> = {
+      workspaceId: WS,
+      incidentId,
+      type: 'captured',
+      v: 1,
+      source: 'slack',
+      occurredAt: at,
+      payload: {
+        kind: 'incident',
+        idempotencyKey: `slack-${incidentId}`,
+        source: 'slack',
+        reporter: { id: 'U0RAE', name: 'Rae', role: 'reporter' },
+        anchorText: 'Cart total is blank',
+        anchorId: '1700000000.000200',
+        channelId: SLACK_CHANNEL,
+        threadId: '1700000000.000100',
+      },
+    };
+    const resolved = { workspaceId: WS, incidentId, type: 'resolved', v: 1, source: 'agent', occurredAt: at, payload: { surfaceId } } as NewEvent<'resolved'>;
+    await state.append(incidentId, surfaceId === undefined ? [captured] : [captured, resolved], 0);
+    return incidentId;
+  }
+
+  it('opens the watcher\'s personal chat with the install\'s serviceUrl and tenant', async () => {
+    const incidentId = await captureSlack();
+    const dm = notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: ['pat'], batch: 'notify:w1:dm:pat' });
+    await enqueue(dm);
+
+    const report = await projector().drainOnce();
+
+    expect(report.sent).toEqual([dm.id]);
+    expect(teams.in(`a:chat-${PAT}`).map((a) => a.text)).toEqual(['WEB-1 is live.']);
+    expect(teams.created[0]).toMatchObject({ isGroup: false, members: [{ id: PAT, aadObjectId: PAT }], tenantId: TENANT });
+    expect(teams.in(SLACK_CHANNEL)).toHaveLength(0);
+  });
+
+  it('falls back to the surface\'s Teams bug channel for a watcher without a personal install, never the Slack thread', async () => {
+    const incidentId = await captureSlack('web');
+    const errors: unknown[] = [];
+    const dm = notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w1:dm:dana' });
+    await enqueue(dm);
+
+    const report = await projector({ onError: (e) => errors.push(e) }).drainOnce();
+
+    expect(report.sent).toEqual([dm.id]);
+    expect(teams.in(SLACK_CHANNEL)).toHaveLength(0);
+    expect(teams.in(BUGS).map((m) => m.text)).toEqual(['<at>dana</at> WEB-1 is live.']);
+    expect(errors.map((e) => String((e as Error).message))).toEqual([expect.stringContaining('mentioned in the bug channel instead')]);
+  });
+
+  it('with no Teams bug channel mapped, logs it and acknowledges the row unposted', async () => {
+    const incidentId = await captureSlack();
+    const errors: unknown[] = [];
+    const dm = notify(incidentId, 'WEB-1 is live.', { delivery: 'dm', mentions: ['dana'], batch: 'notify:w1:dm:dana' });
+    await enqueue(dm);
+
+    const report = await projector({ onError: (e) => errors.push(e) }).drainOnce();
+
+    expect(report.sent).toEqual([dm.id]);
+    expect(teams.activities).toEqual([]);
+    expect(errors.map((e) => String((e as Error).message))).toEqual([expect.stringContaining('not posted (the incident has no Teams thread')]);
+  });
+});
+
 describe('rate limits and failures (B 11)', () => {
   it('a 429 pauses the whole drain for Retry-After and leaves the row as it was', async () => {
     const a = await capture(CHANNEL);

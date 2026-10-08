@@ -606,7 +606,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     };
 
     expect(await post('1790000100801', PAT, '<p>keep me posted on the website</p>')).toEqual([{ kind: 'standing', changed: true }]);
-    expect(await state.getSubscriptions(INC)).toMatchObject([{ userId: PAT, scopeKind: 'surface', scopeId: 'web', channel: 'thread' }]);
+    expect(await state.getSubscriptions(INC)).toMatchObject([{ userId: PAT, scopeKind: 'surface', scopeId: 'web', channel: 'thread', platform: 'teams' }]);
     expect(w.standingReplies).toEqual([{ aadObjectId: PAT, text: 'Done. I will keep you posted on every incident on Website.' }]);
     expect(requests).toEqual([]);
 

@@ -528,7 +528,7 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     const request = standing === undefined ? undefined : parseStandingWatch(text);
     if (standing !== undefined && request !== undefined && resolveWatchTarget(map, request.target) !== undefined) {
       if ((await resolveTarget(deps.state, ref)) === null) return ignored('no-intent');
-      const outcome = await applyStandingWatch(standing, map, { workspaceId: deps.workspaceId, userId: user, text, channel: 'thread', now: deps.clock() });
+      const outcome = await applyStandingWatch(standing, map, { workspaceId: deps.workspaceId, userId: user, text, channel: 'thread', platform: 'teams', now: deps.clock() });
       if (!outcome.handled) return ignored('no-intent');
       await options.confirmStanding?.({ aadObjectId: user, text: outcome.reply, teamId, channelId, rootId }).catch(onError);
       return { kind: 'standing', changed: outcome.changed };

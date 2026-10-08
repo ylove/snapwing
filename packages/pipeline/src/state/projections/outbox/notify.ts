@@ -1,7 +1,10 @@
-// Chat rows for push notifications (A 4.4): target `slack` (or the incident's chat target), op
-// `notify`. `planNotices` (notify/policy.ts) decides who is told and when; this module turns each
-// notice into a row. A thread notice is one row mentioning everyone to be mentioned; a DM is one row
-// per person (`payload.delivery` says which).
+// Chat rows for push notifications (A 4.4), op `notify`. `planNotices` (notify/policy.ts) decides who
+// is told and when; this module turns each notice into a row. A thread notice is one row mentioning
+// everyone to be mentioned; a DM is one row per person (`payload.delivery` says which).
+//
+// The target: a thread row goes to the incident's chat target (Slack for an incident with none). A DM
+// goes to the platform the watcher subscribed from, so a Slack-only watcher of a Teams incident is told
+// on Slack; a DM whose subscription has no platform recorded goes where the thread row would.
 //
 // Rows of one burst share `batch_key` `notify:{window}:{delivery}`, and wait for the same
 // `next_attempt`, so the chat projector merges them into one message (B 7.1) when the window closes.
@@ -11,13 +14,14 @@
 // a caller that has it passes `change.notify`. Without it the module returns nothing: notifications
 // are off by default beyond the silent pinned edit.
 //
-// Row ids: `rowsFor` numbers a target's rows from 0 and the status module takes 0 on `slack`, so these
-// rows are numbered from `NOTIFY_INDEX_BASE`.
+// Row ids: `rowsFor` numbers a target's rows from 0 and the status module takes 0 on its target, so
+// these rows are numbered from `NOTIFY_INDEX_BASE`.
 
 import type { IncidentEvent } from '../../../contracts/events.ts';
 import type { OutboxItem, OutboxTarget } from '../../../contracts/state.ts';
 import { milestoneFor, type Milestone } from '../../../notify/milestone.ts';
 import { planNotices, type NoticeReason, type NotifyWindow } from '../../../notify/policy.ts';
+import { chatPlatformOf } from '../subscriptions.ts';
 import type { IncidentChange } from './index.ts';
 import { outboxRowId } from './row.ts';
 import { statusTargets } from './status.ts';
@@ -66,6 +70,7 @@ export function notifyRows(event: IncidentEvent, change: IncidentChange): Outbox
   const milestone = milestoneFor(event, change.after, change.before);
   if (milestone === undefined) return [];
   const incident = change.after;
+  const platform = chatPlatformOf(incident.source);
   const notices = planNotices({
     milestone,
     incident: {
@@ -74,14 +79,17 @@ export function notifyRows(event: IncidentEvent, change: IncidentChange): Outbox
       ...(incident.priority === undefined ? {} : { priority: incident.priority }),
       ...(incident.reporterId === undefined ? {} : { reporterId: incident.reporterId }),
       ...(incident.jiraKey === undefined ? {} : { jiraKey: incident.jiraKey }),
+      ...(platform === undefined ? {} : { platform }),
     },
     at: event.recordedAt,
     seq: event.seq,
     context,
   });
-  // A thread needs a status target (an incident from chat); a DM does not, so Slack takes it.
-  const target: OutboxTarget = statusTargets(incident.source)[0] ?? 'slack';
+  // A thread needs a status target (an incident from chat). A DM goes to the watcher's platform; one
+  // with none recorded goes to the thread's target, or Slack for an incident with no thread.
+  const threadTarget: OutboxTarget = statusTargets(incident.source)[0] ?? 'slack';
   return notices.map((notice, i): OutboxItem => {
+    const target: OutboxTarget = notice.delivery === 'dm' && notice.platform !== undefined ? notice.platform : threadTarget;
     const payload: NotifyRow = {
       delivery: notice.delivery,
       mentions: notice.mentions,

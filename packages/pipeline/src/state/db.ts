@@ -122,6 +122,8 @@ export interface SubscriptionsTable {
   /** '' for scope `all` (ADR 0011); the store maps it to an absent `scopeId`. */
   scope_id: string;
   channel: 'thread' | 'dm';
+  /** The platform the person subscribed from; null when unknown (0007). */
+  platform: Opt<'slack' | 'teams'>;
   created_at: TsDefault;
 }
 

@@ -272,11 +272,11 @@ describe('standing watch phrases (A 4.4)', () => {
 
   it('writes a surface row from a DM, answers an unknown surface, and ignores a bare watch that is a bug report', async () => {
     await filedIncident({ file: false });
-    const input = { workspaceId, userId: 'U-DM', channel: 'dm' as const, now: new Date(T0) };
+    const input = { workspaceId, userId: 'U-DM', channel: 'dm' as const, platform: 'slack' as const, now: new Date(T0) };
     const done = await applyStandingWatch(state, map, { ...input, text: 'keep me posted on the website' });
     expect(done).toMatchObject({ handled: true, changed: true });
     const { id } = await filedIncident({ file: false });
-    expect((await state.getSubscriptions(id)).map((s) => [s.userId, s.scopeKind, s.scopeId, s.channel])).toContainEqual(['U-DM', 'surface', 'web', 'dm']);
+    expect((await state.getSubscriptions(id)).map((s) => [s.userId, s.scopeKind, s.scopeId, s.channel, s.platform])).toContainEqual(['U-DM', 'surface', 'web', 'dm', 'slack']);
 
     expect(await applyStandingWatch(state, map, { ...input, text: 'keep me posted on billing' })).toMatchObject({ handled: true, changed: false });
     expect(await applyStandingWatch(state, map, { ...input, text: 'watch out, the cart is blank' })).toEqual({ handled: false });

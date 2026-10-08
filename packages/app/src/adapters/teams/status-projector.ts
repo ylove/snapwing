@@ -24,9 +24,11 @@
 //   the union of their mentions once (`<at>` with entities), then each row's line. A thread batch is
 //   one message in the incident's thread. A DM batch goes to the watcher's personal chat when the bot
 //   can open one (the app is installed for them); when it cannot, the watcher is mentioned in the
-//   thread instead and that is logged once per watcher. The reporter's staging request
-//   (`reason: request`) is recorded as `bot-message-posted { role: 'staging-check' }`. Notify rows never
-//   hold back, or wait behind, the status rows of their incident.
+//   thread instead and that is logged once per watcher. A DM for an incident from another platform (a
+//   Teams watcher of a Slack incident) opens the chat with the install's serviceUrl and tenant, and
+//   falls back to the surface's Teams bug channel, since the incident has no Teams thread. The
+//   reporter's staging request (`reason: request`) is recorded as `bot-message-posted { role:
+//   'staging-check' }`. Notify rows never hold back, or wait behind, the status rows of their incident.
 // - Rows of one incident that pile up (a paused drain) collapse to the latest status.
 // - Failures: HTTP 429 pauses the drain for `Retry-After`, the row untouched. A row that cannot be sent
 //   (bad payload, no incident, conversation gone, bot removed) is parked at once; anything else is
@@ -388,11 +390,11 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
   }
 
   /** The AAD object id and `29:` id a watcher ref names, or undefined when the ref resolves to nobody. */
-  function watcherIds(ref: string, at: Where, map: WorkspaceMap | undefined): { aadObjectId: string; userId?: string } | undefined {
+  function watcherIds(ref: string, at: Where | undefined, map: WorkspaceMap | undefined): { aadObjectId: string; userId?: string } | undefined {
     const person = mentionsFromMap(map?.people ?? [])(ref);
     const aadObjectId = person?.id ?? (AAD_OBJECT_ID.test(ref) ? ref : undefined);
     if (aadObjectId === undefined) return undefined;
-    const userId = at.reporterTeamsId !== undefined && at.reporterAadId === aadObjectId ? at.reporterTeamsId : undefined;
+    const userId = at?.reporterTeamsId !== undefined && at.reporterAadId === aadObjectId ? at.reporterTeamsId : undefined;
     return { aadObjectId, ...(userId === undefined ? {} : { userId }) };
   }
 
@@ -408,26 +410,31 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
     if (head.incidentId === undefined) throw new TeamsStatusRowError(head, 'no incident');
     const incident = await state.getIncident(head.incidentId);
     if (incident === null) throw new TeamsStatusRowError(head, `unknown incident ${head.incidentId}`);
-    const at = await whereOf(head, incident);
     const text = mergeNotifyText(parsed);
 
     if (delivery === 'dm') {
       const ref = parsed[0]?.mentions[0];
       if (ref === undefined) throw new TeamsStatusRowError(head, 'a DM notification needs a watcher');
+      // An incident from another platform (a Teams watcher of a Slack incident) has no Teams
+      // conversation: the install's serviceUrl and tenant open the watcher's chat.
+      const at = incident.source === 'teams' ? await whereOf(head, incident) : undefined;
+      const serviceUrl = at?.serviceUrl ?? options.defaultServiceUrl;
+      const tenantId = at === undefined ? options.tenantId : at.tenantId;
       const ids = watcherIds(ref, at, map);
       let why: string | undefined;
       if (ids === undefined) why = 'it resolves to no Teams user';
-      else if (at.tenantId === undefined) why = 'no tenant is known to open a personal chat';
+      else if (serviceUrl === undefined) why = 'no serviceUrl is known to open a personal chat';
+      else if (tenantId === undefined) why = 'no tenant is known to open a personal chat';
       else {
         try {
           const chat = await connector.createPersonalConversation({
-            serviceUrl: at.serviceUrl,
-            tenantId: at.tenantId,
+            serviceUrl,
+            tenantId,
             aadObjectId: ids.aadObjectId,
             ...(ids.userId === undefined ? {} : { userId: ids.userId }),
             ...(options.botId === undefined ? {} : { botId: options.botId }),
           });
-          await connector.sendToConversation({ serviceUrl: chat.serviceUrl ?? at.serviceUrl, conversationId: chat.id }, bodyOf(text));
+          await connector.sendToConversation({ serviceUrl: chat.serviceUrl ?? serviceUrl, conversationId: chat.id }, bodyOf(text));
           return;
         } catch (err) {
           // No per-user install (or the chat is closed to the bot): mention them in the thread instead.
@@ -435,26 +442,32 @@ export function createTeamsStatusProjector(options: TeamsStatusProjectorOptions)
           why = `the personal chat could not be opened (${err.status} ${err.code})`;
         }
       }
-      // In a personal chat `at` is the reporter's 1:1 chat: never post another person's notification there.
-      const bug = at.conversationType === 'personal' ? teamsBugChannel(incident, map) : undefined;
-      const where = at.conversationType !== 'personal' ? 'mentioned in the thread instead' : bug === undefined ? 'not posted (the incident is in a personal chat and no Teams bug channel is mapped)' : 'mentioned in the bug channel instead';
+      // The fallback is the incident's Teams thread. A personal chat is the reporter's 1:1 chat, and an
+      // incident from another platform has no Teams thread: never post another person's notification
+      // there; use the surface's Teams bug channel instead.
+      const thread = at !== undefined && at.conversationType !== 'personal' ? at : undefined;
+      const bug = thread === undefined ? teamsBugChannel(incident, map) : undefined;
+      const noThread = at === undefined ? 'the incident has no Teams thread' : 'the incident is in a personal chat';
+      const where = thread !== undefined ? 'mentioned in the thread instead' : bug === undefined ? `not posted (${noThread} and no Teams bug channel is mapped)` : 'mentioned in the bug channel instead';
       if (!noted.has(ref)) {
         noted.add(ref);
         onError(new Error(`teams notify: ${ref} has no personal install, ${where}: ${why}`));
       }
-      if (at.conversationType === 'personal' && bug === undefined) return;
       const mention = `<@${ref}>`;
       const fallback = mergeNotifyText([{ delivery: 'thread', mentions: [ref], text: text.startsWith(mention) ? text : `${mention} ${text}`, reason: parsed[0]?.reason ?? 'watch' }]);
-      if (bug === undefined) {
-        await post(at, bodyOf(fallback, { reduced: await reduced(at) }));
-      } else {
+      if (thread !== undefined) {
+        await post(thread, bodyOf(fallback, { reduced: await reduced(thread) }));
+      } else if (bug !== undefined) {
         const record = await readTeamsConversation(cache, bug.id).catch(() => undefined);
+        const bugServiceUrl = record?.serviceUrl ?? serviceUrl;
+        if (bugServiceUrl === undefined) throw new TeamsStatusRowError(head, `no serviceUrl known for conversation ${bug.id}`);
         const isReduced = bug.teamId === undefined ? false : await readTeamsMode(cache, bug.teamId).then((m) => m === 'reduced').catch(() => false);
-        await connector.sendToConversation({ serviceUrl: record?.serviceUrl ?? at.serviceUrl, conversationId: bug.id }, bodyOf(fallback, { reduced: isReduced }));
+        await connector.sendToConversation({ serviceUrl: bugServiceUrl, conversationId: bug.id }, bodyOf(fallback, { reduced: isReduced }));
       }
       return;
     }
 
+    const at = await whereOf(head, incident);
     const posted = await post(at, bodyOf(text, { reduced: await reduced(at) }));
     if (parsed.some((p) => p.reason === 'request')) {
       // The reporter's staging request: a reaction on it is the verification (A 1.3).

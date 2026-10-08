@@ -385,7 +385,7 @@ describe('standing watches (A 4.4)', () => {
 
     // A new incident on `web` sees it: getSubscriptions covers the incident's surface.
     await seed(NAV, 'Nav menu missing on pricing page', 'nav');
-    expect((await state.getSubscriptions(NAV.id)).map((s) => [s.userId, s.scopeKind, s.scopeId, s.channel])).toEqual([[REPORTER, 'surface', 'web', 'dm']]);
+    expect((await state.getSubscriptions(NAV.id)).map((s) => [s.userId, s.scopeKind, s.scopeId, s.channel, s.platform])).toEqual([[REPORTER, 'surface', 'web', 'dm', 'teams']]);
 
     sent.length = 0;
     await teams.handle(chat(REPORTER, 'stop updating me on web'));
