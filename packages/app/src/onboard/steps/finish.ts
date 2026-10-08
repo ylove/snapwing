@@ -259,7 +259,7 @@ export const finishStep: OnboardStep = {
         text: 'Make a capture token so someone can send reports from the command line? It is shown once.',
         choices: [{ id: 'none', label: 'Not now' }, ...handles.map((h) => ({ id: h, label: `For ${h}` }))],
         default: 'none',
-        why: 'A capture token lets one person send screenshots and notes with snapwing send. You can make more later with snapwing token issue <handle>.',
+        why: 'A capture token lets one person send screenshots and notes with snapwing shot and snapwing say. You can make more later with snapwing token issue <handle>.',
       });
       if (who !== 'none') {
         const { runToken } = await import('../../cli/token.ts');
