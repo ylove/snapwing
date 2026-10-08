@@ -187,7 +187,8 @@ import { createTeamsAdapter, type TeamsAdapter, type TeamsInbound } from '../ada
 import { createBotTokenSource, createGraphTokenSource, verifyBotFrameworkJwt } from '../adapters/teams/auth.ts';
 import { createTeamsChatSurface, type TeamsChatSurface } from '../adapters/teams/chat-surface.ts';
 import { createTeamsConnector } from '../adapters/teams/connector.ts';
-import { conversationFromActivity, rememberTeamsConversation } from '../adapters/teams/conversations.ts';
+import { conversationFromActivity, readTeamsConversation, readTeamsUser, rememberTeamsConversation } from '../adapters/teams/conversations.ts';
+import { TEAMS_ACTION_COMMAND_ID, TEAMS_SUBMIT_ACTION } from '../adapters/teams/normalize.ts';
 import { createTeamsGraph } from '../adapters/teams/graph.ts';
 import { createKvTeamsCardStore, createTeamsInteractivity, rememberTeamsCards } from '../adapters/teams/interactivity.ts';
 import { createTeamsQueue } from '../adapters/teams/queue.ts';
@@ -1345,6 +1346,7 @@ export const compose: ComposeFn = async (deps) => {
 
   /** A 3 scope change: the second issue captured as its own incident, as "Fix it from here" on that message. */
   async function fileLinked(request: LinkedIncidentRequest): Promise<{ incidentId: string } | undefined> {
+    if (request.platform === 'teams') return fileLinkedTeams(request);
     if (slack === undefined || request.platform !== 'slack' || request.channel === '') return undefined;
     const parent = await state.getIncident(request.parentIncidentId);
     const raw: SlackInbound = {
@@ -1361,6 +1363,59 @@ export const compose: ComposeFn = async (deps) => {
     const normalized = await slack.adapter.normalizeResult(raw);
     if (normalized.kind !== 'incident') return undefined;
     await engine.handleInbound('slack', raw);
+    return { incidentId: normalized.payload.eventId };
+  }
+  /**
+   * The Teams half: "Fix it from here" on the second message, built inside the server from what was kept of
+   * the conversation and its author (their `29:` id), and run through the adapter like the invoke it stands
+   * for. It is trusted by identity: only this object is in `injectedTeams`, and nothing an HTTP request
+   * produces ever is. The key is the action command's own (`teams-{channel}-{message}`), so a later Fix it
+   * on that message dedupes against it.
+   */
+  async function fileLinkedTeams(request: LinkedIncidentRequest): Promise<{ incidentId: string } | undefined> {
+    if (teams === undefined || teamsEngineAdapter === undefined || request.channel === '') return undefined;
+    const conversation = await readTeamsConversation(cache, request.channel);
+    if (conversation === undefined || conversation.conversationType !== 'channel') return undefined;
+    const author = await readTeamsUser(cache, request.reporter.id);
+    const parent = await state.getIncident(request.parentIncidentId);
+    const rootId = parent?.anchorId ?? '';
+    if (rootId === '' || rootId === request.messageId) return undefined;
+    const at = clock().toISOString();
+    const tenantId = conversation.tenantId ?? author?.tenantId;
+    const name = author?.name ?? request.reporter.name ?? '';
+    const activity = {
+      type: 'invoke',
+      name: TEAMS_SUBMIT_ACTION,
+      id: `snapwing-linked-${request.messageId}`,
+      timestamp: at,
+      channelId: 'msteams',
+      serviceUrl: conversation.serviceUrl,
+      from: { id: author?.teamsUserId ?? request.reporter.id, name, aadObjectId: request.reporter.id },
+      conversation: { id: `${request.channel};messageid=${rootId}`, conversationType: 'channel', ...(tenantId === undefined ? {} : { tenantId }) },
+      channelData: {
+        channel: { id: request.channel },
+        ...(conversation.teamId === undefined ? {} : { team: { aadGroupId: conversation.teamId } }),
+        ...(tenantId === undefined ? {} : { tenant: { id: tenantId } }),
+      },
+      value: {
+        commandId: TEAMS_ACTION_COMMAND_ID,
+        commandContext: 'message',
+        messagePayload: {
+          id: request.messageId,
+          replyToId: rootId,
+          createdDateTime: at,
+          from: { user: { id: request.reporter.id, displayName: name, userIdentityType: 'aadUser' } },
+          body: { contentType: 'text', content: request.text },
+          attachments: [],
+          mentions: [],
+        },
+      },
+    };
+    const raw: TeamsInbound = { transport: 'http', headers: new Headers(), activity };
+    injectedTeams.add(raw);
+    const normalized = await teamsEngineAdapter.normalizeResult(raw);
+    if (normalized.kind !== 'incident') return undefined;
+    await engine.handleInbound('teams', raw);
     return { incidentId: normalized.payload.eventId };
   }
   const textSignalDeps: TextSignalDeps = {
