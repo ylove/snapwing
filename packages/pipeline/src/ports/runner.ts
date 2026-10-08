@@ -6,7 +6,7 @@
 // A runner only starts and stops fixer runs. The fixer inside reports progress and its result through
 // the fixer API (B 9), never through the runner and never into the database. A test run and a review
 // run are different: the caller awaits them, and their only results are the exit code the runner
-// observes and, for a review, the verdict file the agent leaves in the mounted tree.
+// observes and, for a review, the verdict file the run leaves in the mounted tree.
 
 import type { HarnessAdapter } from '../config/app-config.ts';
 import type { ArtifactRef } from '../contracts/events.ts';
@@ -103,7 +103,10 @@ export interface ReviewRunJob {
    * `/` separators; the harness gets it on stdin (docs/harness-generic.md section 2).
    */
   inputFile: string;
-  /** Path inside `checkout`, relative, that the agent writes its verdict to (`SNAPWING_REVIEW_FILE`). */
+  /**
+   * Path inside `checkout`, relative, where the run leaves the verdict (`SNAPWING_REVIEW_FILE`). The
+   * runner's own code writes it once the agent has exited, never the agent or anything it ran (#263).
+   */
   verdictFile: string;
 }
 

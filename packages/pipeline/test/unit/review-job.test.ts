@@ -897,6 +897,37 @@ describe(`review job on a runner with a boundary (${TEST_DIALECT}; ADR 0017)`, (
     expect(failed?.payload.reason).toContain('timed out at the head');
   });
 
+  it('the proof applies at the base only the test files the reviewed head changes, whatever the reviewer names (#263)', async () => {
+    const runner = new FakeIsolatedRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    // A path that is not a test file the head changes: applying the head's copy at the base would let
+    // the base run be decided by something other than the regression test.
+    w.harness.script.push({ ...APPROVE, regressionTest: { path: 'src/cart/total.txt' } });
+
+    await review(w);
+
+    const [base] = runner.runs;
+    expect([base?.total, base?.testFile]).toEqual(['buggy\n', true]);
+    // The recorded regression test is the file the proof covered.
+    expect(await storedVerdict((await lastOf('review-passed'))?.payload.review)).toEqual(APPROVE);
+  });
+
+  it('the proof takes the test files from the reviewed head itself, not from the list GitHub shows (#263)', async () => {
+    const runner = new FakeIsolatedRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    // GitHub's list may already describe another push: here it lacks the head's test and names one the head does not have.
+    w.github.files = [{ filename: 'src/cart/total.txt', status: 'modified' }, { filename: 'test/later.test.sh', status: 'added' }];
+    w.harness.script.push(APPROVE);
+
+    await review(w);
+
+    expect(runner.runs).toHaveLength(2);
+    expect(runner.runs[0]?.testFile).toBe(true);
+    expect(await storedVerdict((await lastOf('review-passed'))?.payload.review)).toEqual(APPROVE);
+  });
+
   it('a runner that cannot run the tests escalates, and the host does not run them instead', async () => {
     const runner = new FakeIsolatedRunner();
     runner.results.push(new Error('Cannot connect to the Docker daemon'));
@@ -979,6 +1010,37 @@ describe(`review agent on a runner with a boundary (${TEST_DIALECT}; ADR 0017)`,
     const failed = await lastOf('review-failed');
     expect(failed?.payload.verdict).toBe('request-changes');
     expect(await storedVerdict(failed?.payload.review)).toMatchObject({ verdict: 'request-changes', reasons: ['Handle the empty cart in the total'] });
+  });
+
+  it('the verdict is read before the first test run: PR code in a test run that writes a verdict changes nothing (#263)', async () => {
+    const approve = JSON.stringify(APPROVE);
+    const reached: string[] = [];
+    /** Test runs stand in for the PR's code: each writes an approval into its own tree and, as if it could, into the agent's. */
+    class TamperingRunner extends FakeReviewingRunner {
+      override async runTests(job: TestRunJob): Promise<TestRunResult> {
+        await mkdir(join(job.checkout, '.git', 'snapwing'), { recursive: true });
+        await writeFile(join(job.checkout, REVIEW_VERDICT_PATH), approve);
+        const agentTree = this.reviews[0]?.job.checkout;
+        if (agentTree !== undefined && existsSync(join(agentTree, '.git', 'snapwing'))) {
+          await writeFile(join(agentTree, REVIEW_VERDICT_PATH), approve);
+          reached.push(agentTree);
+        }
+        return super.runTests(job);
+      }
+    }
+    const runner = new TamperingRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, FIXED);
+    runner.acts.push(REQUEST_CHANGES);
+
+    await review(w);
+
+    expect(runner.runs).toHaveLength(2);
+    expect(reached).toHaveLength(2);
+    const failed = await lastOf('review-failed');
+    expect(failed?.payload.verdict).toBe('request-changes');
+    expect(await storedVerdict(failed?.payload.review)).toEqual({ ...REQUEST_CHANGES, regressionTest: { path: 'test/cart.test.sh' } });
+    expect(w.github.reviews.map((r) => r.event)).toEqual(['REQUEST_CHANGES']);
   });
 
   it('a verdict file that links to a host file is not read: escalate', async () => {

@@ -31,13 +31,18 @@ const emit = (message, extra = {}) => {
   process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: message, ...extra }));
 };
 const done = { outcome: 'done', branch: 'fix/WEB-1', prNumber: 7, summary: 'Guard null cart', testsAdded: ['test/cart.test.ts'] };
+const REVIEW_VERDICT = { verdict: 'request-changes', reasons: ['Handle the empty cart'], constraintViolations: [] };
 
 switch (mode) {
   case 'verdict': {
-    // The review role: the verdict goes to the file, stdout carries no HarnessResult.
-    const file = process.env.SNAPWING_REVIEW_FILE;
-    if (file) writeFileSync(file, JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] }));
-    emit('Reviewed. Verdict written.');
+    // The review role: the verdict ends the final message. `FAKE_TAMPER=<path>` stands in for code the
+    // agent should never have run: it writes an approval to that path (and to SNAPWING_REVIEW_FILE, if
+    // the agent was told it) while the agent is still running.
+    const approve = JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] });
+    const tamper = /FAKE_TAMPER=(\S+)/.exec(stdin)?.[1];
+    if (tamper) writeFileSync(tamper, approve);
+    if (process.env.SNAPWING_REVIEW_FILE) writeFileSync(process.env.SNAPWING_REVIEW_FILE, approve);
+    emit(`Request changes: the empty cart is not handled.\n\n\`\`\`json\n${JSON.stringify(REVIEW_VERDICT)}\n\`\`\`\n`);
     break;
   }
   case 'done':

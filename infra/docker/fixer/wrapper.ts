@@ -29,10 +29,15 @@
 //   but it gets git tokens from it and nothing else: never the fixer token.
 //
 // `SNAPWING_ROLE=review` (`snapwing-review-<runId>`, attached):
-//   Feeds `SNAPWING_REVIEW_INPUT_FILE` to the configured review harness on stdin, with
-//   `SNAPWING_REVIEW_FILE` in its environment, and exits 0 only when the harness finished and the
-//   verdict file is a regular file. It reports nothing to the fixer API and holds no credential; the
-//   server reads and validates the verdict after the container is gone.
+//   Feeds `SNAPWING_REVIEW_INPUT_FILE` to the configured review harness on stdin. Nothing in this
+//   container runs the pull request's code (#263): the built-in adapters give the agent read-only
+//   tools and take its verdict from its final message, and the tests run in test containers of their
+//   own (`runTests`). The harness never learns `SNAPWING_REVIEW_FILE`, the path in the mount the server
+//   reads: its `SNAPWING_REVIEW_FILE` names a file in a private directory outside the mount. Once the
+//   harness has exited, the wrapper copies that file, if it is a small regular file, to the mount path,
+//   replacing whatever is there, and exits 0; otherwise it exits non-zero. It reports nothing to the
+//   fixer API and holds no credential; the server reads and validates the verdict after the container
+//   is gone.
 //
 // Model access (ADR 0017 amendment 1): no provider key ever enters a container. Each CLI's base URL
 // is the model proxy (`SNAPWING_MODEL_PROXY_URL`, which already names the work item) and its key is
@@ -40,7 +45,8 @@
 // variable only when it holds a model token (`swm1.`); anything else, a real provider key passed by
 // mistake included, is removed before any harness starts. Without a proxy there is no model access.
 
-import { lstat, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { devNull, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
@@ -50,6 +56,7 @@ import { createCodexHarness } from '../../../packages/pipeline/src/harness/codex
 import { createGeminiHarness } from '../../../packages/pipeline/src/harness/gemini/index.ts';
 import { createGenericHarness } from '../../../packages/pipeline/src/harness/generic/index.ts';
 import type { HarnessCheckpoint, HarnessPort, HarnessResult, WorkItemRef } from '../../../packages/pipeline/src/ports/harness.ts';
+import { REVIEW_FILE_ENV } from '../../../packages/pipeline/src/review/verdict.ts';
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -71,6 +78,8 @@ const GIT_TOKEN_SHAPE = /^[\x21-\x7e]{1,4096}$/;
 export const STOP_POLL_MS = 5000;
 /** SIGTERM to SIGKILL grace for the harness; under docker stop's default PT10S so the wrapper exits first. */
 export const KILL_GRACE_MS = 8000;
+/** Largest verdict file copied to the mount, in bytes; the review job reads no more back (MAX_VERDICT_BYTES). */
+export const MAX_VERDICT_BYTES = 1024 * 1024;
 /** A model proxy token (`app/src/model-proxy/token.ts`); a provider key never has this prefix. */
 export const MODEL_TOKEN_PREFIX = 'swm1.';
 
@@ -108,6 +117,8 @@ export interface WrapperDeps {
   retryDelaysMs?: readonly number[];
   /** Parent of the credential socket's private directory. Default the OS temp directory. */
   gitSocketDir?: string;
+  /** Parent of the review harness's private verdict directory. Default the OS temp directory. */
+  reviewDir?: string;
 }
 
 /**
@@ -437,29 +448,61 @@ async function runReview(deps: WrapperDeps, job: Job, modelVars: Record<string, 
     return EXIT_FAILED;
   }
 
-  let result: HarnessResult;
+  // The harness's verdict file: private to this run and outside the mount (#263).
+  const own = await mkdtemp(join(deps.reviewDir ?? tmpdir(), 'snapwing-review-'));
   try {
-    result = await harness.run(job.workItem, input, job.workdir, {
-      role: 'review',
-      budget: job.budget,
-      onCheckpoint: () => Promise.resolve(),
-      signal: deps.signal,
-      env: { ...GIT_ENV, ...modelVars, SNAPWING_REVIEW_FILE: verdictFile },
-    });
-  } catch (e) {
-    log(`review harness error: ${e instanceof Error ? e.message : String(e)}`);
-    return EXIT_FAILED;
+    const ownFile = join(own, 'verdict.json');
+    let result: HarnessResult;
+    try {
+      result = await harness.run(job.workItem, input, job.workdir, {
+        role: 'review',
+        budget: job.budget,
+        onCheckpoint: () => Promise.resolve(),
+        signal: deps.signal,
+        env: { ...GIT_ENV, ...modelVars, [REVIEW_FILE_ENV]: ownFile },
+      });
+    } catch (e) {
+      log(`review harness error: ${e instanceof Error ? e.message : String(e)}`);
+      return EXIT_FAILED;
+    }
+    if (result.outcome !== 'done') {
+      log(result.outcome === 'failed' ? `review harness failed: ${result.reason}` : `review harness stopped at ${result.atPhase}`);
+      return EXIT_FAILED;
+    }
+    const verdict = await readSmallFile(ownFile, MAX_VERDICT_BYTES);
+    if (verdict === undefined) {
+      log('the review harness wrote no verdict file');
+      return EXIT_FAILED;
+    }
+    // Written once, here, after the harness has exited; anything else at the mount path is replaced.
+    try {
+      await rm(verdictFile, { force: true });
+      await writeFile(verdictFile, verdict, { flag: constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, mode: 0o600 });
+    } catch (e) {
+      log(`could not write the verdict to the mount: ${e instanceof Error ? e.message : String(e)}`);
+      return EXIT_FAILED;
+    }
+    return EXIT_OK;
+  } finally {
+    await rm(own, { recursive: true, force: true });
   }
-  if (result.outcome !== 'done') {
-    log(result.outcome === 'failed' ? `review harness failed: ${result.reason}` : `review harness stopped at ${result.atPhase}`);
-    return EXIT_FAILED;
+}
+
+/** A regular file of at most `maxBytes`, opened without following a link or blocking on a FIFO; else undefined. */
+async function readSmallFile(path: string, maxBytes: number): Promise<Buffer | undefined> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch {
+    return undefined;
   }
-  const written = await lstat(verdictFile).then((s) => s.isFile(), () => false);
-  if (!written) {
-    log('the review harness wrote no verdict file');
-    return EXIT_FAILED;
+  try {
+    const st = await handle.stat();
+    if (!st.isFile() || st.size > maxBytes) return undefined;
+    return await handle.readFile();
+  } finally {
+    await handle.close();
   }
-  return EXIT_OK;
 }
 
 // Git credential relay ---------------------------------------------------------------------------
