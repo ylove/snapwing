@@ -1,4 +1,4 @@
-// The fixer image's entrypoint wrapper (#248; infra/docker/fixer/, ADR 0017 with amendment 1,
+// The fixer image's entrypoint wrapper (infra/docker/fixer/, ADR 0017 with amendment 1,
 // docs/harness-generic.md). The real entrypoint runs as a child process with the exact environment
 // the docker runner builds (`fixerEnv`, `reviewEnv`), fake `claude`, `codex`, and `gemini` CLIs on
 // PATH, and a fake fixer API. No docker runs here and the image is never built: the Dockerfile is
@@ -246,7 +246,7 @@ describe('fixer role', () => {
     expect(r.stderr).toContain('no model access');
   });
 
-  it('gives git a fresh token from the fixer API on every ask, through the credential helper, never in a file or the env (#266)', async () => {
+  it('gives git a fresh token from the fixer API on every ask, through the credential helper, never in a file or the env', async () => {
     checkout();
     mkdirSync(join(work, '.git', 'snapwing', 'hooks'));
     const ask = `printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill`;

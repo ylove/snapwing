@@ -1,4 +1,4 @@
-// Recording what Snapwing posts (A 1.3, #287). The code that posts a card or the status message
+// Recording what Snapwing posts (A 1.3). The code that posts a card or the status message
 // calls `recordBotMessage` right after the post, so a later reaction on that message resolves to its
 // role (`signals/target.ts`). The event is `bot-message-posted`; the projection is `bot_messages`.
 //
@@ -86,7 +86,7 @@ const BOT_RECORDS: ReadonlySet<string> = new Set(['bot-message-posted', 'status-
  * after `expectedSeq` only records what the bot posted (`bot-message-posted`, `status-message-posted`),
  * so the writer's decision still stands and it may append after them; undefined when anything else
  * moved the log, and the writer must re-read and decide again. The engine needs this because a step
- * posts a card through the adapter, which records it, before the step appends (#287).
+ * posts a card through the adapter, which records it, before the step appends.
  */
 export async function lastSeqPastBotRecords(state: Pick<StatePort, 'read'>, incidentId: string, expectedSeq: number): Promise<number | undefined> {
   const newer = await state.read(incidentId, expectedSeq + 1);

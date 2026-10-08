@@ -92,11 +92,11 @@ export type EventType =
   | 'fixer-failed'
   // A 1.3 target resolution: every message Snapwing posts, with its role
   | 'bot-message-posted'
-  // A 6.2 escalation ladders (#299): started, each step, stopped. Not `escalated` (see the payload)
+  // A 6.2 escalation ladders: started, each step, stopped. Not `escalated` (see the payload)
   | 'escalation-ladder'
   // A 5.2: the reporter's user-side check answered That fixed it (no ticket)
   | 'user-side'
-  // Text signals after filing (A 3, #294)
+  // Text signals after filing (A 3)
   | 'text-signal'
   // main 15.3, 15.4: a capture source's lookup ended with nothing filed
   | 'capture-cancelled';
@@ -299,9 +299,9 @@ export interface ClarifiedPayload {
    * was asked about, and the environment its `I meant <env>` button names (absent when it has none).
    */
   userSide?: UserSideCheckRecord;
-  /** Legacy (#47 set it with a correction). New rounds record the answer as `clarify-answered`. */
+  /** Legacy (a correction once set it). New rounds record the answer as `clarify-answered`. */
   answer?: string;
-  /** Legacy (#47 set it with a correction). New rounds record `false` and never correct it. */
+  /** Legacy (a correction once set it). New rounds record `false` and never correct it. */
   timedOut: boolean;
 }
 
@@ -316,9 +316,9 @@ export interface PlannedPayload
     'action' | 'linkTo' | 'projectKey' | 'issueType' | 'summary' | 'priority' | 'labels' | 'componentId' | 'autonomyLevel'
   > {
   implementationRequest?: ArtifactRef;
-  /** The whole `TriageResolutionPlan` as JSON (artifact kind `plan`). Absent in logs written before #114. */
+  /** The whole `TriageResolutionPlan` as JSON (artifact kind `plan`). Absent in logs written before the stored plan. */
   plan?: ArtifactRef;
-  /** Set when triage could not route the incident and filed it to the fallback project at level 0 (#115). */
+  /** Set when triage could not route the incident and filed it to the fallback project at level 0. */
   degraded?: 'unresolved-surface';
   /** Set when the capture's `levelCap` lowered the level policy resolves (#170): the cap's reason. Absent when the cap was moot. */
   capped?: LevelCap['reason'];
@@ -464,7 +464,7 @@ export interface StoppedPayload {
 }
 
 /**
- * Spec silent. One step of the A 1.4 reaction ladder fired (signals/score.ts, #290). Feeds
+ * Spec silent. One step of the A 1.4 reaction ladder fired (signals/score.ts). Feeds
  * `escalation_scores.step_reached` and, with `priority`, `incidents.priority`. Never changes the
  * lifecycle status (ADR 0018): the B 5 `escalated` status is reached by a failure, not by this event.
  * The step's effects are frozen here when it fires, so rebuild and the ask-back gate never depend on
@@ -721,7 +721,7 @@ export interface BotMessagePostedPayload {
 }
 /**
  * A 6.2, B 5 (`escalate:{incident}:{step}`): one playbook `<escalation>` ladder on one incident
- * (`monitor/ladder.ts`, #299). `started` anchors the step times (each step fires at this event's
+ * (`monitor/ladder.ts`). `started` anchors the step times (each step fires at this event's
  * `occurredAt` plus its `after`); `step` records what one `<after>` did; `stopped` ends the run, and
  * a later `started` begins a new one. Never changes `incidents.status` and never feeds
  * `escalation_scores`: that is `escalated`, the B 5 transition and the A 1.4 reaction ladder.
@@ -843,7 +843,7 @@ export interface UserSidePayload {
 }
 
 /**
- * A 3: a text signal in a filed incident's thread (signals/text.ts, #294), one record per step. The
+ * A 3: a text signal in a filed incident's thread (signals/text.ts), one record per step. The
  * actor is the person whose message, tap, or reaction it records; `messageId` is the chat message the
  * signal was read from, and ties a step to the one it answers. Never changes the status: the events
  * that do (`closed`, `jira-priority-changed`) go in the same append.

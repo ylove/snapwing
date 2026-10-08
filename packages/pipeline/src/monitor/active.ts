@@ -15,7 +15,7 @@
 //   disqualified  nothing qualifies it any more (the surface left the playbook's critical list).
 // Closing (any terminal status) clears `incidents.monitored` with no event (ADR 0014); `evaluate`
 // and every timer then cancel what is left. The reaction ladder's outage step appends its own
-// `monitoring-started` (#290); `evaluate` treats that run like its own and arms the timers.
+// `monitoring-started`; `evaluate` treats that run like its own and arms the timers.
 //
 // Timers, all durable through the workflow port and all re-derived from the log, so arming twice
 // changes nothing and a restart loses nothing:
@@ -49,7 +49,7 @@
 //                    Monitoring stopping (a downgrade) or a close stops it the same way.
 //
 // Progress is any event except the agent's own records and the signals people send about the
-// incident: `escalation-ladder` (a ladder's own step must not end the stall it escalates, #299),
+// incident: `escalation-ladder` (a ladder's own step must not end the stall it escalates),
 // `escalated`, `monitoring-*`, `status-message-posted`, `bot-message-posted`, `waiting-changed`,
 // `corrected`, and the reaction, text, and priority signals (`comment`, `text-signal`,
 // `jira-priority-changed`), which count toward escalation, not toward the fix.

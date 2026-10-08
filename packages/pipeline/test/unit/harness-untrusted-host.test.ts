@@ -1,4 +1,4 @@
-// The host-side guards for untrusted code (ADR 0017, #233): a scratch HOME and TMPDIR per run, and no
+// The host-side guards for untrusted code (ADR 0017): a scratch HOME and TMPDIR per run, and no
 // working directory in or above the server's own tree.
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync } from 'node:fs';

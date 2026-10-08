@@ -1,6 +1,6 @@
 /* global process, setTimeout, setInterval */
 // A fake coding agent behind the generic harness contract (docs/harness-generic.md), for the end to
-// end contract test (#160). The real generic adapter starts it with the request on stdin; it reports
+// end contract test. The real generic adapter starts it with the request on stdin; it reports
 // checkpoints as JSON lines on stderr and its result as one JSON object on stdout, which the local
 // runner hands to the fixer API (B 9). It never talks to Snapwing or its database.
 //

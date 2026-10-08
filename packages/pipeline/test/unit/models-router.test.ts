@@ -52,7 +52,7 @@ const SPEC_ROWS: ModelRow[] = [
   { task: 'review', provider: 'google', name: 'gemini-2.5-pro' },
 ];
 
-describe('sampling: a temperature only from the <model> row (#275)', () => {
+describe('sampling: a temperature only from the <model> row', () => {
   function recording() {
     const seen: Array<number | undefined> = [];
     const factory = (route: ModelRoute): ModelBackend => ({

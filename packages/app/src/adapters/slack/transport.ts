@@ -44,12 +44,12 @@ export interface SlackDispatcherOptions {
   /** Button taps and other interactivity (the interactivity issue implements it). Not awaited by the answer. */
   onAction: (payload: SlackActionPayload) => Promise<void> | void;
   /**
-   * Status pull (A 4.3, #296): mentions, status-shaped DMs, and `/status` are answered by this and
+   * Status pull (A 4.3): mentions, status-shaped DMs, and `/status` are answered by this and
    * never reach `handleInbound`. Absent, they are ignored or captured as before.
    */
   status?: SlackStatusQuery;
   /**
-   * App Home (main 20.2, #297): `app_home_opened` publishes the user's Home view, and a tap in the view
+   * App Home (main 20.2): `app_home_opened` publishes the user's Home view, and a tap in the view
    * (after `onAction` ran) publishes it again so it shows the result. Absent, the event is ignored.
    */
   home?: SlackHome;

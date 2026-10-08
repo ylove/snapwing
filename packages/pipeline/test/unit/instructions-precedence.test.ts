@@ -206,7 +206,7 @@ async function setup(opts: { level: 1 | 2 | 3; request?: string; instructions?: 
   const loaded = loadInstructions(opts.instructions === undefined ? INSTRUCTIONS_MD : opts.instructions);
   if (!loaded.ok) throw new Error(loaded.reason);
   const instructions: World['instructions'] = { current: loaded.instructions };
-  // A live getter, as compose passes it (#284 reloads INSTRUCTIONS.md).
+  // A live getter, as compose passes it (it reloads INSTRUCTIONS.md).
   const instructionsGate = { instructions: () => instructions.current, model };
   const clock = (): Date => new Date(now);
   const fixer: FixerDeps = { workspaceId: WS, state, workflow: wf, runner, github: noGitHub, config: { harness: { adapter: 'claude-code' } }, clock, instructionsGate };

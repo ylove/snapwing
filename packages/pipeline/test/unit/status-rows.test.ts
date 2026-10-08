@@ -1,4 +1,4 @@
-// #142: the status loopback (main 12, 20.1). The neutral copy; `statusFor` row by row over a scripted
+// The status loopback (main 12, 20.1). The neutral copy; `statusFor` row by row over a scripted
 // log folded as the projector folds it; the `update-status` rows `outboxFor` gives for chat incidents;
 // the subscriber through the state port; and a replay of the level 2 recording asserting the sequence
 // of status texts.
@@ -303,7 +303,7 @@ describe('statusFor: one row of main 12 per event', () => {
     expect(statusFor({ type: 'filed' } as IncidentEvent, { ...(linked.view as IncidentView) })).toBeUndefined();
   });
 
-  it('names the resolved owner before anyone is assigned in Jira (#191)', () => {
+  it('names the resolved owner before anyone is assigned in Jira', () => {
     expect(filed(0, 'slack', 'webDev1').status).toEqual({ issueKey: KEY, stage: 'filed', text: `Filed as ${KEY}, assigned to <@webDev1>.` });
     expect(filed(1, 'slack', 'webDev1').status?.text).toBe(`Filed as ${KEY}, assigned to <@webDev1>.`);
 
@@ -324,7 +324,7 @@ describe('statusFor: one row of main 12 per event', () => {
     );
   });
 
-  it('a human reassignment in Jira wins over the resolved owner; unassigning falls back to it (B 7.3, #191)', () => {
+  it('a human reassignment in Jira wins over the resolved owner; unassigning falls back to it (B 7.3)', () => {
     const jiraHuman: EventActor = { id: 'jira-account-pat', role: 'human' };
     const { s } = filed(0, 'slack', 'webDev1');
     s.all([draft('jira-assignee-changed', { jiraKey: KEY, to: 'dana' }, jiraHuman, 'jira'), started()]);
@@ -338,7 +338,7 @@ describe('statusFor: one row of main 12 per event', () => {
     );
   });
 
-  it('a later resolution without an owner falls back to the assignee, then to no name (#191)', () => {
+  it('a later resolution without an owner falls back to the assignee, then to no name', () => {
     const { s } = filed(0, 'slack', 'webDev1');
     s.all([draft('resolved', { surfaceId: 'web', resolvedBy: 'clarify', confidence: 0.9 }), started()]);
     expect(s.status(prOpened())?.text).toBe('A fix is up. Review requested.');

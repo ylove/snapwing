@@ -3,7 +3,7 @@
 // Both post in the originating thread, except in a direct message, where threads do not apply (as the
 // status projector does).
 //
-// With `state`, each posted card is recorded as `bot-message-posted { role: 'pr' }` (A 1.3, #287),
+// With `state`, each posted card is recorded as `bot-message-posted { role: 'pr' }` (A 1.3),
 // best effort: the card is out, so a failure goes to `onError`. The ephemeral prompt is not recorded.
 
 import type { PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';

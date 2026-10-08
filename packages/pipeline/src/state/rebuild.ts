@@ -16,7 +16,7 @@
 // The log is read, never written: `corrected` events replay like any other event and the rows they
 // correct stay as stored (B 4).
 //
-// The outbox is not touched (#89). It is not a projection: it is a delivery log whose rows cause
+// The outbox is not touched. It is not a projection: it is a delivery log whose rows cause
 // writes to Jira, GitHub, Slack, and Teams. Replay passes `{ outbox: false }` to `applyProjections`,
 // so `outboxFor` is never consulted and the table is neither truncated nor added to. Enqueueing only
 // the rows that are missing (insert, on conflict do nothing) was considered and rejected:

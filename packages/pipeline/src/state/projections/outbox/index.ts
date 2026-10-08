@@ -1,7 +1,7 @@
 // The outbox rows an event implies (B 4: "the outbox row exists or the event does not"), as a
 // registry of per-target modules. `applyProjections` calls `outboxFor` for each event it folds, inside
 // the append transaction, and enqueues what it returns; rebuild replays with `{ outbox: false }` and
-// never calls it (#89).
+// never calls it.
 //
 // A target module is a pure function of the event and the incident row before and after the event
 // folded: ids, `createdAt`, and `nextAttempt` come from the event (`rowsFor` in row.ts), never the

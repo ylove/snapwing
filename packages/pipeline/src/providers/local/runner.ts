@@ -12,8 +12,8 @@
 // supervisor in harness/process.ts), so stop, budget, and checkpoint handling are the harness's;
 // this runner adds a prepared checkout per run and cancellation by id.
 //
-// `runFixer` takes the run id from the job (the fixer job mints it and appends `fixer-started` first,
-// #173), loads the implementation request artifact (and the review artifact on a retry), parses the
+// `runFixer` takes the run id from the job (the fixer job mints it and appends `fixer-started` first),
+// loads the implementation request artifact (and the review artifact on a retry), parses the
 // request for handoff/@branch and handoff/@base, resolves the harness, and resolves with the run id
 // without waiting for the run to end. It rejects, starting nothing, when the run id is not a plain
 // path segment or is already known, when an artifact is missing or of the wrong kind, when the
@@ -35,7 +35,7 @@
 // fixer API (B 9); errors they throw are swallowed so a reporting failure never kills a run.
 //
 // A server that stops mid-run (a restart, a crash) never reaches step 4, so `sweep` exists for
-// startup (#266): it removes every directory under `workdirRoot` that belongs to no run this runner
+// startup: it removes every directory under `workdirRoot` that belongs to no run this runner
 // knows and is older than the longest fixer wall clock plus `SCRATCH_SWEEP_MARGIN` (`sweepScratch`,
 // shared with the docker runner). Age is the later of the run id's ULID time and the directory's
 // mtime, so nothing a live run could still be using is removed, even one another process started.
@@ -98,7 +98,7 @@ export interface ScratchSweep {
   kept: string[];
 }
 
-/** A runner whose scratch directories a startup sweep can clean (#266). */
+/** A runner whose scratch directories a startup sweep can clean. */
 export interface ScratchSweeper {
   /**
    * Removes the scratch directories under `workdirRoot` that belong to no run or container still

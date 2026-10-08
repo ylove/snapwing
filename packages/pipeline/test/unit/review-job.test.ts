@@ -1,4 +1,4 @@
-// Review job (#151; main 11.1, 11.2, 14.5, B 5). Runs on the in-process workflow over the dialect
+// Review job (main 11.1, 11.2, 14.5, B 5). Runs on the in-process workflow over the dialect
 // `SNAPWING_DB` selects. A local bare repository stands in for GitHub's git (the review checks the PR
 // head out of it and proves the regression test there with a real shell command); the review harness,
 // the `ReviewGitHub` client, and the fixer's RunnerPort are fakes. The fixer API (B 9) is simulated by
@@ -555,7 +555,7 @@ describe(`review job (${TEST_DIALECT})`, () => {
     expect((await lastOf('review-passed'))?.payload.prNumber).toBe(PR);
   });
 
-  it('CI that finished green before the review passed is recorded when the review passes (#214)', async () => {
+  it('CI that finished green before the review passed is recorded when the review passes', async () => {
     const w = await setup();
     const head = await fixerOpensPr(w, FIXED);
     w.github.required = [{ name: 'ci', state: 'success', source: 'check-run' }];
@@ -816,7 +816,7 @@ describe(`review job (${TEST_DIALECT})`, () => {
   });
 });
 
-describe(`review job on a runner with a boundary (${TEST_DIALECT}; ADR 0017, #234)`, () => {
+describe(`review job on a runner with a boundary (${TEST_DIALECT}; ADR 0017)`, () => {
   /** Prepended to the test command: a host process running it leaves this file behind. */
   const marker = (): string => join(scratch, 'host-ran-the-test-command');
   const markedCommand = (): string => `touch '${marker()}'; ${TEST_COMMAND}`;
@@ -913,7 +913,7 @@ describe(`review job on a runner with a boundary (${TEST_DIALECT}; ADR 0017, #23
   });
 });
 
-describe(`review agent on a runner with a boundary (${TEST_DIALECT}; ADR 0017, #239)`, () => {
+describe(`review agent on a runner with a boundary (${TEST_DIALECT}; ADR 0017)`, () => {
   it('no host process runs the review harness: the runner gets a self-contained tree at the head, the input in it, no credential', async () => {
     const runner = new FakeReviewingRunner();
     const w = await setup({ wallClock: 'PT20M' }, runner);

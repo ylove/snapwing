@@ -1,4 +1,4 @@
-// Fixer job, budget timer, and Stop (#133, #173; main 10.1, main 10.4, B 5, B 9). Runs on the
+// Fixer job, budget timer, and Stop (main 10.1, main 10.4, B 5, B 9). Runs on the
 // in-process workflow over the dialect `SNAPWING_DB` selects, with a fake RunnerPort (and once the
 // local runner over a fake harness) and a fake FixerGitHub. The fixer API (B 9) is simulated by
 // appending its events and calling the hooks it will call; `report` mirrors its rule that a report
@@ -182,7 +182,7 @@ async function lastOf<T extends EventType>(type: T): Promise<IncidentEvent<T> | 
 }
 
 /**
- * A fixer report as the fixer API (B 9, #132) records it: appended while a run is going, refused as
+ * A fixer report as the fixer API (B 9) records it: appended while a run is going, refused as
  * `run-finished` when none is.
  */
 async function report(phase: 'cloned' | 'branched', detail = ''): Promise<'accepted' | 'run-finished'> {
@@ -353,7 +353,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(await types()).toEqual(afterStop);
   });
 
-  it('a report from inside runFixer is accepted: fixer-started is already in the log (#173)', async () => {
+  it('a report from inside runFixer is accepted: fixer-started is already in the log', async () => {
     const w = await setup();
     const outcomes: string[] = [];
     w.runner.onStart = async (job) => {
@@ -390,7 +390,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     const origin = await createBareRepo();
     const workdirRoot = await mkdtemp(join(tmpdir(), 'snapwing-fixer-job-'));
     const outcomes: string[] = [];
-    // The runner reports `cloned` itself (#134); the harness begins at `branched`.
+    // The runner reports `cloned` itself; the harness begins at `branched`.
     const harness: HarnessPort = {
       async run(_workItem, _request, _workdir, opts) {
         await opts.onCheckpoint?.({ phase: 'branched', detail: 'fix/WEB-1042' });
@@ -458,7 +458,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(w.runner.cancelled).toEqual([runId]);
   });
 
-  it('stop before filing drops the queued create-issue row so nothing is filed (#206)', async () => {
+  it('stop before filing drops the queued create-issue row so nothing is filed', async () => {
     const w = await setup({ unfiled: true });
     const now0 = new Date(now).toISOString();
     await state.enqueueOutbox({
@@ -478,7 +478,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(await state.drainOutbox('jira', 10)).toEqual([]);
   });
 
-  it('stop before filing keeps a create-issue row that was already sent; its later filed is tracked (#206)', async () => {
+  it('stop before filing keeps a create-issue row that was already sent; its later filed is tracked', async () => {
     const w = await setup({ unfiled: true });
     const now0 = new Date(now).toISOString();
     await state.enqueueOutbox({
@@ -518,7 +518,7 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
     expect(w.github.closed).toHaveLength(1);
   });
 
-  it('stop mid-run after the fixer opened its PR but before done closes the PR its checkpoint names (#160)', async () => {
+  it('stop mid-run after the fixer opened its PR but before done closes the PR its checkpoint names', async () => {
     const w = await setup();
     const runId = await started(w);
     await append(ev('fixer-checkpoint', { phase: 'pushed', detail: '' }, 'fixer'), ev('fixer-checkpoint', { phase: 'pr-opened', detail: '#88' }, 'fixer'));

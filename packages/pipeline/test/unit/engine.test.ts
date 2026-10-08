@@ -1,4 +1,4 @@
-// IncidentOrchestrator (#47, main 14.1, B 5): the process job on the in-process WorkflowPort over a
+// IncidentOrchestrator (main 14.1, B 5): the process job on the in-process WorkflowPort over a
 // real state store (SNAPWING_DB picks the dialect), with fakes for the adapter, the chat reader, Jira
 // search, and the model (a scripted backend behind the shared classify contract). The outbox worker
 // is simulated: it drains `create-issue`, appends `filed`, and continues the incident.
@@ -63,7 +63,7 @@ class FakeAdapter implements IngestionAdapter<FakeRaw, { status: number }> {
   readonly channelSource = 'slack' as const;
   readonly cards: InteractiveCard[] = [];
   readonly statuses: StatusUpdate[] = [];
-  /** Runs after each card is kept, as a real adapter records what it posted (#287). */
+  /** Runs after each card is kept, as a real adapter records what it posted. */
   record: ((payload: CanonicalIncidentPayload, card: InteractiveCard) => Promise<void>) | undefined;
   authenticateRequest(raw: FakeRaw): Promise<boolean> {
     return Promise.resolve(raw.signature === 'sig-test');
@@ -281,8 +281,8 @@ async function status(h: Harness): Promise<string | undefined> {
 
 /**
  * The Jira rows the engine enqueued itself. The field writes `outboxFor` derives from the lifecycle
- * (Agent Status after `filed`, #141) are left out; test/unit/outbox-jira.test.ts covers them. The
- * engine's In Progress transition carries a status field key too (#143), so it is kept by op.
+ * (Agent Status after `filed`) are left out; test/unit/outbox-jira.test.ts covers them. The
+ * engine's In Progress transition carries a status field key too, so it is kept by op.
  */
 async function outbox(): Promise<OutboxItem[]> {
   return (await state.drainOutbox('jira', 50)).filter((r) => r.op === 'transition' || r.batchKey?.startsWith('field:') !== true);
@@ -448,7 +448,7 @@ describe('levels (main 14.1)', () => {
     });
   });
 
-  it('level 2, an adapter that records its cards (#287): the after-filed step appends past the record and posts the fix preview once', async () => {
+  it('level 2, an adapter that records its cards: the after-filed step appends past the record and posts the fix preview once', async () => {
     const h = setup({ level: 2 });
     let n = 0;
     h.adapter.record = async (payload, card) => {
@@ -597,7 +597,7 @@ describe('early exits and waits', () => {
     expect((await types(h)).slice(-3)).toEqual(['dedupe-decided', 'waiting-changed', 'planned']);
   });
 
-  it('asks back when the gate passes and applies a component answer to the resolution (main 7, #115)', async () => {
+  it('asks back when the gate passes and applies a component answer to the resolution (main 7)', async () => {
     const question = {
       audience: 'reporter',
       kind: 'experiential',
@@ -632,7 +632,7 @@ describe('early exits and waits', () => {
   });
 });
 
-describe('reaction escalation (A 1.4, #290)', () => {
+describe('reaction escalation (A 1.4)', () => {
   it('a step that suppressed the ask-back skips the question, and the plan files at the escalated priority', async () => {
     const question = {
       audience: 'reporter',
@@ -679,7 +679,7 @@ async function stop(h: Harness, reason = 'trigger reaction removed'): Promise<vo
   );
 }
 
-describe('Stop before filing (#192, main 15.1)', () => {
+describe('Stop before filing (main 15.1)', () => {
   it('ends the job at a parked scope card: the tap is refused, the timeout does nothing, nothing is filed', async () => {
     const h = setup({ level: 0 });
     await inbound(h);
@@ -737,7 +737,7 @@ describe('Stop before filing (#192, main 15.1)', () => {
     expect(h.adapter.statuses).toEqual([]);
   });
 
-  it('a stop between filed and the after-filed step leaves the issue in Backlog (#206)', async () => {
+  it('a stop between filed and the after-filed step leaves the issue in Backlog', async () => {
     const h = setup({ level: 2 });
     await inbound(h);
     await tap(h, 'scope-preview', 'looks-right');
@@ -757,8 +757,8 @@ describe('Stop before filing (#192, main 15.1)', () => {
   });
 });
 
-// #114: the full plan is an artifact, so a parked level 1 job files the ticket triage wrote.
-describe('stored triage plan (#114)', () => {
+// The full plan is an artifact, so a parked level 1 job files the ticket triage wrote.
+describe('stored triage plan', () => {
   const WRITE_UP = 'Opening Settings crashes the app on Android.\n\nIt started after the 4.2 release.';
 
   it('files a level 1 ticket after the tap with the triage write-up and the suggested assignee', async () => {
@@ -794,8 +794,8 @@ describe('stored triage plan (#114)', () => {
   });
 });
 
-// #115: an unresolved surface is asked about; the answer routes the ticket, a timeout degrades it.
-describe('unresolved surface (#115)', () => {
+// An unresolved surface is asked about; the answer routes the ticket, a timeout degrades it.
+describe('unresolved surface', () => {
   const VAGUE = message('m1', 0, 'it crashes when I open settings');
   const SURFACE_QUESTION = {
     audience: 'reporter',
@@ -873,7 +873,7 @@ describe('unresolved surface (#115)', () => {
     expect(h.adapter.statuses.at(-1)?.text).toBe('Filed as WEB-120. I could not tell which product this is about, so it is in WEB for someone to route.');
   });
 
-  it('takes the map fallback surface over the first-surface rule (#118)', async () => {
+  it('takes the map fallback surface over the first-surface rule', async () => {
     const h = setup(scene({ fallbackSurface: 'admin' }));
     await toQuestion(h);
     now += DAY + 1;

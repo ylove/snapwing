@@ -1,5 +1,5 @@
-// `snapwing state rebuild` (#35): the CLI runs in-process on a temp SQLite database with an inline
-// two-incident recording. The database is always SQLite here; the dialects are #20's tests.
+// `snapwing state rebuild`: the CLI runs in-process on a temp SQLite database with an inline
+// two-incident recording. The database is always SQLite here; the dialects have their own tests.
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

@@ -132,7 +132,7 @@ describe('pull requests', () => {
     server.use(http.post(`${R}/issues/418/labels`, async ({ request }) => (await record(request), HttpResponse.json([{ id: 1, name: 'fixer-incomplete' }, { id: 2, name: 'fixer' }]))));
     expect(await client.addLabels(418, ['fixer-incomplete'])).toEqual(['fixer-incomplete', 'fixer']);
     expect(seen[0]?.body).toEqual({ labels: ['fixer-incomplete'] });
-    // Recorded live (#156): an App without issues: write is refused (422) a token that asks for it.
+    // Recorded live: an App without issues: write is refused (422) a token that asks for it.
     expect(tokenRequests[0]?.permissions).toEqual({ pull_requests: 'write' });
   });
 

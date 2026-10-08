@@ -16,7 +16,7 @@
 // - Status (`transition`): `merged` to in-review, or to done when autopilot merged (level 3, main
 //   11.3); `closed` to done; `stopped` to backlog; `reverted` back out of done, to in-progress at level
 //   1 or above (the revert PR is agent work) and to backlog at level 0 (main 11.3). Only when the event
-//   moved the status there. The target is logical (`jira/statuses.ts`, #268): the projector resolves
+//   moved the status there. The target is logical (`jira/statuses.ts`): the projector resolves
 //   it to the project's own status by category, so a To Do project and a Backlog project both work.
 // - `Autonomy Level` (`update-fields`): whenever the level changes after filing (`level-changed`, or
 //   a claim release that restores it).
@@ -45,7 +45,7 @@
 // Field writes carry one field each and `batch_key` `field:{incident}:{field}` (`jiraFieldBatchKey`),
 // so the inbound sync can drop a pending agent write when a human edits that field (B 7.3); a
 // transition is a write of the `status` field. Payloads name custom fields as create-issue does
-// (`customFields` by name); the projector maps names to ids (#113).
+// (`customFields` by name); the projector maps names to ids.
 
 import type { EventActor, IncidentEvent } from '../../../contracts/events.ts';
 import type { TargetRole } from '../../../contracts/signals.ts';
@@ -62,7 +62,7 @@ export const LABEL_HUMAN_CLAIMED = 'human-claimed';
 export const LABEL_FIXER_FAILED = 'fixer-failed';
 
 /**
- * The logical targets B 7.2 transitions to (#268). A `transition` row carries one of these, never a
+ * The logical targets B 7.2 transitions to. A `transition` row carries one of these, never a
  * status name; the projector maps it to the project's status by category (`jira/statuses.ts`).
  */
 export const JIRA_BACKLOG: JiraLogicalStatus = 'backlog';
@@ -90,7 +90,7 @@ export function jiraFieldBatchKey(incidentId: string, field: JiraField): string 
   return `field:${incidentId}:${FIELD_SLUGS[field]}`;
 }
 
-/** `batch_key` of the engine's `create-issue` row, so a Stop before filing can drop it unsent (#206). */
+/** `batch_key` of the engine's `create-issue` row, so a Stop before filing can drop it unsent. */
 export function jiraCreateBatchKey(incidentId: string): string {
   return `create-issue:${incidentId}`;
 }
@@ -100,7 +100,7 @@ export function jiraCommentBatchKey(incidentId: string): string {
   return `comment:${incidentId}`;
 }
 
-// Payloads (the projector validates them, #140) ---------------------------------------------------
+// Payloads (the projector validates them) ---------------------------------------------------
 
 /** `update-fields`: exactly one custom field, by name. */
 export interface UpdateFieldsRow {
@@ -124,7 +124,7 @@ export interface AddLabelsRow {
 export interface TransitionRow {
   issueKey: string;
   to: JiraLogicalStatus;
-  /** A resolution name sent with the transition, e.g. "Won't Do" (#193). */
+  /** A resolution name sent with the transition, e.g. "Won't Do". */
   resolution?: string;
 }
 
@@ -375,7 +375,7 @@ function actorLabel(actor: EventActor): string {
 /** `PR #n` followed by its GitHub URL when the repo is known (the events carry only the number). */
 function prLink(repo: string | undefined, prNumber: number): string {
   const ref = `PR #${String(prNumber)}`;
-  // The workspace map writes `github.com/owner/name`; the URL wants `owner/name` (#240).
+  // The workspace map writes `github.com/owner/name`; the URL wants `owner/name`.
   const slug = repo?.replace(/^(?:https?:\/\/)?github\.com\//i, '').replace(/\/+$/, '');
   return slug === undefined || slug === '' ? ref : `${ref} (https://github.com/${slug}/pull/${String(prNumber)})`;
 }

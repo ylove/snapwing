@@ -5,7 +5,7 @@
 //   to `reactor_ids` and the event's frozen `count.weight` to the score, once per reactor: reacting
 //   five times is one. A `reaction-removed` signal takes the reactor and that weight back out (A 1.6),
 //   never below zero. `window_ends` is the latest `count.windowEndsAt` seen.
-// - `escalated` (the reaction ladder, signals/score.ts, #290) records the step reached (the highest
+// - `escalated` (the reaction ladder, signals/score.ts) records the step reached (the highest
 //   so far) on the row of the intent that crossed it, adding the row when there is none yet.
 // `reactor_ids` is sorted in code-unit order and scores are rounded to 1e-6, so a rebuild writes
 // the same JSON and the same number on both dialects.

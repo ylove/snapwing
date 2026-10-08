@@ -1,4 +1,4 @@
-// Fixer reporting API (#132; B 9, B 0, main 10.4, main 16). The routes run behind a real `node:http`
+// Fixer reporting API (B 9, B 0, main 10.4, main 16). The routes run behind a real `node:http`
 // listener (a minimal stand-in for the ADR 0016 server) and the tests call them with `fetch`, over
 // the dialect `SNAPWING_DB` selects. Tokens use a fake secret; the clock is a variable.
 
@@ -224,7 +224,7 @@ describe('fixer tokens', () => {
     expect(() => token(INC, INC, 'P2D')).toThrow(RangeError);
   });
 
-  it('lives as long as the run wall clock plus a margin, at most a day (#266)', () => {
+  it('lives as long as the run wall clock plus a margin, at most a day', () => {
     expect(fixerTokenTtl('PT30M')).toBe('PT45M');
     expect(fixerTokenTtl('PT2H')).toBe('PT2H15M');
     expect(fixerTokenTtl('P1D')).toBe('P1D');
@@ -428,7 +428,7 @@ describe('fixer API over HTTP', () => {
   });
 });
 
-describe('GET /fixer/{workItemId}/git-token (#266)', () => {
+describe('GET /fixer/{workItemId}/git-token', () => {
   /** A fake installation token minter: a new value per call, recording the repos asked for. */
   function minter(): { mint: GitTokenMinter; repos: string[] } {
     const repos: string[] = [];

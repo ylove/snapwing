@@ -20,7 +20,7 @@
 //   `instructions-overridden: <who>` restores the level to at most 2, so the PR it opens goes to a person.
 //
 // The step's own deps carry the gate (`MergeDeps.instructionsGate`, `FixerDeps.instructionsGate`):
-// the live instructions getter (#284 reloads INSTRUCTIONS.md) and the model.
+// the live instructions getter (it reloads INSTRUCTIONS.md) and the model.
 
 import { readFile } from 'node:fs/promises';
 import type { AutonomyLevel } from '../contracts/events.ts';

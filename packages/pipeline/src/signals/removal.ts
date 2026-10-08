@@ -1,5 +1,5 @@
-// Reaction removal (A 1.6, #289): removing a reaction reverses its effect where reversal is safe.
-// A pure module the signal handler (#288) calls for a `reaction-removed` signal; it reads the log it is
+// Reaction removal (A 1.6): removing a reaction reverses its effect where reversal is safe.
+// A pure module the signal handler calls for a `reaction-removed` signal; it reads the log it is
 // given and returns a plan, and appends, stops, and posts nothing itself.
 //
 // What the handler already does for every removal, and this module does not repeat: it records the
@@ -18,7 +18,7 @@
 //   escalate  `lower`: the score drops through the projection; priority is never lowered ("a bug that
 //             stopped getting reactions did not stop being a bug", A 1.4), so a plan never carries a
 //             priority change (`lowersPriority` is always false).
-//   trigger   within 60 s of the add, `stop`: the existing Stop (main 15.1, #148 and #192) belongs to
+//   trigger   within 60 s of the add, `stop`: the existing Stop (main 15.1) belongs to
 //             the adapter's `reaction_removed` handling, so the plan says `stop` with `viaAdapter` and
 //             carries no event; the handler must not call `stopIncident` a second time. After 60 s, or
 //             when the log holds no add of theirs, `removed`.
@@ -63,7 +63,7 @@ export interface RemovalPlan {
   effect: RemovalEffect;
   /** Events to append after the removal comment, in order. */
   events: NewEvent[];
-  /** The Stop is the adapter's (#148); the handler must not stop again. Only with `effect: 'stop'`. */
+  /** The Stop is the adapter's; the handler must not stop again. Only with `effect: 'stop'`. */
   viaAdapter?: true;
   /** Priority is never lowered by a removal (A 1.4); always false, so a caller can assert it. */
   lowersPriority: false;

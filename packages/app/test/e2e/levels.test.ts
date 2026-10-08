@@ -1,4 +1,4 @@
-// E2E tier: autonomy levels 1 and 2 on real Slack, Jira, and GitHub (main 14.4 e2e row, main 12; #162).
+// E2E tier: autonomy levels 1 and 2 on real Slack, Jira, and GitHub (main 14.4 e2e row, main 12).
 // The phase 3 proof together with the live tier.
 //
 // Per level, exactly as main 14.4 says: the reporter user posts a bug-shaped message in the test
@@ -55,7 +55,7 @@ const claudeOnPath = spawnSync('claude', ['--version'], { stdio: 'ignore' }).sta
 const fixerChoice = process.env.SNAPWING_E2E_FIXER ?? (claudeOnPath ? 'claude-code' : 'scripted');
 /**
  * The pipeline's model provider and, when set, one model for every task. OpenAI `gpt-4.1` until the
- * adapters stop sending what the default models refuse (#275: Anthropic's 5.5 models reject a forced
+ * adapters stop sending what the default models refuse (Anthropic's 5.5 models reject a forced
  * tool_choice and `temperature`, OpenAI's `gpt-5` rejects `temperature: 0`). With
  * SNAPWING_E2E_MODEL_PROVIDER and an empty SNAPWING_E2E_MODEL the provider's default models run.
  */
@@ -76,7 +76,7 @@ const runId = `${Date.now().toString(36)}${randomBytes(2).toString('hex')}`;
 const WEBHOOK_NAME = `${PREFIX} e2e`;
 const RUN_WEBHOOK = `${WEBHOOK_NAME} ${runId}`;
 
-/** The text of a Jira field: a string as is, an ADF document as its text nodes (#155 sends ADF). */
+/** The text of a Jira field: a string as is, an ADF document as its text nodes (the client sends ADF). */
 function fieldText(value: unknown): string {
   if (typeof value === 'string') return value;
   const out: string[] = [];

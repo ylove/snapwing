@@ -1,5 +1,5 @@
 // src/merge/actions.ts: the PR buttons (main 11.2, main 16, main 20.2): Merge, Request changes,
-// Stop, and Revert. `createPrActions` implements the Slack interactivity's `PrActions` (#148,
+// Stop, and Revert. `createPrActions` implements the Slack interactivity's `PrActions` (
 // `app/src/adapters/slack/interactivity.ts`) plus `stop`; the CLI and other callers use it too.
 //
 // Every action authorizes again here (`authorize`, policy/authorize.ts), with the actor's role taken
@@ -120,7 +120,7 @@ export class PrActionRefusedError extends Error {
 }
 
 /**
- * The Slack interactivity's `PrActions` (#148) exactly, plus `stop`. Each resolves when the action was
+ * The Slack interactivity's `PrActions` exactly, plus `stop`. Each resolves when the action was
  * done and rejects with `PrActionRefusedError` when it was refused.
  */
 export interface HumanPrActions {

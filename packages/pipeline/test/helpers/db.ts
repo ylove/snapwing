@@ -93,7 +93,7 @@ export async function createTestDatabase(): Promise<TestDatabase> {
 /**
  * `pool.end()` resolves once the pool's client list is empty, before each client's socket has closed,
  * so `drop database ... with (force)` can terminate a backend whose client is still shutting down
- * and the FATAL 57P01 surfaces as an unhandled error (#122). Wait (about 5 s) for the other
+ * and the FATAL 57P01 surfaces as an unhandled error. Wait (about 5 s) for the other
  * backends to leave; FORCE still removes any that stay.
  */
 async function waitForNoBackends(c: pg.Client, database: string, timeoutMs = 5000): Promise<void> {

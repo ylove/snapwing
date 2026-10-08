@@ -27,7 +27,7 @@ export type FixerBudget = HarnessRunOptions['budget'];
 export interface FixerJob {
   /**
    * The run's id, minted by the caller (a ULID), which appends `fixer-started { runId }` before it
-   * calls `runFixer`, so the fixer's first report always finds its run in the log (B 9, #173).
+   * calls `runFixer`, so the fixer's first report always finds its run in the log (B 9).
    */
   runId: string;
   workItem: WorkItemRef;
@@ -80,7 +80,7 @@ export type TestRunner = Required<Pick<RunnerPort, 'runTests'>>;
 
 /**
  * One run of the review harness (`role: 'review'`, main 11.1) inside the runner's isolation boundary
- * (ADR 0017, #239). The caller prepares the tree on the host and writes the review input into it; the
+ * (ADR 0017). The caller prepares the tree on the host and writes the review input into it; the
  * runner exposes that tree and nothing else, passes no git credential and no fixer API token, and the
  * caller reads the verdict file back from the tree afterwards, running nothing in it.
  */
@@ -128,13 +128,13 @@ export interface RunnerPort {
   /**
    * Runs a test command inside the runner's isolation boundary and resolves when it ends (ADR 0017).
    * Providers with a boundary implement it (docker); the `local` provider does not, and the review
-   * job then runs the regression proof on the host with #233's guards, for development only. Rejects
+   * job then runs the regression proof on the host with its guards, for development only. Rejects
    * when the run cannot happen at all (no daemon, no image); the caller treats that as unprovable.
    */
   runTests?(job: TestRunJob): Promise<TestRunResult>;
   /**
    * Runs the review harness inside the runner's isolation boundary and resolves when it ends (ADR
-   * 0017, #239). Providers with a boundary implement it (docker); on `local` it is absent and the
+   * 0017). Providers with a boundary implement it (docker); on `local` it is absent and the
    * review job runs the harness on the host, for development only. The run gets no git credential and
    * no fixer API token, and no model provider key: model access is the server's model proxy (ADR 0017,
    * amendment 1). Rejects when the run cannot happen at all; the caller escalates.

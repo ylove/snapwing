@@ -1,4 +1,4 @@
-// 0002: `incident_events.tx_order`, the key `readSince` pages on (#84, ADR 0013). It orders events
+// 0002: `incident_events.tx_order`, the key `readSince` pages on (ADR 0013). It orders events
 // by the transaction that appended them: on Postgres the writing transaction's 64-bit id (the
 // column default, `pg_current_xact_id()`), on SQLite a counter that append bumps once per
 // transaction (state/events.ts). Rows already in the log are numbered -n .. -1 in the order

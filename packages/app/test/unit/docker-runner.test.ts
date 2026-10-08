@@ -1,4 +1,4 @@
-// Docker RunnerPort (#135, #234, #239, #256; main 14.3, main 10.2, ADR 0017). A fake `docker` script
+// Docker RunnerPort (main 14.3, main 10.2, ADR 0017). A fake `docker` script
 // records its argv and the SNAPWING_ and other environment it was given, and copies a fixer's mount
 // as it was at `docker run`; no real docker ever runs. Fixer checkouts clone a local bare repository.
 
@@ -232,7 +232,7 @@ describe('createDockerRunner runFixer', () => {
     expect(calls()[0]!.env['SNAPWING_PRIOR_REVIEW_FILE']).toBeUndefined();
   });
 
-  it('uses the git token for the host clone only: none enters the container, its argv, a file, or the remote URL (#266)', async () => {
+  it('uses the git token for the host clone only: none enters the container, its argv, a file, or the remote URL', async () => {
     let minted = 0;
     await runner({ git: { token: async () => (minted++, GIT_TOKEN), remoteUrl: () => origin.url } }).runFixer(job());
     expect(minted).toBe(1);
@@ -401,7 +401,7 @@ describe('createDockerRunner cancel', () => {
   });
 });
 
-describe('createDockerRunner sweep (#266)', () => {
+describe('createDockerRunner sweep', () => {
   const MIN = 60_000;
   // A fake clock well past the real one: every directory's real mtime is old unless set.
   const NOW = Date.now() + 6 * 60 * MIN;
@@ -465,7 +465,7 @@ describe('createDockerRunner sweep (#266)', () => {
   });
 });
 
-describe('createDockerRunner runTests (#234, ADR 0017)', () => {
+describe('createDockerRunner runTests (ADR 0017)', () => {
   const TEST_RUN = '01J9ZTESTRUN00000000000001';
   const testJob = (over: Partial<TestRunJob> = {}): TestRunJob => ({
     runId: TEST_RUN,
@@ -543,7 +543,7 @@ describe('createDockerRunner runTests (#234, ADR 0017)', () => {
   });
 });
 
-describe('createDockerRunner runReview (#239, ADR 0017)', () => {
+describe('createDockerRunner runReview (ADR 0017)', () => {
   const REVIEW_RUN = '01J9ZREVIEWRUN000000000001';
   const reviewJob = (over: Partial<ReviewRunJob> = {}): ReviewRunJob => ({
     runId: REVIEW_RUN,

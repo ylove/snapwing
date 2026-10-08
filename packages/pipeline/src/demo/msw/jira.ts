@@ -55,7 +55,7 @@ const CUSTOM_FIELDS: readonly { id: string; name: string }[] = [
   { id: 'customfield_10053', name: 'Agent Status' },
 ];
 
-/** Jira Cloud's default workflow; `transition` rows name logical targets resolved against it (#268). */
+/** Jira Cloud's default workflow; `transition` rows name logical targets resolved against it. */
 const TRANSITIONS: readonly { id: string; name: string; category: JiraStatusCategory }[] = [
   { id: '11', name: 'To Do', category: 'new' },
   { id: '21', name: 'In Progress', category: 'indeterminate' },
@@ -283,7 +283,7 @@ export class DemoOutboxDrainer {
     return rows.length;
   }
 
-  /** The project's status for a row's logical target, as the real projector resolves it (#268). */
+  /** The project's status for a row's logical target, as the real projector resolves it. */
   private async statusFor(issueKey: string, target: unknown): Promise<string> {
     const logical = toJiraLogicalStatus(target);
     if (logical === undefined) throw new Error(`jira: ${JSON.stringify(target)} is not a lifecycle target`);

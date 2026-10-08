@@ -1,6 +1,6 @@
 // src/ports/state.ts (B 1). Types: contracts/state.ts. Storage: ADR 0011 (Kysely, one
 // migration set on SQLite and Postgres). Implementation: pipeline/src/state, opened by
-// `openState(options)` in state/db.ts (#16 onward).
+// `openState(options)` in state/db.ts.
 //
 // One deviation from B 1: `append`'s `expectedSeq` is required, not optional. Every append passes it
 // (B 0, CONTEXT.md rule 1); ADR 0011 records the change.
@@ -261,7 +261,7 @@ export interface OpenedState extends StatePort {
 }
 
 /**
- * The factory signature `openState` in `pipeline/src/state/db.ts` implements (#16). Runs pending
+ * The factory signature `openState` in `pipeline/src/state/db.ts` implements. Runs pending
  * migrations on open (B 10) and rejects, naming the migration, if one fails.
  */
 export type OpenState = (options: StateOptions) => Promise<OpenedState>;

@@ -1,4 +1,4 @@
-// Slack App Home (#297; main 20.2): `app_home_opened` publishes the opener's queue, shaped by their role
+// Slack App Home (main 20.2): `app_home_opened` publishes the opener's queue, shaped by their role
 // in the map, over a real store on the dialect `SNAPWING_DB` selects. Slack's Web API and GitHub are
 // recorded, not called. The buttons are checked end to end through the existing interactivity handler.
 

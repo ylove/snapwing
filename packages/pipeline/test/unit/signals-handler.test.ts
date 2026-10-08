@@ -1,4 +1,4 @@
-// The signal handler (#288; A 1.3, A 1.4, A 1.5, A 2.1, A 4.4): target resolution first, then one
+// The signal handler (A 1.3, A 1.4, A 1.5, A 2.1, A 4.4): target resolution first, then one
 // `comment` event per signal plus the event its intent implies, under one `expectedSeq`; attribution
 // comments on the ticket and the PR (batch key `comment:{incident}`); and reactions on a message
 // with no incident, stored and counted once the incident exists. Runs on the dialect `SNAPWING_DB`
@@ -295,7 +295,7 @@ describe(`handleSignal: gating (${TEST_DIALECT})`, () => {
   });
 });
 
-// Claims (A 2.1, #291) ----------------------------------------------------------------------------
+// Claims (A 2.1) ----------------------------------------------------------------------------
 
 describe(`handleSignal: claim and release (${TEST_DIALECT})`, () => {
   it("an engineer's claim on the anchor appends claimed with the map role and calls handleClaim", async () => {
@@ -528,7 +528,7 @@ describe(`handleSignal: the staging check (${TEST_DIALECT})`, () => {
     expect(rows[0]?.payload).toEqual({ issueKey: 'WEB-1042', to: 'in-progress' });
     expect(rows[1]?.payload['text']).toBe(`@Pat says the fix does not work on staging at 10:00 UTC: "still broken" (${LINK}). Reopened: the ticket is back in progress.`);
 
-    // The fixer's start takes the incident from staging back to fixing (B 5 row added by #288).
+    // The fixer's start takes the incident from staging back to fixing (a B 5 row).
     await append(ev('fixer-started', { runId: '01K6RUN0000000000000000002', harness: 'claude-code', attempt: 2 }));
     expect((await state.getIncident(INC))?.status).toBe('fixing');
   });

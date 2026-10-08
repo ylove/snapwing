@@ -1,4 +1,4 @@
-// Claims (#291, A 2.1): an engineer's claim between the anchor and the fixer start holds the fixer at
+// Claims (A 2.1): an engineer's claim between the anchor and the fixer start holds the fixer at
 // every level. The engine runs on the in-process workflow over a real store (SNAPWING_DB picks the
 // dialect) with a scripted model, a fake chat adapter, and a fake read-only repo for the scout; the
 // fixer job runs on the same workflow with a fake runner. Signal ingestion that produces `claimed`

@@ -1,4 +1,4 @@
-// InProcessWorkflow (#23): the WorkflowPort over the jobs and job_waits tables. Runs on the dialect
+// InProcessWorkflow: the WorkflowPort over the jobs and job_waits tables. Runs on the dialect
 // SNAPWING_DB selects; the clock is injected through openState, so nothing here sleeps.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

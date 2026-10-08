@@ -1,4 +1,4 @@
-// Slack interactivity (#148; main 8.2, 15.1, 16; B 5 awaitInteractive). `block_actions` payloads as
+// Slack interactivity (main 8.2, 15.1, 16; B 5 awaitInteractive). `block_actions` payloads as
 // Slack sends them, over a real state store (SNAPWING_DB picks the dialect) and the real
 // `stopIncident`; the orchestrator, the Web API client, the runner, and GitHub are recording fakes.
 
@@ -294,7 +294,7 @@ describe('card choices go to handleTap with the actor from the map', () => {
     });
   }
 
-  it('reads a card built by the #129 builders', async () => {
+  it('reads a card built by the card builders', async () => {
     const card = buildScopePreview(INC, { kind: 'scope-preview', summary: 'Reading 4 messages from the thread.' });
     const out = await ix.handleAction(blockActions(ENGINEER, 'scope_actions', 'looks-right', card.blocks));
     expect(out).toMatchObject({ kind: 'tapped', card: 'scope-preview', choice: 'looks-right' });

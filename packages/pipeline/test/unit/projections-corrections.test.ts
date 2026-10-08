@@ -1,4 +1,4 @@
-// Incidents projection, part two (#87; B 3, B 4, A 4.3, A 4.5, ADR 0014): `corrected` events refold
+// Incidents projection, part two (B 3, B 4, A 4.3, A 4.5, ADR 0014): `corrected` events refold
 // the columns their correction changes, and the status message, waiting-on, and monitoring events
 // fold into `status_msg_id`, `waiting_on`, and `monitored`. Runs on the dialect `SNAPWING_DB`
 // selects; CI runs it once per dialect.
@@ -138,7 +138,7 @@ function data(v: IncidentView): Omit<IncidentView, 'lastSeq' | 'updatedAt'> {
   return rest;
 }
 
-/** Rebuilds the incident from its log (#20) in batches of `batchSize`, and reads the row back. */
+/** Rebuilds the incident from its log in batches of `batchSize`, and reads the row back. */
 async function rebuilt(batchSize: number): Promise<IncidentView> {
   await rebuild(state, { incidentId: INC }, { batchSize });
   return incident();

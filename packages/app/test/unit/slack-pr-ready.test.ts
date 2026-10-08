@@ -1,4 +1,4 @@
-// The Slack PrReadyChat (#229; main 11.2): the card in the thread, and the private link prompt.
+// The Slack PrReadyChat (main 11.2): the card in the thread, and the private link prompt.
 
 import { describe, expect, it } from 'vitest';
 import type { PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
@@ -70,7 +70,7 @@ describe('createSlackPrReadyChat', () => {
     expect(json).toContain('<https://snapwing.example/auth/github/start?t=1|Link your GitHub account>');
   });
 
-  it('with state, each posted card is recorded as a pr message; the ephemeral prompt is not (A 1.3, #287)', async () => {
+  it('with state, each posted card is recorded as a pr message; the ephemeral prompt is not (A 1.3)', async () => {
     const appended: NewEvent[] = [];
     const errors: unknown[] = [];
     const chat = createSlackPrReadyChat({

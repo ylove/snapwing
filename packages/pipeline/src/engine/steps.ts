@@ -35,7 +35,7 @@ import type { ClaimHold } from './claims.ts';
 import { approvedFix, answerAfter, pendingCard, userSideRound, type Cursor, type Phase, type Tap, type UserSideRound } from './cursor.ts';
 import { currentPlaybook, DEFAULT_AGENT_NAME, DEFAULT_MAX_SCOPE_ROUNDS, DEFAULT_TAP_TIMEOUT, type EngineDeps, type StatusSubscription } from './deps.ts';
 
-/** The logical Jira target that starts the fixer (main 14.1: "fires fixer webhook"); the projector resolves it (#268). */
+/** The logical Jira target that starts the fixer (main 14.1: "fires fixer webhook"); the projector resolves it. */
 export const IN_PROGRESS: JiraLogicalStatus = JIRA_IN_PROGRESS;
 
 /** What a step tells the job loop: run the next phase, or return from the handler. */
@@ -138,7 +138,7 @@ function outboxRow(
  * Appends `events` after `cursor.lastSeq`. With `effects`, runs in one transaction: `effects` writes
  * artifacts and outbox rows on `tx` and returns events of its own, appended after `events`.
  * A conflict with nothing but records of what the bot posted (a card the step just posted, the status
- * message) appends after them: they are no decision's input (#287). Any other conflict throws.
+ * message) appends after them: they are no decision's input. Any other conflict throws.
  */
 async function commit(
   env: StepEnv,
@@ -843,7 +843,7 @@ function filedBundle(bundle: ContextBundle, userSide: UserSideRound | undefined)
  * full plan and the implementation request are stored as artifacts (ADR 0015). Levels 0, 2, 3 enqueue
  * `create-issue` with `planned`; level 1 shows the fix preview first. A `noop` plan ends the incident
  * as not a bug. An incident with no surface files to the fallback project at level 0 with
- * `needs-clarification` (#115), so triage never fails for want of a project.
+ * `needs-clarification`, so triage never fails for want of a project.
  */
 export async function planStep(env: StepEnv, needsClarification: boolean, known?: ContextBundle, userSide?: UserSideRound): Promise<StepResult> {
   const bundle = filedBundle(known ?? (await loadBundle(env)), userSide);
@@ -948,8 +948,8 @@ function isPlan(v: unknown): v is TriageResolutionPlan {
 }
 
 /**
- * The plan triage made, read back from the `plan` artifact `planned` references (#114), with the
- * level in force now (`level-changed` may have moved it). A log from before #114 has no artifact; its
+ * The plan triage made, read back from the `plan` artifact `planned` references, with the
+ * level in force now (`level-changed` may have moved it). A log from before the stored plan has no artifact; its
  * plan is rebuilt from `planned`, without the model's write-up and the suggested assignee.
  */
 async function plannedPlan(env: StepEnv): Promise<TriageResolutionPlan> {
@@ -1055,7 +1055,7 @@ export async function afterFiledStep(env: StepEnv): Promise<StepResult> {
   const resolution = must(cursor.resolved, 'resolved').resolution;
   const level = cursor.level ?? planned.payload.autonomyLevel;
   // A Stop between `filed` and this step leaves the issue in Backlog: no In Progress transition (so
-  // no fixer) and no fix preview card (#206).
+  // no fixer) and no fix preview card.
   const stopped = cursor.stoppedAfterFiled !== undefined;
   await rememberIncident(env.deps.cache, resolution, { issueKey, summary: planned.payload.summary });
   const comments = reporterClaimRows(env, issueKey, () => true);

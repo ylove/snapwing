@@ -1,4 +1,4 @@
-// The `bot_messages` projection (A 1.3, #287): every message Snapwing posted that a person can react
+// The `bot_messages` projection (A 1.3): every message Snapwing posted that a person can react
 // to, with its target role and incident, keyed by platform, channel, and message id.
 //
 // - `bot-message-posted` writes one row. The same message recorded again (a retried append, a

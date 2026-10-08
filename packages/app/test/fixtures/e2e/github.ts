@@ -1,4 +1,4 @@
-// A fake GitHub for the end to end contract test (#160): MSW handlers over real local bare
+// A fake GitHub for the end to end contract test: MSW handlers over real local bare
 // repositories. The fixer and review checkouts clone from those repositories (compose's
 // `gitRemoteUrl`), the fake harness pushes its branch there, and every pull request answer (head sha,
 // changed files, line counts) is read from them with git, so what the review job checks out is what

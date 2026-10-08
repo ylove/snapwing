@@ -1,5 +1,5 @@
 // Images for live model calls. The Anthropic API refuses the contract suite's 1x1 PNG ("Could not
-// process image", #275), so every live vision call sends this one.
+// process image"), so every live vision call sends this one.
 import { crc32, deflateSync } from 'node:zlib';
 
 /** A white RGB PNG of `size` by `size` pixels (default 64), as base64. */

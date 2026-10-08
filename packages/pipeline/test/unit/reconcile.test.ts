@@ -1,4 +1,4 @@
-// Reconciler (#139, B 8, B 10, B 11 "suppress the CI webhook"). Runs on the in-process workflow over
+// Reconciler (B 8, B 10, B 11 "suppress the CI webhook"). Runs on the in-process workflow over
 // the dialect `SNAPWING_DB` selects, with fake sources of truth standing in for GitHub and Jira. A
 // "suppressed webhook" is an incident whose log never got the event the world says happened.
 

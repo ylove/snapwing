@@ -361,7 +361,7 @@ type Names = (slackIdOrHandle: string) => string;
 
 /**
  * One line per event type, keyed by name rather than switched on the union, so a renamed event
- * (#117) prints with an empty summary instead of breaking the build.
+ * prints with an empty summary instead of breaking the build.
  */
 const EVENT_SUMMARY: Readonly<Record<string, (p: Json, names: Names) => string>> = {
   captured: (p, n) => `from ${n(get(isObject(p['reporter']) ? p['reporter'] : {}, 'id'))}: "${get(p, 'anchorText')}"`,

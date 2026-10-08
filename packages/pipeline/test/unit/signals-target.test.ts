@@ -1,4 +1,4 @@
-// Message roles and target resolution (#287, A 1.3, A 7, A 8 "target resolution" row): the matrix as
+// Message roles and target resolution (A 1.3, A 7, A 8 "target resolution" row): the matrix as
 // data, both playbook switches, and the `bot_messages` projection that tells a reaction's target
 // (recorded on the dialect `SNAPWING_DB` selects; CI runs both).
 

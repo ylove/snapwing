@@ -1,4 +1,4 @@
-// Artifacts, webhook inbox, outbox, config cache, and kv (#19; B 1, B 3, B 7.1, B 8). Runs on the
+// Artifacts, webhook inbox, outbox, config cache, and kv (B 1, B 3, B 7.1, B 8). Runs on the
 // dialect `SNAPWING_DB` selects; CI runs the file on both SQLite and Postgres.
 
 import { createHash } from 'node:crypto';

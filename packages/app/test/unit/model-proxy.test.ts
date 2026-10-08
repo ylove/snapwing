@@ -1,4 +1,4 @@
-// Model proxy (ADR 0017, amendment 1; #239): per-run model tokens and the proxy routes a fixer or review
+// Model proxy (ADR 0017, amendment 1): per-run model tokens and the proxy routes a fixer or review
 // container calls instead of holding a provider key. The provider is a fake `fetch`; no network.
 
 import { describe, expect, it } from 'vitest';

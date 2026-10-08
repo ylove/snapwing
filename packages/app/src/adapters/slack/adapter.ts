@@ -1,6 +1,6 @@
 // The Slack IngestionAdapter (main 14.1, 15.1). It authenticates and normalizes through the functions
-// of #127, acknowledges with an ephemeral "On it, pulling context", and posts cards and the status
-// message through the Web API client of #128 using the Block Kit builders of #129.
+// of the Slack client, acknowledges with an ephemeral "On it, pulling context", and posts cards and the status
+// message through the Web API client using the Block Kit builders.
 //
 // Inbound requests reach the adapter as a `SlackInbound`: an HTTP request (headers plus the exact
 // signed body) or a Socket Mode payload (already authenticated by the socket the app token opened).
@@ -8,8 +8,8 @@
 // normalizes once per request and caches the result so `authenticateRequest`, `normalizePayload`, and
 // the transport's own check agree on one `eventId`.
 //
-// Every card and status message it posts is recorded as `bot-message-posted` with its role (A 1.3,
-// #287) when the adapter has `state`. The record is best effort: the message is already out, so a
+// Every card and status message it posts is recorded as `bot-message-posted` with its role (A 1.3)
+// when the adapter has `state`. The record is best effort: the message is already out, so a
 // failure goes to `onError` and never fails the post.
 //
 // A status update with an empty `issueKey` is a note about an incident that has no issue (the A 5.2

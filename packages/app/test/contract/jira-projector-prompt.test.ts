@@ -1,4 +1,4 @@
-// Jira projector, placeholder key rewrite and field id mapping (#113; main 9.1, B 7.2). The Jira side
+// Jira projector, placeholder key rewrite and field id mapping (main 9.1, B 7.2). The Jira side
 // is MSW answering with the shapes of the recorded payloads (test/fixtures/jira/create-issue.json for
 // the create answer; the edit answers 204), and every request body is kept so the test reads back what
 // was sent: first the create with the placeholder key, then the update-fields with the real one.

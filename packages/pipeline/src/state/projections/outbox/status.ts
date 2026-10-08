@@ -2,7 +2,7 @@
 // status message go through the same outbox with their own targets"). `statusFor` (status/loopback.ts)
 // decides whether the event changes the message; this module turns its update into one
 // `update-status` row per chat target the incident's thread lives on. Every row of an incident shares
-// `batch_key` `status:{incident}`, so the chat projector (#149) keeps one message and edits it in place:
+// `batch_key` `status:{incident}`, so the chat projector keeps one message and edits it in place:
 // the first row posts it (and pins it where the platform can), later ones edit it, and rows that pile up while the drain is
 // paused collapse to the latest.
 //

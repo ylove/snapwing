@@ -1,5 +1,5 @@
 // Status pull in Slack (A 4.3, main 15.1): "where are we with this?" asked four ways, answered in
-// place through `createStatusQueries(...).respond` (#295).
+// place through `createStatusQueries(...).respond`.
 //
 // - `@Snapwing where are we with this?` in a thread: answered in that thread. The thread's incident is
 //   the one asked about.

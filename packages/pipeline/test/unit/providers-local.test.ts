@@ -578,7 +578,7 @@ describe('local runner (child process over the generic harness)', () => {
     await expect(r.wait('01HZXTESTUNKNOWNRUN0000000')).rejects.toBeInstanceOf(UnknownRunError);
   });
 
-  describe('startup sweep (#266)', () => {
+  describe('startup sweep', () => {
     const MIN = 60_000;
     // A fake clock well past the real one, so every directory's real mtime is old unless set.
     const NOW = Date.now() + 6 * 60 * MIN;

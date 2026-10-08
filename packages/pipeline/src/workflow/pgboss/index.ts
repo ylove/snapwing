@@ -3,7 +3,7 @@
 // `pgboss`) and runs every statement through the state store's Kysely handle (`fromKysely`), so a
 // job write, a `job_waits` write, and the caller's events commit in one transaction.
 //
-// Semantics, matching the in-process scheduler (#23):
+// Semantics, matching the in-process scheduler:
 // - Singleton keys are global (`cancel` takes only a key). A key is "queued" while a pg-boss row
 //   holding it is `created` or `retry` and not parked. pg-boss's own `singletonKey` dedupes only
 //   `created` rows (and only on policy queues), so a retrying job would not block a new one; this

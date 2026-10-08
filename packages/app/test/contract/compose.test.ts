@@ -1,4 +1,4 @@
-// The composition root (#159; main 14.1, main 14.3, B 7.1, B 9) booted for real: `snapwing serve` with
+// The composition root (main 14.1, main 14.3, B 7.1, B 9) booted for real: `snapwing serve` with
 // the real `compose`, the example config, the demo workspace map, fake secrets in an env file, MSW
 // standing in for Slack, Jira, and GitHub, and a fake harness. Runs on the dialect `SNAPWING_DB`
 // selects (pg-boss on Postgres). The last test runs the level 0 demo recording through the composed
@@ -287,7 +287,7 @@ describe('compose', () => {
   });
 });
 
-describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1, #247)', () => {
+describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1)', () => {
   it('mounts the proxy only for docker, and only for providers whose key is set', async () => {
     const localState = await tdb.open();
     const local = await composeDirect({ secrets: fakeSecrets(), overrides: { slackBotUserId: BOT_USER }, state: localState, workflow: new InProcessWorkflow(localState) });
@@ -309,7 +309,7 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     expect(proxied).toEqual(expect.arrayContaining(['/model/:workItemId/anthropic/v1/messages', '/model/:workItemId/google/v1beta/models/:call']));
     expect(proxied.some((p) => p.includes('/openai/'))).toBe(false);
 
-    // Fresh git tokens for containers (#266): docker only.
+    // Fresh git tokens for containers: docker only.
     const gitToken = (c: Composed): string[] => c.routes.filter((r) => r.path.endsWith('/git-token')).map((r) => `${r.method} ${r.path}`);
     expect(gitToken(docker)).toEqual(['GET /fixer/:workItemId/git-token']);
     expect(gitToken(local)).toEqual([]);

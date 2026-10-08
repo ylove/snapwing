@@ -8,14 +8,14 @@
 // ever appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to
 // find its daemon, not the server's environment.
 //
-// The work item is prepared on the host before the container starts (#256), because nothing in the
+// The work item is prepared on the host before the container starts, because nothing in the
 // container can turn an artifact id into a request: `runFixer` loads the implementation request (and
 // on a retry the review) from `artifacts`, makes `<workdirRoot>/<runId>` a checkout on the work branch
 // with `prepareWorkdir` (bot identity, guardrail hooks under `.git/snapwing/hooks`, as the `local`
 // runner does), and writes the request to `.git/snapwing/implementation-request.xml` and the review to
 // `.git/snapwing/review.json`, named in the container as `SNAPWING_PRIOR_REVIEW_FILE` under `/work`.
 // The installation token from `git.token` is used for that clone on the host only: no git token
-// enters the container (#266). Installation tokens expire after an hour and a run may last longer, so
+// enters the container. Installation tokens expire after an hour and a run may last longer, so
 // the image's wrapper fetches a fresh one whenever git asks, from `GET /fixer/{workItemId}/git-token`
 // with the run's fixer token, through a git credential helper that writes it nowhere
 // (docs/harness-generic.md section 8). The wrapper also points `core.hooksPath` at
@@ -39,7 +39,7 @@
 // no daemon). `cancel` is `docker stop -t <grace>`: SIGTERM, then SIGKILL after the grace; `--rm`
 // removes the container afterwards. A container that is already gone makes `cancel` a no-op.
 //
-// `runTests` runs one regression-proof test run (main 11.1, ADR 0017, #234) in the same image, as an
+// `runTests` runs one regression-proof test run (main 11.1, ADR 0017) in the same image, as an
 // attached `docker run --rm` named `snapwing-tests-<runId>`: the command is `sh -c <command>` in place
 // of the image's entrypoint, the caller's prepared tree is the only mount, and the container gets the
 // caller's env and nothing else, no token of any kind (the review job checked the tree out on the host).
@@ -49,7 +49,7 @@
 // itself exits 125 reads as a runner failure (the review escalates; never a pass). Past the timeout the
 // container is killed and the run resolves `timedOut`.
 //
-// `runReview` runs the review agent (main 11.1, ADR 0017, #239) the same way, attached, as
+// `runReview` runs the review agent (main 11.1, ADR 0017) the same way, attached, as
 // `snapwing-review-<runId>`, but with the image's own entrypoint (its wrapper starts the configured
 // harness, as for a fixer) and `SNAPWING_ROLE=review`: the caller's self-contained tree at the head is
 // the only mount, the review input file and `SNAPWING_REVIEW_FILE` lie inside it, and there is no git
@@ -550,7 +550,7 @@ export function modelEnv(proxy: DockerModelProxy | undefined, run: ModelTokenReq
  * The container's environment from the job alone: the harness contract variables
  * (docs/harness-generic.md), API access, and the model proxy when configured. `runFixer` adds
  * `SNAPWING_PRIOR_REVIEW_FILE` on a retry once it has prepared the checkout. There is no git token:
- * the wrapper fetches a fresh one from the fixer API whenever git asks (#266).
+ * the wrapper fetches a fresh one from the fixer API whenever git asks.
  */
 export function fixerEnv(job: FixerJob, env: DockerRunnerEnv): Record<string, string> {
   const out: Record<string, string> = {

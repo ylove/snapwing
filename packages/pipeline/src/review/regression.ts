@@ -15,7 +15,7 @@
 // anything the test command writes to its config would reach the next git call in `workdir`. Our own git
 // calls get the same bare environment and run no hooks.
 //
-// With a `runner` (the RunnerPort's `runTests`: docker, #234), the test command never runs on this host.
+// With a `runner` (the RunnerPort's `runTests`: docker), the test command never runs on this host.
 // Each tree is then a self-contained copy (`clone --local --no-hardlinks`: its own objects, no
 // alternates pointing back at `workdir`, no remote), the runner exposes only that tree to the command,
 // and the command gets only the caller's `env`. Our git calls build each tree before its run and never
@@ -270,7 +270,7 @@ async function runIsolated(
 }
 
 /**
- * A self-contained checkout of `sha` at `dest` for a runner's boundary (the review agent's tree, #239):
+ * A self-contained checkout of `sha` at `dest` for a runner's boundary (the review agent's tree):
  * its own objects and fresh config, no alternates, no remote, no hooks run while building it. The
  * caller runs nothing of git in it after the runner had it.
  */

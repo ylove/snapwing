@@ -1,4 +1,4 @@
-// #298: push notifications (A 4.4). The milestone mapping, the policy rule by rule (watchers, DM
+// Push notifications (A 4.4). The milestone mapping, the policy rule by rule (watchers, DM
 // versus thread, forcePush, the reporter's staging request, quiet hours, the rate limit and the burst
 // merge), and the `notify` outbox rows through `outboxFor`.
 

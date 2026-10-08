@@ -1,6 +1,6 @@
 // Building outbox rows from an event, for the per-target modules in this directory. Pure: the id,
 // `createdAt`, and `nextAttempt` come from the event, so the same event always implies the same rows
-// (B 4; rebuild never calls this, #89, but a test or `jira reproject` may).
+// (B 4; rebuild never calls this, but a test or `jira reproject` may).
 
 import { createHash } from 'node:crypto';
 import type { IncidentEvent } from '../../../contracts/events.ts';

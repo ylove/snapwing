@@ -1,5 +1,5 @@
 // Slack interactivity (main 8.2, 15.1, 16; B 5 awaitInteractive): what a button tap or a removed
-// trigger reaction does. The transport (#147) hands every interactivity payload that is not the message
+// trigger reaction does. The transport hands every interactivity payload that is not the message
 // shortcut to `onAction`, after the request was authenticated and answered.
 //
 // The rules a tap follows (card choices to `orchestrator.handleTap`, authorization, Stop and the Won't
@@ -53,7 +53,7 @@ const TRIGGER_SCAN_LIMIT = 200;
 /** A trigger stamped slightly after the removal (Slack clocks) still matches. */
 const CLOCK_SKEW_MS = 5_000;
 
-/** The card each actions block belongs to, by the `block_id` the card builders (#129) give it. */
+/** The card each actions block belongs to, by the `block_id` the card builders give it. */
 const BLOCK_CARDS: Readonly<Record<string, TapCard>> = {
   scope_actions: 'scope-preview',
   dedupe_actions: 'dedupe',
@@ -132,7 +132,7 @@ function parseTap(payload: SlackActionPayload): Tap | undefined {
   const container = rec(payload['container']);
   const message = rec(payload['message']);
   const userId = str(rec(payload['user'])['id']);
-  // A tap in the App Home (#297) has no channel: replies go to the user's DM with the app.
+  // A tap in the App Home has no channel: replies go to the user's DM with the app.
   const fromHome = container['type'] === 'view' || rec(payload['view'])['type'] === 'home';
   const channel = str(container['channel_id']) || str(rec(payload['channel'])['id']) || (fromHome ? userId : '');
   const incidentId = str(action['value']);

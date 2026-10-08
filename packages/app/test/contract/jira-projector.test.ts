@@ -1,4 +1,4 @@
-// Jira projector (#140; B 7.1, B 11): drains `target='jira'` outbox rows against an in-memory Jira
+// Jira projector (B 7.1, B 11): drains `target='jira'` outbox rows against an in-memory Jira
 // behind MSW, on the dialect `SNAPWING_DB` selects. The clock is shared by the store and the
 // projector, so holds, pauses, and backoff move only when a test moves it.
 
@@ -693,7 +693,7 @@ describe('transition resolution', () => {
   });
 });
 
-describe('logical targets (#268)', () => {
+describe('logical targets', () => {
   const seed = (key: string, status: string): void => {
     jira.issues.set(key, { key, fields: {}, labels: [], status, comments: [], attachments: [] });
   };

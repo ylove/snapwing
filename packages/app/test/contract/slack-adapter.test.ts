@@ -210,7 +210,7 @@ describe('SlackAdapter over HTTP', () => {
     expect(web.postMessage).toHaveBeenCalledWith(expect.objectContaining({ channel: 'C0WEB', thread_ts: '1699999900.000100' }));
   });
 
-  it('records each posted card and a new status message with its role (A 1.3, #287); an edit records nothing', async () => {
+  it('records each posted card and a new status message with its role (A 1.3); an edit records nothing', async () => {
     const web = fakeWeb();
     const appended: NewEvent[] = [];
     const state = {

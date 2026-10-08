@@ -1,6 +1,6 @@
 // Errors the state implementation raises beyond the port's own (contracts/state.ts).
 
-/** A StatePort method whose implementation has not landed yet (#17, #18, #19 fill them). */
+/** A StatePort method whose implementation has not landed yet. */
 export class NotImplementedError extends Error {
   override readonly name = 'NotImplementedError';
   readonly code = 'NOT_IMPLEMENTED';

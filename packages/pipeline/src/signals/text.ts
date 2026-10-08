@@ -1,11 +1,11 @@
-// Text signals after filing (A 3, #294): four things a message in a filed incident's thread can say,
-// beyond the A 1 intents the signal handler (#288) applies.
+// Text signals after filing (A 3): four things a message in a filed incident's thread can say,
+// beyond the A 1 intents the signal handler applies.
 //
 //   resolution     "nvm, works now", "fixed in the deploy that just went out". From the incident's
 //                  reporter or an engineer: one confirmation prompt, then the incident closes and the
 //                  issue goes to done with resolution `Fixed` (a fix went out, or the incident's PR
 //                  merged) or `Cannot Reproduce` (it went away, or it was the reporter's mistake). The
-//                  close is a `transition` row with the resolution through the outbox (#193).
+//                  close is a `transition` row with the resolution through the outbox.
 //   environment    "this is staging", "happening on prod too": the incident's environment becomes the
 //                  one named (`incidentEnvironment`), and a production mention on a staging incident
 //                  raises the priority one step (`update-fields` with the Jira priority, plus
@@ -410,7 +410,7 @@ async function decideResolution(deps: TextSignalDeps, incidentId: string, messag
     const issueKey = row.jiraKey ?? '';
     return {
       events: [record, closed],
-      // The `closed` event's own transition carries no resolution: drop it and send this one (#193).
+      // The `closed` event's own transition carries no resolution: drop it and send this one.
       after: async (tx) => {
         await tx.dropOutbox('jira', jiraFieldBatchKey(row.id, 'status'));
         const close: TransitionRow = { issueKey, to: JIRA_DONE, resolution };

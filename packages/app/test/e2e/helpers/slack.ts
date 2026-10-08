@@ -1,5 +1,5 @@
 // The Slack side of the e2e tier (main 14.4): the reporter and engineer act through their own user
-// tokens (the test-driver app, #264), reads go through the bot token, and a card tap is a
+// tokens (the test-driver app), reads go through the bot token, and a card tap is a
 // `block_actions` payload built from the real card. Slack has no API that presses a button for a user,
 // so the harness hands that payload to the server's Socket Mode connection as an `interactive`
 // envelope (see server.ts); everything else (the trigger reaction, every post and edit) is real.

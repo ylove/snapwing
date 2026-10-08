@@ -8,7 +8,7 @@
 // replaying a log writes the same rows on both dialects. `applyProjections` loads an incident's
 // rows once, folds the events in seq order, and writes back only the tables that changed. Events
 // for an incident with no `captured` event yet fold to nothing. An event that does not fit the
-// incident's status (`isValidTransition`, #11) keeps the status and is logged as a warning, as is
+// incident's status (`isValidTransition`) keeps the status and is logged as a warning, as is
 // a `corrected` event the incidents fold ignores (ADR 0014). Corrections refold the incidents row
 // only; claims, subscriptions, and escalation scores keep what the events as recorded gave them.
 
@@ -43,7 +43,7 @@ export interface ApplyProjectionsOptions {
   /**
    * Enqueue the outbox rows `outboxFor` says the events imply; default true. Append leaves it on,
    * so the row exists or the event does not (B 4). Rebuild turns it off: the outbox is a delivery
-   * log, not a projection, and replay must not send history again (#89; see rebuild.ts).
+   * log, not a projection, and replay must not send history again (see rebuild.ts).
    */
   outbox?: boolean;
 }

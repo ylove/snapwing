@@ -1,4 +1,4 @@
-// Escalation ladders (#299; A 6.2, B 5 `escalate:{incident}:{step}`). Runs on the in-process
+// Escalation ladders (A 6.2, B 5 `escalate:{incident}:{step}`). Runs on the in-process
 // workflow over the dialect `SNAPWING_DB` selects, with a fake clock, a fake chat side, a fake
 // Pager, and an in-memory secrets port. The A 6.2 example ladders (`outage`, `stalled-fix`) are the
 // playbook under test.

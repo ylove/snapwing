@@ -24,7 +24,7 @@
 // - `corrected` (B 4, ADR 0014): refolds the log with the correction merged into the event at
 //   `correctsSeq` and writes only the data columns whose value that changes. Statuses move on the
 //   events as recorded, so a correction never changes `status` or `closed_at`.
-// - Every event: `status` from `nextStatus` (B 5, #11), `last_seq`, and `updated_at` (the event's
+// - Every event: `status` from `nextStatus` (B 5), `last_seq`, and `updated_at` (the event's
 //   `recordedAt`). Entering a terminal status sets `closed_at` to the event's `occurredAt`.
 //
 // Deterministic: timestamps come from the events, never the clock.

@@ -1,5 +1,5 @@
 // src/monitor/ladder.ts: escalation ladders (A 6.2) on durable `escalate:{incident}:{step}` timers
-// (B 5), #299. A factory over injected interfaces; compose wires it.
+// (B 5). A factory over injected interfaces; compose wires it.
 //
 // A ladder is one playbook `<escalation>`. It applies while any one of its `<applyWhen>` elements
 // holds (every attribute on that element must match; none at all means it never applies on its own)
@@ -33,8 +33,8 @@
 //                        mention, and pages, each on its own: one failing never skips another.
 //                        Then it records the `step`.
 //
-// Paging. The step's `pagerduty` value is a PagerDuty service id, never a routing key (orchestrator
-// decision on #299). The key comes from the secrets port: `PAGERDUTY_ROUTING_KEY_<SERVICE>` (the id
+// Paging. The step's `pagerduty` value is a PagerDuty service id, never a routing key (an orchestrator
+// decision). The key comes from the secrets port: `PAGERDUTY_ROUTING_KEY_<SERVICE>` (the id
 // upper-cased, anything but letters and digits as `_`) when set, else `PAGERDUTY_ROUTING_KEY`. With
 // neither the step logs once per service and does not page; its other actions still run. One dedup
 // key per incident and ladder (`pagerDedupKey`); a stop resolves it on every service the run paged.
@@ -101,7 +101,7 @@ export interface LadderDeps {
   pager: Pager;
   secrets: SecretsPort;
   clock: () => Date;
-  /** The A 1.4 outage step has been reached (#290). Default: never. */
+  /** The A 1.4 outage step has been reached. Default: never. */
   outage?: (incident: IncidentView) => boolean | Promise<boolean>;
   /** The incident is stalled (A 4.5). Default: never. */
   stalled?: (incident: IncidentView) => boolean | Promise<boolean>;

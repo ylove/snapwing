@@ -1,4 +1,4 @@
-// Event log: append, read, readSince (#17; B 1, B 4, B 11 row 1). Runs on the dialect `SNAPWING_DB`
+// Event log: append, read, readSince (B 1, B 4, B 11 row 1). Runs on the dialect `SNAPWING_DB`
 // selects; CI runs it once per dialect.
 
 import pg from 'pg';
@@ -14,7 +14,7 @@ import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
 import { logSettled, readAll, readSettled } from '../helpers/log-settled.ts';
 
-// The spy: the real (no-op until #18) applyProjections, wrapped so tests can see and override calls.
+// The spy: the real (once a no-op) applyProjections, wrapped so tests can see and override calls.
 vi.mock('../../src/state/projections/index.ts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/state/projections/index.ts')>();
   return { ...actual, applyProjections: vi.fn(actual.applyProjections) };
@@ -471,7 +471,7 @@ describe('readSince', () => {
     await expect(state.readSince(LOG_START, 0)).rejects.toThrow('limit');
   });
 
-  // #84: a cursor must never pass an event whose transaction commits after the read.
+  // A cursor must never pass an event whose transaction commits after the read.
   describe.runIf(TEST_DIALECT === 'postgres')('on Postgres, with a transaction still open', { timeout: 30_000 }, () => {
     /** A promise that resolves when `open()` is called, and `open()` itself. */
     function latch(): { wait: Promise<void>; open: () => void } {

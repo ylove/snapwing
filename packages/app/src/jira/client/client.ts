@@ -71,7 +71,7 @@ export interface JiraClient {
   findUserByEmail(email: string): Promise<JiraUser | undefined>;
   /**
    * The project's workflow statuses with their categories (`GET /project/{key}/statuses`), across
-   * its issue types, each name once, in Jira's order. Logical targets resolve against these (#268).
+   * its issue types, each name once, in Jira's order. Logical targets resolve against these.
    */
   projectStatuses(key: string): Promise<JiraProjectStatus[]>;
 }

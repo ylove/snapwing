@@ -1,4 +1,4 @@
-// Reaction removal (#289, A 1.6): the plan for each removed intent, and that the projections the plan
+// Reaction removal (A 1.6): the plan for each removed intent, and that the projections the plan
 // leans on (scores, subscriptions) behave as A 1.6 says. Pure; no database.
 
 import { describe, expect, it } from 'vitest';

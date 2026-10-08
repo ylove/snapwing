@@ -1,4 +1,4 @@
-// `snapwing serve` (#125) in-process on the dialect the run selects: boots on an ephemeral port with
+// `snapwing serve` in-process on the dialect the run selects: boots on an ephemeral port with
 // the example config, mounts a composed test route and job, answers /healthz, and on SIGTERM stops
 // the API, drains the worker, and closes the state store.
 

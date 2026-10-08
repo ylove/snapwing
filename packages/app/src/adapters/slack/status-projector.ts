@@ -8,7 +8,7 @@
 //
 // - First row: post the message in the thread (none in a direct message), pin it, then append
 //   `status-message-posted { messageId }` with `expectedSeq` (a conflict is retried from a fresh read),
-//   with `bot-message-posted { role: 'status' }` in the same append (A 1.3, #287).
+//   with `bot-message-posted { role: 'status' }` in the same append (A 1.3).
 //   `incidents.status_msg_id` then names the message; a later row `chat.update`s it.
 // - A try that posted but could not append leaves the ref in the cache under `slack-status:{incident}`;
 //   the retry edits that message and appends, rather than posting a second one.

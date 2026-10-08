@@ -136,7 +136,7 @@ export interface EscalationScoresTable {
   window_ends: Ts;
 }
 
-/** A message Snapwing posted, with its A 1.3 target role (#287). */
+/** A message Snapwing posted, with its A 1.3 target role. */
 export interface BotMessagesTable {
   platform: 'slack' | 'teams';
   channel: string;
@@ -191,7 +191,7 @@ export interface KvTable {
 
 export type JobState = 'created' | 'retry' | 'active' | 'parked' | 'completed' | 'cancelled' | 'failed';
 
-/** The in-process scheduler's job store (B 3, last paragraph; #23). */
+/** The in-process scheduler's job store (B 3, last paragraph). */
 export interface JobsTable {
   id: string;
   name: string;
@@ -219,7 +219,7 @@ export interface JobWaitsTable {
   created_at: TsDefault;
 }
 
-/** A chat user's linked GitHub account (#153); the token columns hold sealed values (util/seal.ts). */
+/** A chat user's linked GitHub account; the token columns hold sealed values (util/seal.ts). */
 export interface LinkedIdentitiesTable {
   workspace_id: string;
   chat: 'slack' | 'teams';

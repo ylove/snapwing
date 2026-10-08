@@ -1,6 +1,6 @@
-// Escalation by weight of reactions (A 1.4, #290): the reaction ladder.
+// Escalation by weight of reactions (A 1.4): the reaction ladder.
 //
-// Counting. The signal handler (signals/handler.ts, #288) records every counted signal as a `comment`
+// Counting. The signal handler (signals/handler.ts) records every counted signal as a `comment`
 // event with `count { weight, windowEndsAt }`, frozen at record time: trigger and escalate anywhere,
 // only inside the playbook's window from the anchor, weighted reporter, engineer, or owner of the
 // surface. A ladder's score is the sum of those weights over its unique reactors: one person reacting
@@ -259,7 +259,7 @@ export interface ReactionEscalationDeps {
   /** The install's workspace (single tenant), stamped on every event and row. */
   workspaceId: string;
   state: StatePort;
-  /** The loaded playbook, or a getter for the current one (hot reload, #284). */
+  /** The loaded playbook, or a getter for the current one (hot reload). */
   playbook: Playbook | (() => Playbook | Promise<Playbook>);
   clock: () => Date;
   /** Posts the note and the owner mention to the incident's thread. Absent: nothing is posted. */

@@ -44,7 +44,7 @@ function allowsNull(schema: JsonSchema): boolean {
 
 /**
  * The same schema, additionally accepting `null`, always as an `anyOf` branch: the API rejects a `type`
- * array such as `["string", "null"]` next to an `enum` (found live on Claude Sonnet 5.5, #275).
+ * array such as `["string", "null"]` next to an `enum` (found live on Claude Sonnet 5.5).
  */
 function makeNullable(schema: JsonSchema): JsonSchema {
   if (allowsNull(schema)) return schema;

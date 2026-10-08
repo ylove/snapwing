@@ -1,4 +1,4 @@
-// Status pull in Slack (#296; A 4.3, main 15.1): a mention in a thread, a mention anywhere, a DM, and
+// Status pull in Slack (A 4.3, main 15.1): a mention in a thread, a mention anywhere, a DM, and
 // `/status`, each answered in place through `answer()`, shaped to the asker's role from the map, over a
 // real store on the dialect `SNAPWING_DB` selects. Slack's Web API and a command's `response_url` are
 // recorded, not called.

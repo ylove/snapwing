@@ -1,4 +1,4 @@
-// Environment holds and claim expiry (#293; A 2.3, A 2.4, B 5 timers). Runs on the in-process workflow
+// Environment holds and claim expiry (A 2.3, A 2.4, B 5 timers). Runs on the in-process workflow
 // over the dialect `SNAPWING_DB` selects, with a fake clock that the state store, the workflow, and the
 // module share. Chat posts go to a recording `say`; ticket and PR comments are read off the outbox.
 

@@ -1,4 +1,4 @@
-// Custom field ids (B 7.2, #113). The ticket payload names its custom fields (`Implementation Prompt`,
+// Custom field ids (B 7.2). The ticket payload names its custom fields (`Implementation Prompt`,
 // `Conversation Link`, `Autonomy Level`) and the lifecycle rows name `Agent Status`; Jira wants the
 // site's `customfield_NNNNN` ids. `pnpm jira:bootstrap` (scripts/jira-bootstrap.ts) creates the four
 // fields and writes their ids into `.env.live` as the variables below, so the composition root reads
