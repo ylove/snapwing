@@ -337,6 +337,17 @@ describe('a direct message', () => {
     }
     expect(sq.intercepts(dm(REPORTER, 'status of the cart bug'))).toBe(true);
   });
+
+  it('answers "status <surface>" when the words after status are exactly a surface id or name; "status web page is down" is captured', async () => {
+    expect(looksLikeStatusQuestion('status web')).toBe(false);
+    expect(looksLikeStatusQuestion('status web', ['web', 'Website'])).toBe(true);
+    await sq.handleEvent(dm(REPORTER, 'status web'));
+    expect(posts).toHaveLength(1);
+    expect(sq.intercepts(dm(REPORTER, 'status web'))).toBe(true);
+    expect(sq.intercepts(dm(REPORTER, 'status Web?'))).toBe(true);
+    expect(sq.intercepts(dm(REPORTER, 'status Website'))).toBe(true);
+    expect(sq.intercepts(dm(REPORTER, 'status web page is down'))).toBe(false);
+  });
 });
 
 describe('/snapwing-status (A 4.3 `/status`, a name Slack reserves)', () => {

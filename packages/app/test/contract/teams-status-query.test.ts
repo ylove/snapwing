@@ -406,6 +406,13 @@ describe('standing watches (A 4.4)', () => {
     for (const q of ['status', 'status?', 'status on WEB-1042', 'status of the cart bug']) expect(teams.intercepts(chat(REPORTER, q)), q).toBe(true);
   });
 
+  it('"status web" and "status Web?" are answered (a surface after status); "status web page is down" is captured', async () => {
+    await teams.handle(chat(REPORTER, 'status web'));
+    expect(sent).toHaveLength(1);
+    expect(teams.intercepts(chat(REPORTER, 'status Web?'))).toBe(true);
+    expect(teams.intercepts(chat(REPORTER, 'status web page is down'))).toBe(false);
+  });
+
   it('asks which surface is meant when the target is unknown, and writes nothing', async () => {
     await teams.handle(chat(REPORTER, 'keep me posted on the moon'));
     expect(sent[0]?.body.text).toContain('could not tell which surface');

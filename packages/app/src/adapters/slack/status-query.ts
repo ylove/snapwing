@@ -109,12 +109,22 @@ const STATUS_WORDS =
 
 /**
  * Whether DM text reads as a status question rather than a bug report to capture. `status` counts only
- * as the whole text, with a `?`, a Jira key, or "of/on/for" after it: "status page is down" is a report.
+ * as the whole text, with a `?`, a Jira key, "of/on/for", or (given `surfaces`) exactly a surface id or
+ * name after it: "status page is down" is a report.
  */
-export function looksLikeStatusQuestion(text: string): boolean {
+export function looksLikeStatusQuestion(text: string, surfaces?: readonly string[]): boolean {
   const t = text.replace(/<@[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   if (t === '') return false;
-  return JIRA_KEY_ONLY.test(t) || STATUS_WORDS.test(t);
+  if (JIRA_KEY_ONLY.test(t) || STATUS_WORDS.test(t)) return true;
+  if (surfaces === undefined || surfaces.length === 0) return false;
+  // `status web`, `status Website?`: the words after `status` are exactly a surface id or name.
+  const named = /^(?:(?:hey|hi|hello|please|pls|can you|could you|tell me|do you know)[,\s]+)*status\s+(.+?)\s*[?!.]*$/i.exec(t);
+  return named?.[1] !== undefined && surfaces.some((name) => name.toLowerCase() === named[1]?.toLowerCase());
+}
+
+/** The ids and names of the map's surfaces, for `looksLikeStatusQuestion`. */
+export function surfaceWords(map: WorkspaceMap): string[] {
+  return map.surfaces.flatMap((s) => [s.id, s.label]);
 }
 
 /** Splits a form body into its fields. */
@@ -253,8 +263,20 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
     await post(blocksFor(answer, map));
   }
 
+  // `intercepts` is synchronous, so it reads the surfaces of the last map seen; each call refreshes them.
+  let surfaceList: string[] = [];
+  async function refreshSurfaces(): Promise<void> {
+    try {
+      surfaceList = surfaceWords(await options.getMap());
+    } catch {
+      // keep the last list; the question path reports map errors itself
+    }
+  }
+  void refreshSurfaces();
+
   /** The request an Events API body carries, or undefined when it is not ours. */
   function requestOf(parsed: unknown): Request | undefined {
+    const surfaces = surfaceList;
     const body = rec(parsed);
     if (body['type'] !== 'event_callback') return undefined;
     const event = rec(body['event']);
@@ -272,7 +294,7 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
     if (event['type'] === 'message' && str(event['channel_type']) === 'im' && options.standing !== undefined && parseStandingWatch(text)?.command === false) {
       return { asker: user, channelId: channel, text, standing: true };
     }
-    if (event['type'] === 'message' && str(event['channel_type']) === 'im' && looksLikeStatusQuestion(raw)) {
+    if (event['type'] === 'message' && str(event['channel_type']) === 'im' && looksLikeStatusQuestion(raw, surfaces)) {
       return { asker: user, channelId: channel, text };
     }
     return undefined;
@@ -281,9 +303,13 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
   return {
     ask,
 
-    intercepts: (parsed) => requestOf(parsed) !== undefined,
+    intercepts: (parsed) => {
+      void refreshSurfaces();
+      return requestOf(parsed) !== undefined;
+    },
 
     async handleEvent(parsed) {
+      await refreshSurfaces();
       const request = requestOf(parsed);
       if (request === undefined) return;
       const eventId = str(rec(parsed)['event_id']);

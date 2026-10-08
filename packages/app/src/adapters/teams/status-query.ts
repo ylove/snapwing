@@ -37,7 +37,7 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { createStatusQueries, type QueryResolution } from '@snapwing/pipeline/status/query.ts';
-import { looksLikeStatusQuestion } from '../slack/status-query.ts';
+import { looksLikeStatusQuestion, surfaceWords } from '../slack/status-query.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './adapter.ts';
 import type { TeamsConnector, TeamsOutgoingActivity } from './connector.ts';
 import { splitConversationId } from './conversations.ts';
@@ -203,8 +203,20 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     return teamsHtmlToText(withoutBot).replace(/\s+/g, ' ').trim();
   }
 
+  // `intercepts` is synchronous, so it reads the surfaces of the last map seen; each call refreshes them.
+  let surfaceList: string[] = [];
+  async function refreshSurfaces(): Promise<void> {
+    try {
+      surfaceList = surfaceWords(await options.getMap());
+    } catch {
+      // keep the last list; the question path reports map errors itself
+    }
+  }
+  void refreshSurfaces();
+
   /** The request an activity carries, or undefined when it is not ours. */
   function requestOf(activity: unknown): Request | undefined {
+    const surfaces = surfaceList;
     const a = rec(activity);
     if (str(a['type']) !== 'message') return undefined;
     const from = rec(a['from']);
@@ -226,8 +238,8 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
         return { ...base, channelId: conversationId, text, kind: 'standing' };
       }
       const command = STATUS_COMMAND.exec(text);
-      if (command !== null && looksLikeStatusQuestion(text)) return { ...base, channelId: conversationId, text: (command[1] ?? '').trim(), kind: 'command' };
-      if (looksLikeStatusQuestion(text)) return { ...base, channelId: conversationId, text, kind: 'personal' };
+      if (command !== null && looksLikeStatusQuestion(text, surfaces)) return { ...base, channelId: conversationId, text: (command[1] ?? '').trim(), kind: 'command' };
+      if (looksLikeStatusQuestion(text, surfaces)) return { ...base, channelId: conversationId, text, kind: 'personal' };
       return undefined;
     }
 
@@ -235,7 +247,7 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     if (!mentionsBot(a)) return undefined;
     // Only a status question or a bare key is ours; any other mention (`queue`, "I'll take this") falls through
     // to the commands and the signals, as Slack's plain `message` event does.
-    if (!looksLikeStatusQuestion(text)) return undefined;
+    if (!looksLikeStatusQuestion(text, surfaces)) return undefined;
     if (conversationType === 'groupChat') return { ...base, channelId: conversationId, text, kind: 'mention' };
     const split = splitConversationId(conversationId);
     const channelId = str(rec(rec(a['channelData'])['channel'])['id']) || split.channelId;
@@ -270,9 +282,13 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
   return {
     ask,
 
-    intercepts: (activity) => requestOf(activity) !== undefined,
+    intercepts: (activity) => {
+      void refreshSurfaces();
+      return requestOf(activity) !== undefined;
+    },
 
     async handle(activity) {
+      await refreshSurfaces();
       const request = requestOf(activity);
       if (request === undefined) return;
       // Teams redelivers an activity it did not get a timely 200 for.
