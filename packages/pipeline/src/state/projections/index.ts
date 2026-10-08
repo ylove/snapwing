@@ -16,6 +16,7 @@ import { sql } from 'kysely';
 import type { IncidentEvent } from '../../contracts/events.ts';
 import type { EscalationScore } from '../../contracts/signals.ts';
 import type { Claim, IncidentQuery, IncidentStatus, IncidentView, Subscription } from '../../contracts/state.ts';
+import { claimHold } from '../../engine/claims.ts';
 import { inTransaction, type StateContext } from '../context.ts';
 import { read } from '../events.ts';
 import { enqueueOutbox } from '../outbox.ts';
@@ -95,7 +96,14 @@ async function projectIncident(tx: StateContext, incidentId: string, events: rea
     } else if (!fold.valid && from !== undefined) {
       console.warn(`projections: incident ${incidentId} seq ${e.seq}: event ${e.type} does not fit status ${from}; status kept`);
     }
-    steps.push({ event: e, status: view.status, change: { before: prev, after: view, valid: fold.valid }, subs: [] });
+    const change: IncidentChange = { before: prev, after: view, valid: fold.valid };
+    // A claim holding the fixer when `filed` arrives makes the first status post ticket only (A 2.1).
+    // Only the events before `filed` count; the log read here holds the whole batch.
+    if (e.type === 'filed' && fold.valid) {
+      const hold = claimHold((await read(tx, incidentId)).filter((x) => x.seq < e.seq).map((x) => upcast(x)));
+      if (hold !== undefined) change.holdClaimerId = hold.claimerId;
+    }
+    steps.push({ event: e, status: view.status, change, subs: [] });
   }
   if (view === undefined) {
     return;

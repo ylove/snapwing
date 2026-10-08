@@ -83,7 +83,7 @@ class Script {
   seq = 0;
 
   /** Folds `d` as the next event and returns the chat rows the hook gives for it. */
-  push<T extends EventType>(d: Draft<T>): OutboxItem[] {
+  push<T extends EventType>(d: Draft<T>, holdClaimerId?: string): OutboxItem[] {
     this.seq += 1;
     const at = new Date(Date.parse('2026-10-01T09:00:00.000Z') + this.seq * 60_000).toISOString();
     const event = {
@@ -102,7 +102,7 @@ class Script {
     const fold = foldIncident(before, event);
     if (fold.view === undefined) throw new Error(`no row after ${d.type}`);
     this.view = fold.view;
-    return outboxFor(event, { before, after: fold.view, valid: fold.valid }).filter((r) => r.target !== 'jira');
+    return outboxFor(event, { before, after: fold.view, valid: fold.valid, ...(holdClaimerId === undefined ? {} : { holdClaimerId }) }).filter((r) => r.target !== 'jira');
   }
 
   /** The status update `d` sets, asserting it is at most one row. */
@@ -379,6 +379,18 @@ describe('update-status rows', () => {
     expect(statusBatchKey(INC)).toBe(`status:${INC}`);
   });
 
+  it('a claim hold at filing makes the first post the ticket-only line, with no Stop, at every level', () => {
+    for (const level of [0, 1, 2, 3] as const) {
+      const s = new Script();
+      s.all(prefix(level));
+      const [row] = s.push(draft('filed', { jiraKey: KEY }), 'U-FAKE-DANA');
+      const status = row?.payload['status'] as StatusUpdate;
+      expect(status.stage, `level ${String(level)}`).toBe('filed');
+      expect(status.text, `level ${String(level)}`).toBe(`Filed as ${KEY}. <@U-FAKE-DANA> is on it, so this is filed as ticket only.`);
+      expect(status.actions, `level ${String(level)}`).toBeUndefined();
+    }
+  });
+
   it('an incident with no chat thread gets no rows, though statusFor still knows the text', () => {
     const { s, status } = filed(2, 'cli');
     expect(status).toBeUndefined();
@@ -449,6 +461,32 @@ describe(`status rows and the subscriber through the state port (${TEST_DIALECT}
     // Without a note, only the subscription; from a channel with no thread, nothing.
     expect((await subscriber.subscribe(payload, KEY)).outbox).toEqual([]);
     expect(await subscriber.subscribe({ ...payload, source: 'cli' }, KEY, note)).toEqual({ events: [], outbox: [] });
+  });
+
+  it("an engineer's claim before filing, at level 2: the first post drained is the ticket-only line, with no actions", async () => {
+    const inc = '01JZ00000000000000000000A2';
+    const at = now.toISOString();
+    const events = [
+      ...prefix(2).map((d) => ({ ...d, idempotencyKey: undefined })),
+      draft('claimed', { claimerId: DANA.id, expiresAt: '2026-10-02T12:00:00.000Z' }, DANA, 'slack'),
+      draft('filed', { jiraKey: 'WEB-1043' }),
+    ].map((d) => ({
+      workspaceId: WS,
+      incidentId: inc,
+      type: d.type,
+      v: 1,
+      source: d.source ?? 'agent',
+      ...(d.actor === undefined ? {} : { actor: d.actor }),
+      occurredAt: at,
+      payload: d.type === 'captured' ? { ...d.payload, idempotencyKey: `slack:${inc}` } : d.payload,
+    })) as unknown as Parameters<OpenedState['append']>[1];
+    await state.append(inc, events, 0);
+
+    const rows = (await state.drainOutbox('slack', 50)).filter((r) => r.incidentId === inc && r.op === UPDATE_STATUS_OP);
+    expect(rows).toHaveLength(1);
+    const status = rows[0]?.payload['status'] as StatusUpdate;
+    expect(status.text).toBe(`Filed as WEB-1043. <@${DANA.id}> is on it, so this is filed as ticket only.`);
+    expect(status.actions).toBeUndefined();
   });
 });
 
