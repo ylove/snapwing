@@ -91,7 +91,7 @@ beforeEach(async () => {
   workdir = await mkdtemp(join(tmpdir(), 'snapwing-onboard-interview-'));
   scratch = await mkdtemp(join(tmpdir(), 'snapwing-onboard-scratch-'));
   world = await emptySandboxes(server, scratch);
-  for (const key of [`${PROJECT}-1`, `${PROJECT}-2`]) await writeFile(join(scratch, 'harness', 'plans', `${key}.json`), JSON.stringify(PLAN));
+  for (const key of [`${PROJECT}-1`, `${PROJECT}-2`, `${PROJECT}-3`]) await writeFile(join(scratch, 'harness', 'plans', `${key}.json`), JSON.stringify(PLAN));
 });
 
 afterEach(async () => {
@@ -261,17 +261,17 @@ async function deliverJira(url: string, issueKey: string, wait: <T>(what: string
  * right. On Teams: posts the sample, reacts to it, and taps Looks right. Jira reports each ticket In
  * Progress.
  */
-async function playTestDrive(drive: Drive, running: () => boolean, lines: readonly string[]): Promise<void> {
+async function playTestDrive(drive: Drive, running: () => boolean, lines: readonly string[], platforms: { readonly slack: boolean; readonly firstKey: number; readonly teamsPost?: string } = { slack: true, firstKey: 1 }): Promise<void> {
   const wait = <T>(what: string, find: () => T | undefined): Promise<T> => until(what, running, lines, find);
   let started: string | undefined;
   void drive.url.then((u) => (started = u));
   const url = await wait('serve to start', () => started);
-  await playSlackDrive(url, wait);
-  await playTeamsDrive(drive, url, lines, wait);
+  if (platforms.slack) await playSlackDrive(url, wait, platforms.firstKey);
+  await playTeamsDrive(drive, url, lines, wait, platforms.firstKey + (platforms.slack ? 1 : 0), platforms.teamsPost ?? TEAMS_POST);
 }
 
 /** The Slack drive: the installer reacts to the bot's sample with the bug and taps Looks right. */
-async function playSlackDrive(url: string, wait: <T>(what: string, find: () => T | undefined) => Promise<T>): Promise<void> {
+async function playSlackDrive(url: string, wait: <T>(what: string, find: () => T | undefined) => Promise<T>, key: number): Promise<void> {
   world.model.use('test drive on Slack', { ...world.answers, segmentation: { included: [SLACK_SAMPLE_TS], excluded: [], resolutionMessageId: '' } });
   await wait('the sample post in Slack', () => world.slackSamples[0]);
   const reaction = JSON.stringify({
@@ -298,27 +298,27 @@ async function playSlackDrive(url: string, wait: <T>(what: string, find: () => T
   };
   const form = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
   expect((await fetch(`${url}/slack/interactivity`, { method: 'POST', headers: slackSigned(form, 'application/x-www-form-urlencoded'), body: form })).status).toBe(200);
-  await deliverJira(url, `${PROJECT}-1`, wait);
+  await deliverJira(url, `${PROJECT}-${key}`, wait);
 }
 
 /** The Teams drive: the installer posts the sample, reacts to it, and taps Looks right. */
-async function playTeamsDrive(drive: Drive, url: string, lines: readonly string[], wait: <T>(what: string, find: () => T | undefined) => Promise<T>): Promise<void> {
+async function playTeamsDrive(drive: Drive, url: string, lines: readonly string[], wait: <T>(what: string, find: () => T | undefined) => Promise<T>, key: number, post: string): Promise<void> {
   await wait('the ask to post the sample in Teams', () => (lines.some((l) => l.includes('post this message as yourself')) ? true : undefined));
-  world.model.use('test drive on Teams', { ...world.answers, segmentation: { included: [TEAMS_POST], excluded: [], resolutionMessageId: '' } });
+  world.model.use('test drive on Teams', { ...world.answers, segmentation: { included: [post], excluded: [], resolutionMessageId: '' } });
   const at = new Date().toISOString();
-  world.teamsWorld.messages.push(graphMessage(TEAMS_POST, at, SAMPLE, OWNER.aad));
-  world.teamsWorld.react(TEAMS_POST, OWNER.aad, '🐛');
-  await drive.inject({ notifications: [messageChanged(TEAM, TEAMS_CHANNEL.id, TEAMS_POST)] });
-  const thread: TeamsThread = { channel: TEAMS_CHANNEL.id, anchor: TEAMS_POST, anchorAt: at };
+  world.teamsWorld.messages.push(graphMessage(post, at, SAMPLE, OWNER.aad));
+  world.teamsWorld.react(post, OWNER.aad, '🐛');
+  await drive.inject({ notifications: [messageChanged(TEAM, TEAMS_CHANNEL.id, post)] });
+  const thread: TeamsThread = { channel: TEAMS_CHANNEL.id, anchor: post, anchorAt: at };
   const card = await wait('the scope card in Teams', () =>
-    world.teamsWorld.connector.find((c) => c.kind === 'reply' && (cardOf(c.body)?.actions ?? []).some((a) => a.verb === 'looks-right')),
+    world.teamsWorld.connector.find((c) => c.kind === 'reply' && c.conversation === `${TEAMS_CHANNEL.id};messageid=${post}` && (cardOf(c.body)?.actions ?? []).some((a) => a.verb === 'looks-right')),
   );
-  expect(card.conversation).toBe(`${TEAMS_CHANNEL.id};messageid=${TEAMS_POST}`);
+  expect(card.conversation).toBe(`${TEAMS_CHANNEL.id};messageid=${post}`);
   const data = cardOf(card.body)?.actions?.find((a) => a.verb === 'looks-right')?.data ?? {};
   // Teams names the default Connector in what it sends; nothing set TEAMS_SERVICE_URL.
   const activity = { ...cardTap(thread, TEAMS_OWNER, card.activityId, 'looks-right', data), serviceUrl: TEAMS_DEFAULT_SERVICE_URL };
   expect(await drive.inject({ activity })).toMatchObject({ status: 200 });
-  await deliverJira(url, `${PROJECT}-2`, wait);
+  await deliverJira(url, `${PROJECT}-${key}`, wait);
 }
 
 // The answers ------------------------------------------------------------------------------------
@@ -365,7 +365,7 @@ const WITHOUT_SLACK = {
   'test-drive.teams-channel': TEAMS_CHANNEL.id,
 };
 
-/** Run 3: approved; Slack's tokens and channels, and the test drive on both platforms. */
+/** Run 3: approved; Slack's tokens and channels, and the steps that read Slack again. */
 const APPROVED = {
   'slack.install': 'installed',
   'slack.bot-token': { env: 'E2E_SLACK_BOT_TOKEN' },
@@ -380,6 +380,10 @@ const APPROVED = {
   'trigger.keep': 'keep',
   'finish.replace': 'replace',
   'finish.token': 'none',
+};
+
+/** Run 4: the test drive again, on both platforms now that Slack is connected. */
+const DRIVE_AGAIN = {
   'test-drive.level': 'lift',
   'test-drive.slack-channel': SLACK_CHANNEL.id,
   'test-drive.teams-channel': TEAMS_CHANNEL.id,
@@ -433,38 +437,42 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
 
     // ---- 2. Resumed while the Slack approval is still pending -------------------------------------
     const blocked = stepsWithDrive();
-    const second = await onboard(WITHOUT_SLACK, { steps: blocked.steps });
+    let blockedRunning = true;
+    const blockedLines: string[] = [];
+    const blockedPlaying = playTestDrive(blocked.drive, () => blockedRunning, blockedLines, { slack: false, firstKey: 1 }).then(
+      () => undefined,
+      (e: unknown) => (blocked.drive.stop(), e),
+    );
+    // Serve starts on Teams while the Slack app awaits approval: no bot token, so no Slack transport named.
+    const second = await onboard(WITHOUT_SLACK, {
+      steps: blocked.steps,
+      out: blockedLines,
+      env: { PORT: '0', HOST: '127.0.0.1', SNAPWING_WORKDIR_ROOT: join(scratch, 'work'), SNAPWING_TEST_COMMAND: TEST_COMMAND },
+    }).finally(() => (blockedRunning = false));
+    const blockedFailure = await blockedPlaying;
+    if (blockedFailure !== undefined) throw blockedFailure;
     expect(second.err).toEqual([]);
     expect(second.code, second.out.join('\n')).toBe(EXIT_WAITING);
     expect(second.out).toContain('Picking up where you left off: Name your products.');
     ({ state } = await stateDocument());
     // Everything from Jira to the owners is done, and so is the map; Slack still waits.
-    expect(status(state)).toMatchObject({ slack: 'blocked', jira: 'done', github: 'done', surfaces: 'done', words: 'done', people: 'done', trigger: 'done', autonomy: 'done', finish: 'done' });
-    // The test drive cannot start Snapwing without the Slack bot, and says which step sets it.
-    expect(state.steps['test-drive']?.status).toBe('blocked');
-    expect(state.steps['test-drive']?.blocked?.reason).toContain('SLACK_BOT_TOKEN');
+    expect(status(state)).toMatchObject({ slack: 'blocked', jira: 'done', github: 'done', surfaces: 'done', words: 'done', people: 'done', trigger: 'done', autonomy: 'done', finish: 'done', 'test-drive': 'done' });
+    // Serve started without Slack and said why, once; the test drive ran on Teams alone, to a Teams pull request.
+    expect(blocked.drive.log.filter((l) => l.includes('install is pending approval'))).toHaveLength(1);
+    expect(blocked.drive.log.join('\n')).toContain('snapwing onboard --step slack');
+    expect(blocked.drive.log.join('\n')).not.toContain('slack http transport');
+    expect(state.steps['test-drive']?.data?.['drives']).toEqual([
+      { platform: 'teams', channel: TEAMS_CHANNEL.id, channelName: TEAMS_CHANNEL.name, incident: expect.any(String), jiraKey: `${PROJECT}-1`, pr: `https://github.com/${REPO}/pull/1` },
+    ]);
+    expect(await Promise.all(blocked.drive.exits)).toEqual([0]);
     // Nothing written in the first run was written again.
     expect(writes()).toEqual(afterFirst.writes);
     const envAfterSecond = await readEnv();
     for (const [key, value] of afterFirst.env) expect(envAfterSecond.get(key), key).toBe(value);
 
-    // ---- 3. Approved: Slack picks up at the install, and the test drive runs -----------------------
+    // ---- 3. Approved: Slack picks up at the install; the test drive stays done from run 2 ------------
     world.grantChannelHistory();
-    const { steps, drive } = stepsWithDrive();
-    let running = true;
-    const lines: string[] = [];
-    const playing = playTestDrive(drive, () => running, lines).then(
-      () => undefined,
-      (e: unknown) => (drive.stop(), e),
-    );
-    // Serve on a free local port; Slack's events come over HTTP (the sandbox serves no Socket Mode WebSocket).
-    const third = await onboard(APPROVED, {
-      steps,
-      out: lines,
-      env: { PORT: '0', HOST: '127.0.0.1', SNAPWING_SLACK_TRANSPORT: 'http', SNAPWING_WORKDIR_ROOT: join(scratch, 'work'), SNAPWING_TEST_COMMAND: TEST_COMMAND },
-    }).finally(() => (running = false));
-    const failure = await playing;
-    if (failure !== undefined) throw failure;
+    const third = await onboard(APPROVED);
     expect(third.err).toEqual([]);
     expect(third.code, third.out.join('\n')).toBe(0);
     expect(third.out).toContain('The Slack app is already created; I will pick up at the install.');
@@ -472,8 +480,33 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
     expect(third.out).toContain('Onboarding is finished.');
     ({ state } = await stateDocument());
     expect(Object.values(status(state)).every((s) => s === 'done')).toBe(true);
-    // Each step ran once, but Slack (blocked twice), the test drive (blocked once), the products (resumed,
-    // then again for Slack), and the steps that read Slack, which ran again when it was approved.
+    // The test drive is not stale when a platform arrives late: it still holds run 2's Teams drive.
+    expect(state.steps['test-drive']?.attempts).toBe(1);
+    expect(state.steps['test-drive']?.data?.['drives']).toEqual([expect.objectContaining({ platform: 'teams', pr: `https://github.com/${REPO}/pull/1` })]);
+
+    // ---- 4. The test drive again, now on both platforms ----------------------------------------------
+    const { steps, drive } = stepsWithDrive();
+    let running = true;
+    const lines: string[] = [];
+    const playing = playTestDrive(drive, () => running, lines, { slack: true, firstKey: 2, teamsPost: '1790900300000' }).then(
+      () => undefined,
+      (e: unknown) => (drive.stop(), e),
+    );
+    // Serve on a free local port; Slack's events come over HTTP (the sandbox serves no Socket Mode WebSocket).
+    const fourth = await onboard(DRIVE_AGAIN, {
+      steps,
+      args: ['--step', 'test-drive'],
+      out: lines,
+      env: { PORT: '0', HOST: '127.0.0.1', SNAPWING_SLACK_TRANSPORT: 'http', SNAPWING_WORKDIR_ROOT: join(scratch, 'work'), SNAPWING_TEST_COMMAND: TEST_COMMAND },
+    }).finally(() => (running = false));
+    const failure = await playing;
+    if (failure !== undefined) throw failure;
+    expect(fourth.err).toEqual([]);
+    expect(fourth.code, fourth.out.join('\n')).toBe(0);
+    ({ state } = await stateDocument());
+    expect(Object.values(status(state)).every((s) => s === 'done')).toBe(true);
+    // Each step ran once, but Slack (blocked twice), the products (resumed, then again for Slack), the steps
+    // that read Slack, which ran again when it was approved, and the test drive (Teams alone, then both).
     expect(Object.fromEntries(ONBOARD_STEPS.map((s) => [s.id, state.steps[s.id]?.attempts]))).toEqual({
       runtime: 1,
       slack: 3,
@@ -495,15 +528,14 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
     const env = await readEnv();
     for (const [key, value] of afterFirst.env) expect(env.get(key), key).toBe(value);
 
-    // The test drive passed on both platforms, each with its own pull request.
+    // The second test drive passed on both platforms, each with its own pull request.
     const driven = state.steps['test-drive']?.data;
     expect(driven).toMatchObject({ repo: REPO, surface: 'admin', level: 2, lifted: true });
     expect(driven?.['drives']).toEqual([
-      { platform: 'slack', channel: SLACK_CHANNEL.id, channelName: SLACK_CHANNEL.name, incident: expect.any(String), jiraKey: `${PROJECT}-1`, pr: `https://github.com/${REPO}/pull/1` },
-      { platform: 'teams', channel: TEAMS_CHANNEL.id, channelName: TEAMS_CHANNEL.name, incident: expect.any(String), jiraKey: `${PROJECT}-2`, pr: `https://github.com/${REPO}/pull/2` },
+      { platform: 'slack', channel: SLACK_CHANNEL.id, channelName: SLACK_CHANNEL.name, incident: expect.any(String), jiraKey: `${PROJECT}-2`, pr: `https://github.com/${REPO}/pull/2` },
+      { platform: 'teams', channel: TEAMS_CHANNEL.id, channelName: TEAMS_CHANNEL.name, incident: expect.any(String), jiraKey: `${PROJECT}-3`, pr: `https://github.com/${REPO}/pull/3` },
     ]);
-    expect(await pullState(REPO, 1, world.secrets.githubInstallationToken)).toBe('open');
-    expect(await pullState(REPO, 2, world.secrets.githubInstallationToken)).toBe('open');
+    for (const n of [1, 2, 3]) expect(await pullState(REPO, n, world.secrets.githubInstallationToken)).toBe('open');
     expect(await Promise.all(drive.exits)).toEqual([0]);
     // Serve read the working directory's playbook and instructions, the ones the map step checked.
     expect(drive.log).toContain(`snapwing serve: watching ${join(workdir, 'playbook.xml')} and ${join(workdir, 'INSTRUCTIONS.md')}`);
@@ -621,7 +653,7 @@ describe('snapwing onboard --answers: a team that leaves a chat platform out', (
         void drive.url.then((u) => (started = u));
         const url = await wait('serve to start', () => started);
         world.model.use('test drive on Slack', { ...world.answers, segmentation: { included: [SLACK_SAMPLE_TS], excluded: [], resolutionMessageId: '' } });
-        await playSlackDrive(url, wait);
+        await playSlackDrive(url, wait, 1);
         return undefined;
       } catch (e) {
         drive.stop();
