@@ -28,7 +28,8 @@
     "slack:test-users": "tsx scripts/slack-test-users.ts",
     "fixer-image:build": "docker build -f infra/docker/fixer/Dockerfile -t snapwing-fixer:local .",
     "pack:cli": "node scripts/pack-cli.mjs",
-    "test:pack": "pnpm --filter @snapwing/app run test:pack"
+    "test:pack": "pnpm --filter @snapwing/app run test:pack",
+    "onboard:proof": "tsx scripts/onboard-proof.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
