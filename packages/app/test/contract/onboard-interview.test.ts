@@ -266,8 +266,12 @@ async function playTestDrive(drive: Drive, running: () => boolean, lines: readon
   let started: string | undefined;
   void drive.url.then((u) => (started = u));
   const url = await wait('serve to start', () => started);
+  await playSlackDrive(url, wait);
+  await playTeamsDrive(drive, url, lines, wait);
+}
 
-  // Slack.
+/** The Slack drive: the installer reacts to the bot's sample with the bug and taps Looks right. */
+async function playSlackDrive(url: string, wait: <T>(what: string, find: () => T | undefined) => Promise<T>): Promise<void> {
   world.model.use('test drive on Slack', { ...world.answers, segmentation: { included: [SLACK_SAMPLE_TS], excluded: [], resolutionMessageId: '' } });
   await wait('the sample post in Slack', () => world.slackSamples[0]);
   const reaction = JSON.stringify({
@@ -295,8 +299,10 @@ async function playTestDrive(drive: Drive, running: () => boolean, lines: readon
   const form = new URLSearchParams({ payload: JSON.stringify(payload) }).toString();
   expect((await fetch(`${url}/slack/interactivity`, { method: 'POST', headers: slackSigned(form, 'application/x-www-form-urlencoded'), body: form })).status).toBe(200);
   await deliverJira(url, `${PROJECT}-1`, wait);
+}
 
-  // Teams.
+/** The Teams drive: the installer posts the sample, reacts to it, and taps Looks right. */
+async function playTeamsDrive(drive: Drive, url: string, lines: readonly string[], wait: <T>(what: string, find: () => T | undefined) => Promise<T>): Promise<void> {
   await wait('the ask to post the sample in Teams', () => (lines.some((l) => l.includes('post this message as yourself')) ? true : undefined));
   world.model.use('test drive on Teams', { ...world.answers, segmentation: { included: [TEAMS_POST], excluded: [], resolutionMessageId: '' } });
   const at = new Date().toISOString();
@@ -325,8 +331,10 @@ const UP_TO_GITHUB = {
   'runtime.openai-have': 'no',
   'runtime.google-have': 'no',
   'runtime.public-url': 'no',
+  'slack.use': 'yes',
   'slack.config-token': { env: 'E2E_SLACK_CONFIG_TOKEN' },
   'slack.install': 'approval',
+  'teams.use': 'yes',
   'teams.app-id': '00000000-0000-4000-8000-0000000000b0',
   'teams.tenant-id': '7a0d5e6f-0000-4000-8000-0000000000c1',
   'teams.client-secret': { env: 'E2E_TEAMS_CLIENT_SECRET' },
@@ -548,4 +556,118 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
     expect(world.teamsWorld.unknown).toEqual([]);
     expect(world.unhandled).toEqual([]);
   }, 240_000);
+});
+
+// A team that reports bugs in Slack only ----------------------------------------------------------
+
+/** One run, Slack approved at once, Teams left out: every question the interview asks, answered. */
+const SLACK_ONLY = {
+  'runtime.where': 'local',
+  'runtime.anthropic-have': 'yes',
+  'runtime.anthropic-key': { env: 'E2E_ANTHROPIC_KEY' },
+  'runtime.openai-have': 'no',
+  'runtime.google-have': 'no',
+  'runtime.public-url': 'no',
+  'slack.use': 'yes',
+  'slack.config-token': { env: 'E2E_SLACK_CONFIG_TOKEN' },
+  'slack.install': 'installed',
+  'slack.bot-token': { env: 'E2E_SLACK_BOT_TOKEN' },
+  'slack.app-token': { env: 'E2E_SLACK_APP_TOKEN' },
+  'slack.channels': SLACK_CHANNEL.name,
+  'slack.private': 'no',
+  'teams.use': 'no',
+  'jira.site': 'acme-demo',
+  'jira.email': 'demo-bot@example.com',
+  'jira.token': { env: 'E2E_JIRA_TOKEN' },
+  'jira.projects': PROJECT,
+  'github.owner-type': 'org',
+  'github.owner': 'acme',
+  'github.name': '',
+  'surfaces.confirm': 'yes',
+  'words.more': 'usage export',
+  'people.owners': 'keep',
+  'people.backups': '',
+  'trigger.emoji': '',
+  'trigger.more': 'done',
+  'autonomy.level': '',
+  'autonomy.by': OWNER.email,
+  'finish.token': 'none',
+  'test-drive.level': 'lift',
+  'test-drive.slack-channel': SLACK_CHANNEL.id,
+};
+
+describe('snapwing onboard --answers: a team that leaves a chat platform out', () => {
+  it('skips Teams, and ends with a valid Slack-only map and a passing test drive', async () => {
+    const { steps, drive } = stepsWithDrive();
+    let running = true;
+    const lines: string[] = [];
+    const playing = (async (): Promise<unknown> => {
+      try {
+        const wait = <T>(what: string, find: () => T | undefined): Promise<T> => until(what, () => running, lines, find);
+        let started: string | undefined;
+        void drive.url.then((u) => (started = u));
+        const url = await wait('serve to start', () => started);
+        world.model.use('test drive on Slack', { ...world.answers, segmentation: { included: [SLACK_SAMPLE_TS], excluded: [], resolutionMessageId: '' } });
+        await playSlackDrive(url, wait);
+        return undefined;
+      } catch (e) {
+        drive.stop();
+        return e;
+      }
+    })();
+    const run = await onboard(SLACK_ONLY, {
+      steps,
+      out: lines,
+      env: { PORT: '0', HOST: '127.0.0.1', SNAPWING_SLACK_TRANSPORT: 'http', SNAPWING_WORKDIR_ROOT: join(scratch, 'work'), SNAPWING_TEST_COMMAND: TEST_COMMAND },
+    }).finally(() => (running = false));
+    const failure = await playing;
+    if (failure !== undefined) throw failure;
+    expect(run.err).toEqual([]);
+    expect(run.code, run.out.join('\n')).toBe(0);
+    expect(run.out).toContain('Leaving Teams out. Run `snapwing onboard --step teams` if your team starts using it.');
+    expect(run.out).toContain('Onboarding is finished.');
+
+    // Teams is skipped, with nothing written to the tenant; every other step is done.
+    const { state } = await stateDocument();
+    expect(state.steps['teams']).toMatchObject({ status: 'skipped', note: 'the installer does not use Teams' });
+    expect(Object.entries(status(state)).filter(([id]) => id !== 'teams').every(([, s]) => s === 'done')).toBe(true);
+    expect(world.teams.published).toBe(0);
+    expect(world.teams.installed).toEqual([]);
+
+    // The test drive followed one sample bug, on Slack only, to an open pull request.
+    expect(state.steps['test-drive']?.data?.['drives']).toEqual([
+      { platform: 'slack', channel: SLACK_CHANNEL.id, channelName: SLACK_CHANNEL.name, incident: expect.any(String), jiraKey: `${PROJECT}-1`, pr: `https://github.com/${REPO}/pull/1` },
+    ]);
+    expect(await pullState(REPO, 1, world.secrets.githubInstallationToken)).toBe('open');
+    expect(await Promise.all(drive.exits)).toEqual([0]);
+
+    // The map and the config are valid, and name Slack's channel and nothing from Teams.
+    const map = await parseWorkspaceMap(await readFile(join(workdir, 'workspace-context.xml'), 'utf8'));
+    expect(map.surfaces).toEqual([{ id: 'admin', label: 'Admin Portal', repo: `github.com/${REPO}`, jira: { project: PROJECT, defaultIssueType: 'Bug' }, components: [] }]);
+    expect(map.channels).toEqual([expect.objectContaining({ id: SLACK_CHANNEL.id, name: SLACK_CHANNEL.name, surface: 'admin' })]);
+    expect(map.channels.some((c) => c.platform === 'teams')).toBe(false);
+    expect(map.people).toEqual([expect.objectContaining({ handle: OWNER.login, email: OWNER.email, role: 'engineer' })]);
+    expect((await validateAppConfig(await readFile(join(workdir, 'snapwing.config.xml'), 'utf8'))).valid).toBe(true);
+    const env = await readEnv();
+    for (const key of [...REQUIRED_SECRETS, ...SLACK_SECRETS, 'SLACK_APP_TOKEN', 'ANTHROPIC_API_KEY']) expect(env.get(key), key).toBeTruthy();
+    for (const key of TEAMS_SECRETS) expect(env.has(key), key).toBe(false);
+    expect(world.browser.errors).toEqual([]);
+    expect(world.unhandled).toEqual([]);
+  }, 240_000);
+
+  it('says a chat platform is needed, and names the steps to run, when both are left out', async () => {
+    const needsChat: OnboardStep = { id: 'needs-chat', title: 'Needs chat', needs: [['slack', 'teams']], run: () => Promise.resolve({ status: 'done' }) };
+    const steps = [...ONBOARD_STEPS.filter((s) => ['runtime', 'slack', 'teams'].includes(s.id)), needsChat];
+    const run = await onboard({ ...SLACK_ONLY, 'slack.use': 'no' }, { steps });
+    expect(run.err).toEqual([]);
+    expect(run.code, run.out.join('\n')).toBe(EXIT_WAITING);
+    expect(run.out.filter((l) => l.startsWith('Snapwing needs a chat platform'))).toEqual([
+      'Snapwing needs a chat platform, and every one was left out. Run `snapwing onboard --step slack` or `snapwing onboard --step teams` to set one up; the steps that need it wait until then.',
+    ]);
+    const { state } = await stateDocument();
+    expect(state.steps['slack']?.status).toBe('skipped');
+    expect(state.steps['teams']?.status).toBe('skipped');
+    expect(state.steps['needs-chat']).toBeUndefined();
+    expect(world.slack.created).toEqual([]);
+  });
 });

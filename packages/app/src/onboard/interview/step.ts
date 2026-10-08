@@ -13,7 +13,8 @@ import type { JsonObject, StepBlock } from './state.ts';
 /**
  * A need is a step id, or a list of ids any one of which will do (the chat platform: Slack or
  * Teams). A step id is met when that step is `done`, `skipped`, or `not-built`; a list is met when
- * one of its steps is `done`, or every one is `skipped` or `not-built`. A `blocked`, `failed`,
+ * one of its steps is `done`, or every one is `not-built`; with none done and any `skipped`, the
+ * installer left them all out and the interview says a chat platform is needed. A `blocked`, `failed`,
  * `running`, or `pending` need holds the step back for this run.
  */
 export type StepNeed = string | readonly string[];

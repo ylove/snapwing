@@ -40,11 +40,21 @@ const statusOf = (state: OnboardingState, id: string): StepStatus => state.steps
 const passes = (s: StepStatus): boolean => s === 'done' || s === 'skipped' || s === 'not-built';
 const isFinished = (s: StepStatus): boolean => s === 'done' || s === 'skipped';
 
+/** Whether a list need has been left out by the installer: no step done, and at least one skipped. */
+function leftOut(need: StepNeed, state: OnboardingState): need is readonly string[] {
+  if (typeof need === 'string') return false;
+  const statuses = need.map((id) => statusOf(state, id));
+  return !statuses.includes('done') && statuses.every((s) => s === 'skipped' || s === 'not-built') && statuses.includes('skipped');
+}
+
 /** Whether one need is met in `state` (see `StepNeed`). */
 export function needMet(need: StepNeed, state: OnboardingState): boolean {
   if (typeof need === 'string') return passes(statusOf(state, need));
   const statuses = need.map((id) => statusOf(state, id));
-  return statuses.includes('done') || statuses.every((s) => s === 'skipped' || s === 'not-built');
+  if (statuses.includes('done')) return true;
+  // Every one left out on purpose is not a chat platform: that waits (see `leftOut`). Only steps
+  // not built yet, which cannot be asked, stand in for one.
+  return statuses.every((s) => s === 'not-built');
 }
 
 export interface RunInterviewOptions {
@@ -264,11 +274,19 @@ export async function runInterview(options: RunInterviewOptions): Promise<Interv
     io.say(`Picking up where you left off: ${resume.title}.`);
   }
 
+  const said = new Set<string>();
   for (const step of steps) {
     if (isFinished(statusOf(state, step.id))) continue;
     const unmet = step.needs.filter((n) => !needMet(n, state));
     if (unmet.length > 0) {
       waiting.push({ id: step.id, on: unmet.flatMap((n) => (typeof n === 'string' ? [n] : [...n])) });
+      for (const need of unmet) {
+        const key = typeof need === 'string' ? '' : need.join(' ');
+        if (!leftOut(need, state) || said.has(key)) continue;
+        said.add(key);
+        const options = (need as readonly string[]).map((id) => `\`snapwing onboard --step ${id}\``);
+        io.say(`Snapwing needs a chat platform, and every one was left out. Run ${options.join(' or ')} to set one up; the steps that need it wait until then.`);
+      }
       continue;
     }
     const { stop } = await runStep(step);

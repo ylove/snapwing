@@ -274,7 +274,24 @@ export function createSlackStep(deps: SlackStepDeps = {}): OnboardStep {
     const scopes = botScopesOf(manifest);
     const publicUrl = (await ctx.readEnv('SNAPWING_PUBLIC_URL'))?.reveal();
     const wantsRedirect = publicUrl !== undefined && /^https:\/\//.test(publicUrl);
-    if (saved === undefined) io.say('Now Slack, where bugs will be reported.');
+    if (saved === undefined) {
+      io.say('Now Slack, where bugs will be reported.');
+      // Asked only before anything is saved: a connected (or half-connected) workspace is re-checked below.
+      const use = await io.choose({
+        id: 'use',
+        text: 'Does your team report bugs in Slack?',
+        choices: [
+          { id: 'yes', label: 'Yes' },
+          { id: 'no', label: 'No, leave Slack out' },
+        ],
+        default: 'yes',
+        why: 'Snapwing needs at least one chat platform, Slack or Teams. Leaving Slack out skips this step; run `snapwing onboard --step slack` to add it later.',
+      });
+      if (use === 'no') {
+        io.say('Leaving Slack out. Run `snapwing onboard --step slack` if your team starts using it.');
+        return { status: 'skipped', reason: 'the installer does not use Slack' };
+      }
+    }
 
     // ---- a saved bot token, re-checked --------------------------------------------------------
     let token: SecretValue | undefined;

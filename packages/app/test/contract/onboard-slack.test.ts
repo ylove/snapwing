@@ -119,8 +119,8 @@ function expectNoSecrets(texts: readonly string[], ...secrets: string[]): void {
   for (const s of secrets) expect(text).not.toContain(s);
 }
 
-// Config token, "it is installed" (1), bot token, app token, public channels, no private channels (1).
-const PASTE = [CONFIG, '1', BOT, APP, 'bugs', '1'];
+// Use Slack (the default), config token, "it is installed" (1), bot token, app token, public channels, no private channels (1).
+const PASTE = ['', CONFIG, '1', BOT, APP, 'bugs', '1'];
 
 describe('onboarding step 1: Slack', () => {
   it('creates the app from the manifest, takes the tokens by paste, and joins the bug channels', async () => {
@@ -158,7 +158,7 @@ describe('onboarding step 1: Slack', () => {
   });
 
   it('asks for the configuration token again when Slack says it expired', async () => {
-    const { result, lines, asked, stateText } = await interview([EXPIRED, CONFIG, '1', BOT, APP, 'bugs', '1']);
+    const { result, lines, asked, stateText } = await interview(['', EXPIRED, CONFIG, '1', BOT, APP, 'bugs', '1']);
     expect(result.state.steps['slack']?.status).toBe('done');
     expect(lines.join('\n')).toMatch(/Configuration tokens expire after 12 hours/);
     expect(asked.filter((q) => q.includes('configuration token'))).toHaveLength(2);
@@ -167,7 +167,7 @@ describe('onboarding step 1: Slack', () => {
   });
 
   it('asks for the bot token and the app-level token again after a refusal', async () => {
-    const { result, lines, envText, stateText } = await interview([CONFIG, '1', 'not-a-bot-token', BAD_BOT, BOT, BAD_APP, APP, 'bugs', '1']);
+    const { result, lines, envText, stateText } = await interview(['', CONFIG, '1', 'not-a-bot-token', BAD_BOT, BOT, BAD_APP, APP, 'bugs', '1']);
     expect(result.state.steps['slack']?.status).toBe('done');
     const text = lines.join('\n');
     expect(text).toMatch(/A bot token starts with xoxb-/);
@@ -182,7 +182,7 @@ describe('onboarding step 1: Slack', () => {
   it('takes the bot token from the OAuth redirect when Snapwing has a public https address', async () => {
     let closed = false;
     const listener: RedirectListener = { wait: () => Promise.resolve('the-code'), close: () => void (closed = true) };
-    const { result, lines, asked, envText } = await interview([CONFIG, '1', APP, 'bugs', '1'], {
+    const { result, lines, asked, envText } = await interview(['', CONFIG, '1', APP, 'bugs', '1'], {
       env: { SNAPWING_PUBLIC_URL: 'https://snap.example.com' },
       listener,
     });
@@ -200,14 +200,14 @@ describe('onboarding step 1: Slack', () => {
 
   it('falls back to a paste when the redirect never arrives', async () => {
     const listener: RedirectListener = { wait: () => Promise.resolve(undefined), close: () => undefined };
-    const { result, lines } = await interview([CONFIG, '1', BOT, APP, 'bugs', '1'], { env: { SNAPWING_PUBLIC_URL: 'https://snap.example.com' }, listener });
+    const { result, lines } = await interview(['', CONFIG, '1', BOT, APP, 'bugs', '1'], { env: { SNAPWING_PUBLIC_URL: 'https://snap.example.com' }, listener });
     expect(result.state.steps['slack']?.status).toBe('done');
     expect(lines.join('\n')).toMatch(/did not send the install back to Snapwing/);
   });
 
   it('blocks on an admin when the install needs approval, prints the request link, and lets the later steps run', async () => {
     const memory = memoryStore();
-    const first = await interview([CONFIG, '2'], { memory });
+    const first = await interview(['', CONFIG, '2'], { memory });
     expect(first.result.outcome).toBe('waiting');
     expect(first.result.state.steps['slack']?.status).toBe('blocked');
     expect(first.result.state.steps['slack']?.blocked).toMatchObject({ on: 'a Slack workspace admin', link: 'https://api.slack.com/apps/A0APP/install-on-team' });
@@ -231,7 +231,7 @@ describe('onboarding step 1: Slack', () => {
 
   it('asks about private channels and for an invite, and records the ones not yet joined', async () => {
     // Bugs, then private "yes", the private name, "Not yet" (2).
-    const notYet = await interview([CONFIG, '1', BOT, APP, 'bugs', '2', 'secret-bugs', '2']);
+    const notYet = await interview(['', CONFIG, '1', BOT, APP, 'bugs', '2', 'secret-bugs', '2']);
     expect(notYet.result.state.steps['slack']?.status).toBe('done');
     expect(notYet.lines.join('\n')).toMatch(/type \/invite @Snapwing/);
     expect(notYet.result.state.steps['slack']?.data).toMatchObject({ waitingForInvite: ['secret-bugs'], channels: [{ name: 'bugs' }] });
@@ -240,14 +240,14 @@ describe('onboarding step 1: Slack', () => {
     // Invited this time: the bot sees the private channel and keeps it.
     slack.channels[2]!.is_member = true;
     dir = await mkdtemp(join(tmpdir(), 'snapwing-onboard-slack-'));
-    const invited = await interview([CONFIG, '1', BOT, APP, 'bugs', '2', 'secret-bugs', '1']);
+    const invited = await interview(['', CONFIG, '1', BOT, APP, 'bugs', '2', 'secret-bugs', '1']);
     expect(invited.result.state.steps['slack']?.data).toMatchObject({ channels: [{ name: 'bugs', private: false }, { name: 'secret-bugs', private: true }] });
     expect(invited.result.state.steps['slack']?.data?.['waitingForInvite']).toBeUndefined();
     expect(slack.joined).not.toContain('secret-bugs');
   });
 
   it('asks again for a channel name that is not in the list', async () => {
-    const { result, lines } = await interview([CONFIG, '1', BOT, APP, 'nope', '#general', '1']);
+    const { result, lines } = await interview(['', CONFIG, '1', BOT, APP, 'nope', '#general', '1']);
     expect(result.state.steps['slack']?.data).toMatchObject({ channels: [{ name: 'general' }] });
     expect(lines.join('\n')).toMatch(/I do not see #nope in the list/);
   });
@@ -270,6 +270,31 @@ describe('onboarding step 1: Slack', () => {
     expect(refused.envText).toContain(`SLACK_BOT_TOKEN=${OTHER_BOT}`);
     expect(refused.envText).not.toContain(`SLACK_BOT_TOKEN=${BOT}`);
     expect(slack.created).toHaveLength(1);
+  });
+
+  it('leaves Slack out on a no, touches nothing, and asks again on --step', async () => {
+    const memory = memoryStore();
+    const left = await interview(['2'], { memory });
+    expect(left.result.state.steps['slack']).toMatchObject({ status: 'skipped', note: 'the installer does not use Slack' });
+    expect(left.result.state.steps['later']?.status).toBe('done');
+    expect(left.lines).toContain('Leaving Slack out. Run `snapwing onboard --step slack` if your team starts using it.');
+    expect(slack.created).toEqual([]);
+    expect(left.envText).toBe('');
+
+    // A plain rerun leaves a skipped step alone; `--step slack` offers it again.
+    const rerun = await interview([], { memory });
+    expect(rerun.asked).toEqual([]);
+    const again = await interview(PASTE, { memory, only: 'slack' });
+    expect(again.lines).toContain('Does your team report bugs in Slack?');
+    expect(again.result.state.steps['slack']?.status).toBe('done');
+    expect(slack.created).toHaveLength(1);
+  });
+
+  it('does not ask whether the team uses Slack again once it is connected', async () => {
+    const memory = memoryStore();
+    await interview(PASTE, { memory });
+    const kept = await interview(['', 'bugs', '1'], { memory, only: 'slack' });
+    expect(kept.lines).not.toContain('Does your team report bugs in Slack?');
   });
 
   it('hands the generated secrets to the redactor, so a later step cannot leak them', async () => {
