@@ -228,7 +228,7 @@ interface World {
   fixerRuns: FixerRunData[];
 }
 
-async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean } = {}): Promise<World> {
+async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean; source?: 'slack' | 'teams'; map?: HumanMap } = {}): Promise<World> {
   const github = new FakeGitHub();
   const codeowners = new FakeCodeowners();
   const identity = new FakeIdentity();
@@ -250,7 +250,7 @@ async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean } = {}): Promise<
       return codeowners;
     },
     identity,
-    map: () => Promise.resolve(MAP),
+    map: () => Promise.resolve(opts.map ?? MAP),
     clock: () => new Date(now),
     chatOut: chat,
     cache: new MemoryCache(),
@@ -268,7 +268,7 @@ async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean } = {}): Promise<
     fixerRuns.push(job.data as FixerRunData);
     return Promise.resolve();
   });
-  await append(...toFiled(opts.level ?? 2));
+  await append(...toFiled(opts.level ?? 2, opts.source));
   if (opts.toCi !== false) {
     await append(...toPr());
     await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
@@ -280,12 +280,12 @@ function ev<T extends EventType>(type: T, payload: EventPayloads[T], source: 'ag
   return { workspaceId: WS, incidentId: INC, type, v: 1, source, occurredAt: new Date(now).toISOString(), payload } as unknown as NewEvent<T>;
 }
 
-function toFiled(level: 1 | 2 | 3): NewEvent[] {
+function toFiled(level: 1 | 2 | 3, source: 'slack' | 'teams' = 'slack'): NewEvent[] {
   return [
     ev('captured', {
       kind: 'incident',
-      idempotencyKey: `slack:${THREAD_CHANNEL}:${INC}`,
-      source: 'slack',
+      idempotencyKey: `${source}:${THREAD_CHANNEL}:${INC}`,
+      source: source,
       reporter: { id: PAT, name: 'Pat', role: 'reporter' },
       anchorText: 'Checkout says 500',
       channelId: THREAD_CHANNEL,
@@ -427,6 +427,36 @@ describe(`requestHumanReview (${TEST_DIALECT})`, () => {
       { target: { channel: BUG_CHANNEL }, card, canMerge: true },
     ]);
     expect(w.chat.prompts).toEqual([]);
+  });
+
+  describe('the bug channel is on the platform of the incident', () => {
+    const TEAMS_BUGS = '19:fake-web-bugs@thread.tacv2';
+    const BOTH: HumanMap = {
+      ...MAP,
+      channels: [
+        { id: TEAMS_BUGS, name: 'web-bugs-teams', surface: 'web', platform: 'teams', teamId: 'fake-team', triggerEmoji: [] },
+        { id: BUG_CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [] },
+      ],
+    };
+    const SLACK_ONLY: HumanMap = { ...MAP, channels: [{ id: BUG_CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [] }] };
+
+    it('a Teams incident posts to the Teams channel, not the Slack one', async () => {
+      const w = await setup({ source: 'teams', map: BOTH });
+      await requestHumanReview(w.deps, INC);
+      expect(w.chat.cards.map((c) => c.target.channel)).toEqual([THREAD_CHANNEL, TEAMS_BUGS]);
+    });
+
+    it('a Slack incident posts to the Slack channel, not the Teams one', async () => {
+      const w = await setup({ source: 'slack', map: BOTH });
+      await requestHumanReview(w.deps, INC);
+      expect(w.chat.cards.map((c) => c.target.channel)).toEqual([THREAD_CHANNEL, BUG_CHANNEL]);
+    });
+
+    it('a surface with a channel only on the other platform posts to the thread only', async () => {
+      const w = await setup({ source: 'teams', map: SLACK_ONLY });
+      await requestHumanReview(w.deps, INC);
+      expect(w.chat.cards.map((c) => c.target.channel)).toEqual([THREAD_CHANNEL]);
+    });
   });
 
   it('an unlinked reviewer gets the Open PR only card and the link to /auth/github/start; with no linked reviewer the card has no Merge', async () => {
