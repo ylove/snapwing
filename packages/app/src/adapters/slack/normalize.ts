@@ -3,7 +3,8 @@
 // transport can acknowledge it. Emoji configuration comes from the parsed workspace map.
 //
 // A trigger reaction with no workspace member among its counted reactors (only guests or people from
-// another organization) still files, with `levelCap` set so its level is at most 1 (#170).
+// another organization) still files, with `levelCap` set so its level is at most 1 (#170). The message
+// shortcut and a direct message have one person each, classified the same way.
 
 import type { CanonicalIncidentPayload, IncidentActor, LevelCap } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -100,7 +101,7 @@ async function anchorAuthorOf(ctx: SlackNormalizeContext, message: Rec, broughtB
 }
 
 /**
- * The cap the counted reactors put on the level (#170): none once one of them is a workspace member.
+ * The cap the counted reactors put on the level (#170; a shortcut or direct message passes its one person): none once one of them is a workspace member.
  * The reactor who triggered it is asked first, the rest only until a member turns up.
  */
 async function reactorCap(ctx: SlackNormalizeContext, reactors: ReadonlySet<string>): Promise<LevelCap | undefined> {
@@ -174,12 +175,14 @@ async function messageAction(body: Rec, ctx: SlackNormalizeContext): Promise<Sla
   if (channel === '' || ts === '' || userId === '') return ignored('unsupported-payload');
   const threadTs = str(message['thread_ts']);
   const anchorAuthor = await anchorAuthorOf(ctx, message, userId);
+  const levelCap = await reactorCap(ctx, new Set([userId]));
   return {
     kind: 'incident',
     payload: build(ctx, {
       key: `slack-${channel}-${ts}`,
       reporter: actor(ctx, userId, str(user['name'])),
       ...(anchorAuthor === undefined ? {} : { anchorAuthor }),
+      ...(levelCap === undefined ? {} : { levelCap }),
       anchorText: str(message['text']),
       channel,
       anchorTs: ts,
@@ -257,11 +260,13 @@ async function directMessage(body: Rec, event: Rec, ctx: SlackNormalizeContext):
   if (dm !== undefined && ((hasText && !dm.text && images.length === 0) || (images.length > 0 && !dm.images && !hasText))) {
     return ignored('direct-message-disabled');
   }
+  const levelCap = await reactorCap(ctx, new Set([userId]));
   return {
     kind: 'incident',
     payload: build(ctx, {
       key: `slack-${channel}-${ts}`,
       reporter: actor(ctx, userId, ''),
+      ...(levelCap === undefined ? {} : { levelCap }),
       anchorText: text,
       channel,
       anchorTs: ts,

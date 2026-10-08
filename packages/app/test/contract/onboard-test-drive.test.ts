@@ -483,7 +483,8 @@ function teamsWorld(): { connector: ConnectorCall[] } {
       id(params, 'message') === POST_ID ? HttpResponse.json(post) : HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 }),
     ),
     http.get(`${GRAPH}/teams/:team/channels/:channel/messages/:message/replies`, () => HttpResponse.json({ value: [] })),
-    http.get(`${GRAPH}/users/:user`, () => HttpResponse.json({ error: { code: 'Authorization_RequestDenied', message: 'Insufficient privileges' } }, { status: 403 })),
+    // Everyone is a tenant member (the guest cap); no mail or name, so the map's stand in.
+    http.get(`${GRAPH}/users/:user`, ({ params }) => HttpResponse.json({ id: params['user'], userType: 'Member' })),
     http.get(`${GRAPH}/teams/:team/channels/:channel/members`, () => HttpResponse.json({ value: [{ id: `member-${RAE}`, userId: RAE, roles: [] }] })),
     http.post(`${GRAPH}/subscriptions`, async ({ request }) => {
       const body = await json(request);

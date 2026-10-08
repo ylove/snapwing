@@ -17,9 +17,15 @@
 // Idempotency keys (main 14.2): `teams-{conversationId}-{activityId}`, where the conversation is the
 // channel (the `;messageid=` suffix dropped) or the chat, and the activity is the anchor message; a
 // reaction trigger appends `-{reaction}`, as Slack's emoji trigger does.
+//
+// Who triggers counts, as on Slack (`triggerCap`): a person is a member, a guest (`userType` Guest, or an
+// `#EXT#` guest account), or external (an activity from another tenant than the install's, or a Graph
+// lookup that failed or was not given: fail closed). With no member among the people who triggered, the
+// payload carries `levelCap`, so the level is at most 1.
 
-import type { CanonicalIncidentPayload, IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
+import type { CanonicalIncidentPayload, IncidentActor, LevelCap } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
+import { triggerCap, type Membership } from '@snapwing/pipeline/policy/autonomy.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { splitConversationId, type TeamsConversationType } from './conversations.ts';
 import type { GraphMessage } from './graph.ts';
@@ -38,6 +44,8 @@ export interface TeamsUserInfo {
   displayName?: string;
   userPrincipalName?: string;
   mail?: string;
+  /** `Guest` for a guest account. */
+  userType?: string;
 }
 
 /**
@@ -69,6 +77,8 @@ export interface TeamsNormalizeContext {
   botAppId: string;
   /** Graph user lookup by AAD object id; undefined when Graph cannot say. Absent: the map alone. */
   userOf?: (aadObjectId: string) => Promise<TeamsUserInfo | undefined>;
+  /** The install's tenant (`TEAMS_TENANT_ID`); an activity from another tenant is external. Absent: not compared. */
+  tenantId?: string;
   /** The action command's id; default `TEAMS_ACTION_COMMAND_ID`. */
   commandId?: string;
   newEventId?: (nowMs: number) => string;
@@ -217,6 +227,33 @@ async function actor(ctx: TeamsNormalizeContext, aadObjectId: string, fallbackNa
   };
 }
 
+/** Member, guest, or external (see the file header). `tenant` is the tenant the activity says the person is in. */
+async function membership(ctx: TeamsNormalizeContext, aadObjectId: string, tenant?: string): Promise<Membership> {
+  if (ctx.tenantId !== undefined && ctx.tenantId !== '' && tenant !== undefined && tenant !== '' && tenant.toLowerCase() !== ctx.tenantId.toLowerCase()) {
+    return 'external';
+  }
+  let user: TeamsUserInfo | undefined;
+  try {
+    user = ctx.userOf === undefined ? undefined : await ctx.userOf(aadObjectId);
+  } catch {
+    user = undefined;
+  }
+  if (user === undefined) return 'external';
+  if (user.userType?.toLowerCase() === 'guest' || /#EXT#/i.test(user.userPrincipalName ?? '')) return 'guest';
+  return 'member';
+}
+
+/** The cap the people who triggered put on the level: none once one of them is a member. The first is asked first. */
+async function triggerCapOf(ctx: TeamsNormalizeContext, people: readonly string[], tenant?: string): Promise<LevelCap | undefined> {
+  const seen: Membership[] = [];
+  for (const id of people) {
+    const m = await membership(ctx, id, id === people[0] ? tenant : undefined);
+    seen.push(m);
+    if (m === 'member') break;
+  }
+  return triggerCap(seen);
+}
+
 function isOwnId(ctx: TeamsNormalizeContext, id: string): boolean {
   return id !== '' && (id === ctx.botAppId || id === `28:${ctx.botAppId}`);
 }
@@ -249,6 +286,7 @@ function build(
     key: string;
     reporter: IncidentActor;
     anchorAuthor?: IncidentActor;
+    levelCap?: LevelCap;
     anchorText: string;
     timestamp: string;
     deepLink?: string;
@@ -263,6 +301,7 @@ function build(
     source: 'teams',
     reporter: parts.reporter,
     ...(parts.anchorAuthor === undefined ? {} : { anchorAuthor: parts.anchorAuthor }),
+    ...(parts.levelCap === undefined ? {} : { levelCap: parts.levelCap }),
     anchorText: parts.anchorText,
     context: {
       channelId: snapshot.channelId,
@@ -351,6 +390,7 @@ async function actionCommand(activity: Rec, invoke: string, ctx: TeamsNormalizeC
 
   const rootId = conv.conversationType === 'channel' ? str(message['replyToId']) || conv.splitRoot || anchorId : undefined;
   const reporter = await actor(ctx, invokerAad, str(from['name']));
+  const levelCap = await triggerCapOf(ctx, [invokerAad], conv.tenantId);
 
   // The anchor's author, when a person other than the invoker wrote it (#363); a bot's post has none.
   const author = rec(message['from']);
@@ -374,6 +414,7 @@ async function actionCommand(activity: Rec, invoke: string, ctx: TeamsNormalizeC
       key: `teams-${conv.channelId}-${anchorId}`,
       reporter: reporter.actor,
       ...(anchorAuthor === undefined ? {} : { anchorAuthor: anchorAuthor.actor }),
+      ...(levelCap === undefined ? {} : { levelCap }),
       anchorText,
       timestamp: isoOr(str(message['createdDateTime']), str(activity['timestamp'])),
       ...(link === '' ? {} : { deepLink: link }),
@@ -421,12 +462,14 @@ async function personalMessage(activity: Rec, ctx: TeamsNormalizeContext): Promi
     return ignored('direct-message-disabled');
   }
   const reporter = await actor(ctx, aad, str(from['name']));
+  const levelCap = await triggerCapOf(ctx, [aad], conv.tenantId);
   const serviceUrl = str(activity['serviceUrl']);
   return {
     kind: 'incident',
     payload: build(ctx, {
       key: `teams-${conv.conversationId}-${activityId}`,
       reporter: reporter.actor,
+      ...(levelCap === undefined ? {} : { levelCap }),
       anchorText: text,
       timestamp: isoOr(str(activity['timestamp']), str(activity['localTimestamp'])),
       snapshot: {
@@ -457,6 +500,7 @@ async function reaction(trigger: TeamsReactionTrigger, ctx: TeamsNormalizeContex
   if (reactors.size < min) return ignored('below-min-reactors');
 
   const reporter = await actor(ctx, trigger.reactorAadId, '');
+  const levelCap = await triggerCapOf(ctx, [...reactors]);
   const authorUser = message.from?.user ?? undefined;
   const byPerson = authorUser !== undefined && (message.from?.application ?? undefined) === undefined && authorUser.userIdentityType !== 'bot';
   const anchorAuthor =
@@ -476,6 +520,7 @@ async function reaction(trigger: TeamsReactionTrigger, ctx: TeamsNormalizeContex
       key: `teams-${trigger.channelId}-${message.id}-${trigger.reaction}`,
       reporter: reporter.actor,
       ...(anchorAuthor === undefined ? {} : { anchorAuthor: anchorAuthor.actor }),
+      ...(levelCap === undefined ? {} : { levelCap }),
       anchorText,
       timestamp: isoOr(trigger.at ?? '', message.lastModifiedDateTime ?? '', message.createdDateTime),
       deepLink: message.webUrl ?? messageLink(trigger.channelId, message.id, trigger.teamId, rootId),

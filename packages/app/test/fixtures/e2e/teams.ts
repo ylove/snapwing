@@ -182,7 +182,8 @@ export function teamsWorld(server: SetupServer, messages: readonly GraphChannelM
       return found === undefined ? HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 }) : HttpResponse.json(found);
     }),
     http.get(`${GRAPH}/teams/:team/channels/:channel/messages/:message/replies`, ({ request }) => (authorized(request) ? HttpResponse.json({ value: [] }) : denied())),
-    http.get(`${GRAPH}/users/:user`, () => HttpResponse.json({ error: { code: 'Authorization_RequestDenied', message: 'Insufficient privileges' } }, { status: 403 })),
+    // Everyone is a tenant member (the guest cap); no mail or name, so the map's stand in.
+    http.get(`${GRAPH}/users/:user`, ({ params }) => HttpResponse.json({ id: params['user'], userType: 'Member' })),
     http.get(`${GRAPH}/teams/:team/channels/:channel/members`, ({ request, params }) => {
       if (!authorized(request)) return denied();
       world.graph.push(`members ${id(params, 'channel')}`);

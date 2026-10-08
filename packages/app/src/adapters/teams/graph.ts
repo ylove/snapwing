@@ -108,6 +108,8 @@ export interface GraphUser {
   displayName?: string | null;
   userPrincipalName?: string | null;
   mail?: string | null;
+  /** `Guest` for a guest account, `Member` otherwise. */
+  userType?: string | null;
 }
 
 export interface GraphTeam {
@@ -325,7 +327,7 @@ export function createTeamsGraph(options: TeamsGraphOptions): TeamsGraph {
     hostedContent: (teamId, channelId, messageId, hostedContentId, replyId) =>
       bytes(`${messagePath(teamId, channelId, messageId, replyId)}/hostedContents/${seg(hostedContentId)}/$value`, GRAPH_PERMISSIONS.files),
     downloadAttachment: (contentUrl) => bytes(`/shares/${shareToken(contentUrl)}/driveItem/content`, GRAPH_PERMISSIONS.files),
-    user: (id) => json<GraphUser>('GET', `/users/${seg(id)}?$select=id,displayName,userPrincipalName,mail`, GRAPH_PERMISSIONS.user),
+    user: (id) => json<GraphUser>('GET', `/users/${seg(id)}?$select=id,displayName,userPrincipalName,mail,userType`, GRAPH_PERMISSIONS.user),
     async userByEmail(email) {
       const filter = `mail eq ${odataString(email)} or userPrincipalName eq ${odataString(email)}`;
       const found = await list<GraphUser>(

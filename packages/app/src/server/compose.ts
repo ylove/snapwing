@@ -520,18 +520,19 @@ function harnessChoice(config: HarnessConfig, adapter: HarnessAdapter): HarnessC
   return { adapter: 'generic', templateId: template.id };
 }
 
-/** The bot's own user id, its bot id, the workspace's team id, and its subdomain, from one `auth.test` call. */
-async function slackIdentity(token: string): Promise<{ userId: string; botId?: string; teamId?: string; domain?: string }> {
+/** The bot's own user id, its bot id, the workspace's team and enterprise ids, and its subdomain, from one `auth.test` call. */
+async function slackIdentity(token: string): Promise<{ userId: string; botId?: string; teamId?: string; enterpriseId?: string; domain?: string }> {
   const res = await fetch('https://slack.com/api/auth.test', {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/x-www-form-urlencoded' },
   });
-  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; bot_id?: string; team_id?: string; url?: string; error?: string };
+  const body = (await res.json().catch(() => ({}))) as { ok?: boolean; user_id?: string; bot_id?: string; team_id?: string; enterprise_id?: string; url?: string; error?: string };
   if (body.ok !== true || typeof body.user_id !== 'string') throw new Error(`slack auth.test failed: ${body.error ?? `http_${res.status}`}`);
   return {
     userId: body.user_id,
     ...(typeof body.bot_id === 'string' && body.bot_id !== '' ? { botId: body.bot_id } : {}),
     ...(typeof body.team_id === 'string' && body.team_id !== '' ? { teamId: body.team_id } : {}),
+    ...(typeof body.enterprise_id === 'string' && body.enterprise_id !== '' ? { enterpriseId: body.enterprise_id } : {}),
     ...workspaceDomain(body.url),
   };
 }
@@ -867,6 +868,8 @@ export const compose: ComposeFn = async (deps) => {
       ...(identity?.botId === undefined ? {} : { botId: identity.botId }),
       // A trigger reactor from another team is external (#170).
       ...(identity?.teamId === undefined ? {} : { teamId: identity.teamId }),
+      // On Enterprise Grid, a person from another workspace of the same organization is a member.
+      ...(identity?.enterpriseId === undefined ? {} : { enterpriseId: identity.enterpriseId }),
       usersInfo: (user) => slackWeb.usersInfo(user),
     });
     const adapter = createSlackAdapter({

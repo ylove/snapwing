@@ -19,7 +19,9 @@
 // Who a person is to the workspace, for the reactors who count toward a trigger (#170), in order:
 //
 //   external  `users.info` fails or was not given (fail closed), or its `team_id` is not the
-//             workspace's (someone from another organization in a Slack Connect channel).
+//             workspace's (someone from another organization in a Slack Connect channel). On
+//             Enterprise Grid, a user from another workspace of the same organization (same
+//             enterprise id as `auth.test`) is not external; one from another organization is.
 //   guest     `is_restricted` or `is_ultra_restricted` (a multi-channel or single-channel guest).
 //   member    anyone else.
 //
@@ -50,6 +52,9 @@ export interface SlackUserFacts {
   is_restricted?: boolean;
   is_ultra_restricted?: boolean;
   team_id?: string;
+  /** Enterprise Grid: the user's organization, in either shape `users.info` returns. */
+  enterprise_id?: string;
+  enterprise_user?: { enterprise_id?: string };
 }
 
 export interface SlackAuthorshipOptions {
@@ -59,6 +64,8 @@ export interface SlackAuthorshipOptions {
   botId?: string;
   /** The workspace's team id (`auth.test` `team_id`); a user with another is external. Absent: not compared. */
   teamId?: string;
+  /** The workspace's enterprise id (`auth.test` `enterprise_id`, Enterprise Grid only); a user of the same organization is not external. */
+  enterpriseId?: string;
   /**
    * `users.info` for a user the map does not name, and for a trigger's reactors. Absent: such a user's
    * message with `bot_id` is a bot's, and every reactor is external.
@@ -101,10 +108,17 @@ export function createSlackAuthorOf(options: SlackAuthorshipOptions): SlackAutho
     return facts === undefined || facts.is_bot === true;
   }
 
+  /** Enterprise Grid: another workspace of the same organization. */
+  function sameOrganization(facts: SlackUserFacts): boolean {
+    const mine = options.enterpriseId;
+    if (mine === undefined || mine === '') return false;
+    return (facts.enterprise_user?.enterprise_id ?? facts.enterprise_id) === mine;
+  }
+
   async function membership(user: string): Promise<Membership> {
     const facts = await factsOf(user);
     if (facts === undefined) return 'external';
-    if (options.teamId !== undefined && options.teamId !== '' && facts.team_id !== options.teamId) return 'external';
+    if (options.teamId !== undefined && options.teamId !== '' && facts.team_id !== options.teamId && !sameOrganization(facts)) return 'external';
     return facts.is_restricted === true || facts.is_ultra_restricted === true ? 'guest' : 'member';
   }
 

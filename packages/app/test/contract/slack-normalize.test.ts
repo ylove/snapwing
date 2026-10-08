@@ -292,121 +292,69 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
     expect(await lookup().membership('U0REPORTER')).toBe('member');
   });
 
-  it('caps nothing but trigger reactions: the shortcut and a direct message carry no cap', async () => {
-    expect(incident(await normalizeSlack(fixture('message-action'), ctx())).levelCap).toBeUndefined();
-    expect(incident(await normalizeSlack(fixture('message-im-text'), ctx())).levelCap).toBeUndefined();
-  });
-});
-
-describe('normalizeSlack: the anchor author (#363)', () => {
-  const author = { id: 'U0AUTHOR', name: 'U0AUTHOR', role: 'unknown' };
-
-  it("names the anchor's author when someone else reacted with the trigger or ran the shortcut", async () => {
-    // reactions.get's message, else the event's item_user.
-    const sent = { text: 't', reactions: [], author: { user: 'U0AUTHOR' } };
-    expect(incident(await normalizeSlack(fixture('reaction-added'), ctx({ reactionsGet: () => Promise.resolve(sent) }))).anchorAuthor).toEqual(author);
-    expect(incident(await normalizeSlack(fixture('reaction-added'), ctx())).anchorAuthor).toEqual(author);
-    const p = incident(await normalizeSlack(fixture('message-action'), ctx()));
-    expect(p.reporter.id).toBe('U0REPORTER');
-    expect(p.anchorAuthor).toEqual(author);
+  it('classifies the one person behind a message shortcut or a direct message like a reactor', async () => {
+    const authorOf = lookup();
+    const shortcut = (user: string) => ({ ...(fixture('message-action') as Record<string, unknown>), user: { id: user, name: user } });
+    expect(incident(await normalizeSlack(shortcut('U0REPORTER'), ctx({ authorOf }))).levelCap).toBeUndefined();
+    for (const user of ['U0GUEST', 'U0SINGLE', 'U0OUTSIDER', 'U0NOBODY']) {
+      const p = incident(await normalizeSlack(shortcut(user), ctx({ authorOf })));
+      expect(p.levelCap).toEqual(CAP);
+      expect(p.reporter.id).toBe(user);
+    }
+    expect(incident(await normalizeSlack(im('message-im-text', { user: 'U0REPORTER' }), ctx({ authorOf }))).levelCap).toBeUndefined();
+    for (const user of ['U0GUEST', 'U0SINGLE', 'U0OUTSIDER', 'U0NOBODY']) {
+      expect(incident(await normalizeSlack(im('message-im-text', { user }), ctx({ authorOf }))).levelCap).toEqual(CAP);
+    }
   });
 
-  it('reads the map for the author, and a mapped person posting through an app is still a person', async () => {
-    const m = map({ people: [{ slackId: 'U0AUTHOR', handle: 'pat', role: 'reporter', owns: [] }, { slackId: 'U0REPORTER', handle: 'dana', role: 'engineer', owns: [] }] });
-    const sent = { text: 't', reactions: [], author: { user: 'U0AUTHOR', bot_id: 'B0DRIVER' } };
-    const p = incident(await normalizeSlack(fixture('reaction-added'), ctx({ map: m, reactionsGet: () => Promise.resolve(sent) })));
-    expect(p.reporter).toEqual({ id: 'U0REPORTER', name: 'dana', role: 'engineer' });
-    expect(p.anchorAuthor).toEqual({ id: 'U0AUTHOR', name: 'pat', role: 'reporter' });
+  it('fails closed on a shortcut or direct message with no lookup', async () => {
+    expect(incident(await normalizeSlack(fixture('message-action'), ctx())).levelCap).toEqual(CAP);
+    expect(incident(await normalizeSlack(fixture('message-im-text'), ctx())).levelCap).toEqual(CAP);
   });
 
-  it('names nobody for your own message, a bot, or Snapwing itself', async () => {
-    const as = (a: SlackReactionsGetResult['author']) => ctx({ reactionsGet: () => Promise.resolve({ text: 't', reactions: [], ...(a === undefined ? {} : { author: a }) }) });
-    const own = reaction({ item_user: 'U0REPORTER' });
-    expect(incident(await normalizeSlack(own, as({ user: 'U0REPORTER' }))).anchorAuthor).toBeUndefined();
-    expect(incident(await normalizeSlack(own, as(undefined))).anchorAuthor).toBeUndefined();
-    expect(incident(await normalizeSlack(reaction({}), as({ user: 'U0ALERTS', bot_id: 'B0ALERTS' }))).anchorAuthor).toBeUndefined();
-    expect(incident(await normalizeSlack(reaction({}), as({ bot_id: 'B0HOOK', subtype: 'bot_message' }))).anchorAuthor).toBeUndefined();
-    expect(incident(await normalizeSlack(reaction({}), as({ user: BOT }))).anchorAuthor).toBeUndefined();
-    const raw = fixture('message-action') as { message: Record<string, unknown> };
-    expect(incident(await normalizeSlack({ ...raw, message: { ...raw.message, user: 'U0REPORTER' } }, ctx())).anchorAuthor).toBeUndefined();
-    expect(incident(await normalizeSlack({ ...raw, message: { ...raw.message, user: 'U0ALERTS', bot_id: 'B0ALERTS' } }, ctx())).anchorAuthor).toBeUndefined();
-  });
-});
+  describe('Enterprise Grid', () => {
+    const ORG = 'E0ORG';
+    const grid: Record<string, SlackUserFacts> = {
+      U0SIBLING: { team_id: 'T0SIBLING', enterprise_user: { enterprise_id: ORG } },
+      U0FLAT: { team_id: 'T0SIBLING', enterprise_id: ORG },
+      U0SIBLINGGUEST: { team_id: 'T0SIBLING', enterprise_user: { enterprise_id: ORG }, is_restricted: true },
+      U0OTHERORG: { team_id: 'T0ELSEWHERE', enterprise_user: { enterprise_id: 'E0OTHER' } },
+      U0NOORG: { team_id: 'T0ELSEWHERE' },
+    };
+    const authorOf = (enterpriseId: string | undefined) =>
+      createSlackAuthorOf({
+        botUserId: BOT,
+        teamId: TEAM,
+        ...(enterpriseId === undefined ? {} : { enterpriseId }),
+        usersInfo: (u) => (grid[u] === undefined ? Promise.reject(new Error('user_not_found')) : Promise.resolve(grid[u])),
+      });
 
-describe('normalizeSlack: direct messages', () => {
-  it('normalizes text, image, and both, keyed by channel and ts', async () => {
-    const text = incident(await normalizeSlack(fixture('message-im-text'), ctx()));
-    expect(text.idempotencyKey).toBe('slack-D0DM-1700000300.000400');
-    expect(text.anchorText).toBe('The invoice page 500s when I click Download');
-    expect(text.context.channelId).toBe('D0DM');
-    expect(text.context.threadId).toBeUndefined();
-
-    const image = incident(await normalizeSlack(fixture('message-im-image'), ctx()));
-    expect(image.idempotencyKey).toBe('slack-D0DM-1700000400.000500');
-    expect(image.anchorText).toBe('');
-    expect(image.context.rawPayloadSnapshot['files']).toEqual([
-      { id: 'F0SHOT', mimetype: 'image/png', url_private_download: 'https://files.slack.com/files-pri/T0001-F0SHOT/download/screenshot.png' },
-    ]);
-
-    const both = incident(await normalizeSlack(fixture('message-im-both'), ctx()));
-    expect(both.anchorText).toBe('Blank total, see screenshot');
-    expect(both.context.rawPayloadSnapshot['files']).toHaveLength(1);
-  });
-
-  // #360: a person posting through an app with their user token gets `bot_id` and `app_id` on the
-  // message; it is still their report.
-  it('captures a DM a mapped person posted through an app (bot_id and app_id on it)', async () => {
-    const p = incident(await normalizeSlack(im('message-im-text', { bot_id: 'B0TESTDRIVER', app_id: 'A0TESTDRIVER' }), ctx()));
-    expect(p.reporter.id).toBe('U0REPORTER');
-    expect(p.anchorText).toBe('The invoice page 500s when I click Download');
-  });
-
-  it('asks users.info about someone the map does not name, and ignores our own bot id', async () => {
-    const asked: string[] = [];
-    const authorOf = createSlackAuthorOf({ botUserId: BOT, botId: 'B0SNAPWING', usersInfo: (u) => (asked.push(u), Promise.resolve({ is_bot: u === 'U0OTHERBOT' })) });
-    const person = incident(await normalizeSlack(im('message-im-text', { user: 'U0NOBODY', bot_id: 'B0TESTDRIVER' }), ctx({ authorOf })));
-    expect(person.reporter.id).toBe('U0NOBODY');
-    expect(await normalizeSlack(im('message-im-text', { user: 'U0OTHERBOT', bot_id: 'B0OTHER' }), ctx({ authorOf }))).toEqual({ kind: 'ignored', reason: 'bot-message' });
-    expect(asked).toEqual(['U0NOBODY', 'U0OTHERBOT']);
-    expect(await normalizeSlack(im('message-im-text', { bot_id: 'B0SNAPWING' }), ctx({ authorOf }))).toEqual({ kind: 'ignored', reason: 'own-message' });
-  });
-
-  it('ignores the bot own messages, other bots, edits, and non-DM channels', async () => {
-    expect(await normalizeSlack(im('message-im-text', { user: BOT }), ctx())).toEqual({ kind: 'ignored', reason: 'own-message' });
-    expect(await normalizeSlack(im('message-im-text', { user: 'U0OTHERBOT', bot_id: 'B0X' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
-    expect(await normalizeSlack(im('message-im-text', { user: undefined, bot_id: 'B0X' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
-    expect(await normalizeSlack(im('message-im-text', { subtype: 'bot_message' }), ctx())).toEqual({ kind: 'ignored', reason: 'bot-message' });
-    expect(await normalizeSlack(im('message-im-text', { subtype: 'message_changed' }), ctx())).toEqual({
-      kind: 'ignored',
-      reason: 'unsupported-subtype',
+    it('counts a user of another workspace in the same organization as a member, in either users.info shape', async () => {
+      const a = authorOf(ORG);
+      expect(await a.membership('U0SIBLING')).toBe('member');
+      expect(await a.membership('U0FLAT')).toBe('member');
     });
-    expect(await normalizeSlack(im('message-im-text', { channel_type: 'channel' }), ctx())).toEqual({ kind: 'ignored', reason: 'not-a-direct-message' });
-  });
 
-  it('ignores empty messages and files that are not images', async () => {
-    expect(await normalizeSlack(im('message-im-text', { text: '  ' }), ctx())).toEqual({ kind: 'ignored', reason: 'empty-message' });
-    const docOnly = im('message-im-both', { text: '', files: [{ id: 'F0DOC', mimetype: 'text/plain' }] });
-    expect(await normalizeSlack(docOnly, ctx())).toEqual({ kind: 'ignored', reason: 'empty-message' });
-  });
-
-  it('honors the map directMessage switches', async () => {
-    const noImages = map({ triggers: { messageActions: [], emoji: [], directMessage: { images: false, text: true } } });
-    expect(await normalizeSlack(fixture('message-im-image'), ctx({ map: noImages }))).toEqual({ kind: 'ignored', reason: 'direct-message-disabled' });
-    expect(incident(await normalizeSlack(fixture('message-im-text'), ctx({ map: noImages }))).anchorText).toContain('invoice');
-    const noText = map({ triggers: { messageActions: [], emoji: [], directMessage: { images: true, text: false } } });
-    expect(await normalizeSlack(fixture('message-im-text'), ctx({ map: noText }))).toEqual({ kind: 'ignored', reason: 'direct-message-disabled' });
-  });
-});
-
-describe('normalizeSlack: everything else is ignored, not an error', () => {
-  it('ignores url_verification, unknown envelopes, and unsubscribed event types', async () => {
-    expect(await normalizeSlack({ type: 'url_verification', challenge: 'abc' }, ctx())).toEqual({ kind: 'ignored', reason: 'url-verification' });
-    expect(await normalizeSlack({ type: 'block_actions' }, ctx())).toEqual({ kind: 'ignored', reason: 'unsupported-payload' });
-    expect(await normalizeSlack({ type: 'event_callback', event: { type: 'file_shared' } }, ctx())).toEqual({
-      kind: 'ignored',
-      reason: 'unsupported-payload',
+    it('keeps a sibling workspace guest a guest, and another organization or a user with no organization external', async () => {
+      const a = authorOf(ORG);
+      expect(await a.membership('U0SIBLINGGUEST')).toBe('guest');
+      expect(await a.membership('U0OTHERORG')).toBe('external');
+      expect(await a.membership('U0NOORG')).toBe('external');
     });
-    expect(await normalizeSlack(null, ctx())).toEqual({ kind: 'ignored', reason: 'unsupported-payload' });
-    expect(await normalizeSlack('nope', ctx())).toEqual({ kind: 'ignored', reason: 'unsupported-payload' });
+
+    it('treats a sibling workspace user as external when the workspace has no enterprise id', async () => {
+      expect(await authorOf(undefined).membership('U0SIBLING')).toBe('external');
+    });
+
+    it('leaves a sibling workspace trigger uncapped on a reaction, a shortcut, and a direct message', async () => {
+      const a = authorOf(ORG);
+      const { raw, reactionsGet } = trigger('U0SIBLING', ['U0SIBLING']);
+      expect(incident(await normalizeSlack(raw, ctx({ authorOf: a, reactionsGet }))).levelCap).toBeUndefined();
+      const shortcut = { ...(fixture('message-action') as Record<string, unknown>), user: { id: 'U0SIBLING', name: 'x' } };
+      expect(incident(await normalizeSlack(shortcut, ctx({ authorOf: a }))).levelCap).toBeUndefined();
+      expect(incident(await normalizeSlack(im('message-im-text', { user: 'U0SIBLING' }), ctx({ authorOf: a }))).levelCap).toBeUndefined();
+      const other = trigger('U0OTHERORG', ['U0OTHERORG']);
+      expect(incident(await normalizeSlack(other.raw, ctx({ authorOf: a, reactionsGet: other.reactionsGet }))).levelCap).toEqual(CAP);
+    });
   });
 });

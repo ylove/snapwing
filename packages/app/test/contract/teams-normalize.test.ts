@@ -53,10 +53,11 @@ const map: WorkspaceMap = {
   policies: { autonomy: { default: 1, levels: [], overrides: [] } },
 };
 
-// Graph `GET /users/{id}`: Rae has a mailbox, Sam has only a UPN, Pat is unknown to Graph.
+// Graph `GET /users/{id}`: Rae has a mailbox, Sam has only a UPN, Pat has both.
 const users: Record<string, Record<string, unknown>> = {
   [RAE]: { id: RAE, displayName: 'Rae Reporter', userPrincipalName: 'rae@contoso.onmicrosoft.com', mail: 'rae@contoso.example' },
   [SAM]: { id: SAM, displayName: 'Sam Engineer', userPrincipalName: 'sam@contoso.onmicrosoft.com', mail: null },
+  [PAT]: { id: PAT, displayName: 'Pat Reporter', userPrincipalName: 'pat@contoso.onmicrosoft.com', mail: 'pat@contoso.example' },
 };
 
 const server = setupServer(
@@ -84,6 +85,7 @@ function ctx(over: Partial<TeamsNormalizeContext> = {}): TeamsNormalizeContext {
           ...(u.displayName ? { displayName: u.displayName } : {}),
           ...(u.userPrincipalName ? { userPrincipalName: u.userPrincipalName } : {}),
           ...(u.mail ? { mail: u.mail } : {}),
+          ...(u.userType ? { userType: u.userType } : {}),
         };
       } catch {
         return undefined;
@@ -285,5 +287,63 @@ describe('teamsHtmlToText', () => {
     expect(teamsHtmlToText('<p>a &lt;b&gt; &#39;c&#x27; &nbsp;<at id="1">Dana</at></p><p>next<br/>line</p><img src="x">')).toBe(
       "a <b> 'c'  @Dana\nnext\nline",
     );
+  });
+});
+
+describe('who triggers caps the level (guest, external, fail closed)', () => {
+  const CAP = { level: 1, reason: 'guest-trigger' };
+  const GUEST = '6f1c2a3b-0000-4000-8000-00000000b001';
+  const EXT = '6f1c2a3b-0000-4000-8000-00000000b002';
+  const GONE = '6f1c2a3b-0000-4000-8000-00000000b003';
+  const OTHER_TENANT = '7a0d5e6f-0000-4000-8000-0000000000d9';
+
+  function withTenant(c: TeamsNormalizeContext = ctx()): TeamsNormalizeContext {
+    return { ...c, tenantId: TENANT };
+  }
+  /** The same activity from `aad`, optionally claiming another tenant. */
+  function from(name: string, aad: string, tenant?: string) {
+    const a = activity(name);
+    const channelData = (a['channelData'] ?? {}) as Record<string, unknown>;
+    return {
+      ...a,
+      from: { ...(a['from'] as object), aadObjectId: aad },
+      ...(tenant === undefined ? {} : { channelData: { ...channelData, tenant: { id: tenant } } }),
+    };
+  }
+
+  it('leaves a member uncapped on every trigger', async () => {
+    expect(incident(await fromActivity(activity('action-fetch-task'), withTenant())).levelCap).toBeUndefined();
+    expect(incident(await fromActivity(activity('personal-text'), withTenant())).levelCap).toBeUndefined();
+    expect(incident(await fromReaction({}, withTenant())).levelCap).toBeUndefined();
+  });
+
+  it('caps a guest (userType Guest, or an #EXT# account) who triggers the action command, a chat, or a reaction', async () => {
+    users[GUEST] = { id: GUEST, displayName: 'Gus Guest', userPrincipalName: 'gus@contoso.onmicrosoft.com', mail: null, userType: 'Guest' };
+    users[EXT] = { id: EXT, displayName: 'Eve Ext', userPrincipalName: 'eve_partner.com#EXT#@contoso.onmicrosoft.com', mail: null, userType: 'Member' };
+    for (const who of [GUEST, EXT]) {
+      expect(incident(await fromActivity(from('action-fetch-task', who), withTenant())).levelCap).toEqual(CAP);
+      expect(incident(await fromActivity(from('personal-text', who), withTenant())).levelCap).toEqual(CAP);
+      expect(incident(await fromReaction({ reactorAadId: who }, withTenant())).levelCap).toEqual(CAP);
+    }
+  });
+
+  it('caps a user whose activity names another tenant, even a member of its own', async () => {
+    const p = incident(await fromActivity(from('personal-text', RAE, OTHER_TENANT), withTenant()));
+    expect(p.levelCap).toEqual(CAP);
+    expect(incident(await fromActivity(from('action-fetch-task', SAM, OTHER_TENANT), withTenant())).levelCap).toEqual(CAP);
+    expect(incident(await fromActivity(from('personal-text', RAE, TENANT), withTenant())).levelCap).toBeUndefined();
+  });
+
+  it('fails closed when the lookup fails or is not given', async () => {
+    expect(incident(await fromActivity(from('personal-text', GONE), withTenant())).levelCap).toEqual(CAP);
+    expect(incident(await fromActivity(activity('personal-text'), withTenant(ctx({ userOf: () => Promise.resolve(undefined) })))).levelCap).toEqual(CAP);
+    const { userOf: _graph, ...noGraph } = ctx();
+    expect(incident(await fromActivity(activity('action-fetch-task'), withTenant(noGraph))).levelCap).toEqual(CAP);
+  });
+
+  it('caps a reaction only when no reactor is a member', async () => {
+    users[GUEST] = { id: GUEST, displayName: 'Gus Guest', userPrincipalName: 'gus@contoso.onmicrosoft.com', mail: null, userType: 'Guest' };
+    expect(incident(await fromReaction({ reactorAadId: GUEST, reactors: [GUEST, GONE] }, withTenant())).levelCap).toEqual(CAP);
+    expect(incident(await fromReaction({ reactorAadId: GUEST, reactors: [GUEST, SAM] }, withTenant())).levelCap).toBeUndefined();
   });
 });
