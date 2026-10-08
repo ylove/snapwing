@@ -34,6 +34,8 @@ import type { StatusAnswer, StatusQuery } from '@snapwing/pipeline/contracts/sig
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { isUnlinkGithub, unlinkGithubReply } from '../shared/unlink-github.ts';
+import type { GitHubOAuth } from '../../github/oauth.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './adapter.ts';
@@ -53,6 +55,8 @@ export interface TeamsStatusQueryOptions {
   getMap: () => Promise<WorkspaceMap>;
   /** Writes standing subscriptions asked for in the personal chat; without it such a message is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
+  /** Answers `unlink github` in the personal chat (main 11.2); without it such a message is not intercepted. */
+  identity?: Pick<GitHubOAuth, 'disconnect'>;
   /** kv: the names Teams gave people the map does not list (their user records). Absent: such a person is `@id`. */
   cache?: Pick<CachePort, 'get'>;
   clock?: () => Date;
@@ -92,7 +96,7 @@ interface Request {
   /** The channel thread the asker is in; absent for a top-level message and in a chat. */
   threadId?: string;
   text: string;
-  kind: 'mention' | 'personal' | 'command' | 'standing';
+  kind: 'mention' | 'personal' | 'command' | 'standing' | 'unlink';
   /** The activity answered (a mention's answer is a reply to it). */
   activityId: string;
   /** Mention in a channel: the thread the answer goes in (the thread asked in, else the one the mention starts). */
@@ -186,6 +190,7 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     const base = { asker, serviceUrl, activityId };
 
     if (conversationType === 'personal') {
+      if (options.identity !== undefined && isUnlinkGithub(text)) return { ...base, channelId: conversationId, text, kind: 'unlink' };
       if (options.standing !== undefined && parseStandingWatch(text)?.command === false) {
         return { ...base, channelId: conversationId, text, kind: 'standing' };
       }
@@ -252,6 +257,10 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
       }
       try {
         const map = await options.getMap();
+        if (request.kind === 'unlink' && options.identity !== undefined) {
+          await post(request, { type: 'message', text: await unlinkGithubReply(options.identity, 'teams', request.asker) });
+          return;
+        }
         if (request.kind === 'standing' && options.standing !== undefined) {
           const outcome = await applyStandingWatch(options.standing, map, {
             workspaceId: options.workspaceId,

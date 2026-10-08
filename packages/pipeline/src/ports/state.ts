@@ -38,7 +38,7 @@ export type {
   StateOptions,
   Subscription,
 } from '../contracts/state.ts';
-export { ExpectedSeqConflictError, isExpectedSeqConflict, isParkedOutbox, LOG_START, StateNotFoundError, stateOptionsFromEnv } from '../contracts/state.ts';
+export { ExpectedSeqConflictError, isExpectedSeqConflict, isParkedOutbox, LinkedIdentityConflictError, LOG_START, StateNotFoundError, stateOptionsFromEnv } from '../contracts/state.ts';
 
 /** The chat platform a linked identity's user belongs to. */
 export type ChatPlatform = 'slack' | 'teams';
@@ -218,10 +218,14 @@ export interface StatePort {
    * Links the chat user to a GitHub account, or updates the link (a re-link or a token refresh):
    * one row per `(workspaceId, chat, chatUserId)`. `linkedAt` is kept unless the GitHub account
    * changes. Rejects with a TypeError, writing nothing, when a token field is not a sealed value.
+   * Rejects with `LinkedIdentityConflictError`, writing nothing, when the GitHub account is already
+   * linked to another chat user of the workspace: one account, one link.
    */
   linkIdentity(identity: NewLinkedIdentity): Promise<void>;
   /** The chat user's link, or null when there is none. */
   getLinkedIdentity(key: LinkedIdentityKey): Promise<LinkedIdentity | null>;
+  /** The link holding this GitHub account in the workspace, or null. At most one chat user holds an account. */
+  getLinkedIdentityByGithubUser(workspaceId: string, githubUserId: number): Promise<LinkedIdentity | null>;
   /** Removes the chat user's link; true when there was one. */
   unlinkIdentity(key: LinkedIdentityKey): Promise<boolean>;
 

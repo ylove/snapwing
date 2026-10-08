@@ -40,6 +40,8 @@ export interface GitHubPerson {
   token: string;
   /** The authorization code that exchanges for `token`. */
   code: string;
+  /** The verified primary email GitHub lists for the account; the link flow checks it against the map. */
+  email: string;
 }
 
 export interface FakePull {
@@ -221,6 +223,10 @@ export class FakeGitHub {
       http.get(`${GITHUB}/user`, ({ request }) => {
         const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
         return person === undefined ? denied() : HttpResponse.json({ login: person.login, id: person.id });
+      }),
+      http.get(`${GITHUB}/user/emails`, ({ request }) => {
+        const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
+        return person === undefined ? denied() : HttpResponse.json([{ email: person.email, primary: true, verified: true }]);
       }),
       http.get(`${GITHUB}/repos/:owner/:repo/pulls/:number`, async ({ request, params }) =>
         installation(request) ? withPull(request, params, (pr) => HttpResponse.json(this.pullJson(pr))) : denied(),

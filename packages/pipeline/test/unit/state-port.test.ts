@@ -103,7 +103,7 @@ describe('StatePort signatures (B 1)', () => {
       | 'putArtifact' | 'getArtifact'
       | 'seenWebhook' | 'enqueueOutbox' | 'drainOutbox' | 'ackOutbox' | 'deferOutbox' | 'parkOutbox' | 'listParkedOutbox' | 'dropOutbox'
       | 'putConfigVersion' | 'getConfigVersion'
-      | 'linkIdentity' | 'getLinkedIdentity' | 'unlinkIdentity'
+      | 'linkIdentity' | 'getLinkedIdentity' | 'getLinkedIdentityByGithubUser' | 'unlinkIdentity'
       | 'issueCaptureToken' | 'verifyCaptureToken' | 'revokeCaptureToken' | 'listCaptureTokens'
       | 'transaction'
     >();

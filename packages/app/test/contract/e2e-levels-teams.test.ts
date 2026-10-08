@@ -131,14 +131,14 @@ const PEOPLE: Readonly<Record<string, Engineer>> = {
     botId: '29:1ari-engineer',
     name: 'Ari Admin',
     handle: 'adminDev',
-    github: { login: 'ari-acme', id: 7100001, token: 'test-user-token-ari', code: 'test-oauth-code-ari' },
+    github: { login: 'ari-acme', id: 7100001, token: 'test-user-token-ari', code: 'test-oauth-code-ari', email: 'ari@example.com' },
   },
   U0WEBDEV: {
     aad: '6f1c2a3b-0000-4000-8000-00000000e002',
     botId: '29:1dana-engineer',
     name: 'Dana Web',
     handle: 'webDev',
-    github: { login: 'dana-acme', id: 7100002, token: 'test-user-token-dana', code: 'test-oauth-code-dana' },
+    github: { login: 'dana-acme', id: 7100002, token: 'test-user-token-dana', code: 'test-oauth-code-dana', email: 'dana@example.com' },
   },
 };
 
@@ -293,8 +293,8 @@ async function linkGitHub(w: World, who: Engineer): Promise<void> {
   const oauth = createGitHubOAuth({ state: w.booted.state, secrets: w.booted.secrets, workspaceId });
   const link = new URL(await oauth.linkUrl({ chat: 'teams', userId: who.aad }));
   const start = await w.booted.api.fetch(new Request(`http://snapwing.test${link.pathname}${link.search}`));
-  expect(start.status).toBe(302);
-  const authorize = new URL(start.headers.get('location') ?? '');
+  expect(start.status).toBe(200);
+  const authorize = new URL((/<a href="([^"]+)"/.exec(await start.text())?.[1] ?? '').replace(/&#(\d+);/g, (_m, n: string) => String.fromCharCode(Number(n))));
   expect(authorize.origin).toBe('https://github.com');
   const cookie = (start.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
   // The user approves on GitHub, which redirects back with a code and the same state.

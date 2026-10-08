@@ -17,14 +17,30 @@
 // link is dead and is removed, and the user links again. Tokens, the client secret, and the key are
 // never logged, never put in an error, and never put in a response.
 //
+// Whose account (main 11.2). The start page names the chat account being linked, by its map handle,
+// before the redirect, so a person handed someone else's link sees that it is not theirs. The
+// callback then checks the GitHub login against the map person: it must equal the person's `handle`
+// (GitHub logins compare case-insensitively), or, failing that, the person's map email must be the
+// verified primary email GitHub reports for the account. Anything else, a person the map does not
+// name, or an install with no map, is refused with a message to ask an admin to fix the map, and the
+// token just issued is revoked. One GitHub account links to one chat user of the workspace: a second
+// chat user is refused (the account's own re-link is not).
+//
+// Revocation. Unlinking (`disconnect`, behind `unlink`) deletes the stored tokens and revokes the
+// grant at GitHub (`DELETE /applications/{client_id}/grant`, basic auth). A re-link to a different
+// GitHub account revokes the old account's grant. A re-link to the same account revokes only the old
+// token (`DELETE /applications/{client_id}/token`), since the grant is shared with the new token.
+//
 // Secrets (CONTEXT.md 6b): GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET (stored by
 // `pnpm github:bootstrap`), SNAPWING_ENCRYPTION_KEY, SNAPWING_PUBLIC_URL. The callback URL is
 // `${SNAPWING_PUBLIC_URL}/auth/github/callback`, as the bootstrap registers it.
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { LinkedIdentityConflictError } from '@snapwing/pipeline/contracts/state.ts';
 import type { SecretsPort } from '@snapwing/pipeline/ports/secrets.ts';
 import type { ChatPlatform, LinkedIdentity, LinkedIdentityKey, StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { deriveKey, parseSealKey, seal, unseal, type SealKey } from '@snapwing/pipeline/util/seal.ts';
+import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { Route } from '../server/http.ts';
 import { TOKEN_REFRESH_MARGIN_MS } from './auth.ts';
 
@@ -61,6 +77,21 @@ export interface GitHubOAuthOptions {
   apiBase?: string;
   /** How long a link stays usable, in seconds. Default 600. */
   stateTtlSec?: number;
+  /**
+   * The workspace map, read per link: who the chat account is, and which GitHub handle or email is
+   * theirs. Without it no link completes (the account cannot be checked).
+   */
+  map?: () => Promise<Pick<WorkspaceMap, 'people'>>;
+  /** Told of a revocation GitHub did not take (the link itself is still removed or made). */
+  onError?: (error: unknown) => void;
+}
+
+/** What `disconnect` did. */
+export interface Disconnected {
+  /** True when the user had a link, now removed along with its stored tokens. */
+  linked: boolean;
+  /** True when GitHub's grant is gone (or was already); false when GitHub could not be told. */
+  revoked: boolean;
 }
 
 export interface GitHubOAuth {
@@ -74,8 +105,10 @@ export interface GitHubOAuth {
   isLinked(user: ChatUser): Promise<boolean>;
   /** A usable user-to-server token, refreshed first when close to expiry; null when not linked or the link is dead. */
   userToken(user: ChatUser): Promise<UserToken | null>;
-  /** Removes the user's link; true when there was one. */
+  /** Removes the user's link and revokes its grant at GitHub; true when there was one. */
   unlink(user: ChatUser): Promise<boolean>;
+  /** `unlink`, saying whether GitHub took the revocation. The stored tokens are deleted either way. */
+  disconnect(user: ChatUser): Promise<Disconnected>;
 }
 
 /** GitHub refused an OAuth exchange, or answered in a shape we do not know. Never carries a token. */
@@ -111,9 +144,10 @@ interface TokenGrant {
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
-function page(status: number, title: string, message: string, extraHeaders: Record<string, string> = {}): Response {
+function page(status: number, title: string, message: string, extraHeaders: Record<string, string> = {}, next?: { href: string; label: string }): Response {
   const esc = (s: string): string => s.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
-  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(title)}</title></head><body><h1>${esc(title)}</h1><p>${esc(message)}</p></body></html>`;
+  const link = next === undefined ? '' : `<p><a href="${esc(next.href)}">${esc(next.label)}</a></p>`;
+  const body = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${esc(title)}</title></head><body><h1>${esc(title)}</h1><p>${esc(message)}</p>${link}</body></html>`;
   return new Response(body, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', ...NO_STORE, ...extraHeaders } });
 }
 
@@ -166,6 +200,7 @@ export function createGitHubOAuth(options: GitHubOAuthOptions): GitHubOAuth {
   const ttlSec = options.stateTtlSec ?? DEFAULT_STATE_TTL_SEC;
   if (!Number.isFinite(ttlSec) || ttlSec <= 0) throw new RangeError('stateTtlSec must be a number of seconds greater than 0');
   const { state, secrets, workspaceId } = options;
+  const onError = options.onError ?? (() => undefined);
   const inflight = new Map<string, Promise<UserToken | null>>();
 
   let keys: Promise<{ seal: SealKey; stateMac: Buffer }> | undefined;
@@ -286,26 +321,94 @@ export function createGitHubOAuth(options: GitHubOAuthOptions): GitHubOAuth {
     });
   }
 
+  // Whose account -----------------------------------------------------------------------------------
+
+  async function personOf(chat: ChatPlatform, userId: string): Promise<MapPerson | undefined> {
+    if (options.map === undefined) return undefined;
+    const map = await options.map();
+    return map.people.find((p) => (chat === 'slack' ? p.slackId : p.teamsId) === userId);
+  }
+
+  /** The label the start page shows: the map handle, never an email or an id. */
+  const handleOf = (person: MapPerson): string => person.handle.replace(/^@/, '');
+
+  async function primaryEmail(token: string): Promise<string | undefined> {
+    const res = await doFetch(`${apiBase}/user/emails`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
+    });
+    if (!res.ok) return undefined;
+    const body: unknown = await res.json().catch(() => undefined);
+    if (!Array.isArray(body)) return undefined;
+    for (const entry of body) {
+      const e = (typeof entry === 'object' && entry !== null ? entry : {}) as Record<string, unknown>;
+      if (e['primary'] === true && e['verified'] === true && typeof e['email'] === 'string') return e['email'];
+    }
+    return undefined;
+  }
+
+  /** True when the GitHub account is the map person's: their handle, else their email verified at GitHub. */
+  async function isTheirs(person: MapPerson, login: string, token: string): Promise<boolean> {
+    if (handleOf(person).toLowerCase() === login.toLowerCase()) return true;
+    if (person.email === undefined || person.email.trim() === '') return false;
+    const verified = await primaryEmail(token).catch(() => undefined);
+    return verified !== undefined && verified.toLowerCase() === person.email.trim().toLowerCase();
+  }
+
+  // Revocation --------------------------------------------------------------------------------------
+
+  /** `DELETE /applications/{client_id}/grant` or `/token`; an answer of 404 means GitHub no longer knows it. */
+  async function revoke(what: 'grant' | 'token', accessToken: string): Promise<void> {
+    const { id, secret } = await client();
+    const res = await doFetch(`${apiBase}/applications/${encodeURIComponent(id)}/${what}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Basic ${Buffer.from(`${id}:${secret}`).toString('base64')}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({ access_token: accessToken }),
+    });
+    if (res.status !== 204 && res.status !== 404 && res.status !== 422) throw new GitHubOAuthError(`http_${res.status}`, `revoking the ${what} answered ${res.status}`);
+  }
+
+  /** Revokes a token the link flow just obtained and will not keep; a failure is reported, not thrown. */
+  async function discard(accessToken: string): Promise<void> {
+    try {
+      await revoke('token', accessToken);
+    } catch (e) {
+      onError(e);
+    }
+  }
+
+  function refused(status: number, message: string, clear: Record<string, string>): Response {
+    return page(status, 'Not linked', message, clear);
+  }
+
   // Routes -----------------------------------------------------------------------------------------
 
   async function start(req: Request): Promise<Response> {
     const raw = new URL(req.url).searchParams.get('state');
     const check = await checkState(raw);
     if (!check.ok || raw === null) return stateFailure(check.ok ? 'invalid' : check.reason);
+    const person = await personOf(check.payload.c, check.payload.u);
+    if (person === undefined) {
+      return page(403, 'Not linked', 'Snapwing cannot tell whose account this is. Ask an admin to add you to the workspace map, then ask Snapwing for a new link.');
+    }
     const [{ id }, base] = await Promise.all([client(), publicUrl()]);
     const authorize = new URL(`${githubBase}/login/oauth/authorize`);
     authorize.searchParams.set('client_id', id);
     authorize.searchParams.set('redirect_uri', `${base}${CALLBACK_PATH}`);
     authorize.searchParams.set('state', raw);
     const maxAge = Math.max(1, Math.ceil(check.payload.e - now().getTime() / 1000));
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: authorize.toString(),
-        'Set-Cookie': `${STATE_COOKIE}=${check.payload.n}; Path=/auth/github; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`,
-        ...NO_STORE,
-      },
-    });
+    const platform = check.payload.c === 'slack' ? 'Slack' : 'Teams';
+    return page(
+      200,
+      'Link your GitHub account',
+      `This links the ${platform} account @${handleOf(person)} to the GitHub account you sign in with. If that is not you, close this page.`,
+      { 'Set-Cookie': `${STATE_COOKIE}=${check.payload.n}; Path=/auth/github; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax` },
+      { href: authorize.toString(), label: `Continue to GitHub as @${handleOf(person)}` },
+    );
   }
 
   async function callback(req: Request): Promise<Response> {
@@ -331,6 +434,10 @@ export function createGitHubOAuth(options: GitHubOAuthOptions): GitHubOAuth {
     if (await state.seenWebhook(STATE_NONCE_SOURCE, payload.n, keepSec)) {
       return page(400, 'Link already used', 'This link was already used. Ask Snapwing for a new one.', clearCookie);
     }
+    const person = await personOf(payload.c, payload.u);
+    if (person === undefined) {
+      return refused(403, 'Snapwing cannot tell whose account this is. Ask an admin to add you to the workspace map, then ask Snapwing for a new link.', clearCookie);
+    }
     const [{ id, secret }, base] = await Promise.all([client(), publicUrl()]);
     let grant: TokenGrant;
     let user: { login: string; id: number };
@@ -343,8 +450,40 @@ export function createGitHubOAuth(options: GitHubOAuthOptions): GitHubOAuth {
       }
       throw e;
     }
-    await store({ workspaceId, chat: payload.c, chatUserId: payload.u }, grant, user);
+    const key: LinkedIdentityKey = { workspaceId, chat: payload.c, chatUserId: payload.u };
+    if (!(await isTheirs(person, user.login, grant.accessToken))) {
+      await discard(grant.accessToken);
+      return refused(
+        403,
+        `The GitHub account @${user.login} is not the one the workspace map lists for you. Ask an admin to add your GitHub handle to the map, then ask Snapwing for a new link.`,
+        clearCookie,
+      );
+    }
+    const holder = await state.getLinkedIdentityByGithubUser(workspaceId, user.id);
+    if (holder !== null && (holder.chat !== key.chat || holder.chatUserId !== key.chatUserId)) {
+      await discard(grant.accessToken);
+      return refused(409, `The GitHub account @${user.login} is already linked to another person. Ask an admin to unlink it first.`, clearCookie);
+    }
+    const previous = await state.getLinkedIdentity(key);
+    try {
+      await store(key, grant, user);
+    } catch (e) {
+      if (!(e instanceof LinkedIdentityConflictError)) throw e;
+      await discard(grant.accessToken);
+      return refused(409, `The GitHub account @${user.login} is already linked to another person. Ask an admin to unlink it first.`, clearCookie);
+    }
+    if (previous !== null) await revokeReplaced(key, previous, user.id);
     return page(200, 'GitHub linked', `Snapwing is linked to GitHub as @${user.login}. You can close this tab.`, clearCookie);
+  }
+
+  /** After a re-link: the old token is no longer wanted. A different account's grant goes whole. */
+  async function revokeReplaced(key: LinkedIdentityKey, previous: LinkedIdentity, newGithubUserId: number): Promise<void> {
+    try {
+      const old = unseal((await sealKeys()).seal, previous.accessToken, sealContext(key, 'access_token'));
+      await revoke(previous.githubUserId === newGithubUserId ? 'token' : 'grant', old);
+    } catch (e) {
+      onError(e);
+    }
   }
 
   // Use --------------------------------------------------------------------------------------------
@@ -388,6 +527,33 @@ export function createGitHubOAuth(options: GitHubOAuthOptions): GitHubOAuth {
     return { token: grant.accessToken, ...current };
   }
 
+  async function disconnect(user: ChatUser): Promise<Disconnected> {
+    const key = keyOf(user);
+    const identity = await state.getLinkedIdentity(key);
+    if (identity === null) return { linked: false, revoked: true };
+    let revoked = true;
+    try {
+      // A token near expiry is refreshed first, so the revocation names a live one. A dead link has
+      // nothing left at GitHub to revoke.
+      const live = await userToken(user);
+      if (live !== null) await revoke('grant', live.token);
+    } catch (e) {
+      revoked = false;
+      onError(e);
+    }
+    await state.unlinkIdentity(key);
+    return { linked: true, revoked };
+  }
+
+  function userToken(user: ChatUser): Promise<UserToken | null> {
+    const k = JSON.stringify([user.chat, user.userId]);
+    const pending = inflight.get(k);
+    if (pending !== undefined) return pending;
+    const p = freshToken(user, false).finally(() => inflight.delete(k));
+    inflight.set(k, p);
+    return p;
+  }
+
   return {
     routes: [
       { method: 'GET', path: START_PATH, handler: start },
@@ -418,17 +584,10 @@ export function createGitHubOAuth(options: GitHubOAuthOptions): GitHubOAuth {
       return identity.accessTokenExpiresAt === undefined || Date.parse(identity.accessTokenExpiresAt) > at || refreshable(identity, at);
     },
 
-    userToken(user) {
-      const k = JSON.stringify([user.chat, user.userId]);
-      const pending = inflight.get(k);
-      if (pending !== undefined) return pending;
-      const p = freshToken(user, false).finally(() => inflight.delete(k));
-      inflight.set(k, p);
-      return p;
-    },
+    userToken,
 
-    unlink(user) {
-      return state.unlinkIdentity(keyOf(user));
-    },
+    unlink: async (user) => (await disconnect(user)).linked,
+
+    disconnect,
   };
 }
