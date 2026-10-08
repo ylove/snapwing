@@ -9,7 +9,8 @@
 //
 // kv `teams-mode:{teamId}` (the team's group id) is `reduced` while the team owner has not consented to
 // the RSC permissions (ADR 0005); every card the adapter posts in such a team carries the reduced-mode
-// banner. The mode check (installation and conversation updates, onboarding) writes it; absent is `full`.
+// banner. The mode check (installation and conversation updates, onboarding) and the Graph subscriptions both write
+// it through `writeTeamsMode`, as JSON `{ mode, since, retryAt?, reason? }`; absent is `full`.
 
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 
@@ -112,20 +113,54 @@ export async function readTeamsConversation(cache: Pick<CachePort, 'get'>, chann
 }
 
 /**
- * The team's mode. The mode check writes the bare word; the Graph subscriptions (`subscriptions.ts`) write
- * JSON `{ mode, since, ... }` under the same key, and either one marks the team reduced.
+ * What kv `teams-mode:{teamId}` holds, JSON, written only by `writeTeamsMode`: the mode, when it began, and
+ * for `reduced` an optional retry time and reason (the Graph subscriptions set both, the RSC mode check neither).
  */
-export async function readTeamsMode(cache: Pick<CachePort, 'get'>, teamId: string): Promise<TeamsMode> {
-  const raw = await cache.get(teamsModeKey(teamId));
-  if (raw === null || raw === 'full') return 'full';
-  if (raw === 'reduced') return 'reduced';
-  try {
-    return rec(JSON.parse(raw))['mode'] === 'reduced' ? 'reduced' : 'full';
-  } catch {
-    return 'full';
-  }
+export interface TeamsModeMark {
+  mode: TeamsMode;
+  /** ISO 8601. */
+  since: string;
+  /** ISO 8601, reduced only. */
+  retryAt?: string;
+  reason?: string;
 }
 
-export async function writeTeamsMode(cache: Pick<CachePort, 'set'>, teamId: string, mode: TeamsMode): Promise<void> {
-  await cache.set(teamsModeKey(teamId), mode);
+/** The stored mark, or undefined when the team has none (absent is `full`). */
+export async function readTeamsModeMark(cache: Pick<CachePort, 'get'>, teamId: string): Promise<TeamsModeMark | undefined> {
+  const raw = await cache.get(teamsModeKey(teamId));
+  if (raw === null || raw === '') return undefined;
+  // Rows written before the shared format hold the bare word `full` or `reduced`.
+  if (raw === 'full' || raw === 'reduced') return { mode: raw, since: '' };
+  let parsed: Rec;
+  try {
+    parsed = rec(JSON.parse(raw));
+  } catch {
+    return undefined;
+  }
+  const mode = parsed['mode'];
+  if (mode !== 'full' && mode !== 'reduced') return undefined;
+  const retryAt = str(parsed['retryAt']);
+  const reason = str(parsed['reason']);
+  return { mode, since: str(parsed['since']), ...(retryAt === '' ? {} : { retryAt }), ...(reason === '' ? {} : { reason }) };
+}
+
+/** The team's mode; `full` when nothing is stored or the row is unreadable. */
+export async function readTeamsMode(cache: Pick<CachePort, 'get'>, teamId: string): Promise<TeamsMode> {
+  return (await readTeamsModeMark(cache, teamId))?.mode ?? 'full';
+}
+
+/** The one writer of kv `teams-mode:{teamId}`; `since` defaults to now. */
+export async function writeTeamsMode(
+  cache: Pick<CachePort, 'set'>,
+  teamId: string,
+  mode: TeamsMode,
+  details: { since?: string; retryAt?: string; reason?: string } = {},
+): Promise<void> {
+  const mark: TeamsModeMark = {
+    mode,
+    since: details.since ?? new Date().toISOString(),
+    ...(mode === 'reduced' && details.retryAt !== undefined ? { retryAt: details.retryAt } : {}),
+    ...(mode === 'reduced' && details.reason !== undefined ? { reason: details.reason } : {}),
+  };
+  await cache.set(teamsModeKey(teamId), JSON.stringify(mark));
 }

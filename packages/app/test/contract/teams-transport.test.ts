@@ -545,7 +545,7 @@ describe('reactions and installs', () => {
     const w = world();
     expect((await post(w, teamInstall)).status).toBe(200);
     await w.transport.stop();
-    expect(w.cache.data.get(teamsModeKey(TEAM))).toBe('full');
+    expect(JSON.parse(w.cache.data.get(teamsModeKey(TEAM)) ?? '')).toMatchObject({ mode: 'full' });
 
     grants = { status: 200, value: [{ id: 'g2', clientAppId: 'another-app', permission: 'ChannelMessage.Read.Group', permissionType: 'Application' }] };
     expect((await post(w, fixture('conversation-update'))).status).toBe(200);
