@@ -8,9 +8,11 @@
 // confirms that the route did so for this source.
 //
 // A capture's id is its incident id (the payload's `eventId`). The same text or image from the same
-// source within the idempotency window (24 h, main 14.2) is one capture: kv `capture-key:{key}` maps the
-// key to the id the first send minted, so a resend answers with the capture it already started, and
-// whoever resent it may answer it too.
+// source by the same person within the idempotency window (24 h, main 14.2) is one capture: kv
+// `capture-key:{key}` maps the key (content hash plus the sender's handle) to the id the first send
+// minted, so a resend answers with the capture it already started. The sender is part of the key so
+// that nobody can reach another person's capture (read it, answer it, cancel it) by sending the same
+// words: the same text from someone else is a capture of their own.
 //
 // What the adapter keeps in kv (B 1 fallback cache), each for `CAPTURE_TTL_SEC`:
 //   capture:{id}        { source, people, image? }: who sent it and the image's type
@@ -193,9 +195,10 @@ function actorOf(person: MapPerson): IncidentActor {
   return { id: person.handle, name: person.handle, ...(person.email === undefined ? {} : { email: person.email }), role: person.role };
 }
 
-/** The idempotency key's content: the text, or the image's bytes (main 14.2). */
-function contentOf(request: CaptureRequest): string | Uint8Array {
-  return 'text' in request ? request.text : Buffer.from(request.image, 'base64');
+/** The idempotency key's content: the sender's handle, then the text or the image's bytes (main 14.2). */
+function contentOf(request: CaptureRequest, person: MapPerson): Uint8Array {
+  const content = 'text' in request ? Buffer.from(request.text) : Buffer.from(request.image, 'base64');
+  return Buffer.concat([Buffer.from(`${person.handle.toLowerCase()}\0`), content]);
 }
 
 export function createCaptureAdapter(source: CaptureSource, options: CaptureAdapterOptions): CaptureAdapter {
@@ -220,7 +223,7 @@ export function createCaptureAdapter(source: CaptureSource, options: CaptureAdap
 
     async normalizePayload(raw) {
       const { request, person } = raw;
-      const key = captureIdempotencyKey(source, contentOf(request));
+      const key = captureIdempotencyKey(source, contentOf(request, person));
       const { id, fresh } = await captureIdFor(key);
       const imageData = 'image' in request ? request.image : undefined;
       const image = 'image' in request ? { mimeType: request.mimeType as ImageMimeType } : undefined;

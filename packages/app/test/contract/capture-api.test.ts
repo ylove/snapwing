@@ -3,6 +3,8 @@
 // and routes (fixtures/e2e/world.ts), with MSW standing in for Slack, Jira, and GitHub (the git trees
 // API included) and a scripted model. Tokens are real ones from `issueCaptureToken`.
 //
+// - Abuse limits: a token over its window is a 429 with Retry-After; an image over 5 MB decoded is a 413
+//   before the vision pass or any kv write; the same words from another person are a capture of their own.
 // - Already tracked: a report that matches an open issue answers `tracked`.
 // - New, then filed: a file path in a stack trace resolves against the repo trees (`new` with the
 //   evidence); File it files through the Jira projector (`filed`).
@@ -25,7 +27,7 @@ import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createCaptureClient, type CaptureClient } from '@snapwing/capture-client/client.ts';
-import { CaptureAuthError } from '@snapwing/capture-client/errors.ts';
+import { CaptureAuthError, CaptureServerError } from '@snapwing/capture-client/errors.ts';
 import { formatRendered, renderChoices } from '@snapwing/capture-client/render.ts';
 import { CAPTURE_ROUTES } from '@snapwing/capture-client/wire.ts';
 import type { ImageReading } from '@snapwing/pipeline/contracts/incident.ts';
@@ -36,6 +38,7 @@ import type { ClassifyRequest, CompletionResult, ModelBackend, RawClassifyResult
 import type { HarnessPort } from '@snapwing/pipeline/ports/harness.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import { CAPTURE_ANSWERS_PER_WINDOW, CAPTURE_IMAGE_MAX_BYTES, CAPTURE_SENDS_PER_WINDOW } from '../../src/adapters/capture/routes.ts';
 import { createApiServer, type ApiServer } from '../../src/server/http.ts';
 import { opsRoutes } from '../../src/server/ops.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
@@ -436,6 +439,64 @@ describe('the capture API through capture-client', () => {
     expect(await engineer.status('WEB-1')).toMatchObject({ issueKey: 'WEB-1', status: 'stopped' });
     // Already stopped: nothing more to stop.
     expect(await engineer.stop('WEB-1')).toEqual({ issueKey: 'WEB-1', stopped: false });
+    settled(w);
+  });
+
+  it('the same words from another person are a capture of their own, out of the first one\'s reach', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const first = await (await w.clientFor('webDev')).sendText(TRACKED_TEXT);
+    const other = await w.clientFor('helpDev');
+    const second = await other.sendText(TRACKED_TEXT);
+    expect(second.captureId).not.toBe(first.captureId);
+    // The second sender cannot read or answer the first one's capture; the first still can.
+    await expect(other.poll(first.captureId)).rejects.toMatchObject({ status: 404 });
+    await expect(other.answer(first.captureId, 'cancel')).rejects.toMatchObject({ status: 404 });
+    expect(await (await w.clientFor('webDev')).poll(first.captureId)).toEqual(first);
+    // A resend by the same person still joins their own capture.
+    expect(await other.sendText(TRACKED_TEXT)).toEqual(second);
+    settled(w);
+  });
+
+  it('refuses an image over 5 MB with a 413 before the vision pass or any kv write', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const cli = await w.clientFor('helpDev');
+    const big = Buffer.alloc(CAPTURE_IMAGE_MAX_BYTES + 1, 7).toString('base64');
+    const err = await cli.sendImage(big, 'image/png').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CaptureServerError);
+    expect(err).toMatchObject({ status: 413, message: 'That image is too large (limit 5 MB).' });
+    expect(w.model.calls).toEqual([]);
+    expect(await w.booted.state.ctx.db.selectFrom('kv').select('k').execute()).toEqual([]);
+    expect(await w.booted.state.findIncidents({ workspaceId: w.workspaceId })).toEqual([]);
+    // Exactly at the limit is fine.
+    const edge = Buffer.alloc(CAPTURE_IMAGE_MAX_BYTES, 7).toString('base64');
+    expect(await cli.sendImage(edge, 'image/png')).toMatchObject({ kind: 'new' });
+    settled(w);
+  });
+
+  it('limits sends and answers per token with a 429 and Retry-After; polling is not counted', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const a = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webDev' });
+    const b = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webDev' });
+    // A body that fails validation: the limiter counts it, and nothing reaches the engine.
+    const call = (token: string, path: string, method = 'POST'): Promise<Response> =>
+      w.api.fetch(new Request(`${ENDPOINT}${path}`, { method, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, ...(method === 'POST' ? { body: '{}' } : {}) }));
+    const answerPath = CAPTURE_ROUTES.answer('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    for (let i = 0; i < CAPTURE_SENDS_PER_WINDOW; i++) expect((await call(a.token, CAPTURE_ROUTES.send)).status).toBe(400);
+    const limited = await call(a.token, CAPTURE_ROUTES.send);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    expect(Number(limited.headers.get('retry-after'))).toBeLessThanOrEqual(60);
+    expect((await limited.json()) as unknown).toEqual({ error: expect.stringMatching(/^too many requests, try again in \d+ seconds$/) });
+    // Another token is not affected; neither are answers or polls on the limited one.
+    expect((await call(b.token, CAPTURE_ROUTES.send)).status).toBe(400);
+    expect((await call(a.token, answerPath)).status).toBe(404);
+    for (let i = 0; i < CAPTURE_SENDS_PER_WINDOW + 5; i++) expect((await call(a.token, CAPTURE_ROUTES.poll('01ARZ3NDEKTSV4RRFFQ69G5FAV'), 'GET')).status).toBe(404);
+    for (let i = 0; i < CAPTURE_ANSWERS_PER_WINDOW - 1; i++) expect((await call(a.token, answerPath)).status).toBe(404);
+    expect((await call(a.token, answerPath)).status).toBe(429);
+    // The client says so in words.
+    const cli = createCaptureClient({ endpoint: ENDPOINT, token: a.token, fetch: (input, init) => w.api.fetch(new Request(input, init)) });
+    await expect(cli.sendText(VAGUE)).rejects.toThrow(/^Too many reports, try again in \d+ seconds\.$/);
+    expect(await w.booted.state.findIncidents({ workspaceId: w.workspaceId })).toEqual([]);
     settled(w);
   });
 

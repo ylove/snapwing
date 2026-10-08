@@ -64,9 +64,14 @@ describe('createCaptureAdapter', () => {
     expect(payload.idempotencyKey).toMatch(/^cli-[0-9a-f]{64}$/);
     expect(await adapter.acknowledge({ request, person: DANA }, payload)).toEqual({ captureId: payload.eventId });
 
-    const again = await adapter.normalizePayload({ request, person: SAM });
+    const again = await adapter.normalizePayload({ request, person: DANA });
     expect(again.eventId).toBe(payload.eventId);
-    expect(await readCaptureRecord(cache, payload.eventId)).toEqual({ source: 'cli', people: ['webDev', 'supportLead'] });
+    expect(await readCaptureRecord(cache, payload.eventId)).toEqual({ source: 'cli', people: ['webDev'] });
+    // The same words from someone else are a capture of their own.
+    const other = await adapter.normalizePayload({ request, person: SAM });
+    expect(other.eventId).not.toBe(payload.eventId);
+    expect(other.idempotencyKey).not.toBe(payload.idempotencyKey);
+    expect(await readCaptureRecord(cache, other.eventId)).toEqual({ source: 'cli', people: ['supportLead'] });
   });
 
   it('keeps a screenshot in kv, out of the payload, as the anchor message attachment', async () => {
