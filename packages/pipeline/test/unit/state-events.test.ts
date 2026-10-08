@@ -1,18 +1,18 @@
 // Event log: append, read, readSince (#17; B 1, B 4, B 11 row 1). Runs on the dialect `SNAPWING_DB`
 // selects; CI runs it once per dialect.
 
-import { sql } from 'kysely';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NewEvent } from '../../src/contracts/events.ts';
 import { ExpectedSeqConflictError, LOG_START, type IncidentEvent, type OpenedState } from '../../src/ports/state.ts';
 import type { StateContext } from '../../src/state/context.ts';
 import type { OpenStateHooks } from '../../src/state/db.ts';
-import { APPEND_LOCK_NAMESPACE, pgWatermark, read as readIn } from '../../src/state/events.ts';
+import { APPEND_LOCK_NAMESPACE, read as readIn } from '../../src/state/events.ts';
 import { upcasters } from '../../src/state/upcast.ts';
 import { applyProjections } from '../../src/state/projections/index.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, TEST_DIALECT, type TestDatabase } from '../helpers/db.ts';
+import { logSettled, readAll, readSettled } from '../helpers/log-settled.ts';
 
 // The spy: the real (no-op until #18) applyProjections, wrapped so tests can see and override calls.
 vi.mock('../../src/state/projections/index.ts', async (importOriginal) => {
@@ -81,89 +81,6 @@ async function settle<T>(promises: Promise<T>[]): Promise<{ won: T[]; lost: unkn
     won: results.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])),
     lost: results.flatMap((r) => (r.status === 'rejected' ? [r.reason as unknown] : [])),
   };
-}
-
-/**
- * Waits until `readSince` can return every committed event. On Postgres it withholds events at or
- * above the oldest in-flight transaction that can write this database (`pgWatermark`, ADR 0013);
- * other test files' databases on the same server do not count (#424). On SQLite there is nothing to
- * wait for.
- */
-async function logSettled(): Promise<void> {
-  if (!(state1 instanceof StateStore) || state1.dialect !== 'postgres') {
-    return;
-  }
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    const { rows } = await sql<{ settled: boolean }>`
-      select coalesce(max(tx_order) < ${await pgWatermark(state1.ctx)}, true) as settled from incident_events
-    `.execute(state1.ctx.db);
-    if (rows[0]?.settled === true) {
-      return;
-    }
-    if (Date.now() > deadline) {
-      throw new Error('timed out waiting for the readSince watermark to pass the log');
-    }
-    await new Promise((r) => setTimeout(r, 10));
-  }
-}
-
-/**
- * `logSettled` and `readSince` each take their own watermark, and `pgWatermark` itself reads the
- * snapshot and `pg_stat_activity` separately, so on Postgres any single `readSince` can come back
- * short (a transaction of another database ending between the two reads). A later read returns
- * the rest; nothing is skipped. This reads from `cursor` until the page holds `expected` events,
- * then returns it, so the caller's assertions stay exact: a page that is too long or wrong is
- * returned and fails them. On SQLite it is a single read.
- */
-async function readSettled(state: Pick<OpenedState, 'readSince'>, cursor: string, limit: number, expected: number): Promise<Awaited<ReturnType<OpenedState['readSince']>>> {
-  const deadline = Date.now() + 10_000;
-  for (;;) {
-    const page = await state.readSince(cursor, limit);
-    if (TEST_DIALECT !== 'postgres' || page.events.length >= expected) {
-      return page;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for readSince to return ${expected} events (got ${page.events.length})`);
-    }
-    await new Promise((r) => setTimeout(r, 10));
-  }
-}
-
-/**
- * Pages through the log from `from` with `limit` until `expected` events are collected, then reads
- * once more and asserts nothing is left. An empty or short page before the count is "not yet" on
- * Postgres (see `readSettled`), so it is retried from the same cursor until the deadline. A page
- * that moves the cursor without events, or an overshoot, fails the caller's assertions.
- */
-async function readAll(
-  state: Pick<OpenedState, 'readSince'>,
-  limit: number,
-  expected: number,
-  from = LOG_START,
-): Promise<{ pages: IncidentEvent[][]; events: IncidentEvent[]; cursor: string }> {
-  const deadline = Date.now() + 10_000;
-  const pages: IncidentEvent[][] = [];
-  let cursor = from;
-  let count = 0;
-  while (count < expected) {
-    const page = await state.readSince(cursor, limit);
-    if (page.events.length === 0) {
-      expect(page.cursor).toBe(cursor);
-      if (TEST_DIALECT !== 'postgres' || Date.now() > deadline) {
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 10));
-      continue;
-    }
-    expect(page.cursor).not.toBe(cursor);
-    pages.push(page.events);
-    count += page.events.length;
-    cursor = page.cursor;
-  }
-  // Everything is collected, so nothing else is appended: a final read has nothing to return.
-  expect((await state.readSince(cursor, limit)).events).toEqual([]);
-  return { pages, events: pages.flat(), cursor };
 }
 
 /** A clock that returns each of `times` once, then keeps returning the last. */
@@ -433,7 +350,7 @@ describe('readSince', () => {
     await state.append(INC_B, [closed(INC_B, 'b1'), closed(INC_B, 'b2'), closed(INC_B, 'b3')], 0); // T2
     await state.append(INC_A, [closed(INC_A, 'a2')], 1); // T3
     await state.append(INC_C, [closed(INC_C, 'c3'), closed(INC_C, 'c4')], 2); // T3
-    await logSettled();
+    await logSettled(state1);
     return state;
   }
 
@@ -468,12 +385,12 @@ describe('readSince', () => {
   it('returns events appended after the last page on the next call', async () => {
     const state = await open({ now: steppedClock([T1, T2, T3]) });
     await state.append(INC_A, [closed(INC_A, 'a1')], 0);
-    await logSettled();
+    await logSettled(state1);
     const first = await readSettled(state, LOG_START, 10, 1);
     expect(reasons(first.events)).toEqual(['a1']);
     await state.append(INC_B, [closed(INC_B, 'b1')], 0);
     await state.append(INC_A, [closed(INC_A, 'a2')], 1);
-    await logSettled();
+    await logSettled(state1);
     const second = await readSettled(state, first.cursor, 10, 2);
     expect(reasons(second.events)).toEqual(['b1', 'a2']);
   });
@@ -481,11 +398,11 @@ describe('readSince', () => {
   it('orders by append, not by recordedAt, so a clock that steps back skips nothing', async () => {
     const state = await open({ now: steppedClock([T3, T1]) });
     await state.append(INC_B, [closed(INC_B, 'b1')], 0); // T3
-    await logSettled();
+    await logSettled(state1);
     const first = await readSettled(state, LOG_START, 10, 1);
     expect(reasons(first.events)).toEqual(['b1']);
     await state.append(INC_A, [closed(INC_A, 'a1')], 0); // T1, earlier than the cursor's event
-    await logSettled();
+    await logSettled(state1);
     expect(reasons((await readSettled(state, first.cursor, 10, 1)).events)).toEqual(['a1']);
   });
 
@@ -498,7 +415,7 @@ describe('readSince', () => {
       await tx.append(INC_C, [closed(INC_C, 'c2')], 1);
     });
     await state.append(INC_B, [closed(INC_B, 'b2')], 1);
-    await logSettled();
+    await logSettled(state1);
     expect(reasons((await readSettled(state, LOG_START, 10, 6)).events)).toEqual(['b1', 'a1', 'a2', 'c1', 'c2', 'b2']);
   });
 
@@ -533,7 +450,7 @@ describe('readSince', () => {
     writing = false;
     await reader;
 
-    await logSettled();
+    await logSettled(state1);
     // A short read on Postgres is not the end: keep reading until all 90 are in (or the deadline).
     seen.push(...(await readAll(s1, 50, 90 - seen.length, cursor)).events);
     const keys = seen.map((e) => `${e.incidentId}#${e.seq}`);
@@ -566,7 +483,7 @@ describe('readSince', () => {
     it('an append that commits after a later one is returned on the next page', async () => {
       const state = await open();
       await state.append(INC_C, [closed(INC_C, 'base')], 0);
-      await logSettled();
+      await logSettled(state1);
 
       // The next append to reach projections waits there: inserted, not committed.
       const reached = latch();
@@ -586,7 +503,7 @@ describe('readSince', () => {
 
         gate.open();
         expect(await first).toEqual({ seq: 1 });
-        await logSettled();
+        await logSettled(state1);
         const next = await readSettled(state, during.cursor, 10, 2);
         expect(reasons(next.events)).toEqual(['first', 'later']);
       } finally {
@@ -598,7 +515,7 @@ describe('readSince', () => {
     it('inside a caller transaction, readSince returns what committed before and withholds its own appends', async () => {
       const state = await open();
       await state.append(INC_C, [closed(INC_C, 'base')], 0);
-      await logSettled();
+      await logSettled(state1);
       await state.transaction(async (tx) => {
         expect(reasons((await readSettled(tx, LOG_START, 10, 1)).events)).toEqual(['base']);
         await tx.append(INC_A, [closed(INC_A, 'mine')], 0);
@@ -609,7 +526,7 @@ describe('readSince', () => {
         expect(reasons((await tx.readSince(LOG_START, 10)).events)).toEqual(['base']);
         expect(reasons(await tx.read(INC_A))).toEqual(['mine']);
       });
-      await logSettled();
+      await logSettled(state1);
       expect(reasons((await readSettled(state, LOG_START, 10, 3)).events)).toEqual(['base', 'mine', 'later']);
     });
 
@@ -634,7 +551,7 @@ describe('readSince', () => {
 
         gate.open();
         await caller;
-        await logSettled();
+        await logSettled(state1);
         expect(reasons((await readSettled(state, during.cursor, 10, 2)).events)).toEqual(['early', 'later']);
       } finally {
         gate.open();
@@ -679,7 +596,7 @@ describe('stored values round-trip', () => {
     // No actor columns means no `actor` property, not an undefined one.
     expect(second).toEqual({ ...agentEvent, seq: 2, recordedAt: '2026-10-01T10:00:00.000Z' });
     expect(second && 'actor' in second).toBe(false);
-    await logSettled();
+    await logSettled(state1);
     expect((await readSettled(state, LOG_START, 10, 2)).events).toEqual([first, second]);
   });
 
@@ -700,7 +617,7 @@ describe('read and readSince upcast (B 4)', () => {
     // A v1 `closed` event from before `why` was renamed to `reason`.
     const v1 = { ...closed(INC_A, 'unused'), payload: { why: 'old shape' } } as unknown as NewEvent;
     await state.append(INC_A, [v1], 0);
-    await logSettled();
+    await logSettled(state1);
 
     const unregister = upcasters.register('closed', 1, (payload) => ({ reason: (payload as { why: string }).why }));
     try {
