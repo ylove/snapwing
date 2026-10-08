@@ -13,6 +13,8 @@ coverage/
 .env
 .env.*
 .env.live
+# the onboarding proof's sandbox names and ids (scripts/onboard-proof.ts); no secrets, but local to each maintainer
+.env.onboard
 !.env.example
 
 # local databases
