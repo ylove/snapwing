@@ -423,6 +423,8 @@ describe('the capture API through capture-client', () => {
     expect(first).toMatchObject({ kind: 'new', surface: { id: 'web', label: 'Website' } });
     expect(await engineer.answer(first.captureId, 'file-it')).toMatchObject({ kind: 'filed', issueKey: 'WEB-1' });
 
+    // Filing is followed by background writes to WEB-1's row (the wait moves to its owner). Let them land first, so the link below is the last write and the duplicate is the newest row.
+    await expect.poll(async () => { const types = await eventTypes(w, first.captureId); return types.slice(types.indexOf('filed')); }, { timeout: 10_000, interval: 25 }).toContain('waiting-changed');
     // A later report of the same problem, linked to WEB-1: its row carries WEB-1 too, and is newer.
     const reporter = await w.clientFor('supportLead');
     const duplicate = await reporter.sendText(TRIAGE.summary, { surface: 'web' });
