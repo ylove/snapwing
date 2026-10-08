@@ -16,6 +16,7 @@ import {
   type CaptureRequest,
   type HealthResult,
   type LookupResponse,
+  type QueueView,
   type StopResult,
   type TicketStatus,
 } from '@snapwing/capture-client/wire.ts';
@@ -119,6 +120,15 @@ const server = setupServer(
     await record(request);
     const result: StopResult = { issueKey: 'WEB-1042', stopped: true };
     return HttpResponse.json(result);
+  }),
+  http.get(`${BASE}${CAPTURE_ROUTES.queue}`, async ({ request }) => {
+    await record(request);
+    const queue: QueueView = {
+      kind: 'reporter',
+      title: 'Snapwing',
+      sections: [{ id: 'reports', title: 'Your reports', empty: 'You have no open reports.', items: [] }],
+    };
+    return HttpResponse.json(queue);
   }),
   http.get(`${BASE}${CAPTURE_ROUTES.health}`, async ({ request }) => {
     await record(request);
@@ -414,10 +424,10 @@ describe('status and stop', () => {
     expect(JSON.parse(stdout())).toEqual({ ...ticket, extra: 'kept by --json' });
   });
 
-  it('status with no key prints the health of each chat platform, Teams in reduced mode', async () => {
+  it('status with no key prints the health of each chat platform, Teams in reduced mode, then the queue', async () => {
     await login();
     expect(await run(['status'])).toBe(0);
-    expect(stdout()).toBe(
+    expect(stdout().split('\n\n')[0]).toBe(
       [
         `Snapwing at ${BASE}: healthy`,
         '  slack: ok',

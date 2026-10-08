@@ -3,6 +3,7 @@ import {
   CAPTURE_ROUTES,
   validateHealthResult,
   validateLookupResponse,
+  validateQueueView,
   validateStopResult,
   validateTicketStatus,
   type AnswerRequest,
@@ -11,6 +12,7 @@ import {
   type CaptureSource,
   type HealthResult,
   type LookupResponse,
+  type QueueView,
   type StopResult,
   type TicketStatus,
   type Validation,
@@ -41,6 +43,7 @@ export interface CaptureClient {
   status(key: string): Promise<TicketStatus>;
   stop(key: string): Promise<StopResult>;
   health(): Promise<HealthResult>;
+  queue(): Promise<QueueView>;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -135,6 +138,9 @@ export function createCaptureClient(options: CaptureClientOptions): CaptureClien
     },
     stop(key) {
       return call('POST', CAPTURE_ROUTES.stop(key), {}, validateStopResult);
+    },
+    queue() {
+      return call('GET', CAPTURE_ROUTES.queue, undefined, validateQueueView);
     },
     health() {
       return call('GET', CAPTURE_ROUTES.health, undefined, validateHealthResult, false);

@@ -28,7 +28,7 @@ import {
   CaptureServerError,
   CaptureTimeoutError,
 } from '@snapwing/capture-client/errors.ts';
-import { formatRendered, renderChoices } from '@snapwing/capture-client/render.ts';
+import { formatQueue, formatRendered, renderChoices } from '@snapwing/capture-client/render.ts';
 import type { HealthResult, LookupResponse, TicketStatus } from '@snapwing/capture-client/wire.ts';
 import { askChoice, findChoice, terminalPrompter, type Prompter } from './prompt.ts';
 import { findScreenshot, runCommand, ScreenshotError, type FoundImage, type ScreenshotDeps } from './screenshot.ts';
@@ -110,7 +110,8 @@ Exit codes: 0 done, 1 error, 2 a question is left unanswered or the server is st
 export const STATUS_USAGE = `Usage: snapwing status [<KEY>] [--json]
 
   <KEY>    print the ticket's status loopback, such as WEB-1042
-  no key   print the server's health: each chat platform, and Teams reduced mode when reported`;
+  no key   print the server's health, then your queue: assigned to you, fixing now, waiting on you,
+           and recently merged or reverted (a reporter sees their own reports)`;
 
 export const STOP_USAGE = `Usage: snapwing stop <KEY> [--json]
 
@@ -455,8 +456,14 @@ export async function runStatus(args: readonly string[], io: CliIo, env: Capture
       return 0;
     }
     const health = await session.client.health();
-    if (parsed.json) io.stdout(JSON.stringify(session.recorder.last ?? health));
-    else io.stdout(formatHealth(session.endpoint, health, platformsOf(session.recorder.last)));
+    const healthRaw = session.recorder.last;
+    if (!health.ok && !parsed.json) {
+      io.stdout(formatHealth(session.endpoint, health, platformsOf(healthRaw)));
+      return 1;
+    }
+    const queue = await session.client.queue();
+    if (parsed.json) io.stdout(JSON.stringify(session.recorder.last ?? queue));
+    else io.stdout(`${formatHealth(session.endpoint, health, platformsOf(healthRaw))}\n\n${formatQueue(queue)}`);
     return health.ok ? 0 : 1;
   } catch (error) {
     if (parsed.key === undefined && error instanceof CaptureServerError && !parsed.json) {
