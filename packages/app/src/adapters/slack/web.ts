@@ -100,6 +100,9 @@ export interface SlackUser {
   is_ultra_restricted?: boolean;
   /** The user's own workspace: another organization's for someone in a Slack Connect channel. */
   team_id?: string;
+  /** On Enterprise Grid: the organization the user belongs to, in either shape Slack returns. */
+  enterprise_id?: string;
+  enterprise_user?: { enterprise_id?: string };
   profile?: { email?: string; display_name?: string; real_name?: string };
 }
 

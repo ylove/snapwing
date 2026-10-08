@@ -114,7 +114,7 @@ describe('identity', () => {
     );
     const user = await graph.user('aad-user-1');
     expect(user).toMatchObject({ userPrincipalName: 'dana@contoso.onmicrosoft.com', mail: 'dana@contoso.com' });
-    expect(select).toBe('id,displayName,userPrincipalName,mail');
+    expect(select).toBe('id,displayName,userPrincipalName,mail,userType');
   });
 
   it('finds a user by email, escaping quotes, and returns undefined when none match', async () => {

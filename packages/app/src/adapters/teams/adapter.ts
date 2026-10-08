@@ -125,7 +125,7 @@ export interface TeamsAdapterOptions {
   cache: CachePort;
   /** The current workspace map; read per inbound so a config change is picked up. */
   getMap: () => Promise<WorkspaceMap>;
-  /** The install's tenant, for a reactor's personal chat when no activity named it. */
+  /** The install's tenant: for a reactor's personal chat when no activity named it, and to tell a person of another tenant. */
   tenantId?: string;
   /** The serviceUrl when no activity has named one for a conversation yet. */
   defaultServiceUrl?: string;
@@ -192,6 +192,7 @@ export function createTeamsAdapter(options: TeamsAdapterOptions): TeamsAdapter {
         ...(u.displayName ? { displayName: u.displayName } : {}),
         ...(u.userPrincipalName ? { userPrincipalName: u.userPrincipalName } : {}),
         ...(u.mail ? { mail: u.mail } : {}),
+        ...(u.userType ? { userType: u.userType } : {}),
       };
     } catch (err) {
       // No `User.Read.All` is the reduced path, not an error; the map's email stands in.
@@ -210,6 +211,7 @@ export function createTeamsAdapter(options: TeamsAdapterOptions): TeamsAdapter {
         map: await options.getMap(),
         botAppId: options.appId,
         userOf,
+        ...(options.tenantId === undefined ? {} : { tenantId: options.tenantId }),
         ...(options.commandId === undefined ? {} : { commandId: options.commandId }),
         ...(options.newEventId === undefined ? {} : { newEventId: options.newEventId }),
       }))();
