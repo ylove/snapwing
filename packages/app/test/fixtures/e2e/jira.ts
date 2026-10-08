@@ -1,7 +1,8 @@
 // What the end to end contract test adds to the demo Jira world (`JiraWorld`, pnpm demo): the
 // agent's own account (`GET /myself`, which the inbound sync compares against), a workflow (Backlog, In
-// Progress, Done, with the status categories the projector resolves logical targets by), and the
-// issue-updated webhook Jira sends on a
+// Progress, Done, with the status categories the projector resolves logical targets by), the people a
+// test lists (`GET /user/search` by email, and the assignee a create or an edit sets, which the demo
+// world does not keep), and the issue-updated webhook Jira sends on a
 // transition. Deliveries are queued, not sent: the test releases them (`deliver`), as a real webhook
 // arrives some time after the transition, so each status row is on screen before the next stage runs.
 
@@ -18,6 +19,13 @@ export const WORKFLOW: readonly { id: string; name: string; category: string }[]
 ];
 const FIELD_IMPL_PROMPT = 'customfield_10050';
 
+/** A Jira account a test lists, found by its email. */
+export interface JiraPerson {
+  accountId: string;
+  emailAddress: string;
+  displayName: string;
+}
+
 export interface JiraDelivery {
   issueKey: string;
   from: string;
@@ -30,13 +38,37 @@ export class JiraWebhooks {
   readonly queued: JiraDelivery[] = [];
   /** Every status the fake moved an issue through, as `KEY: from -> to`. */
   readonly transitions: string[] = [];
+  /** The accounts `GET /user/search` finds by email. */
+  readonly people: JiraPerson[] = [];
+  /** The assignee's accountId per issue key, as the last create or edit set it. */
+  readonly assignees = new Map<string, string>();
   #updated = Date.parse('2026-10-02T12:00:00.000Z');
 
   constructor(private readonly world: JiraWorld) {}
 
   handlers(): HttpHandler[] {
+    const assigneeOf = (fields: unknown): string | undefined => {
+      const assignee = (fields as { assignee?: { accountId?: unknown } } | undefined)?.assignee;
+      return typeof assignee?.accountId === 'string' ? assignee.accountId : undefined;
+    };
     return [
       http.get(`${API}/myself`, () => HttpResponse.json(AGENT_ACCOUNT)),
+      http.get(`${API}/user/search`, ({ request }) => {
+        const query = (new URL(request.url).searchParams.get('query') ?? '').toLowerCase();
+        return HttpResponse.json(this.people.filter((p) => p.emailAddress.toLowerCase() === query).map((p) => ({ ...p, accountType: 'atlassian', active: true })));
+      }),
+      // The assignee only, then on to the demo world's handler (no response here, so MSW falls through).
+      http.post(`${API}/issue`, async ({ request }) => {
+        const fields = ((await request.clone().json()) as { fields?: { project?: { key?: string } } }).fields;
+        const accountId = assigneeOf(fields);
+        if (accountId !== undefined) this.assignees.set(this.world.nextKey(fields?.project?.key ?? ''), accountId);
+        return undefined;
+      }),
+      http.put(`${API}/issue/:key`, async ({ request, params }) => {
+        const accountId = assigneeOf(((await request.clone().json()) as { fields?: unknown }).fields);
+        if (accountId !== undefined) this.assignees.set(String(params['key']), accountId);
+        return undefined;
+      }),
       http.get(`${API}/project/:key/statuses`, () =>
         HttpResponse.json([{ id: '10001', name: 'Bug', statuses: WORKFLOW.map((t) => ({ id: t.id, name: t.name, statusCategory: { key: t.category } })) }]),
       ),
