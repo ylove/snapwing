@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { CaptureRequest } from '@snapwing/capture-client/wire.ts';
-import type { EventType } from '@snapwing/pipeline/contracts/events.ts';
+import type { EventType, IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
 import type { InteractiveCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -101,25 +101,44 @@ describe('createCaptureAdapter', () => {
     await expect(captureScreenshotLoader(cache, () => Promise.reject(new Error('not this one')))({ url })).rejects.toThrow('no longer kept');
   });
 
-  it('drops the image at every terminal and unfiled end, whatever the ticket (#271)', async () => {
-    const incident = (jiraKey?: string): IncidentView => ({ status: 'open', ...(jiraKey === undefined ? {} : { jiraKey }) }) as unknown as IncidentView;
-    const keep = async (type: EventType, jiraKey: string | undefined): Promise<boolean> => {
+  it('drops the image at unfiled ends, and at stop ends only while filing has not started (#271)', async () => {
+    const id = '01JZ0000000000000000000CAP';
+    const keep = async (type: EventType, o: { jiraKey?: string; planned?: boolean } = {}): Promise<boolean> => {
       const cache = memoryCache();
-      const id = '01JZ0000000000000000000CAP';
       await cache.set(`capture-image:${id}`, PNG, 60);
-      await dropEndedCaptureImage(cache, { getIncident: () => Promise.resolve(incident(jiraKey)) }, { type, incidentId: id });
+      const state = {
+        getIncident: () => Promise.resolve({ status: 'open', ...(o.jiraKey === undefined ? {} : { jiraKey: o.jiraKey }) } as unknown as IncidentView),
+        read: () => Promise.resolve((o.planned === true ? [{ type: 'planned' }] : [{ type: 'captured' }]) as unknown as IncidentEvent[]),
+      };
+      await dropEndedCaptureImage(cache, state, { type, incidentId: id });
       return (await cache.get(`capture-image:${id}`)) !== null;
     };
     for (const type of ['stopped', 'escalated', 'closed'] as const) {
-      expect(await keep(type, undefined)).toBe(false);
-      expect(await keep(type, 'WEB-1')).toBe(false); // nothing attaches after a terminal end
+      expect(await keep(type)).toBe(false); // filing never started
+      // A Stop while the create-issue row is pending or retrying: the projector hooks own the image.
+      expect(await keep(type, { planned: true })).toBe(true);
+      expect(await keep(type, { jiraKey: 'WEB-1', planned: true })).toBe(true);
     }
     for (const type of ['capture-cancelled', 'not-a-bug', 'user-side', 'resolution-signal'] as const) {
-      expect(await keep(type, undefined)).toBe(false);
+      expect(await keep(type)).toBe(false);
     }
-    expect(await keep('not-a-bug', 'WEB-1')).toBe(true); // filed: the projector still has to attach it
-    expect(await keep('filed', undefined)).toBe(true);
-    expect(await keep('comment', undefined)).toBe(true);
+    expect(await keep('not-a-bug', { jiraKey: 'WEB-1' })).toBe(true);
+    expect(await keep('filed')).toBe(true);
+    expect(await keep('comment')).toBe(true);
+  });
+
+  it('a pending filing still reads the image after a Stop, and the projector hook then releases it (#271)', async () => {
+    const cache = memoryCache();
+    const id = '01JZ0000000000000000000CAP';
+    const url = captureImageUrl(id, 'image/png');
+    await cache.set(`capture-image:${id}`, PNG, 60);
+    const state = { getIncident: () => Promise.resolve(null as unknown as IncidentView), read: () => Promise.resolve([{ type: 'planned' }] as unknown as IncidentEvent[]) };
+    await dropEndedCaptureImage(cache, state, { type: 'stopped', incidentId: id });
+    const upload = await captureScreenshotLoader(cache, () => Promise.reject(new Error('no')))({ url });
+    expect(upload.content).toEqual(Buffer.from(PNG, 'base64'));
+    // Wired as screenshotsAttached on attach and screenshotsAbandoned on park (see the jira-projector contract test).
+    await releaseCaptureScreenshots(cache)([{ url }]);
+    expect(await cache.get(`capture-image:${id}`)).toBeNull();
   });
 
   it('keeps the card the engine posts, by capture id', async () => {

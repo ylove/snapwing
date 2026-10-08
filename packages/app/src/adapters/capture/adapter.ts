@@ -26,8 +26,8 @@
 // its own (`CAPTURE_UNFILED_ENDS`, which the worker follows in the log). The TTL is the backstop for a
 // capture that does neither. An upload Jira keeps refusing no longer waits for it: the image is deleted
 // when the projector parks the filing (after its `maxAttempts` failed sends, 8 by default; the same
-// `releaseCaptureScreenshots` hook, wired as `screenshotsAbandoned`), and when the incident ends stopped,
-// escalated, or closed (`CAPTURE_TERMINAL_ENDS`), whatever became of the ticket (#271).
+// `releaseCaptureScreenshots` hook, wired as `screenshotsAbandoned`), and when the incident
+// stops, escalates, or closes before any filing started (`CAPTURE_STOP_ENDS`, #271).
 
 import { Buffer } from 'node:buffer';
 import type { CaptureRequest } from '@snapwing/capture-client/wire.ts';
@@ -163,27 +163,33 @@ export function dropCaptureImage(cache: CachePort, captureId: string): Promise<v
 export const CAPTURE_UNFILED_ENDS: ReadonlySet<EventType> = new Set<EventType>(['capture-cancelled', 'linked-to-existing', 'not-a-bug', 'resolution-signal', 'user-side']);
 
 /**
- * The terminal events that drop the image whether or not the incident has a ticket (#271): nothing
- * after them attaches a screenshot, so a row Jira never took must not keep the bytes until the TTL.
- * The worker follows these in the log together with `CAPTURE_UNFILED_ENDS`.
+ * Events after which the incident may never file (#271): the fixer can start again after a stop or an
+ * escalation, so these are not final. They drop the image only when filing never started (no Jira key
+ * and no `planned` in the log); once a plan exists a `create-issue` row may still be retrying, and the
+ * projector's hooks (`releaseCaptureScreenshots` on attach, `screenshotsAbandoned` on park) own the image.
  */
-export const CAPTURE_TERMINAL_ENDS: ReadonlySet<EventType> = new Set<EventType>(['stopped', 'escalated', 'closed']);
+export const CAPTURE_STOP_ENDS: ReadonlySet<EventType> = new Set<EventType>(['stopped', 'escalated', 'closed']);
 
 /**
- * What the worker does for each event it reads from the log (the image's end of life): a terminal event
- * drops the incident's image; an unfiled end drops it unless the incident has a ticket of its own (a Not a
- * bug after filing keeps its image until the projector attaches it, or gives up). Any incident's id:
- * deleting an image a chat incident never had is a no-op.
+ * What the worker does for each event it reads from the log (the image's end of life): an unfiled end
+ * drops the incident's image unless the incident has a ticket of its own (a Not a bug after filing keeps
+ * its image until the projector attaches it, or gives up); a stop end drops it only if filing never
+ * started. Any incident's id: deleting an image a chat incident never had is a no-op.
  */
 export async function dropEndedCaptureImage(
   cache: CachePort,
-  state: Pick<StatePort, 'getIncident'>,
+  state: Pick<StatePort, 'getIncident' | 'read'>,
   event: { type: EventType; incidentId: string },
 ): Promise<void> {
-  const terminal = CAPTURE_TERMINAL_ENDS.has(event.type);
-  if (!terminal && !CAPTURE_UNFILED_ENDS.has(event.type)) return;
-  const incident = terminal ? undefined : await state.getIncident(event.incidentId);
-  if (incident?.jiraKey !== undefined && incident.status !== 'linked-to-existing') return;
+  const stop = CAPTURE_STOP_ENDS.has(event.type);
+  if (!stop && !CAPTURE_UNFILED_ENDS.has(event.type)) return;
+  const incident = await state.getIncident(event.incidentId);
+  if (stop) {
+    if (incident?.jiraKey !== undefined) return;
+    if ((await state.read(event.incidentId)).some((e) => e.type === 'planned')) return;
+  } else if (incident?.jiraKey !== undefined && incident.status !== 'linked-to-existing') {
+    return;
+  }
   await dropCaptureImage(cache, event.incidentId);
 }
 
