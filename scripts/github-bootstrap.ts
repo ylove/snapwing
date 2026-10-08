@@ -17,24 +17,41 @@
 // from stdin. Do not run this against real GitHub from a test.
 
 import { execFile, spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import type { Server } from 'node:http';
+import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { GitHubApiError, errorMessage, signAppJwt } from '../packages/app/src/github/auth.ts';
-import { upsertEnv } from '../packages/app/src/onboard/interview/env.ts';
-import { createEnvFileSecrets } from '../packages/pipeline/src/providers/local/secrets.ts';
+import { GitHubApiError, signAppJwt } from '../packages/app/src/github/auth.ts';
+import { runApp } from '../packages/app/src/onboard/github/app.ts';
+import {
+  call,
+  DEFAULT_FIXTURE_REPO,
+  ENV_FILE,
+  envSecrets,
+  ghToken,
+  isRecord,
+  messageOf,
+  must,
+  PEM_FILE,
+  PLACEHOLDER_HOOK_URL,
+  readPublicUrl,
+  REQUIRED_CHECK,
+  splitRepo,
+  str,
+  upsertEnv,
+  webBase,
+  type BootstrapDeps,
+} from '../packages/app/src/onboard/github/api.ts';
+import { runVerify } from '../packages/app/src/onboard/github/verify.ts';
 import { SecretNotFoundError } from '../packages/pipeline/src/ports/secrets.ts';
 
-export const DEFAULT_FIXTURE_REPO = 'ylove/snapwing-fixture-web';
+// The manifest flow (`runApp`) and `verify` live in packages/app/src/onboard/github/, where the onboarding step
+// uses them too; they are re-exported here so this script's callers and tests keep one import.
+export { runApp, runVerify, upsertEnv, DEFAULT_FIXTURE_REPO, REQUIRED_CHECK, ENV_FILE, PEM_FILE, PLACEHOLDER_HOOK_URL };
+export type { BootstrapDeps };
+export type { AppOptions, AppResult } from '../packages/app/src/onboard/github/app.ts';
+export type { VerifyCheck, VerifyOptions, VerifyResult } from '../packages/app/src/onboard/github/verify.ts';
+
 export const DEFAULT_SNAPWING_REPO = 'ylove/snapwing';
-export const REQUIRED_CHECK = 'snapwing/review';
-export const ENV_FILE = '.env.live';
-export const PEM_FILE = 'secrets/github-app.pem';
-/** Inactive webhook URL sent when SNAPWING_PUBLIC_URL is unset; `webhook` replaces it. */
-export const PLACEHOLDER_HOOK_URL = 'https://example.invalid/snapwing/webhooks/github';
 /** Repository secret names (build/CONTEXT.md 6b): GitHub forbids a `GITHUB_` prefix on them. */
 export const SECRET_MAP: Readonly<Record<string, string>> = {
   GITHUB_APP_ID: 'GH_APP_ID',
@@ -47,280 +64,7 @@ export const SECRET_MAP: Readonly<Record<string, string>> = {
 };
 
 const FIXTURE_DIR = 'fixtures/snapwing-fixture-web';
-const MANIFEST_FILE = 'manifests/github-app.json';
 const SEED_DATE = '2026-01-01T00:00:00Z';
-
-export interface BootstrapDeps {
-  fetch: typeof fetch;
-  /** Runs `gh` with `args`, writing `input` to its stdin when given. Resolves with stdout; rejects on a non-zero exit. */
-  gh(args: readonly string[], input?: string): Promise<string>;
-  /** The snapwing repository root: `.env.live`, `secrets/`, `manifests/`, and `fixtures/` live under it. */
-  root: string;
-  /** Environment fallback for `SNAPWING_PUBLIC_URL`. */
-  env: Readonly<Record<string, string | undefined>>;
-  log(line: string): void;
-  openUrl(url: string): void;
-  now(): Date;
-  apiBase?: string;
-  /** Where the manifest form posts. Default `https://github.com`. */
-  webBase?: string;
-}
-
-const apiBase = (d: BootstrapDeps): string => (d.apiBase ?? 'https://api.github.com').replace(/\/+$/, '');
-const webBase = (d: BootstrapDeps): string => (d.webBase ?? 'https://github.com').replace(/\/+$/, '');
-
-// ---------------------------------------------------------------------------------------------------------------------
-// .env.live editing
-
-// `upsertEnv` is onboarding's one `.env` writer (`packages/app/src/onboard/interview/env.ts`, #386), re-exported
-// here so the scripts and onboarding quote every value the same way.
-export { upsertEnv };
-
-async function readIfExists(path: string): Promise<string> {
-  try {
-    return await readFile(path, 'utf8');
-  } catch (e) {
-    if (e instanceof Error && (e as NodeJS.ErrnoException).code === 'ENOENT') return '';
-    throw e;
-  }
-}
-
-async function updateEnvFile(d: BootstrapDeps, entries: Readonly<Record<string, string>>): Promise<void> {
-  const path = join(d.root, ENV_FILE);
-  await writeFile(path, upsertEnv(await readIfExists(path), entries), { mode: 0o600 });
-}
-
-function envSecrets(d: BootstrapDeps): ReturnType<typeof createEnvFileSecrets> {
-  return createEnvFileSecrets({ path: join(d.root, ENV_FILE), fallbackEnv: {} });
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// GitHub REST
-
-interface ApiResult {
-  status: number;
-  body: unknown;
-}
-
-async function call(d: BootstrapDeps, bearer: string, method: string, path: string, body?: unknown): Promise<ApiResult> {
-  const res = await d.fetch(`${apiBase(d)}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${bearer}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-    },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  });
-  if (res.status === 204) return { status: 204, body: null };
-  if (!res.ok) return { status: res.status, body: { message: await errorMessage(res) } };
-  const text = await res.text();
-  return { status: res.status, body: text === '' ? null : (JSON.parse(text) as unknown) };
-}
-
-/** Like `call` but throws `GitHubApiError` unless the status is 2xx or in `allow`. */
-async function must(d: BootstrapDeps, bearer: string, method: string, path: string, body?: unknown, allow: readonly number[] = []): Promise<ApiResult> {
-  const r = await call(d, bearer, method, path, body);
-  if ((r.status < 200 || r.status > 299) && !allow.includes(r.status)) throw new GitHubApiError(r.status, `${method} ${path}: ${messageOf(r.body)}`);
-  return r;
-}
-
-function messageOf(body: unknown): string {
-  return isRecord(body) && typeof body['message'] === 'string' ? body['message'] : 'request failed';
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
-function str(v: unknown, what: string): string {
-  if (typeof v !== 'string' || v === '') throw new Error(`GitHub response had no ${what}`);
-  return v;
-}
-
-function splitRepo(repo: string): { owner: string; name: string } {
-  const [owner, name, ...rest] = repo.split('/');
-  if (owner === undefined || owner === '' || name === undefined || name === '' || rest.length > 0) throw new Error(`repo must be "owner/name", got "${repo}"`);
-  return { owner, name };
-}
-
-async function ghToken(d: BootstrapDeps): Promise<string> {
-  const token = (await d.gh(['auth', 'token'])).trim();
-  if (token === '') throw new Error('gh has no login: run `gh auth login` first');
-  return token;
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// app: the manifest flow
-
-export interface AppOptions {
-  /** Create the App under this organization instead of the signed-in user. */
-  org?: string;
-  /** Local port for the redirect page; default: any free port. */
-  port?: number;
-  fixtureRepo?: string;
-  /** Give up waiting for the redirect after this many ms. Default 10 minutes. */
-  timeoutMs?: number;
-}
-
-export interface AppResult {
-  appId: string;
-  slug: string;
-  installUrl: string;
-}
-
-function substitute(value: unknown, vars: Readonly<Record<string, string>>): unknown {
-  if (typeof value === 'string') return value.replace(/\$\{([A-Z_]+)\}/g, (_m, name: string) => vars[name] ?? '');
-  if (Array.isArray(value)) return value.map((v) => substitute(v, vars));
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, vars)]));
-  return value;
-}
-
-function escapeHtml(s: string): string {
-  return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-}
-
-function renderPage(action: string, manifest: unknown): string {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Create the Snapwing GitHub App</title></head>
-<body style="font-family: system-ui, sans-serif; max-width: 36rem; margin: 4rem auto;">
-<h1>Create the Snapwing GitHub App</h1>
-<p>GitHub shows every permission the manifest sets. Accept the defaults and click Create on GitHub.</p>
-<form method="post" action="${escapeHtml(action)}">
-<input type="hidden" name="manifest" value="${escapeHtml(JSON.stringify(manifest))}">
-<button type="submit" style="font-size: 1.1rem; padding: 0.6rem 1.2rem;">Create GitHub App</button>
-</form></body></html>`;
-}
-
-interface Conversion {
-  id: string;
-  slug: string;
-  clientId: string;
-  clientSecret: string;
-  /** GitHub returns none when the manifest had no hook_attributes. */
-  webhookSecret: string | null;
-  pem: string;
-}
-
-function parseConversion(body: unknown): Conversion {
-  if (!isRecord(body)) throw new Error('manifest conversion returned no body');
-  const id = body['id'];
-  return {
-    id: typeof id === 'number' || typeof id === 'string' ? String(id) : str(undefined, 'id'),
-    slug: str(body['slug'], 'slug'),
-    clientId: str(body['client_id'], 'client_id'),
-    clientSecret: str(body['client_secret'], 'client_secret'),
-    webhookSecret: typeof body['webhook_secret'] === 'string' && body['webhook_secret'] !== '' ? body['webhook_secret'] : null,
-    pem: str(body['pem'], 'pem'),
-  };
-}
-
-/** `SNAPWING_PUBLIC_URL` from `.env.live`, else the environment, without a trailing slash; empty when unset. */
-async function readPublicUrl(d: BootstrapDeps): Promise<string> {
-  let publicUrl = d.env['SNAPWING_PUBLIC_URL'] ?? '';
-  try {
-    publicUrl = await envSecrets(d).get('SNAPWING_PUBLIC_URL');
-  } catch (e) {
-    if (!(e instanceof SecretNotFoundError)) throw e;
-  }
-  return publicUrl.trim().replace(/\/+$/, '');
-}
-
-export async function runApp(d: BootstrapDeps, options: AppOptions = {}): Promise<AppResult> {
-  const fixtureRepo = options.fixtureRepo ?? DEFAULT_FIXTURE_REPO;
-  d.log('app needs: a browser, and optionally SNAPWING_PUBLIC_URL in .env.live or the environment (without it the App is created with an inactive placeholder webhook).');
-  const publicUrl = await readPublicUrl(d);
-  if (publicUrl === '') d.log('SNAPWING_PUBLIC_URL is not set: creating the App with an inactive placeholder webhook (no callback URL); add it later with `pnpm github:bootstrap webhook`.');
-
-  const state = randomBytes(16).toString('hex');
-  const manifestTemplate: unknown = JSON.parse(await readFile(join(d.root, MANIFEST_FILE), 'utf8'));
-
-  let finish: (r: AppResult) => void = () => undefined;
-  let fail: (e: Error) => void = () => undefined;
-  const done = new Promise<AppResult>((resolve, reject) => {
-    finish = resolve;
-    fail = reject;
-  });
-
-  let page = '';
-  let handling = false;
-  const server: Server = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    const reply = (status: number, html: string): void => {
-      res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-      res.end(html);
-    };
-    if (url.pathname === '/' && req.method === 'GET') return reply(200, page);
-    if (url.pathname !== '/callback' || req.method !== 'GET') return reply(404, 'not found');
-    const code = url.searchParams.get('code') ?? '';
-    if (url.searchParams.get('state') !== state || code === '') return reply(400, 'bad state or missing code');
-    if (handling) return reply(409, 'already handled');
-    handling = true;
-    exchange(code).then(
-      (result) => {
-        reply(200, '<!doctype html><title>Done</title><p>The Snapwing GitHub App is created. Return to the terminal.</p>');
-        finish(result);
-      },
-      (e: unknown) => {
-        reply(500, 'The code exchange failed. See the terminal.');
-        fail(e instanceof Error ? e : new Error(String(e)));
-      },
-    );
-  });
-
-  async function exchange(code: string): Promise<AppResult> {
-    const res = await d.fetch(`${apiBase(d)}/app-manifests/${encodeURIComponent(code)}/conversions`, {
-      method: 'POST',
-      headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' },
-    });
-    if (!res.ok) throw new GitHubApiError(res.status, `manifest code exchange failed: ${await errorMessage(res)}`);
-    const app = parseConversion(await res.json());
-    await mkdir(join(d.root, 'secrets'), { recursive: true, mode: 0o700 });
-    await writeFile(join(d.root, PEM_FILE), app.pem.endsWith('\n') ? app.pem : `${app.pem}\n`, { mode: 0o600 });
-    await updateEnvFile(d, {
-      GITHUB_APP_ID: app.id,
-      GITHUB_APP_CLIENT_ID: app.clientId,
-      GITHUB_APP_CLIENT_SECRET: app.clientSecret,
-      GITHUB_WEBHOOK_SECRET: app.webhookSecret ?? randomBytes(32).toString('hex'),
-      GITHUB_APP_PRIVATE_KEY: app.pem,
-      GITHUB_APP_PRIVATE_KEY_PATH: PEM_FILE,
-      GITHUB_APP_SLUG: app.slug,
-    });
-    return { appId: app.id, slug: app.slug, installUrl: `${webBase(d)}/apps/${app.slug}/installations/new` };
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(options.port ?? 0, '127.0.0.1', resolve);
-  });
-  const address = server.address();
-  if (address === null || typeof address === 'string') throw new Error('local server has no port');
-  const local = `http://127.0.0.1:${address.port}`;
-  const substituted = substitute(manifestTemplate, { SNAPWING_PUBLIC_URL: publicUrl, REDIRECT_URL: `${local}/callback` });
-  let manifest = substituted;
-  if (publicUrl === '' && isRecord(substituted)) {
-    const { callback_urls: _callbacks, ...rest } = substituted;
-    manifest = { ...rest, hook_attributes: { url: PLACEHOLDER_HOOK_URL, active: false } };
-  }
-  const target = options.org === undefined ? `${webBase(d)}/settings/apps/new` : `${webBase(d)}/organizations/${encodeURIComponent(options.org)}/settings/apps/new`;
-  page = renderPage(`${target}?state=${state}`, manifest);
-
-  const timer = setTimeout(() => fail(new Error('timed out waiting for GitHub to redirect back')), options.timeoutMs ?? 10 * 60 * 1000);
-  try {
-    d.log(`Open ${local} and click "Create GitHub App" (opening it now).`);
-    d.openUrl(local);
-    const result = await done;
-    d.log(`Created GitHub App "${result.slug}" (id ${result.appId}). Wrote ${ENV_FILE} and ${PEM_FILE}.`);
-    d.log(`Next: install it on ${fixtureRepo} only (choose "Only select repositories"): ${result.installUrl}`);
-    d.log('Then run `pnpm github:bootstrap verify`.');
-    return result;
-  } finally {
-    clearTimeout(timer);
-    server.closeAllConnections();
-    server.close();
-  }
-}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // fixture
@@ -513,85 +257,6 @@ export async function runDestroy(d: BootstrapDeps, options: DestroyOptions = {})
   }
   d.log('The Snapwing GitHub App itself stays: delete it at https://github.com/settings/apps (open the App, then Advanced, then Delete GitHub App) if it is no longer wanted.');
   return { repo, deleted: r.status !== 404 };
-}
-
-// ---------------------------------------------------------------------------------------------------------------------
-// verify
-
-export interface VerifyOptions {
-  repo?: string;
-}
-
-export interface VerifyCheck {
-  name: string;
-  ok: boolean;
-  detail: string;
-}
-
-export interface VerifyResult {
-  ok: boolean;
-  installationId: string | null;
-  checks: VerifyCheck[];
-}
-
-export async function runVerify(d: BootstrapDeps, options: VerifyOptions = {}): Promise<VerifyResult> {
-  const repo = options.repo ?? DEFAULT_FIXTURE_REPO;
-  const { owner } = splitRepo(repo);
-  d.log(`verify needs: GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY in ${ENV_FILE} (from \`app\`), the App installed on ${repo}, and \`gh\` logged in.`);
-  const secrets = envSecrets(d);
-  const appId = (await secrets.get('GITHUB_APP_ID')).trim();
-  const pem = await secrets.get('GITHUB_APP_PRIVATE_KEY');
-  const jwt = signAppJwt(appId, pem, d.now());
-
-  const checks: VerifyCheck[] = [];
-  const record = (name: string, ok: boolean, detail: string): void => {
-    checks.push({ name, ok, detail });
-    d.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${detail}`);
-  };
-
-  // The slug names the App's bot login (`<slug>[bot]`) for the GitHub webhook route; `app` writes it too, this picks it up on a re-run.
-  const appBody = (await must(d, jwt, 'GET', '/app')).body;
-  const slug = isRecord(appBody) ? str(appBody['slug'], 'slug') : str(undefined, 'slug');
-  await updateEnvFile(d, { GITHUB_APP_SLUG: slug });
-  record('app', true, `read App "${slug}"; wrote GITHUB_APP_SLUG to ${ENV_FILE}`);
-
-  const listed = await must(d, jwt, 'GET', '/app/installations?per_page=100');
-  const installs = Array.isArray(listed.body) ? listed.body.filter(isRecord) : [];
-  const mine = installs.filter((i) => isRecord(i['account']) && String(i['account']['login']).toLowerCase() === owner.toLowerCase());
-  const chosen = mine[0];
-  const rawId = chosen?.['id'];
-  if (rawId === undefined || (typeof rawId !== 'number' && typeof rawId !== 'string')) {
-    record('installation', false, `the App is not installed on ${owner}; open the install link printed by \`app\``);
-    return { ok: false, installationId: null, checks };
-  }
-  const installationId = String(rawId);
-  await updateEnvFile(d, { GITHUB_INSTALLATION_ID: installationId });
-  record('installation', true, `found installation ${installationId} on ${owner}; wrote GITHUB_INSTALLATION_ID to ${ENV_FILE}`);
-
-  const tokenBody = (await must(d, jwt, 'POST', `/app/installations/${installationId}/access_tokens`, {})).body;
-  const installToken = isRecord(tokenBody) ? str(tokenBody['token'], 'installation token') : str(undefined, 'installation token');
-  const repos = (await must(d, installToken, 'GET', '/installation/repositories?per_page=100')).body;
-  const names = isRecord(repos) && Array.isArray(repos['repositories']) ? repos['repositories'].filter(isRecord).map((r) => String(r['full_name']).toLowerCase()) : [];
-  record('repository access', names.includes(repo.toLowerCase()), names.includes(repo.toLowerCase()) ? `installation covers ${repo}` : `installation does not cover ${repo}`);
-
-  const gh = await ghToken(d);
-  const owned = await call(d, gh, 'GET', `/repos/${repo}`);
-  const branch = isRecord(owned.body) && typeof owned.body['default_branch'] === 'string' ? owned.body['default_branch'] : 'main';
-  const prot = await call(d, gh, 'GET', `/repos/${repo}/branches/${branch}/protection`);
-  if (prot.status === 404 || !isRecord(prot.body)) {
-    record('branch protection', false, `${branch} has no protection rule; run \`fixture\``);
-  } else {
-    const rsc = prot.body['required_status_checks'];
-    const contexts = isRecord(rsc) && Array.isArray(rsc['checks']) ? rsc['checks'].filter(isRecord).map((c) => c['context']) : [];
-    const legacy = isRecord(rsc) && Array.isArray(rsc['contexts']) ? rsc['contexts'] : [];
-    const prr = prot.body['required_pull_request_reviews'];
-    const approvals = isRecord(prr) && typeof prr['required_approving_review_count'] === 'number' ? prr['required_approving_review_count'] : 0;
-    const hasCheck = contexts.includes(REQUIRED_CHECK) || legacy.includes(REQUIRED_CHECK);
-    record('branch protection', hasCheck && approvals >= 1, `${branch}: required check ${REQUIRED_CHECK} ${hasCheck ? 'present' : 'missing'}, ${approvals} approval(s) required`);
-  }
-  const ok = checks.every((c) => c.ok);
-  if (ok) d.log('Next: `pnpm github:bootstrap secrets`.');
-  return { ok, installationId, checks };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
