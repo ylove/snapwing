@@ -15,7 +15,7 @@
 // - Staging verification (A 1.3). Level 3. The fixer's pull request is reviewed, goes green, and is
 //   merged by the agent; the test then acts as the fixture's deploy system (a real GitHub deployment to
 //   `staging` with a success status, so GitHub sends the App a real `deployment_status`). The reporter
-//   reacts 👍 on the staging check: `verified`, and "@e2eReporter verified on staging at <time>" on the
+//   reacts 👍 on the staging check: `verified`, and "@e2eReporter verified on staging at <time>" (bold on the PR) on the
 //   Jira issue and the pull request. The production deployment then lands as `deployed:production`
 //   with the incident still at level 3 and nothing holding it.
 // - Escalation (A 1.4). Five distinct people react 🔥 on the report before anyone files it, then the
@@ -697,6 +697,8 @@ describe.skipIf(!ready)('e2e rows on Slack (A 8)', () => {
     expect(comment?.payload.intent).toBe('accept');
 
     const verifiedOn = /@\S+ verified on staging at \d{1,2}:\d{2}/;
+    // The pull request names the person in bold unless their GitHub login is linked (then `@login`).
+    const verifiedOnPr = /(?:@\S+|\*\*[^*]+\*\*) verified on staging at \d{1,2}:\d{2}/;
     await waitFor(
       'the verification comment on the ticket',
       3 * MINUTE,
@@ -706,7 +708,7 @@ describe.skipIf(!ready)('e2e rows on Slack (A 8)', () => {
     await waitFor(
       'the verification comment on the pull request',
       3 * MINUTE,
-      async () => (await github.issueComments(merged?.payload.prNumber ?? 0)).find((c) => verifiedOn.test(c)),
+      async () => (await github.issueComments(merged?.payload.prNumber ?? 0)).find((c) => verifiedOnPr.test(c)),
       async () => `PR comments: ${(await github.issueComments(merged?.payload.prNumber ?? 0)).map((c) => c.slice(0, 120)).join(' | ') || 'none'}`,
     );
 
