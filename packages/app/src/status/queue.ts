@@ -110,6 +110,17 @@ function personOf(map: WorkspaceMap, viewer: ChatUserRef): MapPerson | undefined
   return map.people.find((p) => (viewer.chat === 'slack' ? p.slackId : p.teamsId) === viewer.userId);
 }
 
+/**
+ * Whether `reporterId` is this viewer. A capture from the CLI or Raycast files under the map handle
+ * and one from chat under the chat id, so a person counts under every identity the map gives them (#275).
+ */
+function reportedBy(reporterId: string | undefined, person: MapPerson | undefined, viewer: ChatUserRef): boolean {
+  if (reporterId === undefined) return false;
+  if (reporterId === viewer.userId) return true;
+  if (person === undefined) return false;
+  return reporterId === person.slackId || reporterId === person.teamsId || reporterId.toLowerCase() === person.handle.toLowerCase();
+}
+
 function owns(person: MapPerson, incident: IncidentView): boolean {
   if (incident.surfaceId === undefined) return false;
   return person.owns.some((o) => o.surface === incident.surfaceId && (o.component === undefined || o.component === incident.componentId));
@@ -176,7 +187,7 @@ export function createQueue(options: QueueOptions): QueueModel {
             id: 'reports',
             title: 'Your reports',
             empty: "You have no open reports. When you file one it shows up here until it's fixed.",
-            items: incidents.filter((i) => i.reporterId === viewer.userId && open(i)).map((i) => item(i, i.status)),
+            items: incidents.filter((i) => reportedBy(i.reporterId, person, viewer) && open(i)).map((i) => item(i, i.status)),
           },
         ],
       };
