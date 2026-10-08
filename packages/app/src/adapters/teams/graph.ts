@@ -198,6 +198,8 @@ export interface TeamsGraph {
   catalogApps(opts?: { externalId?: string }): Promise<GraphTeamsApp[]>;
   /** Publishes an app package (zip bytes) to the tenant catalog. */
   publishApp(zip: Uint8Array): Promise<GraphTeamsApp>;
+  /** The versions a catalog app holds (`appCatalogs/teamsApps/{id}/appDefinitions`), as the manifests say them. */
+  appVersions(teamsAppId: string): Promise<string[]>;
   /** Uploads a new version of a catalog app (`appCatalogs/teamsApps/{id}/appDefinitions`). */
   updateApp(teamsAppId: string, zip: Uint8Array): Promise<void>;
   /** Installs a catalog app in a team; `rscPermissions` are consented at install (team owner). */
@@ -351,6 +353,10 @@ export function createTeamsGraph(options: TeamsGraphOptions): TeamsGraph {
     async publishApp(zip) {
       const res = await send('POST', '/appCatalogs/teamsApps', GRAPH_PERMISSIONS.catalogWrite, { body: zip, contentType: 'application/zip' });
       return (await res.json()) as GraphTeamsApp;
+    },
+    async appVersions(teamsAppId) {
+      const defs = await list<{ version?: string | null }>(`/appCatalogs/teamsApps/${seg(teamsAppId)}/appDefinitions`, GRAPH_PERMISSIONS.catalogRead);
+      return defs.flatMap((d) => (typeof d.version === 'string' && d.version !== '' ? [d.version] : []));
     },
     async updateApp(teamsAppId, zip) {
       await send('POST', `/appCatalogs/teamsApps/${seg(teamsAppId)}/appDefinitions`, GRAPH_PERMISSIONS.catalogWrite, {
