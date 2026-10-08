@@ -17,6 +17,11 @@
 // current workspace map, whose role is the caller's; anything else is a bare 401, so a caller learns
 // nothing about why. Only the people who sent a capture may read or answer it; for anyone else it does
 // not exist (404). `GET /healthz` stays unauthenticated on the ops routes.
+//
+// Abuse limits, after the token is accepted: each token gets a fixed window of sends and a fixed window
+// of answers (429 with `Retry-After`, in whole seconds), and an image over `CAPTURE_IMAGE_MAX_BYTES`
+// decoded is a 413 before the engine, the vision pass, or kv sees it. Polling and status reads are not
+// limited: they only read, and a client polls on a timer while a capture settles.
 
 import { CAPTURE_ROUTES, validateAnswerRequest, validateCaptureRequest, type LookupResponse } from '@snapwing/capture-client/wire.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
@@ -49,6 +54,18 @@ export interface CaptureRoutesOptions {
 
 export const CAPTURE_WAIT_MS = 8_000;
 const POLL_MS = 100;
+/** The largest image a capture accepts, decoded. Well under the model's own image limit. */
+export const CAPTURE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+/** The rate-limit window. */
+export const CAPTURE_RATE_WINDOW_MS = 60_000;
+/**
+ * Captures one token may send per window. A person files a few reports a minute at the very most, and
+ * each send can start a vision pass and a model triage, so 20 is far above honest use and low enough
+ * that a leaked token or a looping script cannot run up the model bill.
+ */
+export const CAPTURE_SENDS_PER_WINDOW = 20;
+/** Answers per token per window: three times the sends, as one capture can take several taps (surface, then file). */
+export const CAPTURE_ANSWERS_PER_WINDOW = 60;
 /** Statuses where a fixer run or its PR is active (the Stop button's `fixerActive`). */
 const FIXER_ACTIVE: ReadonlySet<LifecycleStatus> = new Set<LifecycleStatus>(['fixing', 'fixing-retry', 'in-review', 'in-review-retry', 'ci', 'ci-retry', 'mergeable', 'held']);
 
@@ -66,6 +83,34 @@ function unauthorized(): Response {
   return new Response(null, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
 }
 
+/** The decoded size of a base64 string (padding and line breaks aside), without decoding it. */
+function decodedBytes(base64: string): number {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+/** A fixed-window counter per key. In memory, so per process: with several replicas each one allows its own. */
+class RateLimiter {
+  private readonly windows = new Map<string, { resetAt: number; count: number }>();
+  constructor(private readonly limit: number) {}
+
+  /** Counts one call for `key`; the seconds to wait when it is over the limit, else undefined. */
+  hit(key: string, now: number): number | undefined {
+    for (const [k, w] of this.windows) if (w.resetAt <= now) this.windows.delete(k);
+    const window = this.windows.get(key) ?? { resetAt: now + CAPTURE_RATE_WINDOW_MS, count: 0 };
+    this.windows.set(key, window);
+    window.count += 1;
+    return window.count > this.limit ? Math.max(1, Math.ceil((window.resetAt - now) / 1000)) : undefined;
+  }
+}
+
+function tooManyRequests(retryAfterSec: number): Response {
+  return new Response(JSON.stringify({ error: `too many requests, try again in ${retryAfterSec} seconds` }), {
+    status: 429,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'retry-after': String(retryAfterSec) },
+  });
+}
+
 const BEARER = /^Bearer[ \t]+(\S+)[ \t]*$/i;
 
 export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
@@ -74,14 +119,25 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
   const pollMs = options.pollMs ?? POLL_MS;
   const lookupDeps: LookupDeps = { state, cache, map: options.map, issueUrl: options.issueUrl };
 
-  /** The token's map person, or undefined (401). */
-  async function caller(req: Request): Promise<MapPerson | undefined> {
+  const sends = new RateLimiter(CAPTURE_SENDS_PER_WINDOW);
+  const answers = new RateLimiter(CAPTURE_ANSWERS_PER_WINDOW);
+
+  /** The token's map person, or undefined (401). `limiter` counts the call against the token's window. */
+  async function identify(req: Request, limiter?: RateLimiter): Promise<MapPerson | Response | undefined> {
     const token = BEARER.exec(req.headers.get('authorization') ?? '')?.[1];
     if (token === undefined) return undefined;
     const verified = await state.verifyCaptureToken(token);
     if (verified === null || verified.workspaceId !== options.workspaceId) return undefined;
     const handle = verified.person.toLowerCase();
-    return (await options.map()).people.find((p) => p.handle.toLowerCase() === handle);
+    const person = (await options.map()).people.find((p) => p.handle.toLowerCase() === handle);
+    if (person === undefined) return undefined;
+    const wait = limiter?.hit(verified.tokenId, Date.now());
+    return wait === undefined ? person : tooManyRequests(wait);
+  }
+
+  async function caller(req: Request): Promise<MapPerson | undefined> {
+    const found = await identify(req);
+    return found instanceof Response ? undefined : found;
   }
 
   /** The capture's lookup, as `person` sees it, once it is not pending, or `pending` after `waitMs`. */
@@ -119,13 +175,18 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
       method: 'POST',
       path: CAPTURE_ROUTES.send,
       async handler(req) {
-        const person = await caller(req);
+        const person = await identify(req, sends);
         if (person === undefined) return unauthorized();
+        if (person instanceof Response) return person;
         const parsed = validateCaptureRequest(await body(req));
         if (!parsed.ok) return json(400, { error: parsed.error });
         const request = parsed.value;
         if ('image' in request && !(CAPTURE_IMAGE_TYPES as readonly string[]).includes(request.mimeType)) {
           return json(400, { error: `mimeType must be one of ${CAPTURE_IMAGE_TYPES.join(', ')}` });
+        }
+        // Before the engine, so before the vision pass and before any kv write.
+        if ('image' in request && decodedBytes(request.image) > CAPTURE_IMAGE_MAX_BYTES) {
+          return json(413, { error: `that image is too large (limit ${CAPTURE_IMAGE_MAX_BYTES / (1024 * 1024)} MB)` });
         }
         const inbound: CaptureInbound = { request, person };
         const ack = await engine.handleInbound(request.source, inbound);
@@ -148,8 +209,9 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
       method: 'POST',
       path: pattern(CAPTURE_ROUTES.answer, 'id'),
       async handler(req, { params }) {
-        const person = await caller(req);
+        const person = await identify(req, answers);
         if (person === undefined) return unauthorized();
+        if (person instanceof Response) return person;
         const id = params['id'] ?? '';
         if (!(await owns(id, person))) return json(404, { error: 'unknown capture' });
         const parsed = validateAnswerRequest(await body(req));

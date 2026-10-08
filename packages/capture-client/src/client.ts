@@ -81,6 +81,11 @@ export function createCaptureClient(options: CaptureClientOptions): CaptureClien
         throw new CaptureServerError(null, `Could not reach ${base}: ${describe(cause)}`, { cause });
       }
       if (res.status === 401 || res.status === 403) throw new CaptureAuthError(res.status);
+      if (res.status === 429) {
+        const wait = Number(res.headers.get('retry-after'));
+        throw new CaptureServerError(429, Number.isFinite(wait) && wait > 0 ? `Too many reports, try again in ${Math.ceil(wait)} seconds.` : 'Too many reports, try again in a minute.');
+      }
+      if (res.status === 413) throw new CaptureServerError(413, 'That image is too large (limit 5 MB).');
       if (!res.ok) throw new CaptureServerError(res.status, `The server answered ${res.status}.`);
       let raw: unknown;
       try {
