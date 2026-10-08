@@ -9,7 +9,7 @@
 // each `workspace:` dependency to that package's version (the sibling tarball satisfies it when both
 // are installed together). The pipeline stage also gets the root `schemas/` and `manifests/` at its
 // package root, where `assetPath` (pipeline/src/util/assets.ts) finds them once installed. `demo/`, the
-// Slack test-driver manifest, and the Teams schema copy and icon generator are for development and do not ship. Only files git tracks are staged
+// Slack test-driver manifest, and the Teams icon generator are for development and do not ship. Only files git tracks are staged
 // (never an untracked `.env`, key, or database), and the pack fails if a staged path looks like a
 // secret (see `SECRET_PATH`). The
 // app stage bundles `@snapwing/capture-client` (no dependencies of its own) so two tarballs suffice.
@@ -28,7 +28,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGES = join(ROOT, 'packages');
 const ASSET_DIRS = ['schemas', 'manifests'];
 /** Tracked files that are not shipped even though they sit under an asset directory. A trailing `/` names a directory. */
-const NOT_SHIPPED = ['manifests/slack/test-driver.manifest.yaml', 'manifests/teams/schema/', 'manifests/teams/make-icons.mjs'];
+const NOT_SHIPPED = ['manifests/slack/test-driver.manifest.yaml', 'manifests/teams/make-icons.mjs'];
 const isShipped = (file) => !NOT_SHIPPED.some((skip) => (skip.endsWith('/') ? file.startsWith(skip) : file === skip));
 /** Paths that must never be staged: env files, keys, a `secrets/` directory, SQLite databases. */
 const SECRET_PATH = /(^|\/)(\.env[^/]*|[^/]*\.pem|[^/]*\.key|secrets|[^/]*\.sqlite[^/]*)(\/|$)/;

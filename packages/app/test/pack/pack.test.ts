@@ -135,7 +135,6 @@ describe.skipIf(NPM === undefined)(title, () => {
       expect(pipelineListing).not.toContain('test-driver.manifest.yaml');
       expect(pipelineListing).not.toContain('package/demo/');
       expect(pipelineListing).toContain('package/manifests/teams/manifest.json');
-      expect(pipelineListing).not.toContain('manifests/teams/schema/');
       expect(pipelineListing).not.toContain('make-icons.mjs');
     } finally {
       for (const f of dummies) await rm(f, { force: true });

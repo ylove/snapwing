@@ -1,6 +1,0 @@
-Teams app manifest JSON schema, version 1.30, vendored unchanged for the unit test.
-
-Source: https://developer.microsoft.com/json-schemas/teams/v1.30/MicrosoftTeams.schema.json
-Reference: https://learn.microsoft.com/en-us/microsoftteams/platform/resources/schema/manifest-schema
-
-This directory does not ship in the package tarball.

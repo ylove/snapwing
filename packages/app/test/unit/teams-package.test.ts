@@ -14,9 +14,12 @@ const INPUT = { appId: APP_ID, publicUrl: 'https://snapwing.example.org/', versi
 
 const asset = (p: string): Buffer => readFileSync(assetPath(`manifests/teams/${p}`));
 const TEMPLATE = asset('manifest.json').toString('utf8');
-const SCHEMA = JSON.parse(asset('schema/MicrosoftTeams.schema.json').toString('utf8')) as Schema;
 
-// ---- a small JSON Schema (draft-04) checker: the keywords the Teams schema uses for what we declare ----
+// ---- a small JSON Schema (draft-04) checker, and a hand-written subset of the Teams manifest schema ----
+//
+// The subset mirrors, in our own words, the constraints of Microsoft's published Teams app manifest
+// schema, version 1.30 (https://developer.microsoft.com/json-schemas/teams/v1.30/MicrosoftTeams.schema.json),
+// for the fields Snapwing sets. The Microsoft file itself is not copied into this repository.
 
 interface Schema {
   $ref?: string;
@@ -36,6 +39,126 @@ interface Schema {
   anyOf?: Schema[];
   definitions?: Record<string, Schema>;
 }
+
+const str = (maxLength: number): Schema => ({ type: 'string', minLength: 1, maxLength });
+const httpsUrl: Schema = { type: 'string', pattern: '^https://[^\\s]+$', maxLength: 2048 };
+const scopes: Schema = { type: 'array', maxItems: 4, items: { enum: ['team', 'personal', 'groupChat', 'copilot'] } };
+
+const SCHEMA: Schema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['manifestVersion', 'version', 'id', 'developer', 'name', 'description', 'icons', 'accentColor'],
+  definitions: { guid: { type: 'string', pattern: '^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$' } },
+  properties: {
+    $schema: { type: 'string' },
+    manifestVersion: { type: 'string', enum: ['1.30'] },
+    version: { type: 'string', pattern: '^\\d+\\.\\d+\\.\\d+', maxLength: 256 },
+    id: { $ref: '#/definitions/guid' },
+    developer: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['name', 'websiteUrl', 'privacyUrl', 'termsOfUseUrl'],
+      properties: { name: str(32), websiteUrl: httpsUrl, privacyUrl: httpsUrl, termsOfUseUrl: httpsUrl },
+    },
+    name: { type: 'object', additionalProperties: false, required: ['short'], properties: { short: str(30), full: str(100) } },
+    description: { type: 'object', additionalProperties: false, required: ['short', 'full'], properties: { short: str(80), full: str(4000) } },
+    icons: { type: 'object', additionalProperties: false, required: ['outline', 'color'], properties: { outline: str(2048), color: str(2048) } },
+    accentColor: { type: 'string', pattern: '^#[0-9a-fA-F]{6}$' },
+    bots: {
+      type: 'array',
+      maxItems: 1,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['botId', 'scopes'],
+        properties: {
+          botId: { $ref: '#/definitions/guid' },
+          scopes,
+          supportsFiles: { type: 'boolean' },
+          isNotificationOnly: { type: 'boolean' },
+          commandLists: {
+            type: 'array',
+            maxItems: 3,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['scopes', 'commands'],
+              properties: {
+                scopes,
+                commands: {
+                  type: 'array',
+                  maxItems: 12,
+                  items: { type: 'object', additionalProperties: false, required: ['title'], properties: { title: str(128), description: str(4000) } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    composeExtensions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['botId'],
+        properties: {
+          botId: { $ref: '#/definitions/guid' },
+          commands: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['id', 'title'],
+              properties: {
+                id: str(64),
+                type: { enum: ['query', 'action'] },
+                title: str(32),
+                description: str(128),
+                context: { type: 'array', maxItems: 3, items: { enum: ['compose', 'commandBox', 'message'] } },
+                fetchTask: { type: 'boolean' },
+              },
+            },
+          },
+        },
+      },
+    },
+    permissions: { type: 'array', items: { enum: ['identity', 'messageTeamMembers'] } },
+    validDomains: { type: 'array', maxItems: 100, items: str(2048) },
+    webApplicationInfo: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['id'],
+      properties: { id: { $ref: '#/definitions/guid' }, resource: str(2048) },
+    },
+    authorization: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        permissions: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            resourceSpecific: {
+              type: 'array',
+              maxItems: 16,
+              uniqueItems: true,
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['name', 'type'],
+                properties: {
+                  name: { enum: ['ChannelMessage.Read.Group', 'TeamMember.Read.Group', 'ChannelSettings.Read.Group'] },
+                  type: { enum: ['Application'] },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+};
 
 function check(value: unknown, schema: Schema, path: string, errors: string[]): void {
   if (schema.$ref !== undefined) {
@@ -108,16 +231,13 @@ const pngSize = (png: Buffer): { width: number; height: number; colorType: numbe
 };
 
 describe('the Teams manifest', () => {
-  it('declares the schema version and the vendored copy records its source', () => {
+  it('declares schema version 1.30', () => {
     const manifest = JSON.parse(TEMPLATE) as { manifestVersion: string; $schema: string };
     expect(manifest.manifestVersion).toBe('1.30');
     expect(manifest.$schema).toBe('https://developer.microsoft.com/json-schemas/teams/v1.30/MicrosoftTeams.schema.json');
-    const source = asset('schema/SOURCE.txt').toString('utf8');
-    expect(source).toContain('version 1.30');
-    expect(source).toContain(manifest.$schema);
   });
 
-  it('validates against the Teams manifest JSON schema once the placeholders are filled', () => {
+  it('validates against the hand-written subset of the Teams manifest schema once the placeholders are filled', () => {
     expect(validate(JSON.parse(renderTeamsManifest(TEMPLATE, INPUT)))).toEqual([]);
   });
 
