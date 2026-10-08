@@ -107,7 +107,10 @@ function memoryStore(): MemoryStore {
   return { store, raw };
 }
 
-const step = (extra: Parameters<typeof createGitHubStep>[0] = {}): OnboardStep => createGitHubStep({ pollMs: 5, createWaitMs: 400, installWaitMs: 2000, ...extra });
+// The waits are wall-clock timers that start before the simulated browser has loaded anything. A path that must
+// succeed gets a window far longer than a loaded machine can stall; a path that must give up shortens it itself.
+const step = (extra: Parameters<typeof createGitHubStep>[0] = {}): OnboardStep => createGitHubStep({ pollMs: 5, createWaitMs: 60_000, installWaitMs: 60_000, ...extra });
+const GIVES_UP = { createWaitMs: 300 };
 
 async function interview(
   answers: readonly string[],
@@ -202,7 +205,7 @@ describe('onboarding step 3: the GitHub App', () => {
 
   it('offers to try again when the installer cancels, and a retry with another name creates the App', async () => {
     browser = (local) => (attempts === 1 ? cancel(local) : createApp(local));
-    const first = await interview(['org', 'acme', '', 'rename', 'Snapwing Two'], { env: PUBLIC });
+    const first = await interview(['org', 'acme', '', 'rename', 'Snapwing Two'], { env: PUBLIC, steps: [runtime, step(GIVES_UP)] });
     expect(errors).toEqual([]);
     expect(first.result.state.steps['github']?.status).toBe('done');
     expect(attempts).toBe(2);
@@ -216,7 +219,7 @@ describe('onboarding step 3: the GitHub App', () => {
 
   it('stops blocked, with nothing written, when the installer cancels and does not retry', async () => {
     browser = cancel;
-    const { result, envText } = await interview(['org', 'acme', '', 'stop'], { env: PUBLIC });
+    const { result, envText } = await interview(['org', 'acme', '', 'stop'], { env: PUBLIC, steps: [runtime, step(GIVES_UP)] });
     expect(errors).toEqual([]);
     expect(result.state.steps['github']?.status).toBe('blocked');
     expect(result.state.steps['github']?.blocked?.on).toBe('you creating the GitHub App');
