@@ -21,8 +21,6 @@ export type StepNeed = string | readonly string[];
 export interface OnboardStep {
   /** Stable; the state document and `--step` key on it. Lowercase words and dashes. */
   readonly id: string;
-  /** Its number in main 22.2 (0 is the runtime, before the table's step 1). */
-  readonly number: number;
   /** Plain language, such as "Connect Jira". */
   readonly title: string;
   /** Steps that must finish first. Every need is earlier in the registry. */
@@ -61,7 +59,6 @@ export interface StepContext {
 
 export interface StepMeta {
   readonly id: string;
-  readonly number: number;
   readonly title: string;
   readonly needs: readonly StepNeed[];
 }

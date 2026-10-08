@@ -15,10 +15,9 @@ import type { OnboardStep } from '../../src/onboard/interview/step.ts';
 import { createTerminalIO } from '../../src/onboard/interview/terminal.ts';
 import { checkModelKey, normalizePublicUrl, runtimeStep } from '../../src/onboard/steps/runtime.ts';
 import { parseDotenv } from '../../../pipeline/src/providers/local/secrets.ts';
+import { MODEL_LISTS, modelKeyHandlers, type SeenKeys } from '../fixtures/onboard/models.ts';
 
-const ANTHROPIC = 'https://api.anthropic.com/v1/models';
-const OPENAI = 'https://api.openai.com/v1/models';
-const GOOGLE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const { anthropic: ANTHROPIC, openai: OPENAI, google: GOOGLE } = MODEL_LISTS;
 
 const KEYS = { anthropic: 'sk-ant-good-0123456789', openai: 'sk-openai-good-0123456789', google: 'AIza-good-0123456789' };
 
@@ -26,35 +25,14 @@ const server = setupServer();
 beforeAll(() => server.listen());
 afterAll(() => server.close());
 
-/** Every key in KEYS is good; anything else is refused with the status the provider uses. */
-interface Seen {
-  anthropic: string[];
-  openai: string[];
-  google: string[];
-}
-let seen: Seen;
+/** The keys each provider was checked with. Every key in KEYS is good; anything else is refused the way that provider refuses it. */
+let seen: SeenKeys;
 let dir: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'snapwing-runtime-'));
   seen = { anthropic: [], openai: [], google: [] };
-  server.use(
-    http.get(ANTHROPIC, ({ request }) => {
-      const key = request.headers.get('x-api-key') ?? '';
-      seen.anthropic.push(key);
-      return key === KEYS.anthropic ? HttpResponse.json({ data: [] }) : HttpResponse.json({ error: { type: 'authentication_error' } }, { status: 401 });
-    }),
-    http.get(OPENAI, ({ request }) => {
-      const auth = request.headers.get('authorization') ?? '';
-      seen.openai.push(auth);
-      return auth === `Bearer ${KEYS.openai}` ? HttpResponse.json({ data: [] }) : HttpResponse.json({ error: { code: 'invalid_api_key' } }, { status: 401 });
-    }),
-    http.get(GOOGLE, ({ request }) => {
-      const key = request.headers.get('x-goog-api-key') ?? '';
-      seen.google.push(key);
-      return key === KEYS.google ? HttpResponse.json({ models: [] }) : HttpResponse.json({ error: { status: 'INVALID_ARGUMENT' } }, { status: 400 });
-    }),
-  );
+  server.use(...modelKeyHandlers(KEYS, seen));
 });
 
 afterEach(async () => {
@@ -307,7 +285,6 @@ describe('step 0: runtime, model keys, public URL', () => {
   it('hands the generated secrets to the redactor, so a later step cannot leak them', async () => {
     const leak: OnboardStep = {
       id: 'leak',
-      number: 1,
       title: 'Leak',
       needs: ['runtime'],
       run: async () => {

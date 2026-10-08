@@ -6,7 +6,6 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { http, HttpResponse, passthrough } from 'msw';
 import { setupServer } from 'msw/node';
 import { parseDotenv } from '@snapwing/pipeline/providers/local/secrets.ts';
 import { scriptedPrompter } from '../../src/cli/prompt.ts';
@@ -15,8 +14,7 @@ import { createKvOnboardingStore, type OnboardingStore } from '../../src/onboard
 import { createTerminalIO } from '../../src/onboard/interview/terminal.ts';
 import type { OnboardStep } from '../../src/onboard/interview/step.ts';
 import { createGitHubStep } from '../../src/onboard/steps/github.ts';
-
-const API = 'https://api.github.com';
+import { githubAccount, githubOnboardHandlers, readManifestPage, type GitHubAccount } from '../fixtures/onboard/github.ts';
 
 const { privateKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048,
@@ -26,27 +24,7 @@ const { privateKey } = generateKeyPairSync('rsa', {
 
 const CLIENT_SECRET = 'fake-client-secret-0123456789';
 
-interface FakeGitHub {
-  /** The account the App is installed on, once it is. */
-  account: string;
-  /** Whether the owner has installed the App. */
-  installed: boolean;
-  /** Whether opening the install link installs the App (the installer follows it). */
-  autoInstall: boolean;
-  /** The repositories the installation reaches; the first `emptyListings` listings answer none. */
-  repos: string[];
-  emptyListings: number;
-  /** The `webhook_secret` the conversion returns (GitHub returns none for a manifest App). */
-  webhookSecret: string | null;
-  slug: string;
-  /** Every manifest the local page held, as GitHub would receive it. */
-  manifests: Record<string, unknown>[];
-  conversions: string[];
-  hookConfigs: Record<string, unknown>[];
-  /** False once GitHub no longer accepts the App's own credentials. */
-  appValid: boolean;
-}
-let gh: FakeGitHub;
+let gh: GitHubAccount;
 
 /** What the installer does in the browser, per attempt; the default creates the App. */
 type Browser = (local: string) => Promise<void>;
@@ -58,35 +36,10 @@ beforeAll(() => server.listen());
 afterAll(() => server.close());
 
 beforeEach(() => {
-  gh = { account: 'acme', installed: false, autoInstall: true, repos: ['acme/web'], emptyListings: 0, webhookSecret: null, slug: 'snapwing-acme', manifests: [], conversions: [], hookConfigs: [], appValid: true };
+  gh = githubAccount({ app: { id: 424242, clientId: 'Iv1.fakeclientid', clientSecret: CLIENT_SECRET, pem: privateKey } });
   attempts = 0;
   browser = createApp;
-  server.use(
-    http.all('http://127.0.0.1:*/*', () => passthrough()),
-    http.post(`${API}/app-manifests/:code/conversions`, ({ params }) => {
-      gh.conversions.push(String(params['code']));
-      return HttpResponse.json(
-        { id: 424242, slug: gh.slug, client_id: 'Iv1.fakeclientid', client_secret: CLIENT_SECRET, webhook_secret: gh.webhookSecret, pem: privateKey },
-        { status: 201 },
-      );
-    }),
-    http.get(`${API}/app`, ({ request }) =>
-      gh.appValid && (request.headers.get('authorization') ?? '').startsWith('Bearer ') ? HttpResponse.json({ slug: gh.slug }) : HttpResponse.json({ message: 'Bad credentials' }, { status: 401 }),
-    ),
-    http.get(`${API}/app/installations`, () => HttpResponse.json(gh.installed ? [{ id: 777, account: { login: gh.account } }] : [])),
-    http.post(`${API}/app/installations/:id/access_tokens`, () => HttpResponse.json({ token: 'ghs_faketoken', expires_at: '2026-10-08T13:00:00Z' }, { status: 201 })),
-    http.get(`${API}/installation/repositories`, () => {
-      if (gh.emptyListings > 0) {
-        gh.emptyListings -= 1;
-        return HttpResponse.json({ total_count: 0, repositories: [] });
-      }
-      return HttpResponse.json({ total_count: gh.repos.length, repositories: gh.repos.map((full_name) => ({ full_name })) });
-    }),
-    http.patch(`${API}/app/hook/config`, async ({ request }) => {
-      gh.hookConfigs.push((await request.json()) as Record<string, unknown>);
-      return HttpResponse.json({});
-    }),
-  );
+  server.use(...githubOnboardHandlers(gh));
 });
 afterEach(() => {
   server.resetHandlers();
@@ -100,15 +53,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-/** Reads the local page the step opened: where it posts, its state, and the manifest it carries. */
-async function readPage(local: string): Promise<{ action: string; state: string; manifest: Record<string, unknown> }> {
-  const html = await (await fetch(local)).text();
-  const unescape = (s: string): string => s.replaceAll('&quot;', '"').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
-  const action = unescape(/action="([^"]+)"/.exec(html)?.[1] ?? '');
-  const manifest = JSON.parse(unescape(/name="manifest" value="([^"]*)"/.exec(html)?.[1] ?? '{}')) as Record<string, unknown>;
-  gh.manifests.push(manifest);
-  return { action, state: new URL(action).searchParams.get('state') ?? '', manifest };
-}
+const readPage = (local: string): ReturnType<typeof readManifestPage> => readManifestPage(gh, local);
 
 /** The installer clicks Create on GitHub, and GitHub redirects back with a one-time code. */
 const createApp: Browser = async (local) => {
@@ -144,7 +89,7 @@ beforeEach(() => {
   errors = [];
 });
 
-const runtime: OnboardStep = { id: 'runtime', number: 0, title: 'Runtime', needs: [], run: () => Promise.resolve({ status: 'done' }) };
+const runtime: OnboardStep = { id: 'runtime', title: 'Runtime', needs: [], run: () => Promise.resolve({ status: 'done' }) };
 
 interface MemoryStore {
   readonly store: OnboardingStore;
@@ -294,6 +239,16 @@ describe('onboarding step 3: the GitHub App', () => {
     expect(gh.hookConfigs).toEqual([]);
   });
 
+  it("takes the runtime step's http://localhost address for what it is, no public address", async () => {
+    const { result, lines } = await interview(['user', 'acme', ''], { env: { SNAPWING_PUBLIC_URL: 'http://localhost:3000' } });
+    expect(result.state.steps['github']?.status).toBe('done');
+    const manifest = gh.manifests[0] ?? {};
+    expect(manifest['hook_attributes']).toEqual({ url: 'https://example.invalid/snapwing/webhooks/github', active: false });
+    expect(manifest).not.toHaveProperty('callback_urls');
+    expect(lines.join('\n')).toMatch(/no public address/);
+    expect(gh.hookConfigs).toEqual([]);
+  });
+
   it('generates the webhook secret when GitHub returns none and there is no public address', async () => {
     const { envText } = await interview(['user', 'acme', ''], { env: {} });
     expect(parseDotenv(envText, '.env').get('GITHUB_WEBHOOK_SECRET')).toMatch(/^[0-9a-f]{64}$/);
@@ -355,7 +310,6 @@ describe('onboarding step 3: the GitHub App', () => {
   it('hands the secrets it writes to the redactor, so a later step cannot leak them', async () => {
     const leak: OnboardStep = {
       id: 'leak',
-      number: 4,
       title: 'Leak',
       needs: ['github'],
       run: async () => {

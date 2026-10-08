@@ -374,7 +374,7 @@ export function createTeamsStep(deps: TeamsStepDeps = {}): OnboardStep {
     return { status: 'done', data };
   }
 
-  return { id: 'teams', number: 1, title: 'Connect Microsoft Teams', needs: ['runtime'], run };
+  return { id: 'teams', title: 'Connect Microsoft Teams', needs: ['runtime'], run };
 }
 
 export const teamsStep: OnboardStep = createTeamsStep();

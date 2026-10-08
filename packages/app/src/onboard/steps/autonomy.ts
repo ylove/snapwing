@@ -56,7 +56,6 @@ function guessWho(ctx: StepContext): string | undefined {
 
 export const autonomyStep: OnboardStep = {
   id: 'autonomy',
-  number: 8,
   title: 'Choose how much Snapwing does on its own',
   needs: ['surfaces'],
   async run(ctx): Promise<StepOutcome> {

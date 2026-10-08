@@ -602,6 +602,9 @@ export function createTestDriveStep(deps: TestDriveDeps = {}): OnboardStep {
     }
     env['SNAPWING_SQLITE_PATH'] = resolve(ctx.workdir, env['SNAPWING_SQLITE_PATH']?.trim() || SQLITE_FILE);
     env['SNAPWING_MAP'] = mapPath;
+    // The playbook and instructions `finish` checked, in the working directory, not wherever this process started.
+    env['SNAPWING_PLAYBOOK'] = ctx.env['SNAPWING_PLAYBOOK']?.trim() || join(ctx.workdir, 'playbook.xml');
+    env['SNAPWING_INSTRUCTIONS'] = ctx.env['SNAPWING_INSTRUCTIONS']?.trim() || join(ctx.workdir, 'INSTRUCTIONS.md');
 
     const signals = new EventEmitter();
     const stderr: string[] = [];
@@ -923,7 +926,7 @@ export function createTestDriveStep(deps: TestDriveDeps = {}): OnboardStep {
     }
   }
 
-  return { id: 'test-drive', number: 9, title: 'Try it once', needs: ['finish', ['slack', 'teams']], run };
+  return { id: 'test-drive', title: 'Try it once', needs: ['finish', ['slack', 'teams']], run };
 }
 
 /** The end of the event log now: the drive reads only what comes after it. */

@@ -1,7 +1,6 @@
 // Onboarding step 1, Teams (main 22.2, ADR 0005), against MSW: a full install, reduced mode, custom app
 // upload turned off, an existing Snapwing, a bad secret asked again, and a saved bot checked again on a rerun.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -14,6 +13,7 @@ import { createTerminalIO } from '../../src/onboard/interview/terminal.ts';
 import type { OnboardStep } from '../../src/onboard/interview/step.ts';
 import { manifestRscPermissions, TEAMS_APP_VERSION } from '../../src/onboard/teams/install.ts';
 import { createTeamsStep } from '../../src/onboard/steps/teams.ts';
+import { installedSnapwing, teamsOnboardHandlers, teamsTenant, type TeamsTenant } from '../fixtures/onboard/teams.ts';
 
 const G = GRAPH_BASE_URL;
 const LOGIN = 'https://login.test';
@@ -26,82 +26,22 @@ const PUBLIC = 'https://snap.example.test';
 const TEAM = 'team-1';
 const RSC = manifestRscPermissions();
 
-interface FakeTenant {
-  secrets: Set<string>;
-  catalog?: { id: string; versions: string[] };
-  installed: Record<string, unknown>[];
-  grants: string[];
-  uploadDisabled?: boolean;
-  grantOnInstall?: string[];
-  teams: { id: string; displayName: string }[];
-  channels: { id: string; displayName: string }[];
-  ownerSignIns: number;
-  published: number;
-}
-let tenant: FakeTenant;
-
-const ours = () => ({
-  id: 'inst-1',
-  teamsApp: { id: 'cat-1', externalId: APP_ID, displayName: 'Snapwing' },
-  teamsAppDefinition: { version: TEAMS_APP_VERSION },
-});
+let tenant: TeamsTenant;
 
 const server = setupServer();
 beforeAll(() => server.listen());
 afterAll(() => server.close());
 
 beforeEach(() => {
-  tenant = {
+  tenant = teamsTenant({
     secrets: new Set([SECRET]),
-    installed: [],
-    grants: [],
     teams: [{ id: TEAM, displayName: 'Acme Engineering' }],
     channels: [
       { id: '19:bugs@thread.tacv2', displayName: 'Bugs' },
       { id: '19:general@thread.tacv2', displayName: 'General' },
     ],
-    ownerSignIns: 0,
-    published: 0,
-  };
-  server.use(
-    http.post(`${LOGIN}/${TENANT}/oauth2/v2.0/token`, async ({ request }) => {
-      const form = new URLSearchParams(await request.text());
-      if (form.get('grant_type') === 'client_credentials') {
-        return tenant.secrets.has(form.get('client_secret') ?? '')
-          ? HttpResponse.json({ access_token: 'app-token', expires_in: 3600 })
-          : HttpResponse.json({ error: 'invalid_client' }, { status: 401 });
-      }
-      tenant.ownerSignIns += 1;
-      return HttpResponse.json({ access_token: OWNER_TOKEN, expires_in: 3600 });
-    }),
-    http.post(`${LOGIN}/${TENANT}/oauth2/v2.0/devicecode`, () =>
-      HttpResponse.json({ device_code: 'dev-code', user_code: 'ABCD-1234', verification_uri: 'https://login.test/device', expires_in: 900, interval: 1 }),
-    ),
-    http.get(`${G}/me/joinedTeams`, () => HttpResponse.json({ value: tenant.teams })),
-    http.get(`${G}/teams/${TEAM}/channels`, () => HttpResponse.json({ value: tenant.channels })),
-    http.get(`${G}/appCatalogs/teamsApps`, () =>
-      HttpResponse.json({ value: tenant.catalog ? [{ id: tenant.catalog.id, externalId: APP_ID, displayName: 'Snapwing' }] : [] }),
-    ),
-    http.post(`${G}/appCatalogs/teamsApps`, () => {
-      if (tenant.uploadDisabled) return HttpResponse.json({ error: { code: 'Forbidden', message: 'custom apps are off' } }, { status: 403 });
-      tenant.published += 1;
-      tenant.catalog = { id: 'cat-1', versions: [TEAMS_APP_VERSION] };
-      return HttpResponse.json({ id: 'cat-1', externalId: APP_ID, displayName: 'Snapwing' });
-    }),
-    http.get(`${G}/appCatalogs/teamsApps/:id/appDefinitions`, () =>
-      HttpResponse.json({ value: (tenant.catalog?.versions ?? []).map((version) => ({ id: `def-${version}`, version })) }),
-    ),
-    http.get(`${G}/teams/${TEAM}/installedApps`, () => HttpResponse.json({ value: tenant.installed })),
-    http.post(`${G}/teams/${TEAM}/installedApps`, async ({ request }) => {
-      const body = (await request.json()) as { consentedPermissionSet: { resourceSpecificPermissions: { permissionValue: string }[] } };
-      tenant.grants = tenant.grantOnInstall ?? body.consentedPermissionSet.resourceSpecificPermissions.map((p) => p.permissionValue);
-      tenant.installed.push(ours());
-      return new HttpResponse(null, { status: 201 });
-    }),
-    http.get(`${G}/teams/${TEAM}/permissionGrants`, () =>
-      HttpResponse.json({ value: tenant.grants.map((permission, i) => ({ id: `g${i}`, clientAppId: APP_ID, permission, permissionType: 'Application' })) }),
-    ),
-  );
+  });
+  server.use(...teamsOnboardHandlers(tenant, { login: LOGIN, graph: G, tenantId: TENANT, appId: APP_ID, team: TEAM, appToken: 'app-token', ownerToken: OWNER_TOKEN }));
 });
 afterEach(() => server.resetHandlers());
 
@@ -113,8 +53,8 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-const runtime: OnboardStep = { id: 'runtime', number: 0, title: 'Runtime', needs: [], run: () => Promise.resolve({ status: 'done' }) };
-const later: OnboardStep = { id: 'later', number: 2, title: 'Later', needs: ['runtime'], run: () => Promise.resolve({ status: 'done' }) };
+const runtime: OnboardStep = { id: 'runtime', title: 'Runtime', needs: [], run: () => Promise.resolve({ status: 'done' }) };
+const later: OnboardStep = { id: 'later', title: 'Later', needs: ['runtime'], run: () => Promise.resolve({ status: 'done' }) };
 
 interface MemoryStore {
   readonly store: OnboardingStore;
@@ -245,7 +185,7 @@ describe('onboarding step 1: Teams', () => {
 
   it('warns about another Snapwing in the team and carries on with the existing install', async () => {
     tenant.catalog = { id: 'cat-1', versions: [TEAMS_APP_VERSION] };
-    tenant.installed = [ours(), { id: 'inst-9', teamsApp: { id: 'cat-9', externalId: 'other', displayName: 'Snapwing' } }];
+    tenant.installed = [installedSnapwing(APP_ID), { id: 'inst-9', teamsApp: { id: 'cat-9', externalId: 'other', displayName: 'Snapwing' } }];
     tenant.grants = RSC;
     const { result, lines } = await interview(FRESH);
     expect(result.state.steps['teams']?.status).toBe('done');

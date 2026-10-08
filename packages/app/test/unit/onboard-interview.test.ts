@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openState } from '@snapwing/pipeline/state/db.ts';
 import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
-import { runOnboard, EXIT_UNANSWERED, EXIT_WAITING } from '../../src/cli/onboard.ts';
+import { runOnboard, statusLines, EXIT_UNANSWERED, EXIT_WAITING } from '../../src/cli/onboard.ts';
 import { COMMANDS } from '../../src/cli/main.ts';
 import { scriptedPrompter, terminalPrompter, type Prompter } from '../../src/cli/prompt.ts';
 import { upsertEnv, writeEnvFile } from '../../src/onboard/interview/env.ts';
@@ -51,7 +51,7 @@ function memoryKv(): { kvGet(k: string): Promise<string | undefined>; kvSet(k: s
 }
 
 function step(id: string, needs: readonly StepNeed[], run: (ctx: StepContext) => Promise<StepOutcome>): OnboardStep {
-  return { id, number: 1, title: `Step ${id}`, needs, run };
+  return { id, title: `Step ${id}`, needs, run };
 }
 
 interface Harness {
@@ -72,7 +72,7 @@ function run(steps: readonly OnboardStep[], store: OnboardingStore, io: Intervie
 }
 
 describe('the step registry', () => {
-  it('orders step 0, then steps 1 to 9 with Slack and Teams as two step-1 modules, every need earlier', () => {
+  it('orders the runtime first, then the interview with Slack and Teams as two modules, every need earlier', () => {
     expect(() => validateRegistry(ONBOARD_STEPS)).not.toThrow();
     expect(ONBOARD_STEPS.map((s) => s.id)).toEqual([
       'runtime',
@@ -88,12 +88,17 @@ describe('the step registry', () => {
       'finish',
       'test-drive',
     ]);
-    expect(ONBOARD_STEPS.map((s) => s.number)).toEqual([0, 1, 1, 2, 3, 4, 5, 6, 7, 8, 8, 9]);
+  });
+
+  it('numbers each step by its place in the registry, the runtime 0, so no two share a number', () => {
+    const numbers = statusLines(ONBOARD_STEPS, undefined).map((line) => Number(line.trim().split(/\s+/)[0]));
+    expect(numbers).toEqual(ONBOARD_STEPS.map((_, i) => i));
+    expect(statusLines(ONBOARD_STEPS, undefined).filter((l) => /Choose how much|Write the workspace map/.test(l)).map((l) => l.trim().split(/\s+/)[0])).toEqual(['9', '10']);
   });
 
   it('runs every stub as "not built yet" and finishes, then runs them again next time', async () => {
     // The registry's own steps as stubs: built steps ask questions, which their own tests cover.
-    const stubs = ONBOARD_STEPS.map(({ id, number, title, needs }) => notBuiltYet({ id, number, title, needs }));
+    const stubs = ONBOARD_STEPS.map(({ id, title, needs }) => notBuiltYet({ id, title, needs }));
     const kv = memoryKv();
     const store = createKvOnboardingStore(kv);
     const t = terminal([]);
@@ -436,7 +441,7 @@ describe('snapwing onboard', () => {
 
     const status = cli();
     expect(await runOnboard(['--status'], status.io, { cwd: dir, steps: twoSteps, openState: () => openState(tdb.options) })).toBe(0);
-    expect(status.out).toEqual(['Onboarding:', '   1  Step where  done', '   1  Step jira   done']);
+    expect(status.out).toEqual(['Onboarding:', '   0  Step where  done', '   1  Step jira   done']);
   });
 
   it('exits 2 at an unanswered question and picks up there on the next run', async () => {

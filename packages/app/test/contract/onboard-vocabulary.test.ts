@@ -212,7 +212,6 @@ const JIRA_DATA = json({ site: JIRA, email: EMAIL, projects: ['WEB', 'MOB'], web
 
 const seed = (id: string, data: JsonObject | undefined): OnboardStep => ({
   id,
-  number: 0,
   title: id,
   needs: [],
   run: () => Promise.resolve(data === undefined ? { status: 'not-built' } : { status: 'done', data }),

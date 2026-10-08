@@ -396,7 +396,7 @@ export function createSlackStep(deps: SlackStepDeps = {}): OnboardStep {
     return { status: 'done', data };
   }
 
-  return { id: 'slack', number: 1, title: 'Connect Slack', needs: ['runtime'], run };
+  return { id: 'slack', title: 'Connect Slack', needs: ['runtime'], run };
 }
 
 export const slackStep: OnboardStep = createSlackStep();
