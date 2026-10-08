@@ -569,6 +569,23 @@ describe('heartbeat and stall', () => {
     expect(await w.monitor.stalled({ id: other })).toBe(true);
   });
 
+  it('a re-arm just after a heartbeat falls due does not push it back a period (#280)', async () => {
+    const w = setup();
+    await append(...filed(INC), ev('fixer-started', { runId: 'run-1', harness: 'claude-code', attempt: 1 }));
+    await w.monitor.evaluate(INC);
+    await until(9);
+    // The heartbeat is due at 10; a poll re-arms 5 ms later, before the job has run.
+    now = T0 + 10 * MINUTE + 5;
+    await w.monitor.evaluate(INC);
+    await wf.drain();
+    expect(w.chat.posts.filter((p) => p.ladder === 'heartbeat').map((p) => [p.at, p.step])).toEqual([[10, 1]]);
+    // Re-arming again after it ran leaves the chain on the next boundary, and it posts once more.
+    now = T0 + 10 * MINUTE + 10;
+    await w.monitor.evaluate(INC);
+    await until(20);
+    expect(w.chat.posts.filter((p) => p.ladder === 'heartbeat').map((p) => p.step)).toEqual([1, 2]);
+  });
+
   it('a stage change restarts the heartbeat count', async () => {
     const w = setup();
     await append(...filed(INC), ev('fixer-started', { runId: 'run-1', harness: 'claude-code', attempt: 1 }));

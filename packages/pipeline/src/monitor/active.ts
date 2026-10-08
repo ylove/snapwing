@@ -213,7 +213,9 @@ export function createActiveMonitor(deps: ActiveMonitorDeps): ActiveMonitor {
     const now = deps.clock().getTime();
     const data: MonitorTimerData = { incidentId };
     const beat = nextHeartbeat(log, timing.heartbeatMs, now);
-    if (beat !== undefined) await deps.workflow.schedule('timer.heartbeat', data, new Date(beat), { singletonKey: heartbeatKey(incidentId) });
+    // A heartbeat that has just fallen due is either still queued or has run and queued the next; the
+    // singleton schedule would replace either, so a re-arm inside the grace leaves it alone (#280).
+    if (beat !== undefined && !heartbeatJustDue(log, timing.heartbeatMs, now)) await deps.workflow.schedule('timer.heartbeat', data, new Date(beat), { singletonKey: heartbeatKey(incidentId) });
     const anchor = stallAnchor(log);
     if (anchor !== undefined && anchor + timing.stallAfterMs > now) {
       await deps.workflow.schedule('timer.stall', data, new Date(anchor + timing.stallAfterMs), { singletonKey: stallKey(incidentId) });
@@ -633,6 +635,16 @@ function heartbeatBase(log: readonly IncidentEvent[]): number | undefined {
   if (run === undefined) return undefined;
   const stage = stageEvent(log);
   return Math.max(seenAt(run), stage === undefined ? 0 : seenAt(stage));
+}
+
+/** How long after a period boundary a queued heartbeat is given to run before a re-arm may replace it. */
+const HEARTBEAT_GRACE_MS = 30_000;
+
+/** True when `now` is within the grace after a heartbeat boundary (not the base itself, which posts nothing). */
+export function heartbeatJustDue(log: readonly IncidentEvent[], heartbeatMs: number, now: number): boolean {
+  const base = heartbeatBase(log);
+  if (base === undefined || now - base < heartbeatMs) return false;
+  return (now - base) % heartbeatMs < Math.min(HEARTBEAT_GRACE_MS, heartbeatMs / 2);
 }
 
 /** The next heartbeat time after `now`, or undefined when not monitored. */
