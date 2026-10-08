@@ -2,7 +2,8 @@
 // incidents row, and the card the capture adapter kept in kv. The engine's cards map to the wire's
 // kinds (#377):
 //
-//   dedupe card                         tracked        (the client adds Open it and Not now itself)
+//   dedupe card                         tracked        (kept for a card already waiting; a new capture that
+//                                                      matches an issue links at once and answers not-filed)
 //   file-confirm                        new            choices File it, Not this surface, Cancel
 //   clarify asking `surface`            which-surface  one choice per map surface (its id), then Cancel
 //   fix-preview (level 1, pre-filing)   fix-preview    Fix it and Ticket only for an engineer, Ticket
@@ -137,8 +138,9 @@ async function responseFor(deps: LookupDeps, captureId: string, card: Interactiv
 export function tapChoice(card: InteractiveCard, choiceId: string, map: WorkspaceMap, role: MapActorRole): string | undefined {
   switch (card.kind) {
     case 'dedupe':
-      // The client opens the ticket itself; a client may still link the report, or file anyway.
-      return ['link', 'create-anyway', 'not-related'].includes(choiceId) ? choiceId : undefined;
+      // The client opens the ticket itself, which changes nothing. The engine links a tracked capture
+      // at once, so this card is never answered.
+      return undefined;
     case 'file-confirm':
       return (FILE_CONFIRM_CHOICES as readonly string[]).includes(choiceId) ? choiceId : undefined;
     case 'clarify': {

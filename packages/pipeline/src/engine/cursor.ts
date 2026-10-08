@@ -260,7 +260,8 @@ export interface PhaseOptions {
   scopePreview: boolean;
   /**
    * The incident came from a capture source (Raycast, CLI; main 15.3, 15.4), so after dedupe it shows
-   * exactly one lookup card (`capturePhase`) in place of the ask-back. Default false.
+   * exactly one lookup card (`capturePhase`) in place of the ask-back. A candidate is no card for a
+   * capture: its `dedupe-card` step links at once. Default false.
    */
   capture?: boolean;
 }
@@ -335,7 +336,7 @@ export function nextPhase(cursor: Cursor, options: PhaseOptions): Phase {
 
 /**
  * A capture source after dedupe (main 15.3, 15.4; #377). The first response is exactly one of: the
- * dedupe card (handled above, with candidates), `file-confirm` when the surface resolved, or the surface
+ * link to a tracked issue (handled above, with candidates), `file-confirm` when the surface resolved, or the surface
  * question (a `clarify` round asking `surface`, its options the map's labels) when it did not. File it,
  * a surface answer, or Create anyway with a resolved surface goes on to the plan; Not this surface, or
  * Create anyway with none, asks the surface question. Cancel and every timeout append

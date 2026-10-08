@@ -357,46 +357,21 @@ describe('the surface question: new, and the surface did not resolve', () => {
   });
 });
 
-describe('the dedupe card: already tracked', () => {
+describe('already tracked', () => {
   const HIT: JiraSearchHit = { key: 'APP-7', summary: 'The app crashes when I open settings', assignee: 'mobDev' };
 
-  it('is the one card; Open it links the capture to the existing issue', async () => {
+  it('links the capture to the existing issue at once, with no card', async () => {
     const h = setup({ jira: [HIT] });
     await inbound(h);
-    expect(h.adapter.cards).toEqual([{ kind: 'dedupe', issueKey: 'APP-7', summary: HIT.summary, assignee: 'mobDev' }]);
-    await tap(h, 'dedupe', 'link');
+    expect(h.adapter.cards).toEqual([]);
     expect((await types(h)).slice(-2)).toEqual(['dedupe-decided', 'linked-to-existing']);
+    expect(eventOf(await events(h), 'linked-to-existing')?.payload).toEqual({ issueKey: 'APP-7' });
     expect(await status(h)).toBe('linked-to-existing');
     expect((await jiraRows()).map((r) => [r.op, (r.payload as { issueKey: string }).issueKey])).toEqual([['add-comment', 'APP-7']]);
-  });
-
-  it('Create anyway files with the resolved surface and shows no second card', async () => {
-    const h = setup({ jira: [HIT] });
-    await inbound(h);
-    await tap(h, 'dedupe', 'create-anyway');
-    expect((await types(h)).slice(-4)).toEqual(['tapped', 'dedupe-decided', 'waiting-changed', 'planned']);
-    expect(await filedProject()).toBe('APP');
-    expect(h.adapter.cards).toHaveLength(1);
-  });
-
-  it('Create anyway with no surface asks which surface', async () => {
-    const h = setup({ text: VAGUE_TEXT, jira: [{ key: 'WEB-830', summary: 'The total is blank after applying a promo code' }] });
-    await inbound(h);
-    await tap(h, 'dedupe', 'create-anyway');
-    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['dedupe', 'clarify']);
-    await tap(h, 'clarify', 'Website');
-    expect(await filedProject()).toBe('WEB');
-  });
-
-  it('a timeout files nothing', async () => {
-    const h = setup({ jira: [HIT] });
-    await inbound(h);
+    // Nothing waits, so no timeout ends it later.
     now += DAY + 1;
     await wf.drain();
-    expect(eventOf(await events(h), 'capture-cancelled')?.payload).toEqual({ card: 'dedupe', timedOut: true });
-    expect(await types(h)).not.toContain('dedupe-decided');
-    expect(await status(h)).toBe('not-filed');
-    expect(await jiraRows()).toEqual([]);
+    expect(await types(h)).not.toContain('capture-cancelled');
   });
 });
 
@@ -413,10 +388,11 @@ describe('context.surfaceHint (--surface)', () => {
     expect(h.adapter.cards).toEqual([{ kind: 'file-confirm', surfaceId: 'web', surfaceLabel: 'Website' }]);
   });
 
-  it('still shows the dedupe card when the issue is already tracked', async () => {
+  it('still links at once when the issue is already tracked', async () => {
     const h = setup({ surfaceHint: 'Mobile App', jira: [{ key: 'APP-7', summary: 'The app crashes when I open settings' }] });
     await inbound(h);
-    expect(h.adapter.cards.map((c) => c.kind)).toEqual(['dedupe']);
+    expect(h.adapter.cards).toEqual([]);
+    expect(await status(h)).toBe('linked-to-existing');
   });
 
   it('matches a surface by id or label, ignoring case; an unknown hint resolves as usual', async () => {
