@@ -8,8 +8,8 @@
 // never touched. Staging takes the package's `files`, drops `scripts` and `devDependencies`, and pins
 // each `workspace:` dependency to that package's version (the sibling tarball satisfies it when both
 // are installed together). The pipeline stage also gets the root `schemas/` and `manifests/` at its
-// package root, where `assetPath` (pipeline/src/util/assets.ts) finds them once installed. `demo/` and
-// the Slack test-driver manifest are for development and do not ship. Only files git tracks are staged
+// package root, where `assetPath` (pipeline/src/util/assets.ts) finds them once installed. `demo/`, the
+// Slack test-driver manifest, and the Teams schema copy and icon generator are for development and do not ship. Only files git tracks are staged
 // (never an untracked `.env`, key, or database), and the pack fails if a staged path looks like a
 // secret (see `SECRET_PATH`). The
 // app stage bundles `@snapwing/capture-client` (no dependencies of its own) so two tarballs suffice.
@@ -27,8 +27,9 @@ import { parseArgs } from 'node:util';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGES = join(ROOT, 'packages');
 const ASSET_DIRS = ['schemas', 'manifests'];
-/** Tracked files that are not shipped even though they sit under an asset directory. */
-const NOT_SHIPPED = new Set(['manifests/slack/test-driver.manifest.yaml']);
+/** Tracked files that are not shipped even though they sit under an asset directory. A trailing `/` names a directory. */
+const NOT_SHIPPED = ['manifests/slack/test-driver.manifest.yaml', 'manifests/teams/schema/', 'manifests/teams/make-icons.mjs'];
+const isShipped = (file) => !NOT_SHIPPED.some((skip) => (skip.endsWith('/') ? file.startsWith(skip) : file === skip));
 /** Paths that must never be staged: env files, keys, a `secrets/` directory, SQLite databases. */
 const SECRET_PATH = /(^|\/)(\.env[^/]*|[^/]*\.pem|[^/]*\.key|secrets|[^/]*\.sqlite[^/]*)(\/|$)/;
 const BUNDLED = ['@snapwing/capture-client'];
@@ -64,7 +65,7 @@ function shippedManifest(manifest, workspace) {
 /** Files git tracks under `paths` (repository-relative), so ignored and untracked files never ship. */
 function trackedFiles(paths) {
   const raw = execFileSync('git', ['ls-files', '-z', '--', ...paths], { cwd: ROOT, encoding: 'utf8' });
-  return raw.split('\0').filter((f) => f !== '' && !NOT_SHIPPED.has(f));
+  return raw.split('\0').filter((f) => f !== '' && isShipped(f));
 }
 
 /** Copies the tracked files under `paths` (repository-relative) into `dest`, below `base`; refuses secrets. */
