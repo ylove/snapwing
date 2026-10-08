@@ -14,7 +14,12 @@ const isAlive = (pid: number): boolean => {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function start(script: string) {
-  const child = spawn(process.execPath, ['-e', script], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const child = spawn(process.execPath, ['-e', script], {
+    detached: true,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    // Colour escapes (FORCE_COLOR in the caller's environment) would corrupt the pid parsed from stdout.
+    env: { ...process.env, FORCE_COLOR: '0' },
+  });
   const controller = new AbortController();
   const supervisor = superviseProcess(child, { budgetMs: 60_000, graceMs: 200, signal: controller.signal, onCheckpoint: async () => undefined });
   let out = '';
