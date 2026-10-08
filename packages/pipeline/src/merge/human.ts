@@ -28,10 +28,11 @@ import type { IncidentEvent } from '../contracts/events.ts';
 import type { PrReadyCard } from '../contracts/adapters.ts';
 import { keySegment } from '../contracts/jobs.ts';
 import { currentLevel, lastSeqOf, latest, stoppedSinceFiled } from '../fixer/job.ts';
-import type { MapPerson, WorkspaceMap } from '../map/types.ts';
+import { channelPlatform, type MapPerson, type WorkspaceMap } from '../map/types.ts';
 import type { CachePort } from '../ports/cache.ts';
 import type { ChatPlatform, StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
+import { chatPlatformOf } from '../state/projections/subscriptions.ts';
 import { repoFullName } from '../util/repo.ts';
 import { httpStatus, reviewVerdict, type MergeRequiredCheck, type MergeResult } from './job.ts';
 
@@ -350,7 +351,10 @@ export async function requestHumanReview(deps: HumanReviewDeps, incidentId: stri
   const targets: ChatTarget[] = [];
   const thread = threadTarget(log, incident?.channelId, incident?.anchorId);
   if (thread !== undefined) targets.push(thread);
-  const bug = incident?.surfaceId === undefined ? undefined : map.channels.find((c) => c.surface === incident.surfaceId);
+  // The bug channel must be on the platform the incident came from: a Slack channel id means nothing to Teams.
+  const platform = chatPlatformOf(incident?.source) ?? deps.chat;
+  const bug =
+    incident?.surfaceId === undefined ? undefined : map.channels.find((c) => c.surface === incident.surfaceId && channelPlatform(c) === platform);
   if (bug !== undefined && bug.id !== thread?.channel) targets.push({ channel: bug.id });
 
   const posted: string[] = [];
