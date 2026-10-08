@@ -794,6 +794,47 @@ describe('stored triage plan', () => {
   });
 });
 
+describe('planning after an append conflict (#259)', () => {
+  /** Lands one event on the log while the triage model call is in flight, so the plan's append conflicts. */
+  function interject(h: Harness, type: 'monitoring-started' | 'level-changed', payload: unknown): void {
+    const classify = h.model.classify.bind(h.model);
+    let done = false;
+    h.model.classify = async (request: ClassifyRequest<unknown>) => {
+      const answer = await classify(request);
+      if (request.task === 'triage' && !done) {
+        done = true;
+        const log = await state.read(h.payload.eventId);
+        await state.append(
+          h.payload.eventId,
+          [{ workspaceId: WS, incidentId: h.payload.eventId, type, v: 1, source: 'agent', occurredAt: at(5), payload } as never],
+          log.at(-1)?.seq ?? 0,
+        );
+      }
+      return answer;
+    };
+  }
+
+  it('reuses its model results when an unrelated event landed meanwhile', async () => {
+    const h = setup();
+    interject(h, 'monitoring-started', { qualifiedBy: 'priority' });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(h.model.tasks.filter((t) => t === 'triage')).toHaveLength(1);
+    const log = await types(h);
+    expect(log.filter((t) => t === 'planned')).toHaveLength(1);
+    expect(log.indexOf('monitoring-started')).toBeLessThan(log.indexOf('planned'));
+  });
+
+  it('plans again when the event that landed changes its inputs', async () => {
+    const h = setup();
+    interject(h, 'level-changed', { from: 0, to: 1, reason: 'an engineer raised it' });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    expect(h.model.tasks.filter((t) => t === 'triage')).toHaveLength(2);
+    expect((await types(h)).filter((t) => t === 'planned')).toHaveLength(1);
+  });
+});
+
 // An unresolved surface is asked about; the answer routes the ticket, a timeout degrades it.
 describe('unresolved surface', () => {
   const VAGUE = message('m1', 0, 'it crashes when I open settings');

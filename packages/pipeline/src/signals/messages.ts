@@ -79,7 +79,7 @@ export async function recordBotMessage(
 }
 
 /** Events that record what the bot posted. They are never a decision's input. */
-const BOT_RECORDS: ReadonlySet<string> = new Set(['bot-message-posted', 'status-message-posted']);
+export const BOT_RECORDS: ReadonlySet<string> = new Set(['bot-message-posted', 'status-message-posted']);
 
 /**
  * For a writer whose append at `expectedSeq` conflicted: the incident's new last seq when every event
@@ -88,8 +88,14 @@ const BOT_RECORDS: ReadonlySet<string> = new Set(['bot-message-posted', 'status-
  * moved the log, and the writer must re-read and decide again. The engine needs this because a step
  * posts a card through the adapter, which records it, before the step appends.
  */
-export async function lastSeqPastBotRecords(state: Pick<StatePort, 'read'>, incidentId: string, expectedSeq: number): Promise<number | undefined> {
+export async function lastSeqPastBotRecords(
+  state: Pick<StatePort, 'read'>,
+  incidentId: string,
+  expectedSeq: number,
+  /** The event types that leave the writer's decision standing; bot records by default. */
+  harmless: ReadonlySet<string> = BOT_RECORDS,
+): Promise<number | undefined> {
   const newer = await state.read(incidentId, expectedSeq + 1);
-  if (newer.length === 0 || !newer.every((e) => BOT_RECORDS.has(e.type))) return undefined;
+  if (newer.length === 0 || !newer.every((e) => harmless.has(e.type))) return undefined;
   return newer.at(-1)?.seq;
 }
