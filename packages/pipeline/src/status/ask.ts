@@ -9,16 +9,18 @@
 // whole answer stays well under a second.
 //
 // With `access` (A 4.3, #272) an answer covers only what the asker may see: an incident from a channel
-// on the asker's platform they are in, one they reported or own, and one with no chat channel (a CLI
-// or Raycast capture). Another platform's channel is never theirs. `askerMayAsk` is false for a guest
-// or someone from another organization, whom the adapters answer with `GUESTS_GET_NO_STATUS` instead.
+// they are in, one they reported or own, and one with no chat channel (a CLI or Raycast capture). A map
+// person counts as in a channel when either of their ids is in it (#301): for an incident on the other
+// platform, `access.other` checks the id the map gives them there. Anyone the map lists on one platform
+// only never sees the other platform's channels. `askerMayAsk` is false for a guest or someone from
+// another organization, whom the adapters answer with `GUESTS_GET_NO_STATUS` instead.
 
 import type { IncidentEvent } from '../contracts/events.ts';
 import type { StatusAnswer, StatusQuery } from '../contracts/signals.ts';
 import type { IncidentActor } from '../contracts/incident.ts';
 import type { Claim, IncidentView, Subscription } from '../contracts/state.ts';
 import { isTerminalStatus } from '../lifecycle/machine.ts';
-import type { WorkspaceMap } from '../map/types.ts';
+import type { MapPerson, WorkspaceMap } from '../map/types.ts';
 import type { Membership } from '../policy/autonomy.ts';
 import type { ChatPlatform, StatePort } from '../ports/state.ts';
 import { createStatusQueries, type QueryResolution } from './query.ts';
@@ -47,6 +49,8 @@ export interface StatusAccess {
   membership(userId: string): Promise<Membership>;
   /** Whether the user is in the channel now (a short cache is fine). */
   inChannel(channelId: string, userId: string): Promise<boolean>;
+  /** The other chat platform's channel check, when it is configured (#301). */
+  other?: Pick<StatusAccess, 'platform' | 'inChannel'>;
 }
 
 /** What a guest or external person is told when they ask for a status. */
@@ -82,21 +86,33 @@ export function briefMembers(list: (channelId: string) => Promise<Iterable<strin
 }
 
 /** The incidents `asker` may hear about (see the file header). */
-export async function visibleTo(access: StatusAccess, asker: IncidentActor, incidents: readonly IncidentView[]): Promise<IncidentView[]> {
-  const channels = new Map<string, Promise<boolean>>();
-  const inChannel = (channelId: string): Promise<boolean> => {
-    let known = channels.get(channelId);
+export async function visibleTo(
+  access: StatusAccess,
+  asker: IncidentActor,
+  incidents: readonly IncidentView[],
+  map?: Pick<WorkspaceMap, 'people'>,
+): Promise<IncidentView[]> {
+  // The asker's id on each platform: theirs here, and the map's on the other one (#301).
+  const idOn = (platform: ChatPlatform, person: MapPerson): string | undefined => (platform === 'slack' ? person.slackId : person.teamsId);
+  const person = map?.people.find((p) => idOn(access.platform, p) === asker.id);
+  const elsewhere = access.other !== undefined && person !== undefined ? idOn(access.other.platform, person) : undefined;
+  const checks = new Map<string, Promise<boolean>>();
+  const inChannel = (check: Pick<StatusAccess, 'platform' | 'inChannel'>, channelId: string, userId: string): Promise<boolean> => {
+    const key = `${check.platform}:${channelId}`;
+    let known = checks.get(key);
     if (known === undefined) {
-      known = access.inChannel(channelId, asker.id).catch(() => false);
-      channels.set(channelId, known);
+      known = check.inChannel(channelId, userId).catch(() => false);
+      checks.set(key, known);
     }
     return known;
   };
+  const mine = (id: string | undefined): boolean => id !== undefined && (id === asker.id || id === elsewhere);
   const seen = await Promise.all(
     incidents.map(async (i) => {
       const chat = i.source === 'slack' || i.source === 'teams';
-      if (!chat || i.channelId === undefined || i.reporterId === asker.id || (i.ownerRef !== undefined && i.ownerRef === asker.name)) return true;
-      return i.source === access.platform && (await inChannel(i.channelId));
+      if (!chat || i.channelId === undefined || mine(i.reporterId) || (i.ownerRef !== undefined && i.ownerRef === asker.name)) return true;
+      if (i.source === access.platform) return inChannel(access, i.channelId, asker.id);
+      return access.other?.platform === i.source && elsewhere !== undefined && elsewhere !== '' && (await inChannel(access.other, i.channelId, elsewhere));
     }),
   );
   return incidents.filter((_, n) => seen[n] === true);
@@ -155,7 +171,7 @@ export function createStatusAsk(options: StatusAskOptions): (query: StatusQuery)
   return async (query) => {
     const map = await options.getMap();
     const rows = await state.findIncidents({ workspaceId: options.workspaceId, limit });
-    const incidents = options.access === undefined ? rows : await visibleTo(options.access, query.asker, rows);
+    const incidents = options.access === undefined ? rows : await visibleTo(options.access, query.asker, rows, map);
     const logs = new Map<string, IncidentEvent[]>();
     // The asking channel's open incidents: a thread can match only through `captured.threadId` in the log.
     const channelId = query.context.channelId;

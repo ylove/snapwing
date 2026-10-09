@@ -128,8 +128,11 @@ describe('a DM goes to the platform the watcher subscribed from', () => {
   it.each([
     ['teams', 'slack', 'U-FAKE-SLACK-ONLY'],
     ['slack', 'teams', 'AAD-FAKE-TEAMS-ONLY'],
-  ] as const)("a %s incident's channel is never that of a standing watcher who asked on %s (%s): nothing is sent (#272)", async (incident, asked, userId) => {
+  ] as const)('a %s incident sends its DM to a watcher who asked on %s (%s) there, when the map ties them to a member (#301)', async (incident, asked, userId) => {
     time += 3_600_000;
+    if (!(state instanceof StateStore)) throw new Error('not a StateStore');
+    // The list the channel members writer leaves: the member, and their id on the other platform.
+    await state.kvSet(channelMembersKey('C-FAKE'), JSON.stringify(['U-PAT', userId]));
     const outcome = await applyStandingWatch(state, map, { workspaceId, userId, text: 'keep me posted on the website', channel: 'dm', platform: asked, now: new Date(time) });
     expect(outcome).toMatchObject({ handled: true, changed: true });
     const id = await filedIncident(incident);
@@ -138,8 +141,20 @@ describe('a DM goes to the platform the watcher subscribed from', () => {
     const onIncident = (await drain(incident)).filter((r) => r.incidentId === id && r.op === 'notify');
     await state.unsubscribe({ workspaceId, userId, scopeKind: 'surface', scopeId: 'web' });
 
-    expect(dms.map(shape)).toEqual([]);
+    expect(dms.map(shape)).toEqual([[asked, 'dm', [userId]]]);
     expect(onIncident).toEqual([]);
+  });
+
+  it('a watcher the map lists on one platform only hears nothing about the other platform\'s incident (#301)', async () => {
+    time += 3_600_000;
+    if (!(state instanceof StateStore)) throw new Error('not a StateStore');
+    await state.kvSet(channelMembersKey('C-FAKE'), JSON.stringify(['U-PAT']));
+    await applyStandingWatch(state, map, { workspaceId, userId: 'U-FAKE-ONE-PLATFORM', text: 'keep me posted on the website', channel: 'dm', platform: 'slack', now: new Date(time) });
+    const id = await filedIncident('teams');
+    const dms = (await drain('slack')).filter((r) => r.incidentId === id && r.op === 'notify');
+    await state.unsubscribe({ workspaceId, userId: 'U-FAKE-ONE-PLATFORM', scopeKind: 'surface', scopeId: 'web' });
+    expect(dms).toEqual([]);
+    await drain('teams');
   });
 
   it('a standing watch asked again from the other platform moves there; one written with no platform keeps it', async () => {

@@ -1520,6 +1520,16 @@ export const compose: ComposeFn = async (deps) => {
     clock,
   };
 
+  // A 4.3, A 4.4 (#272): status answers and standing watches for members only, about channels they are
+  // in. Each platform's check also reaches the other one's channels for a person the map lists on both (#301).
+  const slackOwnAccess: StatusAccess | undefined =
+    slack === undefined ? undefined : { platform: 'slack', membership: (user) => slack.authorOf.membership(user), inChannel: createSlackChannelAccess({ web: slack.web, clock }) };
+  const teamsOwnAccess: StatusAccess | undefined = teams === undefined ? undefined : createTeamsStatusAccess({ graph: teams.graph, getMap, clock });
+  const withOther = (own: StatusAccess | undefined, other: StatusAccess | undefined): { access?: StatusAccess } =>
+    own === undefined ? {} : { access: other === undefined ? own : { ...own, other: { platform: other.platform, inChannel: other.inChannel } } };
+  const slackAccess = withOther(slackOwnAccess, teamsOwnAccess);
+  const teamsAccess = withOther(teamsOwnAccess, slackOwnAccess);
+
   // Slack's inbound side, when Slack is configured: signals, taps, the status query, Home, and the
   // transport. A tap's PR actions and the GitHub link check are Slack's (per tap source).
   const slackInbound =
@@ -1527,8 +1537,6 @@ export const compose: ComposeFn = async (deps) => {
       ? undefined
       : (() => {
           const { web: slackWeb, botUserId, workspaceDomain, authorOf, surface } = slack;
-          // A 4.3, A 4.4 (#272): status answers and standing watches for members only, about channels they are in.
-          const access: StatusAccess = { platform: 'slack', membership: (user) => authorOf.membership(user), inChannel: createSlackChannelAccess({ web: slackWeb, clock }) };
           const slackSignals = createSlackSignals({
             deps: signalDeps,
             getMap,
@@ -1540,7 +1548,7 @@ export const compose: ComposeFn = async (deps) => {
             model,
             limits: chatLimits,
             standing: state,
-            access,
+            ...slackAccess,
             // A 3 (#294): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
             text: textSignalDeps,
             onOutcome: afterSignal,
@@ -1569,7 +1577,7 @@ export const compose: ComposeFn = async (deps) => {
             botUserId,
             authorOf,
             clock,
-            access,
+            ...slackAccess,
             onError: (e) => log.error(`slack status query: ${message(e)}`),
           });
           const slackHome = createSlackHome({
@@ -1610,7 +1618,6 @@ export const compose: ComposeFn = async (deps) => {
       ? undefined
       : (() => {
           const { appId, connector, graph, surface, teamsError } = teams;
-          const access = createTeamsStatusAccess({ graph, getMap, clock });
           // Reactions (Graph's diff and the bot's own messages) and thread replies, applied by `handleSignal`
           // with the Slack signals' deps. Its per-message chain is per process: with several API replicas
           // the kv reaction set can still race.
@@ -1626,7 +1633,7 @@ export const compose: ComposeFn = async (deps) => {
             model,
             limits: chatLimits,
             standing: state,
-            access,
+            ...teamsAccess,
             // Teams has no ephemerals: a standing watch is confirmed in the person's personal chat.
             confirmStanding: ({ aadObjectId, text }) => surface.personPost(aadObjectId, text),
             text: textSignalDeps,
@@ -1653,7 +1660,7 @@ export const compose: ComposeFn = async (deps) => {
             onError: teamsError('interactivity'),
             log: (line) => log.info(line),
           });
-          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, access, onError: teamsError('status query') });
+          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, ...teamsAccess, onError: teamsError('status query') });
           const queue = teamsQueueRoutes(
             createTeamsQueue({
               connector,

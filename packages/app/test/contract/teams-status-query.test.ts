@@ -15,6 +15,7 @@ import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createTeamsStatusAccess } from '../../src/adapters/teams/channel-members.ts';
+import type { StatusAccess } from '@snapwing/pipeline/status/ask.ts';
 import { createTeamsConnector } from '../../src/adapters/teams/connector.ts';
 import { teamsUserKey } from '../../src/adapters/teams/conversations.ts';
 import { createTeamsStatusQuery, type TeamsStatusQuery } from '../../src/adapters/teams/status-query.ts';
@@ -105,14 +106,14 @@ function ev<T extends EventType>(id: string, type: T, payload: EventPayloads[T])
 }
 
 /** Filed on web/`component` with the fixer running; `threadId` is the channel thread the anchor was a reply in. */
-async function seed(inc: Seed, summary: string, component: string, opts: { channel?: string; threadId?: string } = {}): Promise<void> {
+async function seed(inc: Seed, summary: string, component: string, opts: { channel?: string; threadId?: string; source?: 'slack' | 'teams' } = {}): Promise<void> {
   await state.append(
     inc.id,
     [
       ev(inc.id, 'captured', {
         kind: 'incident',
         idempotencyKey: `teams-${inc.anchor}-bug`,
-        source: 'teams',
+        source: opts.source ?? 'teams',
         reporter: { id: REPORTER, name: 'salesLead', role: 'reporter' },
         anchorText: summary,
         anchorId: inc.anchor,
@@ -403,7 +404,7 @@ describe('the status command', () => {
 
 describe('who may hear about what (#272)', () => {
   const GUEST = '9e8d7c6b-0000-4000-8000-00000000ab01';
-  function scoped(): TeamsStatusQuery {
+  function scoped(other?: StatusAccess['other']): TeamsStatusQuery {
     const scopedMap: WorkspaceMap = { ...map, channels: [...map.channels, { id: CHANNEL, name: 'web-bugs-teams', surface: 'web', triggerEmoji: [], platform: 'teams', teamId: 'team-1' }] };
     const graph = {
       user: (aad: string) => Promise.resolve({ id: aad, userType: aad === GUEST ? 'Guest' : 'Member' }),
@@ -416,7 +417,7 @@ describe('who may hear about what (#272)', () => {
       workspaceId: WS,
       getMap: () => Promise.resolve(scopedMap),
       clock: () => new Date(T0),
-      access: createTeamsStatusAccess({ graph, getMap: () => Promise.resolve(scopedMap), clock: () => new Date(T0) }),
+      access: { ...createTeamsStatusAccess({ graph, getMap: () => Promise.resolve(scopedMap), clock: () => new Date(T0) }), ...(other === undefined ? {} : { other }) },
       onError: (e) => errors.push(e),
     });
   }
@@ -428,6 +429,22 @@ describe('who may hear about what (#272)', () => {
     const text = await answerTo(chat(ENGINEER, "what's open on the website?"));
     expect(text).toContain('WEB-1042');
     expect(text).not.toContain('WEB-1051');
+  });
+
+  // #301: the map gives the engineer a Slack id too, so they are in a Slack channel by it.
+  it('answers about a Slack incident to a Teams asker the map ties to a member of its channel, and not to one listed on Teams only', async () => {
+    const SLACK_CHANNEL = 'C0WEBBUGS';
+    await seed(CART_B, 'Coupon rejected', 'checkout', { channel: SLACK_CHANNEL, source: 'slack' });
+    const asked: string[] = [];
+    teams = scoped({ platform: 'slack', inChannel: (c, u) => (asked.push(`${c} ${u}`), Promise.resolve(c === SLACK_CHANNEL && u === 'U0WEBDEV1')) });
+    expect(await answerTo(chat(ENGINEER, 'WEB-1060?'))).toContain('WEB-1060');
+    expect(asked).toEqual([`${SLACK_CHANNEL} U0WEBDEV1`]);
+    // Someone the map lists on Teams only never sees it, and their Slack membership is not even asked.
+    sent.length = 0;
+    await teams.handle(chat('5c1d7e3a-92b4-4f60-8a1e-3d5b7c9e1f24', 'WEB-1060?'));
+    expect(sent).toHaveLength(1);
+    expect(cardText(sent[0])).not.toContain('WEB-1060');
+    expect(asked).toHaveLength(1);
   });
 
   it('gives a guest no status answer and no standing watch', async () => {

@@ -7,7 +7,8 @@
 //   so watchers and the staging request work on an install with no playbook file.
 // - Subscriptions: the incident's (as the log has folded them up to this event), plus the workspace's
 //   standing `surface` rows for the incident's surface and `all` rows.
-// - Channel members, when known: kv key `channel-members:{channelId}` holding a JSON array of user ids.
+// - Channel members, when known: kv key `channel-members:{channelId}` holding a JSON array of user ids
+//   (with the other platform's id of each member the map lists on both, #301).
 //   The Slack channel members module writes it (`app/src/adapters/slack/channel-members.ts`); a
 //   channel it could not list has no key, so a watcher on the incident there is mentioned in the thread
 //   unless their subscription says DM, and a standing watcher hears nothing (#272).
