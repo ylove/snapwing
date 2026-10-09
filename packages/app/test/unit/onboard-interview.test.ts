@@ -314,7 +314,40 @@ describe('secrets', () => {
     const result = await run(steps, createKvOnboardingStore(memoryKv()), terminal([]).io, { env: { FROM_ENV: 'from-process' } });
     expect(read?.reveal()).toBe('a b"c');
     expect(String(read)).toBe('[secret]');
-    expect(result.state.steps['a']?.data).toEqual({ fallback: '[secret]', missing: true });
+    expect(result.state.steps['a']?.data).toEqual({ fallback: 'from-process', missing: true });
+  });
+
+  it('redacts only secret keys read through readEnv (#276)', async () => {
+    const steps = [
+      step('a', [], async (ctx) => {
+        await ctx.writeEnv({ CUSTOM_VALUE: new SecretValue('written-secret-value') });
+        const read = async (n: string): Promise<string | null> => (await ctx.readEnv(n))?.reveal() ?? null;
+        return {
+          status: 'done',
+          data: {
+            id: await read('SLACK_CLIENT_ID'),
+            url: await read('SNAPWING_PUBLIC_URL'),
+            token: await read('JIRA_API_TOKEN'),
+            db: await read('DATABASE_URL'),
+            written: await read('CUSTOM_VALUE'),
+          },
+        };
+      }),
+    ];
+    const env = {
+      SLACK_CLIENT_ID: '1234567.890123',
+      SNAPWING_PUBLIC_URL: 'https://snap.example.com',
+      JIRA_API_TOKEN: 'jira-token-value',
+      DATABASE_URL: 'postgres://u:pw-secret@h/db',
+    };
+    const result = await run(steps, createKvOnboardingStore(memoryKv()), terminal([]).io, { env });
+    expect(result.state.steps['a']?.data).toEqual({
+      id: '1234567.890123',
+      url: 'https://snap.example.com',
+      token: '[secret]',
+      db: '[secret]',
+      written: '[secret]',
+    });
   });
 
   it('is the one upsertEnv the bootstrap scripts use', () => {
