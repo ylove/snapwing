@@ -112,7 +112,7 @@ const ENGINEER: Person = {
   name: 'E2E Engineer',
   handle: 'e2eEngineer',
   email: 'engineer@example.com',
-  github: { login: 'e2e-engineer', id: 7200001, token: 'test-user-token-engineer', code: 'test-oauth-code-engineer' },
+  github: { login: 'e2e-engineer', id: 7200001, token: 'test-user-token-engineer', code: 'test-oauth-code-engineer', email: 'engineer@example.com' },
 };
 const REPORTER: Person = { aad: '6f1c2a3b-0000-4000-8000-00000000c0a1', botId: '29:1e2e-reporter', name: 'E2E Reporter', handle: 'e2eReporter' };
 /** The escalation row's three other reactors: mapped people the run acts as through Graph. */
@@ -524,8 +524,8 @@ async function linkGitHub(w: World, who: Person): Promise<void> {
   const oauth = createGitHubOAuth({ state: w.booted.state, secrets: w.booted.secrets, workspaceId });
   const link = new URL(await oauth.linkUrl({ chat: 'teams', userId: who.aad }));
   const start = await w.booted.api.fetch(new Request(`http://snapwing.test${link.pathname}${link.search}`));
-  expect(start.status).toBe(302);
-  const authorize = new URL(start.headers.get('location') ?? '');
+  expect(start.status).toBe(200);
+  const authorize = new URL((/<a href="([^"]+)"/.exec(await start.text())?.[1] ?? '').replace(/&#(\d+);/g, (_m, n: string) => String.fromCharCode(Number(n))));
   const cookie = (start.headers.get('set-cookie') ?? '').split(';')[0] ?? '';
   const callback = new URL('http://snapwing.test/auth/github/callback');
   callback.searchParams.set('code', gh.code);
