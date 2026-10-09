@@ -111,6 +111,8 @@ export interface StatusCopyContext {
    * when set, is the person the instruction names, and the copy hands the ticket to them.
    */
   instructionsHold?: string;
+  /** `filed`: the engineer whose claim holds the fixer (A 2.1); the copy says the ticket is filed ticket only. */
+  claimerUserId?: string;
   /** `failed`: whether a draft with what the fixer tried was kept. Default true. */
   draft?: boolean;
   /** Appended as a further sentence (the engine's notes on how an incident was filed). */
@@ -134,7 +136,10 @@ function body(stage: StatusStage, ctx: StatusCopyContext): string {
         const held = `Filed as ${key}. ${isInstructionsHoldSentence(reason) ? reason : 'Holding per workspace instructions'}.`;
         return owner === undefined ? held : `${held} Over to ${owner}.`;
       }
-      return owner === undefined ? `Filed as ${key}.` : `Filed as ${key}, assigned to ${owner}.`;
+      {
+        const filed = owner === undefined ? `Filed as ${key}.` : `Filed as ${key}, assigned to ${owner}.`;
+        return ctx.claimerUserId === undefined ? filed : `${filed} ${mentionToken(ctx.claimerUserId)} is on it, so this is filed as ticket only.`;
+      }
     case 'fixing':
       return `Filed as ${key}. Working on a fix now.`;
     case 'pr-open':

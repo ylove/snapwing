@@ -3,6 +3,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { LinkedIdentityConflictError } from '../../src/contracts/state.ts';
 import type { LinkedIdentityKey, NewLinkedIdentity, OpenedState } from '../../src/ports/state.ts';
 import { StateStore } from '../../src/state/store.ts';
 import { SealError, SEALED_PREFIX, deriveKey, isSealed, parseSealKey, seal, unseal } from '../../src/util/seal.ts';
@@ -136,6 +137,26 @@ describe(`linked identities (${TEST_DIALECT})`, () => {
     expect(got?.linkedAt).toBe(new Date(T0 + 120_000).toISOString());
     const count = await store.ctx.db.selectFrom('linked_identities').select((eb) => eb.fn.countAll().as('n')).executeTakeFirstOrThrow();
     expect(Number(count.n)).toBe(1);
+  });
+
+  it('links a GitHub account to one chat user at a time, and finds its holder', async () => {
+    const W = KEY_A.workspaceId;
+    expect(await store.getLinkedIdentityByGithubUser(W, 2_147_483_648_123)).toBeNull();
+    await store.linkIdentity(identity());
+    expect((await store.getLinkedIdentityByGithubUser(W, 2_147_483_648_123))?.chatUserId).toBe('U0AAAA');
+    expect(await store.getLinkedIdentityByGithubUser('01JZ00000000000000000000W2', 2_147_483_648_123)).toBeNull();
+
+    // A second chat user, on either platform, is refused and writes nothing.
+    await expect(store.linkIdentity(identity({ chatUserId: 'U0BBBB' }))).rejects.toBeInstanceOf(LinkedIdentityConflictError);
+    await expect(store.linkIdentity(identity({ chat: 'teams', chatUserId: 'aad-b' }))).rejects.toBeInstanceOf(LinkedIdentityConflictError);
+    expect(await store.getLinkedIdentity({ ...KEY_A, chatUserId: 'U0BBBB' })).toBeNull();
+    // The same chat user may link again, and another workspace is its own namespace.
+    await store.linkIdentity(identity({ accessToken: seal(KEY, 'test-access-token-again', 'a') }));
+    await store.linkIdentity(identity({ workspaceId: '01JZ00000000000000000000W2', chatUserId: 'U0BBBB' }));
+    // Unlinking frees the account.
+    await store.unlinkIdentity(KEY_A);
+    await store.linkIdentity(identity({ chatUserId: 'U0BBBB' }));
+    expect((await store.getLinkedIdentityByGithubUser(W, 2_147_483_648_123))?.chatUserId).toBe('U0BBBB');
   });
 
   it('rejects a token that is not sealed and writes nothing', async () => {

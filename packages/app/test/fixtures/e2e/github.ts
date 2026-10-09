@@ -10,8 +10,10 @@
 // (reviews, check runs, requested reviewers, merge, comments, close) lands in memory here.
 //
 // Fake CI: the base branch requires `snapwing/review` (the review agent's check run) and `ci/test`,
-// which reports success for every head. Approving or requesting changes on the App's own pull request
-// is refused with 422, as GitHub does, so the review job's COMMENT fallback runs.
+// which reports success for every head unless a test silences it (`silent`: a required check nothing
+// ever reports, CI that never answers). Approving or requesting changes on the App's own pull request
+// is refused with 422, as GitHub does, so the review job's COMMENT fallback runs. A merge is the linked
+// human's (their user-to-server token) or, at level 3, the App's own (the installation token).
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -38,6 +40,8 @@ export interface GitHubPerson {
   token: string;
   /** The authorization code that exchanges for `token`. */
   code: string;
+  /** The verified primary email GitHub lists for the account; the link flow checks it against the map. */
+  email: string;
 }
 
 export interface FakePull {
@@ -82,6 +86,10 @@ export class FakeGitHub {
   readonly people: GitHubPerson[] = [];
   /** Who opened every pull request: the App's bot user. */
   botLogin = BOT_LOGIN;
+  /** Required checks no CI ever reports for any head (so they stay pending). */
+  readonly silent = new Set<string>();
+  /** Branches the app deleted, as `owner/name:branch`. */
+  readonly deletedBranches: string[] = [];
 
   /** `dir` is shared with the fake harness (`pulls/`). */
   constructor(readonly dir: string) {}
@@ -219,6 +227,10 @@ export class FakeGitHub {
         return person === undefined ? denied() : HttpResponse.json({ login: person.login, id: person.id });
       }),
       http.get(`${GITHUB}/repos/:owner/:repo`, ({ request }) => (installation(request) ? HttpResponse.json({ default_branch: 'main' }) : denied())),
+      http.get(`${GITHUB}/user/emails`, ({ request }) => {
+        const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
+        return person === undefined ? denied() : HttpResponse.json([{ email: person.email, primary: true, verified: true }]);
+      }),
       http.get(`${GITHUB}/repos/:owner/:repo/pulls/:number`, async ({ request, params }) =>
         installation(request) ? withPull(request, params, (pr) => HttpResponse.json(this.pullJson(pr))) : denied(),
       ),
@@ -256,16 +268,18 @@ export class FakeGitHub {
         });
       }),
       http.put(`${GITHUB}/repos/:owner/:repo/pulls/:number/merge`, async ({ request, params }) => {
-        // Performed as the linked human (main 16): their user-to-server token, never the App's.
+        // Performed as the linked human (main 16): their user-to-server token. An autopilot merge (level 3,
+        // main 11.3) is the App's own, with the installation token.
         const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
-        if (person === undefined) return denied();
+        const by = person?.login ?? (installation(request) ? BOT_LOGIN : undefined);
+        if (by === undefined) return denied();
         const body = rec(await request.clone().json());
         return withPull(request, params, (pr) => {
           if (pr.state !== 'open') return HttpResponse.json({ message: 'Pull Request is not mergeable' }, { status: 405 });
           if (body['sha'] !== this.headSha(pr)) return HttpResponse.json({ message: 'Head branch was modified' }, { status: 409 });
           pr.state = 'closed';
           pr.merged = true;
-          pr.mergedBy = person.login;
+          pr.mergedBy = by;
           pr.mergeSha = createHash('sha1').update(`${pr.repo}#${pr.number}`).digest('hex');
           return HttpResponse.json({ merged: true, sha: pr.mergeSha, message: 'Pull Request successfully merged' });
         });
@@ -316,8 +330,17 @@ export class FakeGitHub {
         const runs = this.checkRuns
           .filter((r) => r.repo === repoOf(params) && r.headSha === sha)
           .map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion }));
-        const all = [{ id: 1, name: CI_CHECK, status: 'completed', conclusion: 'success' }, ...runs];
+        const ci = this.silent.has(CI_CHECK) ? [] : [{ id: 1, name: CI_CHECK, status: 'completed', conclusion: 'success' }];
+        const all = [...ci, ...runs.filter((r) => !this.silent.has(r.name))];
         return HttpResponse.json(page === 1 ? { total_count: all.length, check_runs: all } : { total_count: all.length, check_runs: [] });
+      }),
+      // The head branch after an autopilot merge (`fix/KEY`, so the ref has a slash).
+      http.delete(/\/repos\/[^/]+\/[^/]+\/git\/refs\/heads\/.+$/, ({ request }) => {
+        if (!installation(request)) return denied();
+        note(request);
+        const [, owner, name, branch] = /\/repos\/([^/]+)\/([^/]+)\/git\/refs\/heads\/(.+)$/.exec(new URL(request.url).pathname) ?? [];
+        this.deletedBranches.push(`${owner ?? ''}/${name ?? ''}:${decodeURIComponent(branch ?? '')}`);
+        return new HttpResponse(null, { status: 204 });
       }),
       http.get(`${GITHUB}/repos/:owner/:repo/commits/:sha/status`, ({ request }) => {
         if (!installation(request)) return denied();

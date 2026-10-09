@@ -20,6 +20,7 @@
 // No keys and no network. Runs on the dialect `SNAPWING_DB` selects (pg-boss on Postgres).
 
 import { generateKeyPairSync } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,13 +37,15 @@ import { DEMO_JIRA_EMAIL, DEMO_JIRA_TOKEN, JIRA_BASE, JiraWorld, jiraHandlers } 
 import { withValidation } from '@snapwing/pipeline/models/router.ts';
 import type { ClassifyRequest, CompletionResult, ModelBackend, RawClassifyResult, VisionRequest, VisionResult } from '@snapwing/pipeline/ports/model.ts';
 import type { HarnessPort } from '@snapwing/pipeline/ports/harness.ts';
+import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { CAPTURE_ANSWERS_PER_WINDOW, CAPTURE_IMAGE_MAX_BYTES, CAPTURE_SENDS_PER_WINDOW } from '../../src/adapters/capture/routes.ts';
+import { createQueue } from '../../src/status/queue.ts';
 import { createApiServer, type ApiServer } from '../../src/server/http.ts';
 import { opsRoutes } from '../../src/server/ops.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
-import { bootComposed, DEMO_MAP, EXAMPLE_CONFIG, fakeSecrets, slackWorld, type Booted } from '../fixtures/e2e/world.ts';
+import { JIRA_HOOK_SECRET, bootComposed, DEMO_MAP, EXAMPLE_CONFIG, fakeSecrets, slackWorld, type Booted } from '../fixtures/e2e/world.ts';
 
 const ENDPOINT = 'http://snapwing.test';
 const TEST_TIMEOUT = 60_000;
@@ -234,7 +237,7 @@ async function world(): Promise<World> {
 async function deliverJira(w: World, issueKey: string): Promise<void> {
   await expect.poll(() => w.jiraHooks.queued.some((d) => d.issueKey === issueKey), { timeout: 10_000, interval: 25 }).toBe(true);
   const statuses = await w.jiraHooks.deliver(issueKey, (body) =>
-    w.api.fetch(new Request(`${ENDPOINT}/webhooks/jira`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
+    w.api.fetch(new Request(`${ENDPOINT}/webhooks/jira?secret=${JIRA_HOOK_SECRET}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })),
   );
   expect(statuses.every((s) => s === 200)).toBe(true);
 }
@@ -453,6 +456,29 @@ describe('the capture API through capture-client', () => {
     const theirs = await reporter.queue();
     expect(theirs.kind).toBe('reporter');
     expect(theirs.sections.map((s) => s.id)).toEqual(['reports']);
+    settled(w);
+  });
+
+  it('a reporter with a Slack id sees their CLI capture in Your reports, asked by handle or by Slack id (#275)', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const reporter = await w.clientFor('salesLead');
+    const sent = await reporter.sendText(VAGUE, { surface: 'web' });
+    expect(sent).toMatchObject({ kind: 'new' });
+    expect(await reporter.answer(sent.captureId, 'file-it')).toMatchObject({ kind: 'filed' });
+    const ids = (q: { readonly sections: readonly { readonly items: readonly { readonly incidentId: string }[] }[] }): string[] => q.sections.flatMap((section) => section.items.map((i) => i.incidentId));
+    // By handle, through GET /queue.
+    expect(ids(await reporter.queue())).toEqual([sent.captureId]);
+    // By Slack id, the way Slack Home asks.
+    const queue = createQueue({
+      state: w.booted.state,
+      workspaceId: w.workspaceId,
+      getMap: () => parseWorkspaceMap(readFileSync(DEMO_MAP, 'utf8')),
+      identity: { getLinkedIdentity: () => Promise.resolve(null), isLinked: () => Promise.resolve(false) },
+      pullRequest: () => Promise.reject(new Error('no pull request lookup expected')),
+    });
+    expect(ids(await queue.queueFor({ chat: 'slack', userId: 'U0SALESLEAD' }))).toEqual([sent.captureId]);
+    // Someone else sees nothing of it.
+    expect(ids(await queue.queueFor({ chat: 'slack', userId: 'U0OTHER' }))).toEqual([]);
     settled(w);
   });
 

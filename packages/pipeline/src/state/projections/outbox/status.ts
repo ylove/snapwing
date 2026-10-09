@@ -45,7 +45,7 @@ export interface UpdateStatusRow {
 /** Chat rows for one event (see the file header). */
 export function statusRows(event: IncidentEvent, change: IncidentChange): OutboxItem[] {
   if (!change.valid) return [];
-  const status = statusFor(event, change.after, change.before);
+  const status = statusFor(event, change.after, change.before, change.holdClaimerId);
   if (status === undefined) return [];
   const payload: UpdateStatusRow = { status };
   return statusTargets(change.after.source).flatMap((target) =>

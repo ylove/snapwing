@@ -292,7 +292,7 @@ describe('missing values', () => {
 });
 
 describe('webhook', () => {
-  const WH = { ...ENV, SNAPWING_PUBLIC_URL: 'https://abc.ngrok.app/' };
+  const WH: Record<string, string> = { ...ENV, SNAPWING_PUBLIC_URL: 'https://abc.ngrok.app/', JIRA_WEBHOOK_SECRET: 'test-secret' };
 
   it('requires SNAPWING_PUBLIC_URL', async () => {
     const report = await runBootstrap({ env: ENV, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
@@ -310,9 +310,16 @@ describe('webhook', () => {
         name: 'Snapwing',
         filters: { 'issue-related-events-section': 'project = OAJ' },
         events: ['jira:issue_updated', 'comment_created'],
-        url: 'https://abc.ngrok.app/webhooks/jira',
+        url: 'https://abc.ngrok.app/webhooks/jira?secret=test-secret',
       }),
     ]);
+  });
+
+  it('refuses to register a webhook address without a secret', async () => {
+    const noSecret = { ...ENV, SNAPWING_PUBLIC_URL: 'https://abc.ngrok.app/' };
+    const report = await runBootstrap({ env: noSecret, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
+    expect(report.ok).toBe(false);
+    expect(jira.webhooks).toHaveLength(0);
   });
 
   it('appends the URL-encoded ?secret= when JIRA_WEBHOOK_SECRET is set and never prints it', async () => {
@@ -340,9 +347,9 @@ describe('webhook', () => {
 
   it('on re-run with a new URL leaves exactly one webhook', async () => {
     await runBootstrap({ env: WH, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
-    await runBootstrap({ env: { ...ENV, SNAPWING_PUBLIC_URL: 'https://def.ngrok.app' }, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
+    await runBootstrap({ env: { ...WH, SNAPWING_PUBLIC_URL: 'https://def.ngrok.app' }, mode: 'webhook', envFilePath: envFile(ORIGINAL) });
     expect(jira.webhooks).toHaveLength(1);
-    expect(jira.webhooks[0]?.url).toBe('https://def.ngrok.app/webhooks/jira');
+    expect(jira.webhooks[0]?.url).toBe('https://def.ngrok.app/webhooks/jira?secret=test-secret');
   });
 
   it('--dry-run registers nothing', async () => {

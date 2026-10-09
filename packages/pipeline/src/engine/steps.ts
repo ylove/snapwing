@@ -23,7 +23,7 @@ import type { MapPerson, WorkspaceMap } from '../map/types.ts';
 import { resolveAutonomy } from '../policy/autonomy.ts';
 import type { StatePort } from '../ports/state.ts';
 import { resolve } from '../resolve/index.ts';
-import { lastSeqPastBotRecords, RECORD_APPEND_TRIES } from '../signals/messages.ts';
+import { BOT_RECORDS, lastSeqPastBotRecords, RECORD_APPEND_TRIES } from '../signals/messages.ts';
 import { atLeastPriority, escalationState, type EscalationState } from '../signals/score.ts';
 import { findSurface, ownerIdOf, probableOwner } from '../resolve/lookup.ts';
 import { JIRA_DONE, JIRA_IN_PROGRESS, LABEL_HUMAN_CLAIMED, jiraCommentBatchKey, jiraCreateBatchKey, jiraFieldBatchKey } from '../state/projections/outbox/jira.ts';
@@ -144,6 +144,7 @@ async function commit(
   env: StepEnv,
   events: readonly NewEvent[],
   effects?: (tx: StatePort) => Promise<NewEvent[]>,
+  harmless?: ReadonlySet<string>,
 ): Promise<void> {
   const { state } = env.deps;
   const id = env.cursor.incidentId;
@@ -159,7 +160,7 @@ async function commit(
       env.cursor.lastSeq = seq;
       return;
     } catch (err) {
-      const past = isExpectedSeqConflict(err) && attempt < RECORD_APPEND_TRIES ? await lastSeqPastBotRecords(state, id, env.cursor.lastSeq) : undefined;
+      const past = isExpectedSeqConflict(err) && attempt < RECORD_APPEND_TRIES ? await lastSeqPastBotRecords(state, id, env.cursor.lastSeq, harmless) : undefined;
       if (past === undefined) throw err;
       env.cursor.lastSeq = past;
     }
@@ -839,6 +840,17 @@ function filedBundle(bundle: ContextBundle, userSide: UserSideRound | undefined)
 }
 
 /**
+ * Events that do NOT change what the plan is made from: what the bot posted, the pinned status, what
+ * the incident waits on, and monitoring. When the plan's append conflicts and only these arrived, the
+ * plan already computed (scout and triage model calls included) still stands and is appended after
+ * them. This is an allowlist on purpose: any other event, including a type added later, may change the
+ * plan's inputs (the context bundle, a scope change, the resolution, a clarify answer, a correction, a
+ * level change, a claim, a reaction), so the conflict propagates and the step plans again from a
+ * fresh read.
+ */
+export const PLAN_UNAFFECTED_BY: ReadonlySet<string> = new Set([...BOT_RECORDS, 'waiting-changed', 'monitoring-started', 'monitoring-stopped']);
+
+/**
  * main 8 and 9: triage plan, autonomy level (from policy, inside `plan`), and ticket synthesis. The
  * full plan and the implementation request are stored as artifacts (ADR 0015). Levels 0, 2, 3 enqueue
  * `create-issue` with `planned`; level 1 shows the fix preview first. A `noop` plan ends the incident
@@ -912,7 +924,7 @@ export async function planStep(env: StepEnv, needsClarification: boolean, known?
         ...(capped === undefined ? {} : { capped }),
       }),
     ];
-  });
+  }, PLAN_UNAFFECTED_BY);
   if (level !== 1 || held) return 'continue';
   env.cursor.waiting = false; // `planned` changed the status, which ends any wait
   return awaitCard(env, { kind: 'fix-preview', plan: triaged }, resolution.ownerId);

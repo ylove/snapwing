@@ -1,10 +1,10 @@
 // The Teams side of the composed app's end to end world, beside `slackWorld` in world.ts: the Bot
 // Framework's OpenID metadata and a JWKS served from a key generated per run (so the messaging endpoint's
 // token check is the real one), the token endpoint, the Bot Connector at the activities' serviceUrl, and
-// Graph over one channel's messages, whose reactions a test changes the way a person reacting would. The
-// activities are the Teams fixtures pointed at that channel. The fake GitHub, the Jira webhooks, and the
-// fake harness are the same ones the Slack end to end test uses (fixtures/e2e/). Every value here is a
-// fake; none looks like a real credential.
+// Graph over one channel's messages and their inline images, whose reactions a test changes the way a
+// person reacting would. The activities are the Teams fixtures pointed at that channel. The fake GitHub,
+// the Jira webhooks, and the fake harness are the same ones the Slack end to end test uses
+// (fixtures/e2e/). Every value here is a fake; none looks like a real credential.
 
 import { generateKeyPairSync, sign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -59,6 +59,8 @@ export interface ConnectorCall {
   /** The activity replied to or edited; for a post, the id the Connector gave it. */
   activityId: string;
   body: Record<string, unknown>;
+  /** When the Connector took the call (epoch milliseconds). */
+  at: number;
 }
 
 export interface GraphReaction {
@@ -95,6 +97,8 @@ export interface TeamsWorldOptions {
   subscriptionStatus?: number;
   /** Where the Bot Connector answers; default the fixtures' `SERVICE_URL`. */
   serviceUrl?: string;
+  /** Inline images of the channel's messages, by hosted content id (Graph's `hostedContents/{id}/$value`). */
+  hostedContents?: Readonly<Record<string, Uint8Array>>;
 }
 
 /** A Graph channel message by `user` (an AAD object id), HTML body `text`. */
@@ -152,24 +156,24 @@ export function teamsWorld(server: SetupServer, messages: readonly GraphChannelM
     // The Bot Connector.
     http.post(`${service}v3/conversations`, async ({ request }) => {
       if (!authorized(request)) return denied();
-      world.connector.push({ kind: 'personal', conversation: '', activityId: '', body: await json(request) });
+      world.connector.push({ kind: 'personal', conversation: '', activityId: '', body: await json(request), at: Date.now() });
       return HttpResponse.json({ id: 'a:1personal-chat' });
     }),
     http.post(`${service}v3/conversations/:conversation/activities`, async ({ request, params }) => {
       if (!authorized(request)) return denied();
       const activityId = `teams-act-${String(++n)}`;
-      world.connector.push({ kind: 'send', conversation: id(params, 'conversation'), activityId, body: await json(request) });
+      world.connector.push({ kind: 'send', conversation: id(params, 'conversation'), activityId, body: await json(request), at: Date.now() });
       return HttpResponse.json({ id: activityId });
     }),
     http.post(`${service}v3/conversations/:conversation/activities/:activity`, async ({ request, params }) => {
       if (!authorized(request)) return denied();
       const activityId = `teams-act-${String(++n)}`;
-      world.connector.push({ kind: 'reply', conversation: id(params, 'conversation'), activityId, body: await json(request) });
+      world.connector.push({ kind: 'reply', conversation: id(params, 'conversation'), activityId, body: await json(request), at: Date.now() });
       return HttpResponse.json({ id: activityId });
     }),
     http.put(`${service}v3/conversations/:conversation/activities/:activity`, async ({ request, params }) => {
       if (!authorized(request)) return denied();
-      world.connector.push({ kind: 'update', conversation: id(params, 'conversation'), activityId: id(params, 'activity'), body: await json(request) });
+      world.connector.push({ kind: 'update', conversation: id(params, 'conversation'), activityId: id(params, 'activity'), body: await json(request), at: Date.now() });
       return HttpResponse.json({ id: id(params, 'activity') });
     }),
     // Graph: the channel's messages, replies, users (no User.Read.All: the map's email stands in), members, subscriptions.
@@ -185,6 +189,14 @@ export function teamsWorld(server: SetupServer, messages: readonly GraphChannelM
       return found === undefined ? HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 }) : HttpResponse.json(found);
     }),
     http.get(`${GRAPH}/teams/:team/channels/:channel/messages/:message/replies`, ({ request }) => (authorized(request) ? HttpResponse.json({ value: [] }) : denied())),
+    // An inline image's bytes (the reader's hosted content download).
+    http.get(/\/teams\/[^/]+\/channels\/[^/]+\/messages\/[^/]+\/hostedContents\/([^/]+)\/\$value$/, ({ request }) => {
+      if (!authorized(request)) return denied();
+      const content = decodeURIComponent(/\/hostedContents\/([^/]+)\/\$value$/.exec(new URL(request.url).pathname)?.[1] ?? '');
+      world.graph.push(`hosted ${content}`);
+      const bytes = options.hostedContents?.[content];
+      return bytes === undefined ? HttpResponse.json({ error: { code: 'NotFound', message: 'gone' } }, { status: 404 }) : new HttpResponse(bytes, { headers: { 'content-type': 'image/png' } });
+    }),
     // Everyone is a tenant member (the guest cap); no mail or name, so the map's stand in.
     http.get(`${GRAPH}/users/:user`, ({ params }) => HttpResponse.json({ id: params['user'], userType: 'Member' })),
     http.get(`${GRAPH}/teams/:team/channels/:channel/members`, ({ request, params }) => {
@@ -291,6 +303,40 @@ export function cardTap(thread: TeamsThread, from: TeamsPerson, cardActivityId: 
     channelData: command['channelData'],
     replyToId: cardActivityId,
     value: { action: { type: 'Action.Execute', verb, data } },
+  };
+}
+
+/**
+ * A reaction by `from` on one of the bot's own messages in the thread, as Bot Framework delivers it
+ * (`messageReaction`; Graph reports reactions on any message, Bot Framework only on the bot's).
+ * `reactionType` is Teams' (`like` for 👍).
+ */
+export function botMessageReaction(thread: TeamsThread, from: TeamsPerson, activityId: string, reactionType: string): Record<string, unknown> {
+  const reaction = teamsFixture('notifications/message-reaction-activity.json');
+  return {
+    ...reaction,
+    id: `f:${activityId}-${reactionType}`,
+    timestamp: new Date().toISOString(),
+    serviceUrl: SERVICE_URL,
+    from: { id: from.botId, name: from.name, aadObjectId: from.aad },
+    conversation: { ...(reaction['conversation'] as Record<string, unknown>), id: `${thread.channel};messageid=${thread.anchor}` },
+    channelData: channelDataOf(reaction['channelData'], thread),
+    replyToId: activityId,
+    reactionsAdded: [{ type: reactionType }],
+  };
+}
+
+/** A message `from` sends the bot in their personal chat with it (`conversation` is that chat's id). */
+export function personalMessage(from: TeamsPerson, conversation: string, text: string, id: string): Record<string, unknown> {
+  const message = teamsFixture('activities/personal-text.json');
+  return {
+    ...message,
+    id,
+    text,
+    timestamp: new Date().toISOString(),
+    serviceUrl: SERVICE_URL,
+    from: { id: from.botId, name: from.name, aadObjectId: from.aad },
+    conversation: { ...(message['conversation'] as Record<string, unknown>), id: conversation },
   };
 }
 

@@ -95,14 +95,14 @@ afterEach(async () => {
 const jira = createJiraClient({ baseUrl: BASE, email: 'bot@example.com', apiToken: 'jira-token-test' });
 
 function route(overrides: Partial<JiraWebhookDeps> = {}): (req: Request) => Promise<Response> {
-  return createJiraWebhookRoute({ fixer, jira, implementationPromptFieldId: PROMPT_FIELD, ...overrides });
+  return createJiraWebhookRoute({ fixer, jira, secret: SECRET, implementationPromptFieldId: PROMPT_FIELD, ...overrides });
 }
 
 function request(body: unknown, opts: { signature?: string; query?: string } = {}): Request {
   const text = JSON.stringify(body);
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (opts.signature !== undefined) headers['x-hub-signature'] = opts.signature;
-  return new Request(`https://snapwing.example.com${JIRA_WEBHOOK_PATH}${opts.query ?? ''}`, { method: 'POST', headers, body: text });
+  return new Request(`https://snapwing.example.com${JIRA_WEBHOOK_PATH}${opts.query ?? (opts.signature === undefined ? `?secret=${SECRET}` : '')}`, { method: 'POST', headers, body: text });
 }
 
 async function deliver(handler: (req: Request) => Promise<Response>, body: unknown, opts: { signature?: string; query?: string } = {}): Promise<{ status: number; outcome?: string }> {
@@ -429,7 +429,7 @@ describe('webhook secret', () => {
   it('rejects a missing or wrong signature with 401 and records nothing', async () => {
     await filed();
     const handler = route({ secret: SECRET });
-    expect((await deliver(handler, body())).status).toBe(401);
+    expect((await deliver(handler, body(), { query: '' })).status).toBe(401);
     expect((await deliver(handler, body(), { signature: 'sha256=00' })).status).toBe(401);
     expect((await deliver(handler, body(), { query: '?secret=wrong' })).status).toBe(401);
     const tampered = variant(body(), { by: AGENT });
@@ -439,8 +439,25 @@ describe('webhook secret', () => {
     expect(await deliver(handler, body(), { signature: sign(body()) })).toEqual({ status: 200, outcome: 'processed' });
   });
 
+  it('refuses an unsigned delivery with 401 and writes nothing', async () => {
+    await filed();
+    expect((await deliver(route(), body(), { query: '' })).status).toBe(401);
+    expect(await jiraEvents()).toEqual([]);
+  });
+
+  it('refuses every delivery when no secret is configured, even one carrying a secret', async () => {
+    await filed();
+    for (const secret of [undefined, '']) {
+      const handler = createJiraWebhookRoute({ fixer, jira, implementationPromptFieldId: PROMPT_FIELD, ...(secret === undefined ? {} : { secret }) });
+      expect((await deliver(handler, body(), { query: '' })).status).toBe(401);
+      expect((await deliver(handler, body(), { query: '?secret=' })).status).toBe(401);
+      expect((await deliver(handler, body(), { signature: sign(body()) })).status).toBe(401);
+    }
+    expect(await jiraEvents()).toEqual([]);
+  });
+
   it('rejects a body that is not a JSON object with 400', async () => {
-    const res = await route()(new Request(`https://snapwing.example.com${JIRA_WEBHOOK_PATH}`, { method: 'POST', body: 'not json' }));
+    const res = await route()(new Request(`https://snapwing.example.com${JIRA_WEBHOOK_PATH}?secret=${SECRET}`, { method: 'POST', body: 'not json' }));
     expect(res.status).toBe(400);
   });
 });

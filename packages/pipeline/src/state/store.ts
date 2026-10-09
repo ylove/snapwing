@@ -156,6 +156,10 @@ export class StateStore implements StatePort {
     return identities.getLinkedIdentity(this.ctx, key);
   }
 
+  getLinkedIdentityByGithubUser(workspaceId: string, githubUserId: number): Promise<LinkedIdentity | null> {
+    return identities.getLinkedIdentityByGithubUser(this.ctx, workspaceId, githubUserId);
+  }
+
   unlinkIdentity(key: LinkedIdentityKey): Promise<boolean> {
     return identities.unlinkIdentity(this.ctx, key);
   }
@@ -194,6 +198,11 @@ export class StateStore implements StatePort {
 
   kvDelete(k: string): Promise<void> {
     return kv.kvDelete(this.ctx, k);
+  }
+
+  /** Deletes expired kv rows, `batch` at a time (default 500); resolves to how many went (#271). */
+  kvSweepExpired(batch?: number): Promise<number> {
+    return kv.kvSweepExpired(this.ctx, batch);
   }
 
   // Transactions

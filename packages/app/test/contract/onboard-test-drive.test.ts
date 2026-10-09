@@ -45,6 +45,7 @@ import {
   envFile,
   EXAMPLE_CONFIG,
   fakeSecrets,
+  JIRA_HOOK_SECRET,
   SLACK_API,
   slackSigned,
   slackWorld,
@@ -396,7 +397,7 @@ async function slackInstaller(installer: Installer, w: World, slack: SlackDrive,
 /** Jira's webhook for the In Progress transition the agent made. */
 async function deliverJira(installer: Installer, w: World, url: string): Promise<void> {
   await until(installer, 'In Progress transition', () => (w.jiraHooks.queued.some((q) => q.issueKey === ISSUE) ? true : undefined));
-  const statuses = await w.jiraHooks.deliver(ISSUE, (body) => fetch(`${url}/webhooks/jira`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }));
+  const statuses = await w.jiraHooks.deliver(ISSUE, (body) => fetch(`${url}/webhooks/jira?secret=${JIRA_HOOK_SECRET}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body }));
   expect(statuses.every((s) => s === 200)).toBe(true);
 }
 

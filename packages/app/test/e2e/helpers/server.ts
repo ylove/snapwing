@@ -121,7 +121,8 @@ export async function startServer(input: ServerInput): Promise<RunningServer> {
   let ready!: (info: { url?: string }) => void;
   const readyP = new Promise<{ url?: string }>((r) => (ready = r));
   const exit = runServe(
-    ['--port', String(input.port), '--host', '127.0.0.1', '--config', configPath, '--env-file', input.envFile],
+    // The e2e levels run the local runner with real secrets on purpose (#265), so the override is explicit.
+    ['--port', String(input.port), '--host', '127.0.0.1', '--config', configPath, '--env-file', input.envFile, '--allow-local-runner'],
     { env: { ...process.env, ...input.env, SNAPWING_MAP: mapPath }, stdout: (l) => lines.push(l), stderr: (l) => lines.push(l) },
     {
       signals,
