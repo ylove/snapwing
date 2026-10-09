@@ -79,6 +79,16 @@ export function isExpectedSeqConflict(e: unknown): e is ExpectedSeqConflictError
   return e instanceof ExpectedSeqConflictError || (e instanceof Error && (e as { code?: unknown }).code === 'EXPECTED_SEQ_CONFLICT');
 }
 
+/** `linkIdentity` refused: the GitHub account is already linked to another chat user of the workspace (main 11.2). */
+export class LinkedIdentityConflictError extends Error {
+  override readonly name = 'LinkedIdentityConflictError';
+  readonly code = 'LINKED_IDENTITY_CONFLICT';
+
+  constructor() {
+    super('that GitHub account is already linked to another chat user');
+  }
+}
+
 /** `getArtifact` or `getConfigVersion` found no row. Both B 1 signatures return a value, not null. */
 export class StateNotFoundError extends Error {
   override readonly name = 'StateNotFoundError';

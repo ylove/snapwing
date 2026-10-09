@@ -6,6 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
+import type { MapPerson } from '@snapwing/pipeline/map/types.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { SecretNotFoundError, type SecretsPort } from '@snapwing/pipeline/ports/secrets.ts';
 import { StateStore } from '@snapwing/pipeline/state/store.ts';
@@ -49,6 +50,16 @@ interface TokenCall {
 }
 let tokenCalls: TokenCall[] = [];
 let userCalls: string[] = [];
+interface RevokeCall {
+  what: string;
+  auth: string | null;
+  body: Record<string, unknown>;
+}
+let revokeCalls: RevokeCall[] = [];
+let revokeStatus = 204;
+/** Who `/user` says the token belongs to, and the emails `/user/emails` lists. */
+let githubAccount: { login: string; id: number };
+let githubEmails: { email: string; primary: boolean; verified: boolean }[] | number;
 /** What the token endpoint answers next, by grant: a code exchange or a refresh. */
 let codeAnswer: Record<string, unknown>;
 let refreshAnswer: Record<string, unknown>;
@@ -61,9 +72,21 @@ const server = setupServer(
   }),
   http.get('https://api.github.com/user', ({ request }) => {
     userCalls.push(request.headers.get('authorization') ?? '');
-    return HttpResponse.json({ login: 'octo-human', id: 583231, type: 'User' });
+    return HttpResponse.json({ ...githubAccount, type: 'User' });
+  }),
+  http.get('https://api.github.com/user/emails', () => (typeof githubEmails === 'number' ? new HttpResponse(null, { status: githubEmails }) : HttpResponse.json(githubEmails))),
+  http.delete('https://api.github.com/applications/:clientId/:what', async ({ request, params }) => {
+    revokeCalls.push({ what: String(params['what']), auth: request.headers.get('authorization'), body: (await request.json()) as Record<string, unknown> });
+    return new HttpResponse(null, { status: revokeStatus });
   }),
 );
+
+/** The workspace map's people: the checks read these. Slack U0AAAA is `octo-human`; the Teams user is `teams-human`. */
+const PEOPLE: MapPerson[] = [
+  { slackId: 'U0AAAA', handle: 'octo-human', email: 'octo@example.com', role: 'engineer', owns: [] },
+  { slackId: 'U0BBBB', handle: 'bee-human', email: 'bee@example.com', role: 'engineer', owns: [] },
+  { teamsId: '7f1c-aad-object-id', handle: 'teams-human', role: 'engineer', owns: [] },
+];
 
 beforeAll(() => server.listen());
 afterAll(() => server.close());
@@ -90,11 +113,15 @@ beforeEach(async () => {
   nowMs = T0;
   tokenCalls = [];
   userCalls = [];
+  revokeCalls = [];
+  revokeStatus = 204;
+  githubAccount = { login: 'octo-human', id: 583231 };
+  githubEmails = [];
   codeAnswer = { access_token: ACCESS_1, expires_in: 28800, refresh_token: REFRESH_1, refresh_token_expires_in: 15811200, token_type: 'bearer', scope: '' };
   refreshAnswer = { access_token: ACCESS_2, expires_in: 28800, refresh_token: REFRESH_2, refresh_token_expires_in: 15811200, token_type: 'bearer', scope: '' };
   await store.ctx.db.deleteFrom('linked_identities').execute();
   await store.ctx.db.deleteFrom('webhook_inbox').execute();
-  oauth = createGitHubOAuth({ state: store, secrets, workspaceId: WS, now: () => new Date(nowMs) });
+  oauth = createGitHubOAuth({ state: store, secrets, workspaceId: WS, now: () => new Date(nowMs), map: () => Promise.resolve({ people: PEOPLE }) });
   api = createApiServer({ routes: oauth.routes, port: 0 });
 });
 afterEach(() => server.resetHandlers());
@@ -103,15 +130,22 @@ function stateOf(url: string): string {
   return new URL(url).searchParams.get('state') ?? '';
 }
 
-/** Follows `linkUrl` through the start route; returns the state GitHub would echo and the cookie. */
-async function begin(user: ChatUser = USER): Promise<{ state: string; cookie: string; location: URL }> {
+/** The page's "Continue to GitHub" link, decoded. */
+function continueHref(html: string): string {
+  const raw = /<a href="([^"]+)"/.exec(html)?.[1] ?? '';
+  return raw.replace(/&#(\d+);/g, (_m, n: string) => String.fromCharCode(Number(n)));
+}
+
+/** Follows `linkUrl` through the start page; returns the state GitHub would echo and the cookie. */
+async function begin(user: ChatUser = USER): Promise<{ state: string; cookie: string; location: URL; page: string }> {
   const link = await oauth.linkUrl(user);
   const res = await api.fetch(new Request(link));
-  expect(res.status).toBe(302);
-  const location = new URL(res.headers.get('location') ?? '');
+  expect(res.status).toBe(200);
+  const html = await res.text();
+  const location = new URL(continueHref(html));
   const setCookie = res.headers.get('set-cookie') ?? '';
   const cookie = setCookie.split(';')[0] ?? '';
-  return { state: location.searchParams.get('state') ?? '', cookie, location };
+  return { state: location.searchParams.get('state') ?? '', cookie, location, page: html };
 }
 
 function callback(params: Record<string, string>, cookie?: string): Promise<Response> {
@@ -153,8 +187,11 @@ describe('routes (ADR 0016)', () => {
 });
 
 describe('full flow', () => {
-  it('start redirects to GitHub with the client id, callback URL, and state, and sets the browser cookie', async () => {
-    const { state, cookie, location } = await begin();
+  it('start shows whose account is linked, then continues to GitHub with the client id, callback URL, and state, and sets the browser cookie', async () => {
+    const { state, cookie, location, page } = await begin();
+    expect(page).toContain('Slack account @octo-human');
+    expect(page).not.toContain('U0AAAA');
+    expect(page).not.toContain('octo@example.com');
     expect(`${location.origin}${location.pathname}`).toBe('https://github.com/login/oauth/authorize');
     expect(location.searchParams.get('client_id')).toBe(CLIENT_ID);
     expect(location.searchParams.get('redirect_uri')).toBe(`${PUBLIC}/auth/github/callback`);
@@ -167,6 +204,7 @@ describe('full flow', () => {
     expect(setCookie).toContain('Secure');
     expect(setCookie).toContain('SameSite=Lax');
     expect(setCookie).toContain('Max-Age=600');
+    expect(res.status).toBe(200);
   });
 
   it('callback exchanges the code, reads /user, and stores the link with sealed tokens', async () => {
@@ -201,6 +239,7 @@ describe('full flow', () => {
 
   it('links the chat user the state was minted for, not whoever holds the browser', async () => {
     const other: ChatUser = { chat: 'teams', userId: '7f1c-aad-object-id' };
+    githubAccount = { login: 'Teams-Human', id: 90210 };
     const { state, cookie } = await begin(other);
     expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
     expect(await oauth.getLinkedIdentity(other)).toMatchObject({ chat: 'teams', chatUserId: '7f1c-aad-object-id' });
@@ -226,6 +265,228 @@ describe('full flow', () => {
     expect(await oauth.unlink(USER)).toBe(true);
     expect(await oauth.isLinked(USER)).toBe(false);
     expect(await oauth.userToken(USER)).toBeNull();
+    expect(await oauth.unlink(USER)).toBe(false);
+  });
+});
+
+async function linkUser(user: ChatUser = USER): Promise<void> {
+  const { state, cookie } = await begin(user);
+  expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+  tokenCalls = [];
+  userCalls = [];
+  revokeCalls = [];
+}
+
+describe('whose account (main 11.2)', () => {
+  it('the start page escapes what the map says and names the chat account, not an id', async () => {
+    PEOPLE.push({ slackId: 'U0EVIL', handle: '<img src=x onerror=alert(1)>', role: 'reporter', owns: [] });
+    try {
+      const res = await api.fetch(new Request(await oauth.linkUrl({ chat: 'slack', userId: 'U0EVIL' })));
+      const html = await res.text();
+      expect(html).not.toContain('<img');
+      expect(html).toContain('&#60;img');
+    } finally {
+      PEOPLE.pop();
+    }
+  });
+
+  it('a chat user the map does not name gets no start page and no callback', async () => {
+    const stranger: ChatUser = { chat: 'slack', userId: 'U0NOBODY' };
+    const res = await api.fetch(new Request(await oauth.linkUrl(stranger)));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('add you to the workspace map');
+    expect(res.headers.get('set-cookie')).toBeNull();
+
+    // A state minted for a user later removed from the map is refused at the callback too.
+    const { state, cookie } = await begin();
+    PEOPLE.splice(0, 1);
+    try {
+      expect((await callback({ code: CODE, state }, cookie)).status).toBe(403);
+      expect(tokenCalls).toHaveLength(0);
+    } finally {
+      PEOPLE.unshift({ slackId: 'U0AAAA', handle: 'octo-human', email: 'octo@example.com', role: 'engineer', owns: [] });
+    }
+    expect(await oauth.getLinkedIdentity(USER)).toBeNull();
+  });
+
+  it('accepts the map handle in any letter case', async () => {
+    githubAccount = { login: 'Octo-Human', id: 583231 };
+    const { state, cookie } = await begin();
+    expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+    expect(await oauth.getLinkedIdentity(USER)).toMatchObject({ githubLogin: 'Octo-Human' });
+    expect(userCalls).toHaveLength(1);
+  });
+
+  it('refuses a GitHub login that is not the map person\'s, stores nothing, and revokes the new token alone', async () => {
+    githubAccount = { login: 'someone-else', id: 777 };
+    const { state, cookie } = await begin();
+    const res = await callback({ code: CODE, state }, cookie);
+    expect(res.status).toBe(403);
+    const body = await res.text();
+    expect(body).toContain('@someone-else');
+    expect(body).toContain('Ask an admin to add your GitHub handle to the map');
+    for (const secret of [ACCESS_1, REFRESH_1, CLIENT_SECRET, CODE]) expect(body).not.toContain(secret);
+    expect(await oauth.getLinkedIdentity(USER)).toBeNull();
+    // The account may be someone else's link elsewhere, so only this token goes, never the grant.
+    expect(revokeCalls).toEqual([{ what: 'token', auth: `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')}`, body: { access_token: ACCESS_1 } }]);
+  });
+
+  it('accepts another handle when the map email is the verified primary email GitHub reports', async () => {
+    githubAccount = { login: 'octo-work-account', id: 583231 };
+    githubEmails = [
+      { email: 'noise@example.com', primary: false, verified: true },
+      { email: 'Octo@Example.com', primary: true, verified: true },
+    ];
+    const { state, cookie } = await begin();
+    expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+    expect(await oauth.getLinkedIdentity(USER)).toMatchObject({ githubLogin: 'octo-work-account' });
+    expect(revokeCalls).toHaveLength(0);
+  });
+
+  it('refuses an email that is not primary, not verified, absent, or unreadable', async () => {
+    githubAccount = { login: 'octo-work-account', id: 583231 };
+    const attempts: (typeof githubEmails)[] = [
+      [{ email: 'octo@example.com', primary: false, verified: true }],
+      [{ email: 'octo@example.com', primary: true, verified: false }],
+      [{ email: 'other@example.com', primary: true, verified: true }],
+      403,
+    ];
+    for (const emails of attempts) {
+      githubEmails = emails;
+      const { state, cookie } = await begin();
+      expect((await callback({ code: CODE, state }, cookie)).status).toBe(403);
+    }
+    expect(await oauth.getLinkedIdentity(USER)).toBeNull();
+    expect(revokeCalls.map((c) => c.what)).toEqual(['token', 'token', 'token', 'token']);
+  });
+
+  it('with no handle match and no email in the map, refuses and asks for the handle to be added', async () => {
+    githubAccount = { login: 'not-teams-human', id: 90210 };
+    const { state, cookie } = await begin({ chat: 'teams', userId: '7f1c-aad-object-id' });
+    const res = await callback({ code: CODE, state }, cookie);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toContain('add your GitHub handle to the map');
+    expect(await oauth.getLinkedIdentity({ chat: 'teams', userId: '7f1c-aad-object-id' })).toBeNull();
+  });
+
+  it('with no map at all, no link completes', async () => {
+    const blind = createGitHubOAuth({ state: store, secrets, workspaceId: WS, now: () => new Date(nowMs) });
+    const server2 = createApiServer({ routes: blind.routes, port: 0 });
+    const res = await server2.fetch(new Request(await blind.linkUrl(USER)));
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('one account, one link (main 11.2)', () => {
+  it('refuses a second chat user the same GitHub account, revokes only the new token, and keeps the first link', async () => {
+    await linkUser();
+    PEOPLE[1] = { ...(PEOPLE[1] as MapPerson), handle: 'octo-human' };
+    try {
+      const { state, cookie } = await begin({ chat: 'slack', userId: 'U0BBBB' });
+      const res = await callback({ code: CODE, state }, cookie);
+      expect(res.status).toBe(409);
+      expect(await res.text()).toContain('already linked to another person');
+      expect(await oauth.getLinkedIdentity({ chat: 'slack', userId: 'U0BBBB' })).toBeNull();
+      expect(await oauth.userToken(USER)).toMatchObject({ githubLogin: 'octo-human' });
+      expect(revokeCalls.map((c) => c.what)).toEqual(['token']);
+    } finally {
+      PEOPLE[1] = { slackId: 'U0BBBB', handle: 'bee-human', email: 'bee@example.com', role: 'engineer', owns: [] };
+    }
+  });
+
+  it('allows the same chat user to link the same account again', async () => {
+    await linkUser();
+    const { state, cookie } = await begin();
+    expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+    expect(await oauth.getLinkedIdentity(USER)).toMatchObject({ githubUserId: 583231 });
+  });
+
+  it('allows the account to move to another chat user once the first is unlinked', async () => {
+    await linkUser();
+    PEOPLE[1] = { ...(PEOPLE[1] as MapPerson), handle: 'octo-human' };
+    try {
+      await oauth.unlink(USER);
+      const { state, cookie } = await begin({ chat: 'slack', userId: 'U0BBBB' });
+      expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+    } finally {
+      PEOPLE[1] = { slackId: 'U0BBBB', handle: 'bee-human', email: 'bee@example.com', role: 'engineer', owns: [] };
+    }
+  });
+});
+
+describe('unlinking revokes the grant (main 11.2)', () => {
+  const BASIC = `Basic ${Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')}`;
+
+  it('unlink deletes the stored token and revokes the grant at GitHub with the app credentials', async () => {
+    await linkUser();
+    expect(await oauth.disconnect(USER)).toEqual({ linked: true, revoked: true });
+    expect(revokeCalls).toEqual([{ what: 'grant', auth: BASIC, body: { access_token: ACCESS_1 } }]);
+    expect(await store.getLinkedIdentity(KEY)).toBeNull();
+    expect(await store.ctx.db.selectFrom('linked_identities').selectAll().execute()).toHaveLength(0);
+  });
+
+  it('unlink with nothing linked calls GitHub for nothing', async () => {
+    expect(await oauth.disconnect(USER)).toEqual({ linked: false, revoked: true });
+    expect(revokeCalls).toHaveLength(0);
+  });
+
+  it('revokes with a refreshed token when the stored one is about to expire', async () => {
+    await linkUser();
+    nowMs = T0 + 28800_000 - 60_000;
+    expect(await oauth.unlink(USER)).toBe(true);
+    expect(revokeCalls).toEqual([{ what: 'grant', auth: BASIC, body: { access_token: ACCESS_2 } }]);
+  });
+
+  it('deletes the stored token even when GitHub refuses the revocation, and says so', async () => {
+    const errors: unknown[] = [];
+    oauth = createGitHubOAuth({ state: store, secrets, workspaceId: WS, now: () => new Date(nowMs), map: () => Promise.resolve({ people: PEOPLE }), onError: (e) => errors.push(e) });
+    await linkUser();
+    revokeStatus = 502;
+    expect(await oauth.disconnect(USER)).toEqual({ linked: true, revoked: false });
+    expect(await store.getLinkedIdentity(KEY)).toBeNull();
+    expect(errors).toHaveLength(1);
+    expect(String((errors[0] as Error).message)).not.toContain(ACCESS_1);
+    expect(String((errors[0] as Error).message)).not.toContain(CLIENT_SECRET);
+  });
+
+  it('treats a grant GitHub no longer knows as revoked', async () => {
+    await linkUser();
+    revokeStatus = 404;
+    expect(await oauth.disconnect(USER)).toEqual({ linked: true, revoked: true });
+  });
+
+  it('a re-link to a different GitHub account revokes the old account\'s grant', async () => {
+    await linkUser();
+    PEOPLE[0] = { ...(PEOPLE[0] as MapPerson), email: 'new@example.com' };
+    githubAccount = { login: 'octo-human', id: 583232 };
+    try {
+      codeAnswer = { ...codeAnswer, access_token: ACCESS_2, refresh_token: REFRESH_2 };
+      const { state, cookie } = await begin();
+      expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+      expect(revokeCalls).toEqual([{ what: 'grant', auth: BASIC, body: { access_token: ACCESS_1 } }]);
+      expect(await oauth.getLinkedIdentity(USER)).toMatchObject({ githubUserId: 583232 });
+      expect((await oauth.userToken(USER))?.token).toBe(ACCESS_2);
+    } finally {
+      PEOPLE[0] = { slackId: 'U0AAAA', handle: 'octo-human', email: 'octo@example.com', role: 'engineer', owns: [] };
+    }
+  });
+
+  it('a re-link to the same account revokes only the old token, so the new one keeps working', async () => {
+    await linkUser();
+    codeAnswer = { ...codeAnswer, access_token: ACCESS_2, refresh_token: REFRESH_2 };
+    const { state, cookie } = await begin();
+    expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+    expect(revokeCalls).toEqual([{ what: 'token', auth: BASIC, body: { access_token: ACCESS_1 } }]);
+    expect((await oauth.userToken(USER))?.token).toBe(ACCESS_2);
+  });
+
+  it('a failed revocation after a re-link does not undo the link', async () => {
+    await linkUser();
+    revokeStatus = 500;
+    codeAnswer = { ...codeAnswer, access_token: ACCESS_2, refresh_token: REFRESH_2 };
+    const { state, cookie } = await begin();
+    expect((await callback({ code: CODE, state }, cookie)).status).toBe(200);
+    expect((await oauth.userToken(USER))?.token).toBe(ACCESS_2);
   });
 });
 
@@ -422,7 +683,7 @@ describe('tokens at rest', () => {
     // The same sealed token copied to another chat user's row does not open there.
     const linked = await oauth.getLinkedIdentity(USER);
     if (linked === null) throw new Error('not linked');
-    await store.linkIdentity({ ...linked, chatUserId: 'U0COPY' });
+    await store.linkIdentity({ ...linked, chatUserId: 'U0COPY', githubUserId: 999 });
     await expect(oauth.userToken({ chat: 'slack', userId: 'U0COPY' })).rejects.toThrow(/does not open/);
   });
 });

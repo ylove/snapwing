@@ -413,3 +413,62 @@ describe('wiring and speed', () => {
     expect(text).toContain('WEB-1042');
   });
 });
+
+describe('unlink github in a direct message (main 11.2)', () => {
+  function withIdentity(result: { linked: boolean; revoked: boolean } | Error): { calls: unknown[] } {
+    const calls: unknown[] = [];
+    sq = createSlackStatusQuery({
+      web: { postMessage: (a: PostMessageArgs) => (posts.push(a), Promise.resolve({ ts: '1.1' })) } as unknown as SlackWeb,
+      state,
+      workspaceId: WS,
+      getMap: () => Promise.resolve(map),
+      botUserId: BOT,
+      clock: () => new Date(T0),
+      identity: {
+        disconnect: (user) => {
+          calls.push(user);
+          return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
+        },
+      },
+      onError: (e) => errors.push(e),
+    });
+    return { calls };
+  }
+
+  it('unlinks the asker, only the asker, and says the token is deleted and revoked', async () => {
+    const { calls } = withIdentity({ linked: true, revoked: true });
+    for (const text of ['unlink github', 'Unlink my GitHub account.', 'please disconnect github']) {
+      posts.length = 0;
+      expect(sq.intercepts(dm(REPORTER, text)), text).toBe(true);
+      await sq.handleEvent(dm(REPORTER, text));
+      expect(posts.map((p) => p.channel)).toEqual([DM]);
+      expect(posts[0]?.text).toContain('revoked at GitHub');
+    }
+    expect(calls).toEqual([
+      { chat: 'slack', userId: REPORTER },
+      { chat: 'slack', userId: REPORTER },
+      { chat: 'slack', userId: REPORTER },
+    ]);
+  });
+
+  it('says so when nothing was linked, and when GitHub did not confirm the revocation', async () => {
+    withIdentity({ linked: false, revoked: true });
+    await sq.handleEvent(dm(REPORTER, 'unlink github'));
+    expect(posts[0]?.text).toBe('Your GitHub account is not linked.');
+    posts.length = 0;
+    withIdentity({ linked: true, revoked: false });
+    await sq.handleEvent(dm(REPORTER, 'unlink github'));
+    expect(posts[0]?.text).toContain('did not confirm the revocation');
+    posts.length = 0;
+    withIdentity(new Error('boom'));
+    await sq.handleEvent(dm(REPORTER, 'unlink github'));
+    expect(posts[0]?.text).toContain('could not unlink');
+  });
+
+  it('leaves a bug report that mentions GitHub, and an install without identity links alone', () => {
+    withIdentity({ linked: true, revoked: true });
+    expect(sq.intercepts(dm(REPORTER, 'unlink github button is broken on the settings page'))).toBe(false);
+    const plain = createSlackStatusQuery({ web: {} as SlackWeb, state, workspaceId: WS, getMap: () => Promise.resolve(map), botUserId: BOT });
+    expect(plain.intercepts(dm(REPORTER, 'unlink github'))).toBe(false);
+  });
+});
