@@ -276,6 +276,12 @@
     </xs:attribute>
   </xs:complexType>
 
+  <!-- 9 -->
+
+  <xs:complexType name="LimitsType">
+    <xs:attribute name="modelCallsPerDay" type="xs:positiveInteger" use="optional"/>
+  </xs:complexType>
+
   <!-- Root -->
 
   <xs:element name="playbook">
@@ -295,6 +301,7 @@
         <xs:element name="escalation" type="EscalationType" minOccurs="0" maxOccurs="unbounded"/>
         <xs:element name="userSide" type="UserSideType" minOccurs="0"/>
         <xs:element name="recordings" type="RecordingsType" minOccurs="0"/>
+        <xs:element name="limits" type="LimitsType" minOccurs="0"/>
       </xs:sequence>
       <xs:attribute name="version" type="xs:string" use="optional" fixed="1"/>
     </xs:complexType>

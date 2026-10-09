@@ -136,6 +136,12 @@ export interface PlaybookRecordings {
   sampleFps: number;
 }
 
+/** Chat abuse limits (main 16, #272). */
+export interface PlaybookLimits {
+  /** Model calls per UTC day; once spent, chat starts no new model work until the next day. */
+  modelCallsPerDay: number;
+}
+
 export interface Playbook {
   version: 1;
   signals: PlaybookSignals;
@@ -148,6 +154,7 @@ export interface Playbook {
   escalations: PlaybookEscalation[];
   userSide: PlaybookUserSide;
   recordings: PlaybookRecordings;
+  limits: PlaybookLimits;
 }
 
 /** One reason a playbook was rejected. `rule` is `xsd` or the id of the Schematron assert that fired. */
@@ -221,6 +228,7 @@ export function defaultPlaybook(): Playbook {
     escalations: [],
     userSide: { check: true, uxFrictionThreshold: 3, uxFrictionWindow: 'P30D' },
     recordings: { maxDuration: 'PT3M', sampleFps: 1 },
+    limits: { modelCallsPerDay: 5000 },
   };
 }
 
@@ -414,7 +422,11 @@ function convert(xml: string): Playbook {
     recordings.sampleFps = num(recordingsEl, 'sampleFps', recordings.sampleFps);
   }
 
-  return { version: 1, signals, weights, ladders, claims, notifications, monitor, escalations, userSide, recordings };
+  const limitsEl = child(root, 'limits');
+  const limits = defaults.limits;
+  if (limitsEl) limits.modelCallsPerDay = num(limitsEl, 'modelCallsPerDay', limits.modelCallsPerDay);
+
+  return { version: 1, signals, weights, ladders, claims, notifications, monitor, escalations, userSide, recordings, limits };
 }
 
 function ladderStep(el: Element): LadderStep {

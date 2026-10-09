@@ -21,6 +21,7 @@ import { parseScenario, RecordedModel } from '@snapwing/pipeline/demo/run.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { withValidation } from '@snapwing/pipeline/models/router.ts';
 import type { HarnessPort } from '@snapwing/pipeline/ports/harness.ts';
+import { createChatLimits, type ChatLimits } from '@snapwing/pipeline/policy/limits.ts';
 import type { ClassifyRequest, ModelPort } from '@snapwing/pipeline/ports/model.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
@@ -173,7 +174,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     );
   }
 
-  function setup(opts: { model?: ModelPort } = {}) {
+  function setup(opts: { model?: ModelPort; limits?: Pick<ChatLimits, 'modelWork'> } = {}) {
     const web = fakeWeb();
     const onError = vi.fn();
     const getMap = () => Promise.resolve(MAP);
@@ -214,6 +215,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
       web,
       standing: state,
       ...(opts.model === undefined ? {} : { model: opts.model }),
+      ...(opts.limits === undefined ? {} : { limits: opts.limits }),
       onOutcome: (o) => outcomes.push(o),
       onError,
     });
@@ -379,6 +381,27 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     await w.post(variant('signal-thread-reply', 'Ev0SIGLLM002', { text: 'let me dig into the coupon service logs', thread_ts: '1730000003.000100' }));
     expect(requests).toHaveLength(1);
     expect(w.outcomes.at(-1)).toEqual({ kind: 'ignored', reason: 'no-intent' });
+  });
+
+  it('the model pass takes a slot of the replier and the thread (#272); over a window or the day budget the reply gets the lexicon only', async () => {
+    await filed();
+    let requests = 0;
+    const model = {
+      classify: () => (requests++, Promise.resolve({ value: { intent: 'claim', confidence: 0.9 }, model: 'fake' })),
+    } as unknown as ModelPort;
+    const limits = createChatLimits({ budget: () => 1000, clock: () => NOW, windows: { perUser: { max: 1, windowMs: 60_000 } } });
+    const w = setup({ model, limits });
+    await w.post(variant('signal-thread-reply', 'Ev0SIGLIM001', { text: 'let me dig into the coupon service logs for this one' }));
+    await w.post(variant('signal-thread-reply', 'Ev0SIGLIM002', { text: 'still digging through those coupon service logs' }));
+    expect(requests).toBe(1);
+    expect(w.outcomes.at(-1)).toEqual({ kind: 'ignored', reason: 'no-intent' });
+    // The lexicon still reads a reply over the limit.
+    await w.post(variant('signal-thread-reply', 'Ev0SIGLIM003', { text: 'on it' }));
+    expect(w.outcomes.at(-1)).toMatchObject({ kind: 'signal', intent: 'claim' });
+    const spent = createChatLimits({ budget: () => 0, clock: () => NOW });
+    const v = setup({ model, limits: spent });
+    await v.post(variant('signal-thread-reply', 'Ev0SIGLIM004', { user: PAT, text: 'let me dig into the coupon service logs for this one' }));
+    expect(requests).toBe(1);
   });
 });
 

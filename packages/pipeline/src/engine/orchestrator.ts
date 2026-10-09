@@ -1,8 +1,8 @@
 // src/engine/orchestrator.ts: the incident orchestrator (main 14.1) on the WorkflowPort (B 1, ADR 0012).
 //
 // handleInbound (the request path, within the platform's ack budget): adapter by channel, then
-// authenticate, normalize, idempotency (`seenWebhook` on the payload's key, main 14.2), start the
-// `incident.process` job, acknowledge. Nothing else runs before the ack.
+// authenticate, normalize, admission (the chat limits, `admit`), idempotency (`seenWebhook` on the
+// payload's key, main 14.2), start the `incident.process` job, acknowledge. Nothing else runs before the ack.
 //
 // process (the `incident.process` job): a loop of "read the log, fold it (cursor.ts), run the next
 // phase (steps.ts)". Every append passes `expectedSeq`; a conflict re-reads and decides again. A card
@@ -179,6 +179,8 @@ export class IncidentOrchestrator {
     if (!(await adapter.authenticateRequest(raw))) throw new UnauthorizedError(source);
 
     const payload = await adapter.normalizePayload(raw);
+    // Before the key is marked seen, so a refused trigger can be tried again once its window has room.
+    if (this.deps.admit !== undefined && !(await this.deps.admit(source, payload))) return undefined;
     const seen = await this.deps.state.seenWebhook(`incident:${source}`, payload.idempotencyKey, idempotencyTtlSec(this.deps, source));
     if (!seen) {
       const data: ProcessJobData = { incidentId: payload.eventId, payload };
