@@ -301,6 +301,20 @@ describe('answer', () => {
     expect(queries.answer(merged.view, 'engineer').text).toContain('merged 2:10 → waiting on: the staging deploy');
   });
 
+  it("an engineer's Revert names the incident's latest merge; other audiences get no buttons (#264)", () => {
+    const merged = build({
+      id: '01JZ00000000000000000000C5',
+      key: 'WEB-1074',
+      summary: 'Coupon field cleared',
+      surface: 'web',
+      then: [...toCi, d('ci-green', { prNumber: 418, headSha: 'abc' }), d('merged', { prNumber: 418, mergeCommitSha: 'def', levelAtMergeTime: 3 })],
+    });
+    const queries = createStatusQueries(snapshot([merged]));
+    expect(queries.answer(merged.view, 'engineer')).toMatchObject({ actions: ['revert'], pin: { prNumber: 418, sha: 'def' } });
+    expect(queries.answer(merged.view, 'reporter')).not.toHaveProperty('pin');
+    expect(queries.answer(CART.view, 'engineer')).not.toHaveProperty('pin');
+  });
+
   it("the engine's recorded wait wins over the status", () => {
     const asked = build({
       id: '01JZ00000000000000000000C2',

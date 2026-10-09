@@ -16,7 +16,10 @@
 // 3. Posts the `pr-ready` card (contracts/adapters.ts) in the originating thread and in the surface's
 //    bug channel (the map's first channel for the surface; skipped when it is the thread's channel).
 //    `canMerge` is true when at least one requested reviewer has a linked identity: the buttons are
-//    then on the card, and a tap by anyone else is refused (policy/authorize.ts, actions.ts).
+//    then on the card, and a tap by anyone else is refused (policy/authorize.ts, actions.ts). The card
+//    names the PR and the head it shows (`headSha`), and its buttons act on those only (#264). When
+//    the approval is for another commit than the PR's head, no card is posted: the head is reviewed
+//    first, and that approval brings its own card.
 // 4. Each requested reviewer the map knows who has no linked identity gets, privately, the `Open PR`
 //    only card and the link to `/auth/github/start` (`IdentityLinks.linkUrl`, main 11.2 step 3).
 //
@@ -34,7 +37,7 @@ import type { ChatPlatform, StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { chatPlatformOf } from '../state/projections/subscriptions.ts';
 import { repoFullName } from '../util/repo.ts';
-import { httpStatus, reviewVerdict, type MergeRequiredCheck, type MergeResult } from './job.ts';
+import { httpStatus, reviewOf, startReviewOfHead, type MergeRequiredCheck, type MergeResult } from './job.ts';
 
 /** How long a posted-card record is kept (the card is posted once per trigger event). */
 export const HUMAN_REVIEW_POSTED_TTL_SEC = 30 * 24 * 60 * 60;
@@ -256,7 +259,7 @@ export function sameLogin(a: string, b: string): boolean {
 
 // When a PR is ready for a human -----------------------------------------------------------------
 
-export type HumanReviewSkip = 'no-pr' | 'stopped' | 'merged' | 'not-reviewed' | 'review-failed' | 'level' | 'no-repo' | 'not-open';
+export type HumanReviewSkip = 'no-pr' | 'stopped' | 'merged' | 'not-reviewed' | 'review-failed' | 'level' | 'no-repo' | 'not-open' | 'head-moved';
 
 export type HumanReviewTrigger =
   | { ready: true; prNumber: number; on: 'review-passed' | 'held'; seq: number }
@@ -274,12 +277,16 @@ export function humanReviewTrigger(log: readonly IncidentEvent[]): HumanReviewTr
   if (stoppedSinceFiled(log)) return { ready: false, reason: 'stopped' };
   if (log.some((e) => e.seq > opened.seq && e.type === 'merged' && e.payload.prNumber === prNumber)) return { ready: false, reason: 'merged' };
   const since = lastSeqOf(log, 'fixer-started');
-  // A hold before a later fixer run (a human asked for changes) is superseded by that run's review.
-  const held = latest(log, 'held');
-  if (held !== undefined && held.payload.kind === 'gate' && held.seq > Math.max(opened.seq, since)) return { ready: true, prNumber, on: 'held', seq: held.seq };
   let review: IncidentEvent | undefined;
   for (const e of log) {
     if (e.seq > since && (e.type === 'review-passed' || e.type === 'review-failed') && e.payload.prNumber === prNumber) review = e;
+  }
+  // A hold before a later fixer run (a human asked for changes) is superseded by that run's review, and
+  // a hold before a later approval (of a new head, #264) by that approval, whose card shows the new head.
+  const held = latest(log, 'held');
+  const approvedSince = review?.type === 'review-passed' && held !== undefined && review.seq > held.seq;
+  if (held !== undefined && held.payload.kind === 'gate' && held.seq > Math.max(opened.seq, since) && !approvedSince) {
+    return { ready: true, prNumber, on: 'held', seq: held.seq };
   }
   if (review === undefined) return { ready: false, reason: 'not-reviewed' };
   if (review.type !== 'review-passed') return { ready: false, reason: 'review-failed' };
@@ -318,12 +325,14 @@ export async function requestHumanReview(deps: HumanReviewDeps, incidentId: stri
   const gh = deps.github(repo);
   const pr = await gh.getPullRequest(prNumber);
   if (pr.state !== 'open' || pr.merged) return { requested: false, reason: 'not-open' };
-  const [files, status, verdict, map] = await Promise.all([
-    gh.listPullRequestFiles(prNumber),
-    gh.combinedStatus(pr.headSha, pr.baseRef),
-    reviewVerdict(deps.state, log, prNumber),
-    loadMap(deps.map),
-  ]);
+  const review = await reviewOf(deps.state, log, prNumber);
+  if (review?.verdict === 'approve' && review.headSha !== pr.headSha) {
+    // The approval is for another commit (#264): no card offers a merge of this head before its review,
+    // whose approval brings a card of its own.
+    await startReviewOfHead(deps, { incidentId, prNumber, headSha: pr.headSha });
+    return { requested: false, reason: 'head-moved' };
+  }
+  const [files, status, map] = await Promise.all([gh.listPullRequestFiles(prNumber), gh.combinedStatus(pr.headSha, pr.baseRef), loadMap(deps.map)]);
   const reviewers = await resolveReviewers(deps, {
     repo,
     paths: files.map((f) => f.filename),
@@ -337,9 +346,10 @@ export async function requestHumanReview(deps: HumanReviewDeps, incidentId: stri
   const card: PrReadyCard = {
     kind: 'pr-ready',
     prNumber,
+    headSha: pr.headSha,
     prUrl: pr.htmlUrl,
     issueKey: incident?.jiraKey ?? latest(log, 'filed')?.payload.jiraKey ?? '',
-    reviewVerdict: verdict ?? 'escalate',
+    reviewVerdict: review?.verdict ?? 'escalate',
     ciState: ciState(status),
     filesChanged: pr.changedFiles,
     additions: pr.additions,

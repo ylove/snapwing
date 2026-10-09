@@ -20,6 +20,7 @@
 // `handleAction` and `handleEvent` resolve to an `InteractivityOutcome` (tests); `onAction` and
 // `onEvent` hand it to `onOutcome` (logs). None throws for a payload it does not understand.
 
+import type { PrPin } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TapInput, TapOutcome } from '@snapwing/pipeline/engine/orchestrator.ts';
 import type { MidFlightAnswer, MidFlightAnswerInput } from '@snapwing/pipeline/fixer/claims.ts';
 import type { StopInput, StopOutcome } from '@snapwing/pipeline/fixer/stop.ts';
@@ -41,6 +42,7 @@ import type { SlackAdapter } from './adapter.ts';
 import { parsedBodyOf, slackPayloadType } from './adapter.ts';
 import { context, esc, mention, section } from './cards/blocks.ts';
 import { midFlightChoiceOf, parseMidFlightBlock } from './cards/mid-flight.ts';
+import { parsePinnedValue } from '../shared/pr-pin.ts';
 import type { SlackActionPayload } from './transport.ts';
 import type { SlackWeb } from './web.ts';
 
@@ -115,6 +117,8 @@ const stripTone = (name: string): string => name.replace(/::skin-tone-\d$/, '');
 interface Tap {
   userId: string;
   incidentId: string;
+  /** The PR and commit a PR button carried (#264). */
+  pin?: PrPin;
   actionId: string;
   blockId: string;
   label: string;
@@ -135,7 +139,8 @@ function parseTap(payload: SlackActionPayload): Tap | undefined {
   // A tap in the App Home has no channel: replies go to the user's DM with the app.
   const fromHome = container['type'] === 'view' || rec(payload['view'])['type'] === 'home';
   const channel = str(container['channel_id']) || str(rec(payload['channel'])['id']) || (fromHome ? userId : '');
-  const incidentId = str(action['value']);
+  // A PR button's value also names the PR and commit its card showed (#264).
+  const { incidentId, pin } = parsePinnedValue(str(action['value']));
   const actionId = str(action['action_id']);
   if (userId === '' || channel === '' || incidentId === '' || actionId === '') return undefined;
   const messageTs = str(container['message_ts']) || str(message['ts']);
@@ -143,6 +148,7 @@ function parseTap(payload: SlackActionPayload): Tap | undefined {
   return {
     userId,
     incidentId,
+    ...(pin === undefined ? {} : { pin }),
     actionId,
     blockId: str(action['block_id']),
     label: str(rec(action['text'])['text']) || actionId,
@@ -227,7 +233,7 @@ export function createSlackInteractivity(options: SlackInteractivityOptions): Sl
     if (slackPayloadType(payload) !== 'block_actions') return ignored('not-block-actions');
     const tap = parseTap(payload);
     if (tap === undefined) return ignored('malformed');
-    const base = { userId: tap.userId, incidentId: tap.incidentId, action: tap.actionId, label: tap.label };
+    const base = { userId: tap.userId, incidentId: tap.incidentId, action: tap.actionId, label: tap.label, ...(tap.pin === undefined ? {} : { pin: tap.pin }) };
     const offer = parseMidFlightBlock(tap.blockId);
     if (offer !== undefined) {
       const result = await core.run({ ...base, card: 'mid-flight', midFlight: { ...offer, choice: midFlightChoiceOf(tap.actionId) } });

@@ -73,6 +73,11 @@ const ARROWS: Row[] = [
   ['mergeable', ev('review-failed'), 'fixing-retry'],
   ['held', ev('review-failed'), 'fixing-retry'],
   ['ci-retry', ev('review-failed'), 'escalated'],
+  // The review of a new head after the approval (#264): CI is awaited for it, a hold stays held
+  ['ci', ev('review-passed'), 'ci'],
+  ['ci-retry', ev('review-passed'), 'ci-retry'],
+  ['mergeable', ev('review-passed'), 'ci-retry'],
+  ['held', ev('review-passed'), 'held'],
   ['fixing', ev('fixer-failed'), 'escalated'],
   ['fixing-retry', ev('fixer-failed'), 'escalated'],
   // Merge and deploy

@@ -41,6 +41,7 @@ import { isUnlinkGithub, unlinkGithubReply } from '../shared/unlink-github.ts';
 import type { GitHubOAuth } from '../../github/oauth.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { askerMayAsk, createStatusAsk, GUESTS_GET_NO_STATUS, looksLikeStatusQuestion, surfaceWords, type StatusAccess, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
+import { pinData } from '../shared/pr-pin.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './adapter.ts';
 import type { TeamsConnector, TeamsOutgoingActivity } from './connector.ts';
 import { rememberedNames, splitConversationId } from './conversations.ts';
@@ -133,10 +134,11 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
     const rendered = renderText(answer.text, mentionsOr(fromMap, names));
     // The card's own fallback keeps the escapes, so user markdown (a summary's link) is never live there.
     const fallback = renderText(answer.text, () => undefined).text;
+    // Revert carries the merge this answer names, and acts on no later one (#264).
     const wanted: ActionSpec[] =
       answer.audience === 'engineer'
         ? answer.actions.flatMap((a): ActionSpec[] =>
-            a === 'stop' ? [{ title: 'Stop', verb: 'stop', style: 'destructive' }] : a === 'revert' ? [{ title: 'Revert', verb: 'revert' }] : [],
+            a === 'stop' ? [{ title: 'Stop', verb: 'stop', style: 'destructive' }] : a === 'revert' ? [{ title: 'Revert', verb: 'revert', data: pinData(answer.pin) }] : [],
           )
         : [];
     const actions = answer.incidentId === undefined || wanted.length === 0 ? [] : actionSet(answer.incidentId, wanted);

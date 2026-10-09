@@ -14,6 +14,7 @@ import {
   GitHubNotMergeableError,
   GitHubRateLimitError,
   GitHubValidationError,
+  COMPARE_FILE_LIMIT,
   REVIEW_CHECK_NAME,
   createGitHubClient,
 } from '../../src/github/client.ts';
@@ -31,7 +32,11 @@ const auth: GitHubAuth = {
     return { token: 'ghs_test_installation', expiresAt: '2026-10-02T13:00:00Z' };
   },
 };
-const client = createGitHubClient(auth, { repo: REPO, now: () => NOW });
+/** This App's id: `snapwing/review` counts only from its check runs (#264). */
+const APP_ID = 900001;
+/** GitHub Actions' app id, as branch protection names it for a workflow's check. */
+const ACTIONS_APP_ID = 15368;
+const client = createGitHubClient(auth, { repo: REPO, appId: APP_ID, now: () => NOW });
 
 interface Seen {
   method: string;
@@ -112,6 +117,47 @@ describe('pull requests', () => {
     expect(files[100]).toEqual({ filename: 'src/f100.ts', status: 'modified', additions: 100, deletions: 1, changes: 101 });
   });
 
+  it('lists the files of exactly one commit against the base, a renamed file with its old path (#264)', async () => {
+    const head = '6dcb09b5b57875f334f61aebed695e2e4193db5e';
+    server.use(
+      http.get(`${R}/compare/:basehead`, async ({ request, params }) => {
+        await record(request);
+        expect(params['basehead']).toBe(`main...${head}`);
+        return HttpResponse.json({
+          status: 'ahead',
+          ahead_by: 2,
+          behind_by: 0,
+          files: [
+            { sha: 's1', filename: 'src/cart.ts', status: 'modified', additions: 3, deletions: 1, changes: 4 },
+            { sha: 's2', filename: 'src/deploy.tf', previous_filename: 'infra/deploy.tf', status: 'renamed', additions: 0, deletions: 0, changes: 0 },
+          ],
+        });
+      }),
+    );
+    const out = await client.compareFiles('main', head);
+    expect(out).toEqual({
+      files: [
+        { filename: 'src/cart.ts', status: 'modified', additions: 3, deletions: 1, changes: 4 },
+        { filename: 'src/deploy.tf', status: 'renamed', additions: 0, deletions: 0, changes: 0, previousFilename: 'infra/deploy.tf' },
+      ],
+      complete: true,
+    });
+    expect(tokenRequests[0]?.permissions).toEqual({ contents: 'read' });
+  });
+
+  it('says a comparison list of the most files GitHub returns may be cut short, and keeps a slashed base a ref', async () => {
+    const file = (i: number) => ({ sha: `s${i}`, filename: `src/f${i}.ts`, status: 'modified', additions: 1, deletions: 0, changes: 1 });
+    server.use(
+      http.get(`${R}/compare/release/:basehead`, ({ params }) => {
+        expect(params['basehead']).toBe('1.2...abc1234');
+        return HttpResponse.json({ status: 'ahead', files: Array.from({ length: COMPARE_FILE_LIMIT }, (_, i) => file(i)) });
+      }),
+    );
+    const out = await client.compareFiles('release/1.2', 'abc1234');
+    expect(out.files).toHaveLength(COMPARE_FILE_LIMIT);
+    expect(out.complete).toBe(false);
+  });
+
   it('requests reviewers', async () => {
     server.use(http.post(`${R}/pulls/418/requested_reviewers`, async ({ request }) => (await record(request), HttpResponse.json(pullPayload, { status: 201 }))));
     await client.requestReviewers(418, { users: ['webDev1'], teams: ['web-owners'] });
@@ -184,6 +230,23 @@ describe('pull requests', () => {
     expect(JSON.stringify(gql?.body)).toContain('revertPullRequest');
   });
 
+  it('opens the revert as the person whose user-to-server token it is (#264); a person without access is a 403', async () => {
+    server.use(
+      http.get(`${R}/pulls/418`, () => HttpResponse.json({ ...pullPayload, merged: true, state: 'closed' })),
+      http.post(`${API}/graphql`, async ({ request }) => {
+        await record(request);
+        return HttpResponse.json({ data: { revertPullRequest: { revertPullRequest: { id: 'PR_kwDOrevert', number: 419, url: `https://github.com/${REPO}/pull/419` } } } });
+      }),
+    );
+    await client.openRevertPullRequest(418, { title: 'Revert WEB-1042', userToken: 'ghu_test_user' });
+    expect(seen.find((s) => s.url.pathname === '/graphql')?.authorization).toBe('Bearer ghu_test_user');
+    // The PR is read with the installation token; only the mutation is the person's.
+    expect(tokenRequests.map((t) => t.permissions)).toEqual([{ pull_requests: 'read' }]);
+
+    server.use(http.post(`${API}/graphql`, () => HttpResponse.json({ data: null, errors: [{ type: 'FORBIDDEN', message: 'Resource not accessible by user' }] })));
+    await expect(client.openRevertPullRequest(418, { userToken: 'ghu_test_user' })).rejects.toMatchObject({ status: 403 });
+  });
+
   it('maps a GraphQL NOT_FOUND to a not-found error and a GraphQL rate limit to a rate-limit error', async () => {
     server.use(http.get(`${R}/pulls/418`, () => HttpResponse.json(pullPayload)));
     server.use(http.post(`${API}/graphql`, () => HttpResponse.json({ data: null, errors: [{ type: 'NOT_FOUND', message: 'Could not resolve to a node' }] })));
@@ -214,33 +277,43 @@ describe('check runs', () => {
 
 describe('combinedStatus', () => {
   const SHA = '6dcb09b5b57875f334f61aebed695e2e4193db5e';
-  function serve(opts: { protection: unknown | 404; runs: unknown[]; statuses: unknown[] }): void {
+  /** `rules`: the branch's rules from repository rulesets, or 404 (default: none). */
+  function serve(opts: { protection: unknown | 404; rules?: unknown[] | 404; runs: unknown[]; statuses: unknown[] }): void {
+    const rules = opts.rules ?? [];
     server.use(
       http.get(`${R}/branches/main/protection/required_status_checks`, () =>
         opts.protection === 404 ? HttpResponse.json({ message: 'Branch not protected' }, { status: 404 }) : HttpResponse.json(opts.protection as JsonBodyType),
       ),
+      http.get(`${R}/rules/branches/main`, ({ request }) => {
+        if (rules === 404) return HttpResponse.json({ message: 'Not Found' }, { status: 404 });
+        // One page of rules; a later page is empty.
+        return HttpResponse.json(Number(new URL(request.url).searchParams.get('page') ?? '1') === 1 ? (rules as JsonBodyType) : []);
+      }),
       http.get(`${R}/commits/${SHA}/check-runs`, () => HttpResponse.json({ total_count: opts.runs.length, check_runs: opts.runs })),
       http.get(`${R}/commits/${SHA}/status`, () => HttpResponse.json({ state: 'pending', sha: SHA, statuses: opts.statuses })),
     );
   }
-  const protection = { strict: true, contexts: ['ci/legacy'], checks: [{ context: 'unit', app_id: 15368 }, { context: 'snapwing/review', app_id: null }] };
+  const protection = { strict: true, contexts: ['ci/legacy'], checks: [{ context: 'unit', app_id: ACTIONS_APP_ID }, { context: 'snapwing/review', app_id: null }] };
+  const actions = { id: ACTIONS_APP_ID, slug: 'github-actions' };
+  const snapwing = { id: APP_ID, slug: 'snapwing' };
+  const other = { id: 424242, slug: 'other-app' };
 
   it('is success when every required check, from either source, is green', async () => {
     serve({
       protection,
       runs: [
-        { id: 1, name: 'unit', status: 'completed', conclusion: 'success' },
-        { id: 2, name: 'snapwing/review', status: 'completed', conclusion: 'neutral' },
-        { id: 3, name: 'extra', status: 'completed', conclusion: 'failure' },
+        { id: 1, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA, app: actions },
+        { id: 2, name: 'snapwing/review', status: 'completed', conclusion: 'neutral', head_sha: SHA, app: snapwing },
+        { id: 3, name: 'extra', status: 'completed', conclusion: 'failure', head_sha: SHA, app: actions },
       ],
       statuses: [{ context: 'ci/legacy', state: 'success' }],
     });
     const status = await client.combinedStatus(SHA, 'main');
     expect(status.state).toBe('success');
-    expect(status.required.map((r) => [r.name, r.state, r.source]).sort()).toEqual([
-      ['ci/legacy', 'success', 'status'],
-      ['snapwing/review', 'success', 'check-run'],
-      ['unit', 'success', 'check-run'],
+    expect(status.required.map((r) => [r.name, r.state, r.source, r.appId ?? null]).sort()).toEqual([
+      ['ci/legacy', 'success', 'status', null],
+      ['snapwing/review', 'success', 'check-run', APP_ID],
+      ['unit', 'success', 'check-run', ACTIONS_APP_ID],
     ]);
     expect(status.all).toHaveLength(4);
     expect(tokenRequests.some((t) => t.permissions.administration === 'read')).toBe(true);
@@ -248,25 +321,170 @@ describe('combinedStatus', () => {
 
   it('reads the recorded required_status_checks shape, a name in both contexts and checks counted once', async () => {
     const recorded = JSON.parse(readFileSync(new URL('../fixtures/github/required-status-checks.json', import.meta.url), 'utf8')) as unknown;
-    serve({ protection: recorded, runs: [{ id: 1, name: 'snapwing/review', status: 'completed', conclusion: 'success' }], statuses: [] });
+    serve({ protection: recorded, runs: [{ id: 1, name: 'snapwing/review', status: 'completed', conclusion: 'success', head_sha: SHA, app: snapwing }], statuses: [] });
     const status = await client.combinedStatus(SHA, 'main');
-    expect(status.required).toEqual([{ name: 'snapwing/review', state: 'success', source: 'check-run' }]);
+    expect(status.required).toEqual([{ name: 'snapwing/review', state: 'success', source: 'check-run', appId: APP_ID }]);
     expect(status.state).toBe('success');
   });
 
   it('is pending while a required check is queued or has not reported', async () => {
-    serve({ protection, runs: [{ id: 1, name: 'unit', status: 'in_progress', conclusion: null }], statuses: [{ context: 'ci/legacy', state: 'success' }] });
+    serve({ protection, runs: [{ id: 1, name: 'unit', status: 'in_progress', conclusion: null, head_sha: SHA, app: actions }], statuses: [{ context: 'ci/legacy', state: 'success' }] });
     const status = await client.combinedStatus(SHA, 'main');
     expect(status.state).toBe('pending');
-    expect(status.required.find((r) => r.name === 'snapwing/review')).toEqual({ name: 'snapwing/review', state: 'pending', source: null });
+    expect(status.required.find((r) => r.name === 'snapwing/review')).toEqual({ name: 'snapwing/review', state: 'pending', source: null, appId: APP_ID });
+  });
+
+  describe('a required check counts only from the app that must report it, on exactly that sha (#264)', () => {
+    it('snapwing/review from another app, or as a commit status, is not reported, even when branch protection lets any source report it', async () => {
+      serve({
+        protection: { contexts: ['snapwing/review'], checks: [{ context: 'snapwing/review', app_id: null }] },
+        runs: [{ id: 9, name: 'snapwing/review', status: 'completed', conclusion: 'success', head_sha: SHA, app: actions }],
+        statuses: [{ context: 'snapwing/review', state: 'success' }],
+      });
+      const status = await client.combinedStatus(SHA, 'main');
+      expect(status.required).toEqual([{ name: 'snapwing/review', state: 'pending', source: null, appId: APP_ID }]);
+      expect(status.state).toBe('pending');
+    });
+
+    it("another app's newer run of the same name neither passes nor hides the pinned app's own result", async () => {
+      serve({
+        protection: { contexts: [], checks: [{ context: 'unit', app_id: ACTIONS_APP_ID }, { context: 'snapwing/review', app_id: APP_ID }] },
+        runs: [
+          { id: 1, name: 'unit', status: 'completed', conclusion: 'failure', head_sha: SHA, app: actions },
+          { id: 2, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA, app: other },
+          { id: 3, name: 'snapwing/review', status: 'completed', conclusion: 'failure', head_sha: SHA, app: snapwing },
+          { id: 4, name: 'snapwing/review', status: 'completed', conclusion: 'success', head_sha: SHA, app: other },
+        ],
+        statuses: [{ context: 'unit', state: 'success' }],
+      });
+      const status = await client.combinedStatus(SHA, 'main');
+      expect(status.required).toEqual([
+        { name: 'unit', state: 'failure', source: 'check-run', appId: ACTIONS_APP_ID },
+        { name: 'snapwing/review', state: 'failure', source: 'check-run', appId: APP_ID },
+      ]);
+      expect(status.state).toBe('failure');
+    });
+
+    it('a run reported for another sha does not count', async () => {
+      serve({
+        protection: { contexts: [], checks: [{ context: 'snapwing/review', app_id: null }] },
+        runs: [{ id: 1, name: 'snapwing/review', status: 'completed', conclusion: 'success', head_sha: 'b'.repeat(40), app: snapwing }],
+        statuses: [],
+      });
+      expect((await client.combinedStatus(SHA, 'main')).required).toEqual([{ name: 'snapwing/review', state: 'pending', source: null, appId: APP_ID }]);
+    });
+
+    it('a client without the App id never counts snapwing/review', async () => {
+      serve({
+        protection: { contexts: [], checks: [{ context: 'snapwing/review', app_id: null }] },
+        runs: [{ id: 1, name: 'snapwing/review', status: 'completed', conclusion: 'success', head_sha: SHA, app: snapwing }],
+        statuses: [],
+      });
+      const noAppId = createGitHubClient(auth, { repo: REPO, now: () => NOW });
+      expect((await noAppId.combinedStatus(SHA, 'main')).required).toEqual([{ name: 'snapwing/review', state: 'pending', source: null }]);
+    });
+
+    it('a branch protected by rulesets alone: each required_status_checks rule counts, pinned to its integration_id', async () => {
+      serve({
+        protection: 404,
+        rules: [
+          { type: 'pull_request', parameters: { required_approving_review_count: 1 }, ruleset_source_type: 'Repository', ruleset_source: REPO, ruleset_id: 7 },
+          {
+            type: 'required_status_checks',
+            parameters: {
+              strict_required_status_checks_policy: false,
+              required_status_checks: [{ context: 'unit', integration_id: ACTIONS_APP_ID }, { context: 'lint' }, { context: 'snapwing/review', integration_id: APP_ID }],
+            },
+            ruleset_source_type: 'Repository',
+            ruleset_source: REPO,
+            ruleset_id: 7,
+          },
+        ],
+        runs: [
+          { id: 1, name: 'unit', status: 'in_progress', conclusion: null, head_sha: SHA, app: actions },
+          { id: 2, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA, app: other },
+          { id: 3, name: 'snapwing/review', status: 'completed', conclusion: 'success', head_sha: SHA, app: snapwing },
+        ],
+        statuses: [{ context: 'lint', state: 'success' }],
+      });
+      const status = await client.combinedStatus(SHA, 'main');
+      // CI still running is pending, never green, though another app reported the same name as passing.
+      expect(status.required).toEqual([
+        { name: 'unit', state: 'pending', source: 'check-run', appId: ACTIONS_APP_ID },
+        { name: 'lint', state: 'success', source: 'status' },
+        { name: 'snapwing/review', state: 'success', source: 'check-run', appId: APP_ID },
+      ]);
+      expect(status.state).toBe('pending');
+      expect(tokenRequests.some((t) => t.permissions.metadata === 'read')).toBe(true);
+    });
+
+    it('classic protection only: the rulesets endpoint answering 404 requires nothing more', async () => {
+      serve({
+        protection: { contexts: [], checks: [{ context: 'unit', app_id: ACTIONS_APP_ID }] },
+        rules: 404,
+        runs: [{ id: 1, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA, app: actions }],
+        statuses: [],
+      });
+      const status = await client.combinedStatus(SHA, 'main');
+      expect(status.required).toEqual([{ name: 'unit', state: 'success', source: 'check-run', appId: ACTIONS_APP_ID }]);
+      expect(status.state).toBe('success');
+    });
+
+    it('both: a ruleset pinning a check classic protection lets any source report keeps the pin; two different pins need both apps', async () => {
+      const rule = (checks: unknown[]) => ({ type: 'required_status_checks', parameters: { required_status_checks: checks }, ruleset_source_type: 'Repository', ruleset_source: REPO, ruleset_id: 9 });
+      serve({
+        protection: { contexts: ['unit', 'e2e'], checks: [{ context: 'unit', app_id: null }, { context: 'e2e', app_id: other.id }] },
+        rules: [rule([{ context: 'unit', integration_id: ACTIONS_APP_ID }, { context: 'e2e', integration_id: ACTIONS_APP_ID }])],
+        runs: [
+          { id: 1, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA, app: other },
+          { id: 2, name: 'e2e', status: 'completed', conclusion: 'success', head_sha: SHA, app: other },
+        ],
+        statuses: [{ context: 'unit', state: 'success' }],
+      });
+      const first = await client.combinedStatus(SHA, 'main');
+      // `unit` from another app or as a status does not count: the ruleset pins it to Actions.
+      // `e2e` is pinned to two apps; only one has reported.
+      expect(first.required).toEqual([
+        { name: 'unit', state: 'pending', source: null, appId: ACTIONS_APP_ID },
+        { name: 'e2e', state: 'success', source: 'check-run', appId: other.id },
+        { name: 'e2e', state: 'pending', source: null, appId: ACTIONS_APP_ID },
+      ]);
+      expect(first.state).toBe('pending');
+
+      server.resetHandlers();
+      serve({
+        protection: { contexts: ['unit', 'e2e'], checks: [{ context: 'unit', app_id: null }, { context: 'e2e', app_id: other.id }] },
+        rules: [rule([{ context: 'unit', integration_id: ACTIONS_APP_ID }, { context: 'e2e', integration_id: ACTIONS_APP_ID }])],
+        runs: [
+          { id: 1, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA, app: actions },
+          { id: 2, name: 'e2e', status: 'completed', conclusion: 'success', head_sha: SHA, app: other },
+          { id: 3, name: 'e2e', status: 'completed', conclusion: 'success', head_sha: SHA, app: actions },
+        ],
+        statuses: [],
+      });
+      expect((await client.combinedStatus(SHA, 'main')).state).toBe('success');
+    });
+
+    it('a check branch protection lets any source report matches by name, from a check run or a status, as GitHub does', async () => {
+      serve({
+        protection: { contexts: ['lint', 'e2e'], checks: [{ context: 'lint', app_id: null }, { context: 'e2e' }] },
+        runs: [{ id: 1, name: 'lint', status: 'completed', conclusion: 'success', head_sha: SHA, app: other }],
+        statuses: [{ context: 'e2e', state: 'success' }],
+      });
+      const status = await client.combinedStatus(SHA, 'main');
+      expect(status.required).toEqual([
+        { name: 'lint', state: 'success', source: 'check-run' },
+        { name: 'e2e', state: 'success', source: 'status' },
+      ]);
+    });
   });
 
   it('is failure when a required check failed, and a rerun supersedes the earlier failure', async () => {
     serve({
       protection: { contexts: [], checks: [{ context: 'unit' }] },
       runs: [
-        { id: 1, name: 'unit', status: 'completed', conclusion: 'failure' },
-        { id: 7, name: 'unit', status: 'completed', conclusion: 'success' },
+        { id: 1, name: 'unit', status: 'completed', conclusion: 'failure', head_sha: SHA },
+        { id: 7, name: 'unit', status: 'completed', conclusion: 'success', head_sha: SHA },
       ],
       statuses: [],
     });

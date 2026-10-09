@@ -10,6 +10,13 @@
 //                        and line counts, the stop state, and the level re-resolved from the current
 //                        map, then calls `evaluateMergeGate` (gate.ts).
 //
+// Pinned to the reviewed commit (#264): an approval counts only for the head its `review-passed`
+// recorded (`headSha`). When the PR's head is another commit (a push after the review, or a review
+// recorded before heads were pinned) nothing merges: the job starts `review.run` for the new head and
+// waits for it. The required checks, the files and line counts (`compareFiles`, read for that exact
+// commit, renamed files with their old path), and the merge call itself (`sha`, so GitHub refuses a
+// moved head too) all name that one commit.
+//
 // Only an incident whose level in force (the last `level-changed`, else the plan's) is 3 is merged
 // here; at levels 0, 1, and 2 the job appends nothing but the CI result and a human merges (main
 // 11.2). At level 3:
@@ -18,8 +25,8 @@
 //   `levelAtMergeTime`, then the branch is deleted, then `timer.revert` is scheduled with the key
 //   `revert:{incident}` at now plus `AppConfig.merge.revertWindow` (default PT72H). When GitHub
 //   answers 409 (the head moved between the evaluation and the merge) the whole evaluation runs once
-//   more against the new head; a second 409 gives up and appends nothing (the new head's CI webhook
-//   starts the job again). A 405, or a merge GitHub reports as not done, is a failed gate.
+//   more, which finds the new head unreviewed and starts its review; a second 409 gives up and appends
+//   nothing. A 405, or a merge GitHub reports as not done, is a failed gate.
 // - any failed gate: `held { kind: 'gate', reason, gate }` and `level-changed` 3 to 2, so the
 //   incident falls back to the level 2 path (main 11.2: review requested, the card says which gate
 //   failed and why) and a later run of this job is a no-op.
@@ -49,7 +56,7 @@
 // Every append passes `expectedSeq` through `appendDecided` and decides again on a conflict.
 
 import type { AutonomyLevel, IncidentEvent, NewEvent } from '../contracts/events.ts';
-import { keySegment, timerKey } from '../contracts/jobs.ts';
+import { keySegment, reviewRunKey, timerKey, type ReviewRunData } from '../contracts/jobs.ts';
 import { DEFAULT_MERGE_FORBIDDEN, type MergeConfig } from '../config/app-config.ts';
 import { appendDecided, currentLevel, instructionsIncident, latest, lastSeqOf, newEvent, stoppedSinceFiled } from '../fixer/job.ts';
 import type { JiraPriorityName, WorkspaceMap } from '../map/types.ts';
@@ -86,6 +93,15 @@ export interface MergePullRequestFile {
   filename: string;
   additions: number;
   deletions: number;
+  /** A renamed file's old path, as GitHub reports it (`previous_filename`). */
+  previousFilename?: string;
+}
+
+/** The files one commit changes against the base branch, read for that exact commit. */
+export interface MergeCompareFiles {
+  files: readonly MergePullRequestFile[];
+  /** False when GitHub cut the list short (a comparison lists at most 300 files). */
+  complete: boolean;
 }
 
 export interface MergeRequiredCheck {
@@ -118,13 +134,15 @@ export interface RevertPullRequestResult {
  */
 export interface MergeGitHub {
   getPullRequest(number: number): Promise<MergePullRequest>;
-  listPullRequestFiles(number: number): Promise<readonly MergePullRequestFile[]>;
+  /** The files `head` changes against its merge base with `base` (`GET /compare/{base}...{head}`): the PR's files at exactly that commit. */
+  compareFiles(base: string, head: string): Promise<MergeCompareFiles>;
+  /** The required checks for exactly `sha`, each counted only from the app that must report it (#264). */
   combinedStatus(sha: string, baseBranch: string): Promise<MergeCombinedStatus>;
   /** Squash merge as the App, pinned to `expectedHeadSha`. */
   mergePullRequest(number: number, input: { expectedHeadSha: string; commitTitle?: string; commitMessage?: string }): Promise<MergeResult>;
   deleteBranch(branch: string): Promise<void>;
-  /** GraphQL `revertPullRequest`; the pull request must already be merged. */
-  openRevertPullRequest(number: number, input?: { title?: string; body?: string }): Promise<RevertPullRequestResult>;
+  /** GraphQL `revertPullRequest`, as the person `userToken` belongs to; the pull request must already be merged. */
+  openRevertPullRequest(number: number, input: { title?: string; body?: string; userToken: string }): Promise<RevertPullRequestResult>;
 }
 
 /** Where the level is re-resolved from: the loaded map, or a getter that returns the current one. */
@@ -179,6 +197,16 @@ export function startMergeEvaluate(deps: Pick<MergeDeps, 'workflow'>, incidentId
   return deps.workflow.start('merge.evaluate', { incidentId } satisfies MergeEvaluateData, { singletonKey: mergeEvaluateKey(incidentId) });
 }
 
+/**
+ * Starts `review.run` for a head no review approved (#264), keyed like the review job's own starts
+ * (`review:{incident}:{sha}`), so a start while one is queued for that head returns that job. The
+ * review job decides again whether the head needs one (review/job.ts).
+ */
+export function startReviewOfHead(deps: Pick<MergeDeps, 'workflow'>, input: ReviewRunData): Promise<{ jobId: string }> {
+  const data: ReviewRunData = { incidentId: input.incidentId, prNumber: input.prNumber, headSha: input.headSha };
+  return deps.workflow.start('review.run', data, { singletonKey: reviewRunKey(input.incidentId, input.headSha) });
+}
+
 // merge.evaluate ---------------------------------------------------------------------------------
 
 export type MergeSkip = 'no-pr' | 'no-repo' | 'not-autopilot' | 'already-merged' | 'already-held' | 'stopped' | 'ci-red' | 'not-open' | 'head-moved';
@@ -219,16 +247,28 @@ async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeO
   if (mapRepo === undefined || mapRepo === '') return { outcome: 'skipped', reason: 'no-repo' };
   const repo = repoFullName(mapRepo);
 
-  const review = await reviewVerdict(deps.state, log, prNumber);
+  const review = await reviewOf(deps.state, log, prNumber);
   if (review === undefined) return { outcome: 'waiting', on: 'review' };
 
   const gh = deps.github(repo);
   const pr = await gh.getPullRequest(prNumber);
   if (pr.state !== 'open' || pr.merged) return { outcome: 'skipped', reason: 'not-open' };
-  const [status, prFiles, map] = await Promise.all([gh.combinedStatus(pr.headSha, pr.baseRef), gh.listPullRequestFiles(prNumber), loadMap(deps.map)]);
+  if (review.verdict === 'approve' && review.headSha !== pr.headSha) {
+    // The approval is for another commit (or for none, before reviews were pinned): review this head first.
+    await startReviewOfHead(deps, { incidentId, prNumber, headSha: pr.headSha });
+    return { outcome: 'waiting', on: 'review' };
+  }
+  // Every read below, and the merge, name this one commit.
+  const sha = pr.headSha;
+  const [status, diff, map] = await Promise.all([gh.combinedStatus(sha, pr.baseRef), gh.compareFiles(pr.baseRef, sha), loadMap(deps.map)]);
 
   const requiredChecks: RequiredCheck[] = status.required.map((c) => ({ name: c.name, state: c.source === null ? 'missing' : c.state }));
-  const files: ChangedFile[] = prFiles.map((f) => ({ path: f.filename, additions: f.additions, deletions: f.deletions }));
+  const files: ChangedFile[] = diff.files.map((f) => ({
+    path: f.filename,
+    additions: f.additions,
+    deletions: f.deletions,
+    ...(f.previousFilename === undefined || f.previousFilename === f.filename ? {} : { previousPath: f.previousFilename }),
+  }));
   const plannedPriority = latest(log, 'planned')?.payload.priority;
   const priority = isPriority(incident?.priority) ? incident.priority : (plannedPriority ?? 'Medium');
   const levelAtMergeTime = resolveAutonomy(
@@ -236,7 +276,15 @@ async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeO
     { priority },
     map,
   );
-  const input = { reviewVerdict: review, requiredChecks, files, stopped: stoppedSinceFiled(log), levelAtMergeTime, limits: riskLimits(deps.merge, map) };
+  const input = {
+    reviewVerdict: review.verdict,
+    requiredChecks,
+    files,
+    filesComplete: diff.complete,
+    stopped: stoppedSinceFiled(log),
+    levelAtMergeTime,
+    limits: riskLimits(deps.merge, map),
+  };
   const gate = evaluateMergeGate(input);
 
   if (gate.decision === 'hold') return { outcome: 'skipped', reason: 'stopped' };
@@ -245,9 +293,9 @@ async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeO
     const ifGreen = evaluateMergeGate({ ...input, requiredChecks: requiredChecks.map((c) => ({ ...c, state: 'success' as const })) });
     if (ifGreen.decision === 'merge') return { outcome: 'waiting', on: 'ci' };
     if (ifGreen.decision === 'hold') return { outcome: 'skipped', reason: 'stopped' };
-    return hold(deps, incidentId, prNumber, pr.headSha, { ...gate, reason: ifGreen.reason ?? 'gate failed' });
+    return hold(deps, incidentId, prNumber, sha, { ...gate, reason: ifGreen.reason ?? 'gate failed' });
   }
-  if (gate.decision === 'degrade') return hold(deps, incidentId, prNumber, pr.headSha, gate);
+  if (gate.decision === 'degrade') return hold(deps, incidentId, prNumber, sha, gate);
 
   // Every gate passed: the workspace instructions may still hold this merge, never force one (A 6.4).
   const instructed = await checkInstructions(deps.instructionsGate, {
@@ -256,23 +304,24 @@ async function evaluateOnce(deps: MergeDeps, incidentId: string): Promise<MergeO
     incident: { ...instructionsIncident(log, incident), repo, priority, level: 3 },
     pullRequest: { number: prNumber, files: files.map((f) => ({ path: f.path, additions: f.additions, deletions: f.deletions })) },
   });
-  if (instructed.hold) return hold(deps, incidentId, prNumber, pr.headSha, { ...gate, decision: 'degrade', reason: instructed.status });
+  if (instructed.hold) return hold(deps, incidentId, prNumber, sha, { ...gate, decision: 'degrade', reason: instructed.status });
 
   let merge: MergeResult;
   try {
-    merge = await gh.mergePullRequest(prNumber, { expectedHeadSha: pr.headSha });
+    // `sha` is the reviewed head: GitHub refuses (409) when the head is another commit by now.
+    merge = await gh.mergePullRequest(prNumber, { expectedHeadSha: sha });
   } catch (e) {
     if (httpStatus(e) === 409) return HEAD_MOVED;
-    if (httpStatus(e) === 405) return hold(deps, incidentId, prNumber, pr.headSha, refused(gate, errorMessage(e)));
+    if (httpStatus(e) === 405) return hold(deps, incidentId, prNumber, sha, refused(gate, errorMessage(e)));
     throw e;
   }
-  if (!merge.merged) return hold(deps, incidentId, prNumber, pr.headSha, refused(gate, merge.message));
+  if (!merge.merged) return hold(deps, incidentId, prNumber, sha, refused(gate, merge.message));
 
   // GitHub merged it: record that whatever the log now says, so the merge is never unrecorded.
   await appendDecided(deps.state, incidentId, (events) => {
     if (mergedSince(events, prNumber)) return undefined;
     return [
-      ...ciGreenFirst(deps, incidentId, events, prNumber, pr.headSha),
+      ...ciGreenFirst(deps, incidentId, events, prNumber, sha),
       newEvent(deps, incidentId, 'merged', { prNumber, mergeCommitSha: merge.sha, levelAtMergeTime: 3 }),
     ];
   });
@@ -337,13 +386,20 @@ function ciGreenFirst(deps: MergeDeps, incidentId: string, events: readonly Inci
   return ciResultEvents(deps, incidentId, events, { prNumber, headSha, checks: { state: 'green' } });
 }
 
+/** The latest review of a PR: its verdict and, for an approval, the commit it approved. */
+export interface ReviewRecord {
+  verdict: ReviewVerdict;
+  /** The head a `review-passed` recorded (#264). Absent on a failed review, and on an approval recorded before heads were pinned. */
+  headSha?: string;
+}
+
 /**
- * The verdict of the latest review of PR `prNumber` since the latest fixer run started (a retry's
- * review replaces the first one), or undefined when that PR has not been reviewed yet. A
- * `review-passed` approves only when its `review` artifact, when it has one, parses to `approve`;
- * an unreadable or disagreeing artifact never approves.
+ * The latest review of PR `prNumber` since the latest fixer run started (a retry's review replaces the
+ * first one), or undefined when that PR has not been reviewed yet. A `review-passed` approves only when
+ * its `review` artifact, when it has one, parses to `approve`; an unreadable or disagreeing artifact
+ * never approves. An approval counts for its `headSha` alone: no caller merges another commit on it.
  */
-export async function reviewVerdict(state: StatePort, log: readonly IncidentEvent[], prNumber: number): Promise<ReviewVerdict | undefined> {
+export async function reviewOf(state: StatePort, log: readonly IncidentEvent[], prNumber: number): Promise<ReviewRecord | undefined> {
   const since = lastSeqOf(log, 'fixer-started');
   let review: IncidentEvent<'review-passed'> | IncidentEvent<'review-failed'> | undefined;
   for (const e of log) {
@@ -351,13 +407,21 @@ export async function reviewVerdict(state: StatePort, log: readonly IncidentEven
     if ((e.type === 'review-passed' || e.type === 'review-failed') && e.payload.prNumber === prNumber) review = e;
   }
   if (review === undefined) return undefined;
-  if (review.type === 'review-failed') return review.payload.verdict;
+  if (review.type === 'review-failed') return { verdict: review.payload.verdict };
+  const headSha = review.payload.headSha;
+  const approved: ReviewRecord = headSha === undefined || headSha === '' ? { verdict: 'approve' } : { verdict: 'approve', headSha };
   const ref = review.payload.review;
-  if (ref === undefined) return 'approve';
+  if (ref === undefined) return approved;
   const artifact = await state.getArtifact(ref.artifactId, ref.version);
-  if (artifact.kind !== 'review') return 'escalate';
+  if (artifact.kind !== 'review') return { verdict: 'escalate' };
   const parsed = parseReviewVerdict(artifact.body);
-  return parsed.ok ? parsed.verdict.verdict : 'escalate';
+  if (!parsed.ok) return { verdict: 'escalate' };
+  return parsed.verdict.verdict === 'approve' ? approved : { verdict: parsed.verdict.verdict };
+}
+
+/** The verdict of `reviewOf`, for callers that only show it (the PR card). */
+export async function reviewVerdict(state: StatePort, log: readonly IncidentEvent[], prNumber: number): Promise<ReviewVerdict | undefined> {
+  return (await reviewOf(state, log, prNumber))?.verdict;
 }
 
 /** The stricter of `AppConfig.merge` and the map's risk gate; the built-in forbidden paths always apply. */

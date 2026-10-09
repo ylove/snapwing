@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import type { StatusStage } from '@snapwing/pipeline/contracts/adapters.ts';
+import type { PrReadyCard, StatusStage } from '@snapwing/pipeline/contracts/adapters.ts';
+import { parsePinnedValue } from '../../src/adapters/shared/pr-pin.ts';
 import { MAX_BUTTON_VALUE, type ActionsBlock, type SlackMessage } from '../../src/adapters/slack/cards/blocks.ts';
 import { buildCard, buildClarify } from '../../src/adapters/slack/cards/cards.ts';
 import { EXAMPLE_INCIDENT_ID, renderExamples } from '../../src/adapters/slack/cards/examples.ts';
@@ -16,6 +17,20 @@ import {
 
 const docsDir = join(dirname(fileURLToPath(import.meta.url)), '../../../../docs/cards/slack');
 const ID = EXAMPLE_INCIDENT_ID;
+const HEAD = 'a'.repeat(40);
+const PR_READY: PrReadyCard = {
+  kind: 'pr-ready',
+  prNumber: 418,
+  headSha: HEAD,
+  prUrl: 'https://github.com/example/web/pull/418',
+  issueKey: 'WEB-1042',
+  reviewVerdict: 'approve',
+  ciState: 'green',
+  filesChanged: 2,
+  additions: 41,
+  deletions: 6,
+  reviewerUserIds: [],
+};
 
 function buttons(msg: SlackMessage) {
   const block = msg.blocks.find((b): b is ActionsBlock => b.type === 'actions');
@@ -82,12 +97,29 @@ describe('slack cards', () => {
   it('every button carries the incident id and a bounded action_id', () => {
     for (const msg of Object.values(examples)) {
       for (const b of buttons(msg)) {
-        expect(b.value).toBe(ID);
+        expect(parsePinnedValue(b.value).incidentId).toBe(ID);
+        // Only the PR buttons name a PR and a commit (#264).
+        expect(parsePinnedValue(b.value).pin === undefined).toBe(!['merge', 'request_changes', 'revert'].includes(b.action_id));
         expect(b.value.length).toBeLessThan(MAX_BUTTON_VALUE);
         expect(b.action_id.length).toBeGreaterThan(0);
         expect(b.action_id.length).toBeLessThanOrEqual(255);
       }
     }
+  });
+
+  it('pr-ready: Merge and Request changes carry the PR and the head the card shows; Stop does not (#264)', () => {
+    const msg = buildCard(ID, { ...PR_READY, prNumber: 31, headSha: HEAD }, { canMerge: true });
+    expect(buttons(msg).map((b) => [b.action_id, b.value])).toEqual([
+      ['open_pr', ID],
+      ['merge', `${ID}:31:${HEAD}`],
+      ['request_changes', `${ID}:31:${HEAD}`],
+      ['stop', ID],
+    ]);
+    expect(parsePinnedValue(`${ID}:31:${HEAD}`)).toEqual({ incidentId: ID, pin: { prNumber: 31, sha: HEAD } });
+    // A malformed pin is no pin: the tap is refused as out of date.
+    expect(parsePinnedValue(`${ID}:0:${HEAD}`)).toEqual({ incidentId: ID });
+    expect(parsePinnedValue(`${ID}:31:not-a-sha`)).toEqual({ incidentId: ID });
+    expect(parsePinnedValue(`${ID}:31:${HEAD}:extra`)).toEqual({ incidentId: ID });
   });
 
   it('rejects a value over the Slack limit', () => {
@@ -154,6 +186,14 @@ describe('status copy', () => {
     expect(buttons(buildStatusMessage(ID, makeStatusUpdate('fixing', ctx))).map((b) => b.action_id)).toEqual(['stop']);
     expect(buttons(buildStatusMessage(ID, makeStatusUpdate('merged', { ...ctx, automatic: true }))).map((b) => b.action_id)).toEqual(['revert']);
     expect(buttons(buildStatusMessage(ID, makeStatusUpdate('production', ctx)))).toEqual([]);
+  });
+
+  it('Revert carries the merged PR and its merge commit (#264)', () => {
+    const merged = makeStatusUpdate('merged', { ...ctx, automatic: true, pin: { prNumber: 31, sha: HEAD } });
+    expect(merged.pin).toEqual({ prNumber: 31, sha: HEAD });
+    expect(buttons(buildStatusMessage(ID, merged)).map((b) => b.value)).toEqual([`${ID}:31:${HEAD}`]);
+    // A human merge has no Revert, so no pin either.
+    expect(makeStatusUpdate('merged', { ...ctx, pin: { prNumber: 31, sha: HEAD } }).pin).toBeUndefined();
   });
 });
 

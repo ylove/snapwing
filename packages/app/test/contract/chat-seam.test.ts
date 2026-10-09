@@ -201,6 +201,7 @@ async function runDigest(b: Booted, name: 'digest.0' | 'digest.1'): Promise<void
 const CARD: PrReadyCard = {
   kind: 'pr-ready',
   prNumber: 7,
+  headSha: 'e'.repeat(40),
   prUrl: 'https://github.com/acme/web/pull/7',
   issueKey: 'WEB-1',
   reviewVerdict: 'approve',

@@ -128,7 +128,9 @@ describe.skipIf(!hasSecrets)('Durability live tier: park across a restart, and t
   const jira = createJiraClient({ baseUrl, email: env.JIRA_EMAIL, apiToken: env.JIRA_API_TOKEN, log: () => undefined });
   const fileSecrets = createEnvFileSecrets({ path: findEnvFile() });
   const githubAuth = createGitHubAuth({ secrets: fileSecrets });
-  const githubClient = createGitHubClient(githubAuth, { repo: REPO });
+  // This App's id: `snapwing/review` counts only from its own check runs (#264).
+  const appId = Number(env.GITHUB_APP_ID.trim());
+  const githubClient = createGitHubClient(githubAuth, { repo: REPO, appId });
   const githubCall = createGitHubTransport(githubAuth, { repo: REPO });
 
   // What teardown must undo.
@@ -512,7 +514,7 @@ describe.skipIf(!hasSecrets)('Durability live tier: park across a restart, and t
     prNumber = number;
     const check = await githubClient.createCheckRun({ headSha, status: 'in_progress', output: { title: 'Snapwing review', summary: 'Live reconcile probe.' } });
     await githubClient.updateCheckRun(check.id, { status: 'completed', conclusion: 'success', output: { title: 'Snapwing review', summary: 'Live reconcile probe passed.' } });
-    expect((await githubClient.combinedStatus(headSha, BASE)).required).toEqual([{ name: REVIEW_CHECK_NAME, state: 'success', source: 'check-run' }]);
+    expect((await githubClient.combinedStatus(headSha, BASE)).required).toEqual([{ name: REVIEW_CHECK_NAME, state: 'success', source: 'check-run', appId }]);
 
     // An incident that opened its PR, passed review, and has waited on CI for 40 minutes: its webhook "never arrived".
     const state = await tdb.open();
@@ -549,7 +551,8 @@ describe.skipIf(!hasSecrets)('Durability live tier: park across a restart, and t
         ev('filed', { jiraKey: `${projectKey}-999999` }),
         ev('fixer-started', { runId: `${incidentId}-run`, harness: 'claude-code', attempt: 1 }),
         ev('pr-opened', { prNumber: number, branch: branch ?? '' }, 'fixer'),
-        ev('review-passed', { prNumber: number }),
+        // The approval names the head it reviewed (v2, #264).
+        { ...ev('review-passed', { prNumber: number, headSha }), v: 2 },
         ev('waiting-changed', { waitingOn: { kind: 'ci', who: 'required checks' } }),
       ],
       0,

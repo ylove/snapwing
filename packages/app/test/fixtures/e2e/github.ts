@@ -31,6 +31,10 @@ export const BOT_LOGIN = 'snapwing-test[bot]';
 /** The check GitHub's fake CI reports green for every head. */
 export const CI_CHECK = 'ci/test';
 export const REVIEW_CHECK = 'snapwing/review';
+/** The App's id (`GITHUB_APP_ID` in world.ts): check runs the App creates carry it, as GitHub's do. */
+export const APP_ID = 1001;
+/** The app CI's check run comes from (GitHub Actions). */
+const CI_APP = { id: 15368, slug: 'github-actions' };
 
 /** A person who links a GitHub account through the OAuth flow. */
 export interface GitHubPerson {
@@ -153,9 +157,13 @@ export class FakeGitHub {
   }
 
   private diff(pr: FakePull): { filename: string; status: string; additions: number; deletions: number }[] {
-    const bare = this.repos.get(pr.repo);
+    return this.diffOf(pr.repo, `refs/heads/${pr.base}...refs/heads/${pr.head}`);
+  }
+
+  /** The files a `base...head` range changes in `repo`, as GitHub lists them. */
+  private diffOf(repo: string, range: string): { filename: string; status: string; additions: number; deletions: number }[] {
+    const bare = this.repos.get(repo);
     if (bare === undefined) return [];
-    const range = `refs/heads/${pr.base}...refs/heads/${pr.head}`;
     const status = new Map(
       git(bare.url, ['diff', '--name-status', range])
         .split('\n')
@@ -247,6 +255,15 @@ export class FakeGitHub {
         const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
         return withPull(request, params, (pr) => HttpResponse.json(page === 1 ? this.diff(pr).map((f) => ({ ...f, changes: f.additions + f.deletions })) : []));
       }),
+      // The merge step reads the files of exactly the commit it merges (#264): `base...sha`.
+      http.get(`${GITHUB}/repos/:owner/:repo/compare/:basehead`, async ({ request, params }) => {
+        if (!installation(request)) return denied();
+        note(request);
+        await this.sync();
+        const [base = '', head = ''] = String(params['basehead']).split('...');
+        const files = this.diffOf(repoOf(params), `refs/heads/${base}...${head}`).map((f) => ({ ...f, changes: f.additions + f.deletions }));
+        return HttpResponse.json({ status: 'ahead', files });
+      }),
       http.post(`${GITHUB}/repos/:owner/:repo/pulls/:number/requested_reviewers`, async ({ request, params }) => {
         if (!installation(request)) return denied();
         const body = rec(await request.clone().json());
@@ -322,6 +339,12 @@ export class FakeGitHub {
         note(request);
         return HttpResponse.json({ strict: false, contexts: [REVIEW_CHECK, CI_CHECK], checks: [] });
       }),
+      // No repository ruleset requires anything more (the classic list above holds every required check).
+      http.get(`${GITHUB}/repos/:owner/:repo/rules/branches/:branch`, ({ request }) => {
+        if (!installation(request)) return denied();
+        note(request);
+        return HttpResponse.json([]);
+      }),
       http.get(`${GITHUB}/repos/:owner/:repo/commits/:sha/check-runs`, ({ request, params }) => {
         if (!installation(request)) return denied();
         note(request);
@@ -329,8 +352,8 @@ export class FakeGitHub {
         const page = Number(new URL(request.url).searchParams.get('page') ?? '1');
         const runs = this.checkRuns
           .filter((r) => r.repo === repoOf(params) && r.headSha === sha)
-          .map((r) => ({ id: r.id, name: r.name, status: r.status, conclusion: r.conclusion }));
-        const ci = this.silent.has(CI_CHECK) ? [] : [{ id: 1, name: CI_CHECK, status: 'completed', conclusion: 'success' }];
+          .map((r) => ({ id: r.id, name: r.name, head_sha: r.headSha, status: r.status, conclusion: r.conclusion, app: { id: APP_ID, slug: 'snapwing-test' } }));
+        const ci = this.silent.has(CI_CHECK) ? [] : [{ id: 1, name: CI_CHECK, head_sha: sha, status: 'completed', conclusion: 'success', app: CI_APP }];
         const all = [...ci, ...runs.filter((r) => !this.silent.has(r.name))];
         return HttpResponse.json(page === 1 ? { total_count: all.length, check_runs: all } : { total_count: all.length, check_runs: [] });
       }),

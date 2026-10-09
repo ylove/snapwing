@@ -1,7 +1,15 @@
 // GitHub pull request, checks, and merge operations (main 10.3, 10.4, 11.1 to 11.3). A factory over GitHubAuth:
 // every call mints (or reuses) an installation token scoped to the one repository and the smallest permission
-// set that operation needs. Merge may instead run with a user-to-server token so GitHub's audit log names a
-// human (11.2). fetch only. A token is never logged and never put in an error message.
+// set that operation needs. Merge and revert may instead run with a user-to-server token so GitHub's audit log
+// names a human (11.2, 11.3). fetch only. A token is never logged and never put in an error message.
+//
+// Required checks (#264) come from classic branch protection and from repository rulesets together (a
+// branch protected by rulesets alone lists none under classic protection). They are matched by name
+// and by the app that must report them, for exactly the sha asked about: the app either source names
+// for the check (`checks[].app_id`, a ruleset's `integration_id`; a check no source pins matches by
+// name, as GitHub does), and for `snapwing/review` always this App (`GitHubClientOptions.appId`). A
+// check pinned to an app counts only from that app's check runs, never from a commit status or another
+// app's run of the same name.
 
 import { GitHubApiError } from './auth.ts';
 import type { GitHubAuth, GitHubPermissions } from './auth.ts';
@@ -13,6 +21,8 @@ export const REVIEW_CHECK_NAME = 'snapwing/review';
 const DEFAULT_RETRY_AFTER_MS = 60_000;
 const PAGE_SIZE = 100;
 const MAX_PAGES = 30;
+/** GitHub lists at most this many files in a comparison; a list this long may be cut short. */
+export const COMPARE_FILE_LIMIT = 300;
 
 /** 404: the repository, pull request, branch, check run, or file does not exist (or the token cannot see it). */
 export class GitHubNotFoundError extends GitHubApiError {
@@ -63,6 +73,11 @@ export class GitHubRateLimitError extends GitHubApiError {
 export interface GitHubClientOptions {
   /** `owner/name`. */
   repo: string;
+  /**
+   * This App's id (`GITHUB_APP_ID`). `snapwing/review` counts as a required check only from this App's
+   * check run on the sha asked about (#264); without the id it never counts.
+   */
+  appId?: number;
   fetch?: typeof fetch;
   now?: () => Date;
   /** Default `https://api.github.com`. */
@@ -102,6 +117,15 @@ export interface PullRequestFile {
   additions: number;
   deletions: number;
   changes: number;
+  /** A renamed file's old path (`previous_filename`). */
+  previousFilename?: string;
+}
+
+/** The files one commit changes against a base, read for exactly that commit. */
+export interface CompareFiles {
+  files: PullRequestFile[];
+  /** False when GitHub may have cut the list short (`COMPARE_FILE_LIMIT`). */
+  complete: boolean;
 }
 
 export type ReviewEvent = 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT';
@@ -161,14 +185,18 @@ export interface CheckResult {
   name: string;
   state: CheckState;
   source: 'check-run' | 'status';
+  /** The app that reported a check run (`app.id`); absent for a commit status. */
+  appId?: number;
 }
 
 export interface RequiredCheck {
   name: string;
-  /** `pending` when nothing has reported under that name yet. */
+  /** `pending` when nothing has reported under that name yet (from the app it must come from). */
   state: CheckState;
-  /** `null` when nothing has reported. */
+  /** `null` when nothing has reported (from that app). */
   source: CheckResult['source'] | null;
+  /** The app that must report it; absent when any source may. */
+  appId?: number;
 }
 
 export interface CombinedStatus {
@@ -200,6 +228,8 @@ export interface RevertInput {
   title?: string;
   body?: string;
   draft?: boolean;
+  /** A user-to-server token. When set, the revert PR is opened (and audited) as that user instead of the app. */
+  userToken?: string;
 }
 
 export interface RevertPullRequest {
@@ -224,6 +254,8 @@ export interface GitHubClient {
   /** The repository's default branch. */
   getDefaultBranch(): Promise<string>;
   listPullRequestFiles(number: number): Promise<PullRequestFile[]>;
+  /** The files `head` changes against its merge base with `base` (`GET /compare/{base}...{head}`), for exactly that commit. */
+  compareFiles(base: string, head: string): Promise<CompareFiles>;
   requestReviewers(number: number, reviewers: { users?: readonly string[]; teams?: readonly string[] }): Promise<void>;
   createReview(number: number, input: CreateReviewInput): Promise<Review>;
   createCheckRun(input: CreateCheckRunInput): Promise<CheckRun>;
@@ -238,7 +270,7 @@ export interface GitHubClient {
   markDraft(number: number): Promise<void>;
   addLabels(number: number, labels: readonly string[]): Promise<string[]>;
   deleteBranch(branch: string): Promise<void>;
-  /** GraphQL `revertPullRequest`; the pull request must already be merged. */
+  /** GraphQL `revertPullRequest`; the pull request must already be merged. With `userToken`, as that user. */
   openRevertPullRequest(number: number, input?: RevertInput): Promise<RevertPullRequest>;
 }
 
@@ -369,6 +401,29 @@ function toPullRequest(raw: unknown): PullRequest {
   };
 }
 
+function toFile(raw: unknown): PullRequestFile | undefined {
+  const f = record(raw);
+  if (f === undefined || typeof f.filename !== 'string') return undefined;
+  return {
+    filename: f.filename,
+    status: str(f.status),
+    additions: num(f.additions),
+    deletions: num(f.deletions),
+    changes: num(f.changes),
+    ...(typeof f.previous_filename === 'string' && f.previous_filename !== '' ? { previousFilename: f.previous_filename } : {}),
+  };
+}
+
+/** A positive app id, else undefined (branch protection writes `null` or `-1` for "any source"). */
+function appIdOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+/** The ref as a path: each `/`-separated part encoded, so `release/1.2` stays a ref GitHub reads. */
+function refPath(ref: string): string {
+  return ref.split('/').map(encodeURIComponent).join('/');
+}
+
 function toCheckRun(raw: unknown): CheckRun {
   const run = record(raw);
   if (run === undefined || typeof run.id !== 'number') throw new GitHubApiError(502, 'check run response had no id');
@@ -387,6 +442,8 @@ function statusState(state: unknown): CheckState {
 }
 
 const WORST: Record<CheckState, number> = { success: 0, pending: 1, failure: 2 };
+/** No app has this id: a check pinned to it never counts (`snapwing/review` without `appId`). */
+const NO_APP = -1;
 
 export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOptions): GitHubClient {
   const repoPath = `/repos/${options.repo}`;
@@ -409,8 +466,8 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
     return out;
   }
 
-  async function graphql(query: string, variables: Record<string, unknown>, permissions: GitHubPermissions): Promise<Record<string, unknown>> {
-    const res = await call({ method: 'POST', path: '/graphql', permissions, body: { query, variables } });
+  async function graphql(query: string, variables: Record<string, unknown>, permissions: GitHubPermissions, token?: string): Promise<Record<string, unknown>> {
+    const res = await call({ method: 'POST', path: '/graphql', permissions, body: { query, variables }, ...(token === undefined ? {} : { token }) });
     const body = record(parseJson(res.text));
     const errors = list(body?.errors);
     if (errors.length > 0) {
@@ -419,6 +476,8 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
       const type = str(first?.type);
       if (type === 'RATE_LIMITED') throw new GitHubRateLimitError(200, message, retryAfterMs(res.headers, now()));
       if (type === 'NOT_FOUND') throw new GitHubNotFoundError(message);
+      // A user-to-server token whose user lacks access (a revert as that user) is refused like a REST 403.
+      if (type === 'FORBIDDEN') throw new GitHubApiError(403, message);
       throw new GitHubValidationError(message, errors);
     }
     const data = record(body?.data);
@@ -426,7 +485,12 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
     return data;
   }
 
-  async function requiredCheckNames(baseBranch: string): Promise<string[]> {
+  /**
+   * The base branch's required checks: each name, and the app branch protection says must report it
+   * (`checks[].app_id`), absent when any source may. A name listed both ways keeps its app.
+   */
+  /** Classic branch protection's required checks: `contexts` (any source) and `checks[].app_id`. */
+  async function classicRequiredChecks(baseBranch: string): Promise<{ name: string; appId?: number }[]> {
     try {
       const body = record(
         await json({
@@ -435,18 +499,57 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
           permissions: { administration: 'read' },
         }),
       );
-      const names = new Set<string>();
-      for (const c of list(body?.contexts)) if (typeof c === 'string') names.add(c);
-      for (const c of list(body?.checks)) {
-        const context = record(c)?.context;
-        if (typeof context === 'string') names.add(context);
-      }
-      return [...names];
+      const contexts = list(body?.contexts).flatMap((c) => (typeof c === 'string' ? [{ name: c }] : []));
+      const checks = list(body?.checks).flatMap((c) => {
+        const check = record(c);
+        const appId = appIdOf(check?.app_id);
+        return typeof check?.context !== 'string' ? [] : [appId === undefined ? { name: check.context } : { name: check.context, appId }];
+      });
+      return [...contexts, ...checks];
     } catch (err) {
       // An unprotected branch (or one with no required-checks rule) answers 404: nothing is required.
       if (err instanceof GitHubNotFoundError) return [];
       throw err;
     }
+  }
+
+  /** Repository rulesets' required checks for the branch: each `required_status_checks` rule's `context` and `integration_id`. */
+  async function rulesetRequiredChecks(baseBranch: string): Promise<{ name: string; appId?: number }[]> {
+    try {
+      const rules = await paginate(`${repoPath}/rules/branches/${encodeURIComponent(baseBranch)}`, { metadata: 'read' }, (page) => list(page));
+      return rules.flatMap((r) => {
+        const rule = record(r);
+        if (rule?.type !== 'required_status_checks') return [];
+        return list(record(rule.parameters)?.required_status_checks).flatMap((c) => {
+          const check = record(c);
+          const appId = appIdOf(check?.integration_id);
+          return typeof check?.context !== 'string' ? [] : [appId === undefined ? { name: check.context } : { name: check.context, appId }];
+        });
+      });
+    } catch (err) {
+      // No rules for the branch: nothing is required by a ruleset.
+      if (err instanceof GitHubNotFoundError) return [];
+      throw err;
+    }
+  }
+
+  /**
+   * The base branch's required checks from classic branch protection and repository rulesets together,
+   * one entry per name and app that must report it (#264). A name either source pins to an app counts
+   * only from that app; pinned to two apps, both must report it. A name no source pins accepts any
+   * source. `snapwing/review` is this App's own check: it is pinned to the App's id as well (to an id
+   * no app has when `appId` is unknown, so it never counts).
+   */
+  async function requiredChecksOf(baseBranch: string): Promise<{ name: string; appId?: number }[]> {
+    const [classic, rulesets] = await Promise.all([classicRequiredChecks(baseBranch), rulesetRequiredChecks(baseBranch)]);
+    const pins = new Map<string, Set<number>>();
+    for (const { name, appId } of [...classic, ...rulesets]) {
+      const apps = pins.get(name) ?? new Set<number>();
+      if (appId !== undefined) apps.add(appId);
+      pins.set(name, apps);
+    }
+    pins.get(REVIEW_CHECK_NAME)?.add(options.appId ?? NO_APP);
+    return [...pins.entries()].flatMap(([name, apps]) => (apps.size === 0 ? [{ name }] : [...apps].map((appId) => ({ name, appId }))));
   }
 
   async function fetchPullRequest(number: number): Promise<PullRequest> {
@@ -465,13 +568,14 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
 
     async listPullRequestFiles(number) {
       const raw = await paginate(`${repoPath}/pulls/${number}/files`, prRead, (page) => list(page));
-      const files: PullRequestFile[] = [];
-      for (const r of raw) {
-        const f = record(r);
-        if (f === undefined || typeof f.filename !== 'string') continue;
-        files.push({ filename: f.filename, status: str(f.status), additions: num(f.additions), deletions: num(f.deletions), changes: num(f.changes) });
-      }
-      return files;
+      return raw.flatMap((r) => toFile(r) ?? []);
+    },
+
+    async compareFiles(base, head) {
+      // One page: GitHub puts the files (at most COMPARE_FILE_LIMIT) on the first page only.
+      const body = record(await json({ method: 'GET', path: `${repoPath}/compare/${refPath(base)}...${refPath(head)}`, permissions: { contents: 'read' } }));
+      const files = list(body?.files).flatMap((r) => toFile(r) ?? []);
+      return { files, complete: files.length < COMPARE_FILE_LIMIT };
     },
 
     async requestReviewers(number, reviewers) {
@@ -532,29 +636,45 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
 
     async combinedStatus(sha, baseBranch) {
       const checksPermissions: GitHubPermissions = { checks: 'read', statuses: 'read' };
-      const [requiredNames, runs, statusBody] = await Promise.all([
-        requiredCheckNames(baseBranch),
+      const [requiredChecks, rawRuns, statusBody] = await Promise.all([
+        requiredChecksOf(baseBranch),
         paginate(`${repoPath}/commits/${encodeURIComponent(sha)}/check-runs`, checksPermissions, (page) => list(record(page)?.check_runs)),
         json({ method: 'GET', path: `${repoPath}/commits/${encodeURIComponent(sha)}/status`, permissions: checksPermissions, query: { per_page: PAGE_SIZE } }),
       ]);
-      // Several runs can share a name (reruns); the highest id is the latest.
-      const latestRuns = new Map<string, Record<string, unknown>>();
-      for (const r of runs) {
+      // Only what was reported on exactly this sha.
+      const runs = rawRuns.flatMap((r) => {
         const run = record(r);
-        if (run === undefined || typeof run.name !== 'string') continue;
-        const prior = latestRuns.get(run.name);
-        if (prior === undefined || num(run.id) > num(prior.id)) latestRuns.set(run.name, run);
-      }
-      const all: CheckResult[] = [...latestRuns.entries()].map(([name, run]) => ({ name, state: checkRunState(run), source: 'check-run' as const }));
-      for (const s of list(record(statusBody)?.statuses)) {
+        if (run === undefined || typeof run.name !== 'string') return [];
+        return typeof run.head_sha === 'string' && run.head_sha !== sha ? [] : [run];
+      });
+      const statusFor = record(statusBody);
+      const statuses = typeof statusFor?.sha === 'string' && statusFor.sha !== sha ? [] : list(statusFor?.statuses);
+      const runResult = (run: Record<string, unknown>): CheckResult => {
+        const appId = appIdOf(record(run.app)?.id);
+        return { name: str(run.name), state: checkRunState(run), source: 'check-run', ...(appId === undefined ? {} : { appId }) };
+      };
+      // Several runs can share a name (reruns, or several apps); the highest id is the latest.
+      const latestOf = (candidates: readonly Record<string, unknown>[]): Record<string, unknown> | undefined =>
+        candidates.reduce<Record<string, unknown> | undefined>((l, r) => (l === undefined || num(r.id) > num(l.id) ? r : l), undefined);
+      const all: CheckResult[] = [...new Set(runs.map((r) => str(r.name)))].flatMap((name) => {
+        const latest = latestOf(runs.filter((r) => r.name === name));
+        return latest === undefined ? [] : [runResult(latest)];
+      });
+      const reported: CheckResult[] = [];
+      for (const s of statuses) {
         const status = record(s);
         if (status === undefined || typeof status.context !== 'string') continue;
-        all.push({ name: status.context, state: statusState(status.state), source: 'status' });
+        reported.push({ name: status.context, state: statusState(status.state), source: 'status' });
       }
-      const required: RequiredCheck[] = requiredNames.map((name) => {
-        // A name reported both ways is as bad as its worst result.
-        const worst = all.filter((r) => r.name === name).reduce<CheckResult | undefined>((w, r) => (w === undefined || WORST[r.state] > WORST[w.state] ? r : w), undefined);
-        return worst === undefined ? { name, state: 'pending', source: null } : { name, state: worst.state, source: worst.source };
+      all.push(...reported);
+      const required: RequiredCheck[] = requiredChecks.map(({ name, appId }) => {
+        const pinned = appId !== undefined;
+        const latest = latestOf(runs.filter((r) => r.name === name && (!pinned || appIdOf(record(r.app)?.id) === appId)));
+        // An app-pinned check counts only from that app's check runs; otherwise a name reported both ways is as bad as its worst result.
+        const results = [...(latest === undefined ? [] : [runResult(latest)]), ...(pinned ? [] : reported.filter((r) => r.name === name))];
+        const worst = results.reduce<CheckResult | undefined>((w, r) => (w === undefined || WORST[r.state] > WORST[w.state] ? r : w), undefined);
+        const app = appId === undefined || appId === NO_APP ? {} : { appId };
+        return worst === undefined ? { name, state: 'pending', source: null, ...app } : { name, state: worst.state, source: worst.source, ...app };
       });
       const state = required.reduce<CheckState>((s, r) => (WORST[r.state] > WORST[s] ? r.state : s), 'success');
       return { sha, baseBranch, state, required, all };
@@ -635,6 +755,7 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
           },
         },
         { contents: 'write', pull_requests: 'write' },
+        input.userToken,
       );
       const revert = record(record(data.revertPullRequest)?.revertPullRequest);
       if (revert === undefined || typeof revert.number !== 'number') throw new GitHubApiError(502, 'revertPullRequest returned no pull request');

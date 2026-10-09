@@ -1,4 +1,5 @@
 // Signal contracts: A section 7.
+import type { PrPin } from './adapters.ts';
 import type { ApprovalAction, IncidentActor } from './incident.ts';
 
 export type Intent =
@@ -53,4 +54,5 @@ export interface StatusAnswer {
   waitingOn: { kind: 'ci' | 'review' | 'human' | 'deploy' | 'hold' | 'nothing'; who?: string; since?: string };
   nextStep: string;
   actions: ApprovalAction[];
+  pin?: PrPin;                     // with a revert action: the merged PR and merge commit it acts on (#264)
 }

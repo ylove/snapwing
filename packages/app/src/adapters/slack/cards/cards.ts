@@ -1,10 +1,12 @@
 // Pure builders from an InteractiveCard to Block Kit JSON (main 5.5, 6.2, 7.2, 8.2, 11.2).
-// Every button carries `action_id` (an ApprovalAction or the card's choice) and `value` (the incident id).
+// Every button carries `action_id` (an ApprovalAction or the card's choice) and `value` (the incident id;
+// on Merge and Request changes followed by the PR and head the card shows, `../../shared/pr-pin.ts`, #264).
 // The fallback `text` is mrkdwn Slack notifies from, so user text in it is escaped like the blocks: a
 // `<@U...>` or `<!channel>` in a summary must not ping anyone.
 
 import type { ClaimedCard, FileConfirmCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TriageResolutionPlan } from '@snapwing/pipeline/contracts/incident.ts';
+import { pinnedValue } from '../../shared/pr-pin.ts';
 import { actions, context, esc, mention, section, type ButtonSpec, type SlackBlock, type SlackMessage } from './blocks.ts';
 
 export interface FixPreviewOptions {
@@ -149,9 +151,11 @@ export function buildPrReady(incidentId: string, card: PrReadyCard, opts: PrRead
   const reviewers = card.reviewerUserIds.length === 0 ? '' : ` Review requested from ${card.reviewerUserIds.map(mention).join(', ')}.`;
   const buttons: ButtonSpec[] = [{ label: 'Open PR', actionId: 'open_pr', value: incidentId, url: card.prUrl }];
   if (opts.canMerge === true) {
+    // Merge and Request changes act on the PR and head this card shows, and nothing else (#264).
+    const pinned = pinnedValue(incidentId, { prNumber: card.prNumber, sha: card.headSha });
     buttons.push(
-      { label: 'Merge', actionId: 'merge', value: incidentId, style: 'primary' },
-      { label: 'Request changes', actionId: 'request_changes', value: incidentId },
+      { label: 'Merge', actionId: 'merge', value: pinned, style: 'primary' },
+      { label: 'Request changes', actionId: 'request_changes', value: pinned },
       { label: 'Stop', actionId: 'stop', value: incidentId, style: 'danger' },
     );
   }

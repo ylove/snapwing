@@ -14,6 +14,7 @@
 // app id as `botId`.
 
 import { HOME_SECTION_LIMIT, type Queue, type QueueButton, type QueueItem, type QueueModel, type QueueSection } from '../../status/queue.ts';
+import { pinData } from '../shared/pr-pin.ts';
 import type { TeamsConnector, TeamsOutgoingActivity } from './connector.ts';
 import {
   MAX_CARD_BYTES,
@@ -51,7 +52,8 @@ function buttonAction(button: QueueButton, incidentId: string): CardAction {
     case 'open_pr':
       return action(incidentId, { title: 'Open PR', verb: 'open_pr', url: button.url });
     case 'merge':
-      return action(incidentId, { title: 'Merge', verb: 'merge', style: 'positive' });
+      // The PR and head the queue showed (#264).
+      return action(incidentId, { title: 'Merge', verb: 'merge', style: 'positive', data: pinData(button.pin) });
     case 'stop':
       return action(incidentId, { title: 'Stop', verb: 'stop', style: 'destructive' });
   }

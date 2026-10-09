@@ -63,6 +63,11 @@ export function createUpcasters(): UpcasterRegistry {
 /** The registry every reader uses by default. Production upcasters are registered on it here. */
 export const upcasters: UpcasterRegistry = createUpcasters();
 
+// `review-passed` v1 to v2 (#264): v2 adds `headSha`, the commit the review approved. A v1 review never
+// recorded one, so the step adds none and the payload is otherwise the same: readers treat a review
+// without `headSha` as approving no head, and the merge step asks for a fresh review instead of merging.
+upcasters.register('review-passed', 1, (payload) => payload);
+
 /**
  * `event` at the newest version its type has an upcaster chain for. Returns `event` itself when no
  * step applies, otherwise a new object with the upcast payload and `v`; never mutates `event`.

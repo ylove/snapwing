@@ -582,9 +582,21 @@ function answerIncident(index: Index, incident: IncidentView, audience: StatusAu
       return { ...base, text: reporterText(index, incident, log, s, waitingOn, since), actions: [] };
     case 'lead':
       return { ...base, text: leadText(index, incident, s, waitingOn, since), actions: [] };
-    case 'engineer':
-      return { ...base, text: engineerText(index, incident, log, s, waitingOn, since), actions: s.actions };
+    case 'engineer': {
+      // Revert names the merge it undoes (#264): the incident's latest one.
+      const merged = s.actions.includes('revert') ? latestMerged(log) : undefined;
+      const pin = merged === undefined ? {} : { pin: { prNumber: merged.payload.prNumber, sha: merged.payload.mergeCommitSha } };
+      return { ...base, text: engineerText(index, incident, log, s, waitingOn, since), actions: s.actions, ...pin };
+    }
   }
+}
+
+function latestMerged(log: readonly IncidentEvent[]): IncidentEvent<'merged'> | undefined {
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e?.type === 'merged') return e;
+  }
+  return undefined;
 }
 
 /** "WEB-1042, blank cart total." with whichever parts are known and reporter safe. */

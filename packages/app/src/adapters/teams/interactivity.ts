@@ -84,6 +84,7 @@ import {
   type TapCard,
   type TapReply,
 } from '../shared/taps.ts';
+import { pinFromData } from '../shared/pr-pin.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE, cardActivity } from './adapter.ts';
 import {
   assertLimits,
@@ -675,12 +676,15 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
       const shown = stored === undefined ? undefined : withReason(stored, NOT_PENDING_TEXT);
       return handled({ kind: 'ignored', reason: 'card-answered' }, shown, noticeOf(inv, stored, NOT_PENDING_TEXT));
     }
+    // A PR button's data also names the PR and commit its card showed (#264).
+    const pin = pinFromData(inv.data);
     const tap: ChatTap = {
       userId: inv.userId,
       incidentId: inv.incidentId,
       action: inv.verb,
       card,
       label: labelOf(inv, stored),
+      ...(pin === undefined ? {} : { pin }),
       // A clarify card that names itself: its option is the answer, whatever it reads.
       ...(card === 'clarify' && inv.data['card'] === CLARIFY_DATA.card ? { cardDecides: true } : {}),
       ...(card === 'mid-flight'

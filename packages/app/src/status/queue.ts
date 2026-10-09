@@ -16,6 +16,7 @@
 //
 // Text in the model is plain (nothing escaped); each adapter escapes for its own markup.
 
+import type { PrPin } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { IncidentStatus, IncidentView } from '@snapwing/pipeline/contracts/state.ts';
 import { isTerminalStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -41,8 +42,11 @@ const MERGED_OR_REVERTED: ReadonlySet<IncidentStatus> = new Set<IncidentStatus>(
 
 export type QueueSectionId = 'assigned' | 'fixing' | 'waiting' | 'recent' | 'reports';
 
-/** A button on an item. `open_pr` is a link; `stop` and `merge` are taps on the interactivity paths. */
-export type QueueButton = { kind: 'open_pr'; url: string } | { kind: 'stop' } | { kind: 'merge' };
+/**
+ * A button on an item. `open_pr` is a link; `stop` and `merge` are taps on the interactivity paths.
+ * `merge` carries the PR and the head the queue read, and acts on those only (#264).
+ */
+export type QueueButton = { kind: 'open_pr'; url: string } | { kind: 'stop' } | { kind: 'merge'; pin: PrPin };
 
 export interface QueueItem {
   incidentId: string;
@@ -77,6 +81,7 @@ export interface QueuePullRequest {
   state: 'open' | 'closed';
   merged: boolean;
   htmlUrl: string;
+  headSha: string;
   requestedReviewers: readonly string[];
 }
 
@@ -161,7 +166,7 @@ export function createQueue(options: QueueOptions): QueueModel {
           if (pr.state !== 'open' || pr.merged || !pr.requestedReviewers.some((r) => sameLogin(r, login))) return undefined;
           const buttons: QueueButton[] = [{ kind: 'open_pr', url: pr.htmlUrl }];
           const merge = authorize('merge', { kind: 'human', role: person.role, githubLinked }, { level: incident.autonomyLevel ?? 1, fixerActive: true });
-          if (merge.allowed) buttons.push({ kind: 'merge' });
+          if (merge.allowed) buttons.push({ kind: 'merge', pin: { prNumber: incident.prNumber as number, sha: pr.headSha } });
           return item(incident, `PR #${incident.prNumber}`, buttons);
         } catch (e) {
           onError(e);

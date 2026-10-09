@@ -7,8 +7,9 @@
 //                   triggering event starts the follow-up job). The head comes from GitHub unless given.
 //   review.run      trusts nothing the fixer reported. It re-reads the log and refuses, appending
 //                   nothing, when the PR is not the latest `pr-opened`, a fixer run is going or started
-//                   after that `pr-opened`, a `stopped` is newer than the last `filed`, or this PR was
-//                   already reviewed since the latest `fixer-started`. It reads the PR from GitHub
+//                   after that `pr-opened`, a `stopped` is newer than the last `filed`, or since the
+//                   latest `fixer-started` this head was approved or this PR failed review (an approval
+//                   covers only its head, #264). It reads the PR from GitHub
 //                   (closed, merged, or a head that moved is a skip; a moved head starts a review of the
 //                   new head), opens the `snapwing/review` check run `in_progress`, and then:
 //
@@ -265,7 +266,7 @@ export type ReviewOutcome =
 export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promise<ReviewOutcome> {
   const { incidentId, prNumber, headSha } = data;
   const log = await deps.state.read(incidentId);
-  const pre = precheck(log, prNumber);
+  const pre = precheck(log, prNumber, headSha);
   if (pre !== undefined) return skipped(pre);
 
   const incident = await deps.state.getIncident(incidentId);
@@ -315,7 +316,7 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
   }
 
   // The log may have moved while the agent ran (a Stop, a duplicate job); decide again first.
-  const again = precheck(await deps.state.read(incidentId), prNumber);
+  const again = precheck(await deps.state.read(incidentId), prNumber, headSha);
   if (again !== undefined) {
     await gh.updateCheckRun(check.id, {
       status: 'completed',
@@ -345,12 +346,13 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
 
   let refused: ReviewSkip = 'already-reviewed';
   const appended = await appendDecided(deps.state, incidentId, (events) => {
-    const skip = precheck(events, prNumber);
+    const skip = precheck(events, prNumber, headSha);
     if (skip !== undefined) {
       refused = skip;
       return undefined;
     }
-    if (verdict.verdict === 'approve') return [newEvent(deps, incidentId, 'review-passed', { prNumber, review })];
+    // The approval names the head it reviewed: nothing merges any other (#264).
+    if (verdict.verdict === 'approve') return [newEvent(deps, incidentId, 'review-passed', { prNumber, headSha, review })];
     return [newEvent(deps, incidentId, 'review-failed', { prNumber, verdict: verdict.verdict, reason: failureReason(verdict), review })];
   });
   if (!appended.appended) return skipped(refused);
@@ -732,14 +734,23 @@ function failureReason(v: ReviewVerdict): string {
 
 // Log reading ------------------------------------------------------------------------------------
 
-/** Why `review.run` does nothing for this log, before and again after the review. */
-function precheck(log: readonly IncidentEvent[], prNumber: number): ReviewSkip | undefined {
+/**
+ * Why `review.run` does nothing for this log, before and again after the review. An approval covers
+ * only the head it recorded (#264): a new head of an approved PR is reviewed again, and so is the head
+ * of a PR whose approval recorded none. A failed review still ends the PR's reviews until the next run.
+ */
+function precheck(log: readonly IncidentEvent[], prNumber: number, headSha: string): ReviewSkip | undefined {
   const opened = latest(log, 'pr-opened');
   if (opened === undefined || opened.payload.prNumber !== prNumber) return 'not-latest-pr';
   if (stoppedSinceFiled(log)) return 'stopped';
   if (activeRun(log) !== undefined || lastSeqOf(log, 'fixer-started') > opened.seq) return 'fixer-running';
   const since = lastSeqOf(log, 'fixer-started');
-  const reviewed = log.some((e) => e.seq > since && (e.type === 'review-passed' || e.type === 'review-failed') && e.payload.prNumber === prNumber);
+  const reviewed = log.some(
+    (e) =>
+      e.seq > since &&
+      ((e.type === 'review-passed' && e.payload.prNumber === prNumber && e.payload.headSha === headSha) ||
+        (e.type === 'review-failed' && e.payload.prNumber === prNumber)),
+  );
   return reviewed ? 'already-reviewed' : undefined;
 }
 

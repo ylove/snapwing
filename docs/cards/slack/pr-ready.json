@@ -30,7 +30,7 @@
             "text": "Merge"
           },
           "action_id": "merge",
-          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA:418:7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3"
         },
         {
           "type": "button",
@@ -39,7 +39,7 @@
             "text": "Request changes"
           },
           "action_id": "request_changes",
-          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+          "value": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA:418:7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3"
         },
         {
           "type": "button",

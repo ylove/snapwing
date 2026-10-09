@@ -54,6 +54,24 @@ describe('evaluateMergeGate', () => {
     expect(evaluateMergeGate(input({ files: files.slice(0, 10) })).decision).toBe('merge');
   });
 
+  it('checks a renamed file by its old path too (#264)', () => {
+    const r = evaluateMergeGate(input({ files: [{ path: 'src/deploy.tf', previousPath: 'infra/deploy.tf', additions: 0, deletions: 0 }] }));
+    expect(r).toMatchObject({ decision: 'degrade', riskGate: { passed: false, forbiddenHits: ['infra/deploy.tf'] } });
+    expect(r.reason).toBe('risk gate: forbidden paths touched: infra/deploy.tf');
+    // Renamed into a forbidden path: the new path is the hit.
+    expect(evaluateMergeGate(input({ files: [{ path: 'infra/deploy.tf', previousPath: 'src/deploy.tf', additions: 0, deletions: 0 }] })).riskGate.forbiddenHits).toEqual(['infra/deploy.tf']);
+    // Both paths forbidden: both are named.
+    expect(evaluateMergeGate(input({ files: [{ path: 'infra/b.tf', previousPath: 'infra/a.tf', additions: 0, deletions: 0 }] })).riskGate.forbiddenHits).toEqual(['infra/a.tf', 'infra/b.tf']);
+    expect(evaluateMergeGate(input({ files: [{ path: 'src/b.ts', previousPath: 'src/a.ts', additions: 1, deletions: 1 }] })).decision).toBe('merge');
+  });
+
+  it('degrades when the list of files is incomplete (#264)', () => {
+    const r = evaluateMergeGate(input({ filesComplete: false }));
+    expect(r).toMatchObject({ decision: 'degrade', riskGate: { passed: false } });
+    expect(r.reason).toBe('risk gate: the list of changed files is incomplete');
+    expect(evaluateMergeGate(input({ filesComplete: true })).decision).toBe('merge');
+  });
+
   it('degrades when the diff is too large alone', () => {
     const r = evaluateMergeGate(input({ files: [{ path: 'src/a.ts', additions: 300, deletions: 101 }] }));
     expect(r.reason).toMatch(/^risk gate: 401 diff lines/);

@@ -3,7 +3,7 @@
 
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { NewEvent } from '../../src/contracts/events.ts';
+import { currentEventVersion, type NewEvent } from '../../src/contracts/events.ts';
 import { ExpectedSeqConflictError, LOG_START, type IncidentEvent, type OpenedState } from '../../src/ports/state.ts';
 import type { StateContext } from '../../src/state/context.ts';
 import type { OpenStateHooks } from '../../src/state/db.ts';
@@ -632,5 +632,19 @@ describe('read and readSince upcast (B 4)', () => {
     }
     const stored = await state.read(INC_A);
     expect(stored[0]).toMatchObject({ v: 1, payload: { why: 'old shape' } });
+  });
+
+  it('review-passed: a v1 event reads back as v2 with no head recorded; a v2 event keeps its head (#264)', async () => {
+    const state = await open();
+    const base = { workspaceId: WS, incidentId: INC_A, type: 'review-passed', source: 'agent', occurredAt: OCCURRED } as const;
+    const v1 = { ...base, v: 1, payload: { prNumber: 7 } } as unknown as NewEvent;
+    const v2 = { ...base, v: currentEventVersion('review-passed'), payload: { prNumber: 7, headSha: 'a'.repeat(40) } } as unknown as NewEvent;
+    await state.append(INC_A, [v1, v2], 0);
+    const [first, second] = await state.read(INC_A);
+    expect(first).toMatchObject({ type: 'review-passed', v: 2, payload: { prNumber: 7 } });
+    expect(first?.payload).not.toHaveProperty('headSha');
+    expect(second).toMatchObject({ type: 'review-passed', v: 2, payload: { prNumber: 7, headSha: 'a'.repeat(40) } });
+    expect(currentEventVersion('review-passed')).toBe(2);
+    expect(currentEventVersion('closed')).toBe(1);
   });
 });

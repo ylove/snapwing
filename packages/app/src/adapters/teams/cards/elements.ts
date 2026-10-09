@@ -62,6 +62,8 @@ export interface ActionSpec {
   style?: 'positive' | 'destructive';
   /** An `Action.OpenUrl` instead of an `Action.Execute`. */
   url?: string;
+  /** More `data` for this action alone, such as the PR and commit a PR button acts on (#264). */
+  data?: Readonly<Record<string, string>>;
 }
 
 /** A person a mention ref resolves to: the AAD object id and the name shown in `<at>`. */
@@ -170,7 +172,7 @@ export function action(incidentId: string, spec: ActionSpec, context: Readonly<R
     type: 'Action.Execute',
     title: spec.title,
     verb: spec.verb,
-    data: { incidentId, ...context },
+    data: { incidentId, ...context, ...spec.data },
     ...(spec.style === undefined ? {} : { style: spec.style }),
   };
 }

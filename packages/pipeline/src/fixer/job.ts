@@ -43,7 +43,7 @@
 // Every append passes `expectedSeq` and re-reads on a conflict. The fixer itself reports only through the fixer API (B 9); this module
 // never sees its progress except through the log.
 
-import type { ArtifactRef, AutonomyLevel, EventActor, EventPayloads, EventSource, EventType, IncidentEvent, NewEvent } from '../contracts/events.ts';
+import { currentEventVersion, type ArtifactRef, type AutonomyLevel, type EventActor, type EventPayloads, type EventSource, type EventType, type IncidentEvent, type NewEvent } from '../contracts/events.ts';
 import { fixerRunKey, isFixerBudgetData, isFixerRunData, timerKey, type FixerBudgetData, type FixerRunData } from '../contracts/jobs.ts';
 import { isExpectedSeqConflict } from '../contracts/state.ts';
 import { claimHold } from '../engine/claims.ts';
@@ -369,7 +369,7 @@ export function newEvent<T extends EventType>(
     workspaceId: deps.workspaceId,
     incidentId,
     type,
-    v: 1,
+    v: currentEventVersion(type),
     source: extra.source ?? 'agent',
     ...(extra.actor === undefined ? {} : { actor: extra.actor }),
     occurredAt: deps.clock().toISOString(),

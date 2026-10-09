@@ -20,13 +20,18 @@ export interface ChangedFile {
   path: string;
   additions: number;
   deletions: number;
+  /** A renamed file's old path. The forbidden paths are checked against it too (#264): moving a file out of one is touching it. */
+  previousPath?: string;
 }
 
 export interface MergeGateInput {
   reviewVerdict: ReviewVerdict;
   /** Every required CI check. An empty list is not green: autopilot never merges without a check. */
   requiredChecks: readonly RequiredCheck[];
+  /** The files of exactly the commit being merged. */
   files: readonly ChangedFile[];
+  /** False when the list of files is cut short (GitHub lists a limited number): the risk gate fails. Default true. */
+  filesComplete?: boolean;
   stopped: boolean;
   /** The level re-resolved from the map now, not the one at filing time. */
   levelAtMergeTime: AutonomyLevel;
@@ -49,8 +54,11 @@ export function evaluateMergeGate(input: MergeGateInput): MergeGateResult {
   const ciGreen = input.requiredChecks.length > 0 && input.requiredChecks.every((c) => c.state === 'success');
   const filesTouched = input.files.length;
   const diffLines = input.files.reduce((n, f) => n + f.additions + f.deletions, 0);
-  const forbiddenHits = input.files.filter((f) => matchesAnyGlob(limits.forbidden, f.path)).map((f) => f.path);
+  const forbiddenHits = input.files.flatMap((f) =>
+    [f.previousPath, f.path].filter((p): p is string => p !== undefined && matchesAnyGlob(limits.forbidden, p)),
+  );
   const riskProblems: string[] = [];
+  if (input.filesComplete === false) riskProblems.push('the list of changed files is incomplete');
   if (filesTouched > limits.maxFiles) riskProblems.push(`${filesTouched} files touched (limit ${limits.maxFiles})`);
   if (diffLines > limits.maxDiffLines) riskProblems.push(`${diffLines} diff lines (limit ${limits.maxDiffLines})`);
   if (forbiddenHits.length > 0) riskProblems.push(`forbidden paths touched: ${forbiddenHits.join(', ')}`);
