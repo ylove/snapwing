@@ -2,9 +2,38 @@
 // post a card, reply in a channel thread, edit in place, delete, open a personal chat, read a member.
 // No botbuilder SDK. The token source is injected (the bot's client-credentials token, or a test
 // string); the token travels only in the `Authorization` header and never appears in an error.
-// Every call goes to the activity's own `serviceUrl`, which must be https without credentials.
+// Every call goes to the activity's own `serviceUrl`, which must be https without credentials, and on a
+// host `allowServiceUrl` accepts; compose passes `allowTeamsServiceUrl`, the documented Bot Connector hosts.
 
 const DEFAULT_RETRY_AFTER_MS = 1000;
+
+/**
+ * The Bot Connector hosts Microsoft documents for Teams service URLs: the public cloud (its regional
+ * service URLs, `/teams/`, `/amer/`, `/emea/`, `/apac/`, are paths on this one host), GCC, GCC High, and DoD.
+ * The bot token goes to these hosts only, and to the host of a configured `TEAMS_SERVICE_URL`.
+ */
+export const TEAMS_SERVICE_HOSTS: readonly string[] = Object.freeze([
+  'smba.trafficmanager.net',
+  'smba.infra.gcc.teams.microsoft.com',
+  'smba.infra.gov.teams.microsoft.us',
+  'smba.infra.dod.teams.microsoft.us',
+]);
+
+/** True for an https URL on the default port whose host is exactly one of `hosts` (lower-cased). */
+export function onTeamsServiceHost(url: URL, hosts: ReadonlySet<string>): boolean {
+  return url.protocol === 'https:' && url.port === '' && hosts.has(url.hostname.toLowerCase());
+}
+
+/** The exact host allowlist: {@link TEAMS_SERVICE_HOSTS} plus `extra` (a configured service URL's host). */
+export function teamsServiceHosts(extra: readonly string[] = []): ReadonlySet<string> {
+  return new Set([...TEAMS_SERVICE_HOSTS, ...extra].map((h) => h.trim().toLowerCase()).filter((h) => h !== ''));
+}
+
+/** `allowServiceUrl` over {@link teamsServiceHosts}: nothing but an exact documented (or configured) host. */
+export function allowTeamsServiceUrl(extra: readonly string[] = []): (url: URL) => boolean {
+  const hosts = teamsServiceHosts(extra);
+  return (url) => onTeamsServiceHost(url, hosts);
+}
 
 export class TeamsError extends Error {
   constructor(message: string) {
@@ -143,7 +172,7 @@ export interface TeamsConnectorOptions {
   token: () => Promise<string>;
   /** The bot's app id, sent as `bot.id` when opening a personal conversation. */
   botId?: string;
-  /** Extra check on a `serviceUrl` (for example an allow-list of hosts); https and no credentials are always required. */
+  /** Extra check on a `serviceUrl` (`allowTeamsServiceUrl` in compose); https and no credentials are always required. */
   allowServiceUrl?: (url: URL) => boolean;
   /** Defaults to the global `fetch`. */
   fetch?: typeof fetch;

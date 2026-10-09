@@ -7,7 +7,9 @@ import {
   TeamsForbiddenError,
   TeamsNotFoundError,
   TeamsRateLimitError,
+  TEAMS_SERVICE_HOSTS,
   TeamsServiceUrlError,
+  allowTeamsServiceUrl,
   createTeamsConnector,
 } from '../../src/adapters/teams/connector.ts';
 
@@ -283,6 +285,53 @@ describe('errors', () => {
     await expect(strict.sendToConversation({ serviceUrl: SERVICE_URL, conversationId: CHANNEL }, card)).rejects.toBeInstanceOf(
       TeamsServiceUrlError,
     );
+  });
+
+  it('allowTeamsServiceUrl admits the documented Bot Connector hosts and a configured one, exactly (#269)', async () => {
+    expect(TEAMS_SERVICE_HOSTS).toEqual([
+      'smba.trafficmanager.net',
+      'smba.infra.gcc.teams.microsoft.com',
+      'smba.infra.gov.teams.microsoft.us',
+      'smba.infra.dod.teams.microsoft.us',
+    ]);
+    const allow = allowTeamsServiceUrl(['smba.test']);
+    const admitted = [
+      'https://smba.trafficmanager.net/teams/',
+      'https://smba.trafficmanager.net/amer/',
+      'https://SMBA.trafficmanager.net/emea/',
+      'https://smba.infra.gcc.teams.microsoft.com/teams',
+      'https://smba.infra.gov.teams.microsoft.us/teams',
+      'https://smba.infra.dod.teams.microsoft.us/teams',
+      SERVICE_URL,
+    ];
+    for (const url of admitted) expect(allow(new URL(url)), url).toBe(true);
+    const refused = [
+      'https://smba.trafficmanager.net.attacker.test/amer/',
+      'https://x.smba.trafficmanager.net/amer/',
+      'https://smba.trafficmanager.net:8443/amer/',
+      'http://smba.trafficmanager.net/amer/',
+      'https://api.botframework.com/',
+      'https://attacker.test/amer/',
+    ];
+    for (const url of refused) expect(allow(new URL(url)), url).toBe(false);
+    // Without the configured host, the fake Connector's is refused too.
+    expect(allowTeamsServiceUrl()(new URL(SERVICE_URL))).toBe(false);
+
+    // As the connector's check: a refused host is never called, so the token never leaves.
+    const calls: string[] = [];
+    server.use(
+      http.all(/.*/, ({ request }) => {
+        calls.push(request.url);
+        return HttpResponse.json({ id: 'x' });
+      }),
+    );
+    const strict = createTeamsConnector({ token: async () => TOKEN, allowServiceUrl: allowTeamsServiceUrl() });
+    for (const serviceUrl of [SERVICE_URL, 'https://smba.trafficmanager.net.attacker.test/amer/']) {
+      await expect(strict.sendToConversation({ serviceUrl, conversationId: CHANNEL }, card)).rejects.toBeInstanceOf(TeamsServiceUrlError);
+    }
+    expect(calls).toEqual([]);
+    expect(await strict.sendToConversation({ serviceUrl: 'https://smba.trafficmanager.net/amer/', conversationId: CHANNEL }, card)).toEqual({ id: 'x' });
+    expect(calls).toEqual([`https://smba.trafficmanager.net/amer/v3/conversations/${encodeURIComponent(CHANNEL)}/activities`]);
   });
 
   it('a 2xx without an id is a TeamsApiError, not a silent undefined', async () => {

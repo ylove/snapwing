@@ -587,6 +587,57 @@ describe('reactions and installs', () => {
   });
 });
 
+describe("only the install's tenant (#269)", () => {
+  const OTHER_TENANT = '0b0b0b0b-0000-4000-8000-0000000000ff';
+
+  /** `activity` naming `tenant` in both places Teams names one (undefined: in neither). */
+  function inTenant(activity: Record<string, unknown>, tenant: string | undefined): Record<string, unknown> {
+    const { tenantId: _conversationTenant, ...conversation } = (activity['conversation'] ?? {}) as Record<string, unknown>;
+    const { tenant: _dataTenant, ...channelData } = (activity['channelData'] ?? {}) as Record<string, unknown>;
+    return {
+      ...activity,
+      conversation: tenant === undefined ? conversation : { ...conversation, tenantId: tenant },
+      channelData: tenant === undefined ? channelData : { ...channelData, tenant: { id: tenant } },
+    };
+  }
+
+  it('ignores an activity from another tenant, or naming none, with one log line each: nothing captured, tapped, read, or answered', async () => {
+    const logs: string[] = [];
+    const w = world({ tenantId: TENANT, log: (line) => logs.push(line) });
+    const activities = [fixture('personal-text'), fixture('action-fetch-task'), statusQuestion, queueCommand, threadReply, cardTap, reaction, teamInstall, personalInstall];
+    for (const activity of activities) {
+      const res = await post(w, inTenant(activity, OTHER_TENANT));
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('');
+    }
+    // One place naming the install's tenant is not enough when the other names another; naming none is not either.
+    const personal = fixture('personal-text');
+    const mixed = { ...personal, conversation: { ...(personal['conversation'] as Record<string, unknown>), tenantId: OTHER_TENANT } };
+    expect((await post(w, mixed)).status).toBe(200);
+    expect((await post(w, inTenant(personal, undefined))).status).toBe(200);
+    await w.transport.stop();
+    expect(w.inbound).not.toHaveBeenCalled();
+    expect(w.status.handle).not.toHaveBeenCalled();
+    expect(w.signals.onActivity).not.toHaveBeenCalled();
+    expect(w.queue.command).not.toHaveBeenCalled();
+    expect(w.queue.install).not.toHaveBeenCalled();
+    expect(w.action).not.toHaveBeenCalled();
+    expect(graphCalls).toEqual([]);
+    expect(logs).toHaveLength(activities.length + 2);
+    expect(logs[0]).toBe(`teams: ignored a message activity from tenant ${OTHER_TENANT}, not the install's`);
+    expect(logs.at(-1)).toBe("teams: ignored a message activity from no tenant, not the install's");
+  });
+
+  it("lets the install's own tenant through, whatever its case", async () => {
+    const w = world({ tenantId: TENANT.toUpperCase() });
+    expect((await post(w, fixture('personal-text'))).status).toBe(200);
+    expect(w.inbound).toHaveBeenCalledTimes(1);
+    const tapped = await post(w, cardTap);
+    expect(await tapped.json()).toEqual({ statusCode: 200, type: ADAPTIVE_CARD_CONTENT_TYPE, value: REFRESHED });
+    expect(w.action).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Graph notifications', () => {
   const resource = `teams('${TEAM}')/channels('${CHANNEL}')/messages('1790000100123')/replies('1790000100555')`;
   const notification = (clientState: string) => ({
@@ -605,6 +656,21 @@ describe('Graph notifications', () => {
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toContain('text/plain');
       expect(await res.text()).toBe('Validation: Testing client application reachability');
+    }
+    untouched(w);
+  });
+
+  it('answers the handshake only for a short printable token, as text/plain with nosniff (#269)', async () => {
+    const w = world();
+    const ok = await graphPost(w, TEAMS_NOTIFICATIONS_PATH, undefined, `?validationToken=${encodeURIComponent('Validation: Testing client application reachability')}`);
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('content-type')).toBe('text/plain; charset=utf-8');
+    expect(ok.headers.get('x-content-type-options')).toBe('nosniff');
+    for (const token of ['x'.repeat(1025), 'line\nbreak', 'nul\u0000', 'caf\u00e9', '']) {
+      const res = await graphPost(w, TEAMS_LIFECYCLE_PATH, undefined, `?validationToken=${encodeURIComponent(token)}`);
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(await res.text()).toBe('');
     }
     untouched(w);
   });

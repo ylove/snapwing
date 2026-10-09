@@ -92,7 +92,9 @@
 //                per mapped team (notifications to TEAMS_PUBLIC_URL, else SNAPWING_PUBLIC_URL). `/healthz`
 //                reports Teams' mode: reduced while any mapped team lacks the RSC grant. A post that no
 //                activity named a serviceUrl for (a DM about a Slack incident) goes to TEAMS_SERVICE_URL,
-//                else the public Bot Framework endpoint.
+//                else the public Bot Framework endpoint. The bot token goes only to the documented Bot
+//                Connector hosts (`TEAMS_SERVICE_HOSTS`) and TEAMS_SERVICE_URL's host, as Connector calls and
+//                as attachment downloads; an activity from a tenant other than TEAMS_TENANT_ID is ignored (#269).
 //
 // GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
 // `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
@@ -188,7 +190,7 @@ import { createSlackWeb, type SlackWeb } from '../adapters/slack/web.ts';
 import { createTeamsAdapter, type TeamsAdapter, type TeamsInbound } from '../adapters/teams/adapter.ts';
 import { createBotTokenSource, createGraphTokenSource, verifyBotFrameworkJwt } from '../adapters/teams/auth.ts';
 import { createTeamsChatSurface, type TeamsChatSurface } from '../adapters/teams/chat-surface.ts';
-import { createTeamsConnector } from '../adapters/teams/connector.ts';
+import { allowTeamsServiceUrl, createTeamsConnector } from '../adapters/teams/connector.ts';
 import { conversationFromActivity, readTeamsConversation, readTeamsUser, rememberTeamsConversation } from '../adapters/teams/conversations.ts';
 import { TEAMS_ACTION_COMMAND_ID, TEAMS_SUBMIT_ACTION } from '../adapters/teams/normalize.ts';
 import { createTeamsGraph } from '../adapters/teams/graph.ts';
@@ -939,10 +941,14 @@ export const compose: ComposeFn = async (deps) => {
         const credentials = { appId, password: secret('TEAMS_APP_PASSWORD'), tenantId };
         const botTokens = createBotTokenSource(credentials);
         const graphTokens = createGraphTokenSource(credentials);
-        const serviceUrl = s.get('TEAMS_SERVICE_URL')?.trim() || TEAMS_DEFAULT_SERVICE_URL;
+        const configuredServiceUrl = s.get('TEAMS_SERVICE_URL')?.trim();
+        const serviceUrl = configuredServiceUrl || TEAMS_DEFAULT_SERVICE_URL;
+        // The documented Bot Connector hosts, and the configured service URL's (a sovereign or test endpoint).
+        const configuredHost = configuredServiceUrl && URL.canParse(configuredServiceUrl) ? new URL(configuredServiceUrl).hostname : undefined;
+        const serviceHosts = configuredHost === undefined ? [] : [configuredHost];
         const teamsError = (what: string) => (e: unknown) => log.error(`teams ${what}: ${message(e)}`);
         const connector = rememberTeamsCards(
-          createTeamsConnector({ token: () => botTokens.token(), botId: appId }),
+          createTeamsConnector({ token: () => botTokens.token(), botId: appId, allowServiceUrl: allowTeamsServiceUrl(serviceHosts) }),
           createKvTeamsCardStore(cache),
           teamsError('card store'),
         );
@@ -963,7 +969,11 @@ export const compose: ComposeFn = async (deps) => {
         // Teams' outbound chat effects: thread, channel, and personal posts, the cards, channel members (Graph).
         const surface: TeamsChatSurface = createTeamsChatSurface({ connector, graph, state, cache, getMap: liveMap, identity: oauth, botId: appId, tenantId, serviceUrl, now: clock, log });
         // A channel's team, for reading around the anchor when the activity names none (the map's `team`).
-        const context = createTeamsContextSource(graph, { teamFor: (channelId) => mapSnapshot.channels.find((c) => c.id === channelId)?.teamId, botToken: () => botTokens.token() });
+        const context = createTeamsContextSource(graph, {
+          teamFor: (channelId) => mapSnapshot.channels.find((c) => c.id === channelId)?.teamId,
+          botToken: () => botTokens.token(),
+          botHosts: serviceHosts,
+        });
         return { appId, tenantId, serviceUrl, connector, graph, adapter, surface, context, teamsError };
       })();
   // Activities the e2e seam hands in past authentication (`overrides.teamsInject`); empty otherwise, so
@@ -1613,6 +1623,7 @@ export const compose: ComposeFn = async (deps) => {
             githubLinked: surface.githubLinked,
             clock,
             onError: teamsError('interactivity'),
+            log: (line) => log.info(line),
           });
           const access = createTeamsStatusAccess({ graph, getMap, clock });
           const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, access, onError: teamsError('status query') });
@@ -1666,6 +1677,8 @@ export const compose: ComposeFn = async (deps) => {
             onLifecycle: (outcomes) => {
               for (const o of outcomes) if (o.kind === 'missed') log.info(`teams: Graph missed notifications on subscription ${o.subscriptionId}; reactions in that gap were not seen`);
             },
+            tenantId: teams.tenantId,
+            log: (line) => log.info(line),
             onError: teamsError('transport'),
           });
           return { transport, signals: teamsSignals, subscriptions };
