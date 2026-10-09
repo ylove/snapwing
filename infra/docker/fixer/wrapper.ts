@@ -19,6 +19,10 @@
 //   fixer token. A missing work item is reported as `failed`, so the run degrades instead of hanging
 //   until its budget timer.
 //
+//   Registries (#273): with the relay's egress proxy in the container's `HTTPS_PROXY` and the other
+//   standard proxy variables, the wrapper passes those on to the harness, so the agent's installs
+//   reach the allowlisted package registries; nothing else on the internet answers.
+//
 //   Credentials (#273): the run's fixer token and model token arrive in no variable. The runner writes
 //   them to `SNAPWING_CREDENTIALS_FILE` (`/run/snapwing/credentials.json`, a mount of its own), which
 //   the wrapper reads and removes before any harness starts, so they live only in its memory. Both
@@ -95,6 +99,8 @@ export const MODEL_KEY_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API
 export const MODEL_VARS = [...MODEL_KEY_VARS, 'GOOGLE_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'GOOGLE_GEMINI_BASE_URL'] as const;
 /** Variables no harness may see. */
 const SECRET_VARS = ['SNAPWING_FIXER_TOKEN', 'SNAPWING_GIT_TOKEN', CREDENTIALS_ENV] as const;
+/** The egress proxy variables a fixer harness is given when the container has them (#273); never a review harness. */
+export const PROXY_VARS = ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy', 'NO_PROXY', 'no_proxy', 'NODE_USE_ENV_PROXY'] as const;
 
 export const EXIT_OK = 0;
 /** The fixer reported `failed`, or the review produced no verdict. */
@@ -429,6 +435,12 @@ async function runFixer(deps: WrapperDeps, job: Job, credentials: Credentials, m
   gitConfig.forEach(([key, value], i) => Object.assign(runEnv, { [`GIT_CONFIG_KEY_${i}`]: key, [`GIT_CONFIG_VALUE_${i}`]: value }));
   const prior = deps.env['SNAPWING_PRIOR_REVIEW_FILE'];
   if (prior !== undefined && isAbsolute(prior) && inside(job.workdir, prior)) runEnv['SNAPWING_PRIOR_REVIEW_FILE'] = prior;
+  // The relay's proxy to the allowlisted registries, when the runner gave one (#273): the agent and the
+  // installs it runs read the standard variables. Model calls stay on loopback (NO_PROXY).
+  for (const name of PROXY_VARS) {
+    const v = deps.env[name];
+    if (v !== undefined && v !== '') runEnv[name] = v;
+  }
 
   // Stop: the API says so (204 or 409), or docker stop sends SIGTERM.
   const stop = new AbortController();

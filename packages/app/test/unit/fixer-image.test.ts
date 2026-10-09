@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import { createServer as createNetServer, type AddressInfo } from 'node:net';
+import { connect as netConnect, createServer as createNetServer, type AddressInfo } from 'node:net';
 import { devNull, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -325,6 +325,17 @@ describe('fixer role', () => {
     expect(r.stderr).not.toContain('test-provider-key-not-real');
   });
 
+  it('passes the relay\'s egress proxy variables to the fixer harness (#273)', async () => {
+    checkout();
+    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: '', testsAdded: [] }));
+    const proxyEnv = { HTTPS_PROXY: 'http://snapwing-api:3128', https_proxy: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' };
+
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN, modelProxy: proxy }), proxyEnv));
+
+    expect(r.code, r.stderr).toBe(0);
+    expect(seenEnv('claude')).toMatchObject(proxyEnv);
+  });
+
   it('gives the harness no model access without a proxy', async () => {
     checkout();
     fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: '', testsAdded: [] }));
@@ -554,7 +565,7 @@ describe('review role', () => {
     fakeCli(cli, finalMessage(cli, message));
     const env = reviewContainer(reviewJob({ harness: { adapter } }), { apiUrl, token: FIXER_TOKEN, modelProxy: proxy });
 
-    const r = await runEntrypoint(containerEnv(env));
+    const r = await runEntrypoint(containerEnv(env, { HTTPS_PROXY: 'http://snapwing-api:3128' }));
 
     expect(r.code, r.stderr).toBe(0);
     // codex has no system prompt flag, so its stdin is the review prompt followed by the input.
@@ -566,6 +577,8 @@ describe('review role', () => {
     expect(seenBy['SNAPWING_REVIEW_FILE']).toBeUndefined();
     expect(seenBy[baseVar]).toMatch(loopback(suffix));
     expect(seenBy[keyVar]).toBe(LOCAL_MODEL_KEY);
+    // The review agent only reads: no registry proxy, whatever the container holds.
+    expect(Object.keys(seenBy).filter((k) => /proxy/i.test(k) && k !== 'SNAPWING_MODEL_PROXY_URL')).toEqual([]);
     expect(seen(cli, 'env')).not.toContain('swm1.');
     expect(existsSync(join(credsDir, 'credentials.json'))).toBe(false);
     for (const absent of ['SNAPWING_FIXER_TOKEN', 'SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_API_URL', 'SNAPWING_CREDENTIALS_FILE']) expect(seenBy[absent]).toBeUndefined();
@@ -679,12 +692,9 @@ describe('model access and credentials (#273)', () => {
 
 describe('the relay (#273)', () => {
   it('forwards only the fixer API and the model proxy to its upstream, headers as sent, and nothing else', async () => {
-    const probe = createNetServer();
-    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
-    const port = (probe.address() as AddressInfo).port;
-    await new Promise<void>((r) => probe.close(() => r()));
+    const [port, egressPort] = [await freePort(), await freePort()];
     const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(FIXER_DIR, 'relay.ts')], {
-      env: { PATH: process.env['PATH'] ?? '', SNAPWING_RELAY_UPSTREAM: apiUrl, SNAPWING_RELAY_PORT: String(port) },
+      env: { PATH: process.env['PATH'] ?? '', SNAPWING_RELAY_UPSTREAM: apiUrl, SNAPWING_RELAY_PORT: String(port), SNAPWING_RELAY_EGRESS_PORT: String(egressPort) },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     try {
@@ -698,11 +708,55 @@ describe('the relay (#273)', () => {
         expect((await fetch(`${relay}${path}`)).status, path).toBe(404);
       }
       expect(api.map((c) => `${c.method} ${c.path} ${c.auth ?? ''}`)).toEqual(['GET /fixer/WI01/stop Bearer swf1.a.b', 'POST /model/WI01/anthropic/v1/messages ']);
+      // No allowlist, no egress proxy at all.
+      await expect(connectStatus(egressPort, 'registry.npmjs.org:443')).rejects.toThrow(/ECONNREFUSED/);
+    } finally {
+      child.kill('SIGTERM');
+    }
+  });
+
+  it('serves the egress proxy for its allowlist, refusing other hosts and names that resolve to the host, one line each', async () => {
+    const [port, egressPort] = [await freePort(), await freePort()];
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(FIXER_DIR, 'relay.ts')], {
+      env: { PATH: process.env['PATH'] ?? '', SNAPWING_RELAY_UPSTREAM: apiUrl, SNAPWING_RELAY_PORT: String(port), SNAPWING_RELAY_EGRESS_PORT: String(egressPort), SNAPWING_RELAY_EGRESS_ALLOW: 'registry.npmjs.org, localhost' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    try {
+      await new Promise<void>((r) => child.stderr.on('data', (c: Buffer) => ((stderr += c.toString('utf8')), stderr.includes('listening') && r())));
+      expect(stderr).toContain('egress on');
+      expect(await connectStatus(egressPort, 'example.com:443')).toBe('HTTP/1.1 403 Forbidden');
+      expect(await connectStatus(egressPort, 'localhost:443')).toBe('HTTP/1.1 403 Forbidden');
+      await new Promise((r) => setTimeout(r, 50));
+      expect(stderr).toContain('refused example.com: not on the allowlist');
+      expect(stderr).toContain('refused localhost: resolves to a loopback address');
     } finally {
       child.kill('SIGTERM');
     }
   });
 });
+
+/** A port nothing listens on yet. */
+async function freePort(): Promise<number> {
+  const probe = createNetServer();
+  await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
+  const port = (probe.address() as AddressInfo).port;
+  await new Promise<void>((r) => probe.close(() => r()));
+  return port;
+}
+
+/** The status line a CONNECT to `target` through the proxy on `port` gets. */
+function connectStatus(port: number, target: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const s = netConnect({ host: '127.0.0.1', port });
+    s.on('error', reject);
+    s.on('data', (c: Buffer) => {
+      resolve(c.toString('utf8').split('\r\n')[0] ?? '');
+      s.destroy();
+    });
+    s.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+  });
+}
 
 describe('the image definition', () => {
   const dockerfile = readFileSync(join(FIXER_DIR, 'Dockerfile'), 'utf8');
@@ -730,14 +784,14 @@ describe('the image definition', () => {
     for (const l of instructions.filter((x) => /^(ENV|ARG) /.test(x))) expect(l).not.toMatch(/KEY|TOKEN|SECRET|PASSWORD/i);
     const copies = instructions.filter((l) => l.startsWith('COPY ')).map((l) => l.split(/\s+/).slice(1, -1));
     // No credential helper either: nothing in the image fetches or holds a GitHub token (#262).
-    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/forward.ts', 'infra/docker/fixer/relay.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
+    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/egress.ts', 'infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/forward.ts', 'infra/docker/fixer/relay.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
     const ignore = readFileSync(join(FIXER_DIR, 'Dockerfile.dockerignore'), 'utf8').split('\n').filter((l) => l !== '' && !l.startsWith('#'));
     expect(ignore[0]).toBe('*');
     expect(ignore.slice(1).every((l) => l.startsWith('!packages/pipeline/src/') || l.startsWith('!infra/docker/fixer/'))).toBe(true);
   });
 
   it('imports nothing the image does not copy', () => {
-    const copied = ['entrypoint.ts', 'wrapper.ts', 'forward.ts', 'relay.ts'].map((f) => join(FIXER_DIR, f));
+    const copied = ['entrypoint.ts', 'wrapper.ts', 'forward.ts', 'egress.ts', 'relay.ts'].map((f) => join(FIXER_DIR, f));
     for (const file of copied) {
       const specs = [...readFileSync(file, 'utf8').matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1] ?? '');
       for (const s of specs) {

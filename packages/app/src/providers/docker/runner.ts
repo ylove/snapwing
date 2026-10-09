@@ -14,13 +14,19 @@
 //
 // Network (#273): fixer and review containers join `network` (default `snapwing-runs`), a docker
 // `--internal` network whose bridge has no address of the host's (`inhibit_ipv4`): it has no route out
-// and no way to the host, so no host port, no cloud metadata service (169.254.169.254), no package
-// registry, and no internet. The runner creates it when it is missing and refuses to start a run on a
-// network that lets either through. With `relay`, the only other thing on it is the relay container (`snapwing-relay`, the image's relay.ts, alias `snapwing-api`, `RELAY_URL`): it
-// reaches the server on `relay.network` (default docker's `bridge`) and forwards only the fixer API and
-// model proxy paths to `relay.upstream`; the runner (re)starts it when it is missing or was started for
-// another image, upstream, or network. Containers of concurrent runs share the internal network. Test
-// containers get `--network none` unless `testNetwork` names one.
+// and no way to the host, so no host port, no cloud metadata service (169.254.169.254), and no internet.
+// The runner creates it when it is missing and refuses to start a run on a network that lets either
+// through. With `relay`, the only other thing on it is the relay container (`snapwing-relay`, the
+// image's relay.ts, alias `snapwing-api`): it reaches the server on `relay.network` (default docker's
+// `bridge`) and forwards only the fixer API and model proxy paths to `relay.upstream` (`RELAY_URL`).
+// With `egress` (an allowlist of hosts, `DEFAULT_FIXER_EGRESS_ALLOW` from compose), the relay also
+// serves an HTTP CONNECT proxy (`EGRESS_PROXY_URL`) to port 443 of those hosts and no others, refusing
+// any whose name resolves to a loopback, link-local, private, or shared address (egress.ts), and fixer
+// containers get it in the standard proxy variables (`egressEnv`), with `snapwing-api` and loopback
+// left direct. Review containers never get it: the review agent only reads. The runner (re)starts the
+// relay when it is missing or was started for another image, upstream, network, or allowlist.
+// Containers of concurrent runs share the internal network. Test containers get `--network none`
+// unless `testNetwork` names one, or `testEgress` puts them on the run network with the proxy too.
 //
 // Env values go to the docker CLI through its own environment and `-e NAME` (no value), so no value ever
 // appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to find its
@@ -153,6 +159,13 @@ export interface DockerRunnerOptions {
   testNetwork?: string;
   /** Starts and keeps the relay on `network` (#273). Without it, something else must make the API reachable there. */
   relay?: DockerRelay;
+  /**
+   * Hosts the relay's CONNECT proxy reaches on port 443 for fixer containers (#273), each lowercase and
+   * exact or `*.<suffix>` (`parseEgressAllow`). Default none: no proxy. Needs `relay`.
+   */
+  egress?: readonly string[];
+  /** Test runs join the run network with the egress proxy, as fixer runs do. Default false (`--network none`). */
+  testEgress?: boolean;
   /** Revokes a run's tokens (#273): after its fixer container is gone, before `cancel` stops it, and after a review run. */
   revoke?: (runId: string) => Promise<void>;
   env: DockerRunnerEnv;
@@ -222,6 +235,46 @@ export const RELAY_ALIAS = 'snapwing-api';
 export const RELAY_PORT = 8080;
 export const RELAY_URL = `http://${RELAY_ALIAS}:${RELAY_PORT}`;
 const RELAY_SCRIPT = '/opt/snapwing/infra/docker/fixer/relay.ts';
+/** The relay's CONNECT proxy to the allowlisted hosts, as containers reach it. */
+export const EGRESS_PROXY_URL = `http://${RELAY_ALIAS}:3128`;
+/** What a container with the proxy reaches directly: the relay's server paths and its own loopback. */
+export const EGRESS_NO_PROXY = `${RELAY_ALIAS},localhost,127.0.0.1,::1`;
+/**
+ * The hosts a fixer container reaches through the proxy unless SNAPWING_FIXER_EGRESS_ALLOW says
+ * otherwise: the public package registries (npm, which pnpm and corepack's pnpm and yarn 1 also use;
+ * yarn; PyPI; Go modules; crates.io; RubyGems; Maven Central; NuGet), all on HTTPS.
+ */
+export const DEFAULT_FIXER_EGRESS_ALLOW: readonly string[] = Object.freeze([
+  'registry.npmjs.org',
+  'registry.yarnpkg.com',
+  'repo.yarnpkg.com',
+  'pypi.org',
+  'files.pythonhosted.org',
+  'proxy.golang.org',
+  'sum.golang.org',
+  'index.crates.io',
+  'static.crates.io',
+  'rubygems.org',
+  'index.rubygems.org',
+  'repo.maven.apache.org',
+  'repo1.maven.org',
+  'api.nuget.org',
+]);
+const EGRESS_HOST = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/**
+ * SNAPWING_FIXER_EGRESS_ALLOW: unset or blank for `DEFAULT_FIXER_EGRESS_ALLOW`, `none` for no egress,
+ * else comma-separated hosts, each exact or `*.<suffix>`, replacing the default. Throws on anything else.
+ */
+export function parseEgressAllow(raw: string | undefined): readonly string[] {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === '') return DEFAULT_FIXER_EGRESS_ALLOW;
+  if (value === 'none') return [];
+  const hosts = value.split(',').map((h) => h.trim()).filter((h) => h !== '');
+  const bad = hosts.filter((h) => !EGRESS_HOST.test(h));
+  if (bad.length > 0) throw new Error(`SNAPWING_FIXER_EGRESS_ALLOW: not a host name or *.<suffix>: ${bad.join(', ')}`);
+  return [...new Set(hosts)];
+}
 /** A bridge option that leaves the host no address on the network, so a container cannot reach the host through it. */
 const INHIBIT_IPV4 = 'com.docker.network.bridge.inhibit_ipv4';
 export const DOCKER_NAME_PREFIX = 'snapwing-fixer-';
@@ -303,7 +356,8 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     }
     if (options.relay === undefined) return;
     const relayNet = options.relay.network ?? 'bridge';
-    const label = `${options.image} ${options.relay.upstream} ${relayNet} ${network}`;
+    const allow = (options.egress ?? []).join(',');
+    const label = `${options.image} ${options.relay.upstream} ${relayNet} ${network} ${allow === '' ? 'no-egress' : allow}`;
     const running = async (): Promise<boolean> => {
       const r = await cli(['inspect', '--format', '{{.State.Running}} {{index .Config.Labels "snapwing.relay"}}', RELAY_NAME]);
       if (r.code === 0 && r.stdout.trim() === `true ${label}`) return true;
@@ -311,7 +365,7 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
       return false;
     };
     if (await running()) return;
-    const relayEnv = { SNAPWING_RELAY_UPSTREAM: options.relay.upstream };
+    const relayEnv: Record<string, string> = { SNAPWING_RELAY_UPSTREAM: options.relay.upstream, ...(allow === '' ? {} : { SNAPWING_RELAY_EGRESS_ALLOW: allow }) };
     const started = await cli(
       [
         'run', '-d',
@@ -325,7 +379,7 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
         '--security-opt', 'no-new-privileges',
         '--network', relayNet,
         '--add-host', 'host.docker.internal:host-gateway',
-        '-e', 'SNAPWING_RELAY_UPSTREAM',
+        ...Object.keys(relayEnv).flatMap((k) => ['-e', k]),
         '--entrypoint', 'node',
         options.image,
         '--disable-warning=ExperimentalWarning', RELAY_SCRIPT,
@@ -339,6 +393,17 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     }
     const joined = await cli(['network', 'connect', '--alias', RELAY_ALIAS, network, RELAY_NAME]);
     if (joined.code !== 0 && !/already exists/i.test(joined.stderr)) throw new Error(`docker network connect failed (exit ${joined.code}): ${firstLine(joined.stderr)}`);
+  }
+
+  /** The proxy variables of a container that may reach the allowlisted hosts; empty without egress. */
+  function egressEnv(): Record<string, string> {
+    if (options.relay === undefined || (options.egress ?? []).length === 0) return {};
+    const env: Record<string, string> = {};
+    for (const name of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) env[name] = EGRESS_PROXY_URL;
+    for (const name of ['NO_PROXY', 'no_proxy']) env[name] = EGRESS_NO_PROXY;
+    // Node's own fetch and http (corepack's downloads among them) read those only when asked to.
+    env['NODE_USE_ENV_PROXY'] = '1';
+    return env;
   }
 
   /** The run's credentials file in `dir/creds`, and the mount the container reads it from. */
@@ -391,6 +456,7 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
           jobEnv[PRIOR_REVIEW_ENV] = `${DOCKER_WORKDIR}/${FIXER_REVIEW_FILE}`;
         }
         const creds = await credentialsMount(scratch, fixerCredentials(job, options.env));
+        Object.assign(jobEnv, egressEnv());
         await prepareEgress();
 
         const args = [
@@ -461,11 +527,12 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     async runTests(job) {
       const name = testContainerName(job.runId);
       if (!Number.isFinite(job.timeoutMs) || job.timeoutMs <= 0) throw new Error(`invalid test timeout: ${String(job.timeoutMs)}`);
-      const env = testEnv(job.env);
+      const env = { ...testEnv(job.env), ...(options.testEgress === true ? egressEnv() : {}) };
+      if (options.testEgress === true) await prepareEgress();
       const args = [
         'run',
         '--rm',
-        ...common(name, options.testNetwork ?? 'none'),
+        ...common(name, options.testEgress === true ? network : (options.testNetwork ?? 'none')),
         '-v', `${job.checkout}:${DOCKER_WORKDIR}`,
         '-w', DOCKER_WORKDIR,
         ...Object.keys(env).flatMap((k) => ['-e', k]),

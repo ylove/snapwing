@@ -411,7 +411,7 @@ describe('createDockerRunner runFixer', () => {
 
 describe('createDockerRunner network and relay (#273)', () => {
   const relay = { upstream: 'http://host.docker.internal:3000' };
-  const LABEL = `snapwing-fixer:test ${relay.upstream} bridge snapwing-runs`;
+  const LABEL = `snapwing-fixer:test ${relay.upstream} bridge snapwing-runs no-egress`;
   const egress = (): string[][] => allCalls().filter(isEgress).map((c) => c.args);
 
   it('creates the run network internal, with no host address on its bridge, when it is missing', async () => {
@@ -455,6 +455,54 @@ describe('createDockerRunner network and relay (#273)', () => {
     expect(allCalls().find((c) => c.args.includes('snapwing-relay') && c.args[0] === 'run')?.env['SNAPWING_RELAY_UPSTREAM']).toBe(relay.upstream);
     expect(steps[3]).toEqual(['network', 'connect', '--alias', 'snapwing-api', 'snapwing-runs', 'snapwing-relay']);
     expect(RELAY_URL).toBe('http://snapwing-api:8080');
+  });
+
+  it('with an egress allowlist: the relay gets it, a fixer container gets the proxy variables, a review container does not', async () => {
+    const egress = ['registry.npmjs.org', '*.pythonhosted.org'];
+    const r = runner({ relay, egress });
+    await r.runFixer(job());
+    const relayRun = allCalls().find((c) => c.args[0] === 'run' && c.args.includes('snapwing-relay'))!;
+    expect(relayRun.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBe('registry.npmjs.org,*.pythonhosted.org');
+    expect(relayRun.args[relayRun.args.indexOf('--label') + 1]).toBe(`snapwing.relay=snapwing-fixer:test ${relay.upstream} bridge snapwing-runs registry.npmjs.org,*.pythonhosted.org`);
+    const fixer = calls()[0]!;
+    expect(fixer.env).toMatchObject({
+      HTTPS_PROXY: 'http://snapwing-api:3128',
+      HTTP_PROXY: 'http://snapwing-api:3128',
+      https_proxy: 'http://snapwing-api:3128',
+      http_proxy: 'http://snapwing-api:3128',
+      NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1',
+      no_proxy: 'snapwing-api,localhost,127.0.0.1,::1',
+      NODE_USE_ENV_PROXY: '1',
+    });
+    for (const name of ['HTTPS_PROXY', 'NO_PROXY']) expect(fixer.args).toContain(name);
+
+    writeFileSync(join(dir, 'calls.log'), '');
+    await r.runReview({ ...job({ runId: '01J9ZREVIEWRUN000000000008' }), checkout: join(dir, 'tree'), inputFile: 'in.xml', verdictFile: 'v.json', budget: { wallClock: 'PT1M', attempts: 1 } });
+    expect(Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k))).toEqual([]);
+  });
+
+  it('test runs keep --network none with egress on, unless testEgress puts them on the run network with the proxy', async () => {
+    const testRun = { runId: '01J9ZTESTRUN00000000000002', checkout: join(dir, 'tree'), command: 'npm ci && npm test', timeoutMs: 20_000 };
+    await runner({ relay, egress: ['registry.npmjs.org'] }).runTests(testRun);
+    let a = calls()[0]!.args;
+    expect(a[a.indexOf('--network') + 1]).toBe('none');
+    expect(Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k))).toEqual([]);
+
+    writeFileSync(join(dir, 'calls.log'), '');
+    await runner({ relay, egress: ['registry.npmjs.org'], testEgress: true }).runTests(testRun);
+    a = calls()[0]!.args;
+    expect(a[a.indexOf('--network') + 1]).toBe('snapwing-runs');
+    expect(calls()[0]!.env['HTTPS_PROXY']).toBe('http://snapwing-api:3128');
+    expect(Object.keys(calls()[0]!.env).filter((k) => k.startsWith('SNAPWING_'))).toEqual([]);
+  });
+
+  it('gives no proxy variables without egress (none) or without a relay', async () => {
+    await runner({ relay, egress: [] }).runFixer(job());
+    expect(Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k))).toEqual([]);
+    expect(allCalls().find((c) => c.args.includes('snapwing-relay') && c.args[0] === 'run')?.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBeUndefined();
+    writeFileSync(join(dir, 'calls.log'), '');
+    await runner({ egress: ['registry.npmjs.org'] }).runFixer(job({ runId: '01J9ZRUNID0000000000000007' }));
+    expect(Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k))).toEqual([]);
   });
 
   it('keeps a running relay started for this image, upstream, and networks, and replaces any other', async () => {

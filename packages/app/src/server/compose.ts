@@ -42,8 +42,11 @@
 //                review containers run on an internal network (SNAPWING_CONTAINER_NETWORK, default
 //                `snapwing-runs`) whose only way out is the relay (#273): it forwards the fixer API and
 //                the model proxy to SNAPWING_CONTAINER_API_URL (else SNAPWING_FIXER_API_URL, else
-//                SNAPWING_PUBLIC_URL), reached on SNAPWING_RELAY_NETWORK (default docker's `bridge`).
-//                Test containers have no network unless SNAPWING_TEST_NETWORK names one. A run's fixer
+//                SNAPWING_PUBLIC_URL), reached on SNAPWING_RELAY_NETWORK (default docker's `bridge`),
+//                and serves fixer containers a CONNECT proxy to the package registries in
+//                SNAPWING_FIXER_EGRESS_ALLOW (`DEFAULT_FIXER_EGRESS_ALLOW` when unset, `none` for no
+//                egress). Test containers have no network unless SNAPWING_TEST_NETWORK names one or
+//                SNAPWING_TEST_EGRESS=on gives them the fixer's registry access. A run's fixer
 //                and model tokens name the run and go in its credentials file, never its environment;
 //                the model token pins the role's provider, model (`<harness fixer-model review-model>`,
 //                else `DEFAULT_HARNESS_MODELS`), and `max_tokens` cap (`max-tokens`), and the proxy
@@ -246,7 +249,7 @@ import { createStatusResolver } from '../jira/projector/statuses.ts';
 import { fetchScreenshot, screenshotFilename, textToAdf, type LoadScreenshot } from '../jira/projector/ops.ts';
 import { createModelProxyRoutes, MODEL_PROXY_PREFIX, type ModelProviderUpstream, type ModelProxyProvider } from '../model-proxy/routes.ts';
 import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier, type ModelGrant } from '../model-proxy/token.ts';
-import { createDockerRunner, RELAY_URL, type DockerModelProxy } from '../providers/docker/runner.ts';
+import { createDockerRunner, parseEgressAllow, RELAY_URL, type DockerModelProxy } from '../providers/docker/runner.ts';
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
 import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
@@ -880,6 +883,8 @@ export const compose: ComposeFn = async (deps) => {
           ...(env['SNAPWING_CONTAINER_NETWORK']?.trim() ? { network: env['SNAPWING_CONTAINER_NETWORK'].trim() } : {}),
           ...(env['SNAPWING_TEST_NETWORK']?.trim() ? { testNetwork: env['SNAPWING_TEST_NETWORK'].trim() } : {}),
           relay: { upstream: containerApiUrl, ...(env['SNAPWING_RELAY_NETWORK']?.trim() ? { network: env['SNAPWING_RELAY_NETWORK'].trim() } : {}) },
+          egress: parseEgressAllow(env['SNAPWING_FIXER_EGRESS_ALLOW']),
+          testEgress: env['SNAPWING_TEST_EGRESS']?.trim() === 'on',
           revoke: revokeRun,
           // The work item is prepared on the host before the container starts.
           artifacts: store,

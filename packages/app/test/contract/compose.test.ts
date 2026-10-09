@@ -33,6 +33,7 @@ import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/he
 import { createBareRepo, git } from '../../../pipeline/test/helpers/git.ts';
 import { verifyFixerToken } from '../../src/fixer-api/token.ts';
 import { verifyModelToken } from '../../src/model-proxy/token.ts';
+import { DEFAULT_FIXER_EGRESS_ALLOW } from '../../src/providers/docker/runner.ts';
 import type { SocketLike } from '../../src/adapters/slack/transport.ts';
 import { repoFullName, sameRepo } from '../../src/github/repo.ts';
 import { compose, mergePrometheus, MissingSecretsError, type Composed, type ComposeFn, type ComposeOverrides } from '../../src/server/compose.ts';
@@ -456,8 +457,13 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
 
     // Both containers reach the server only through the relay on the internal run network (#273), which
     // forwards to SNAPWING_CONTAINER_API_URL.
-    expect(runs.find((r) => r.name === 'snapwing-relay')?.env['SNAPWING_RELAY_UPSTREAM']).toBe(containerApi);
+    const relayRun = runs.find((r) => r.name === 'snapwing-relay');
+    expect(relayRun?.env['SNAPWING_RELAY_UPSTREAM']).toBe(containerApi);
     for (const run of [reviewRun, fixerRun]) expect(run.network).toBe('snapwing-runs');
+    // The relay's egress proxy serves the default registries; only the fixer container is pointed at it.
+    expect(relayRun?.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBe(DEFAULT_FIXER_EGRESS_ALLOW.join(','));
+    expect(fixerRun.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
+    expect(reviewRun.env['HTTPS_PROXY']).toBeUndefined();
 
     // The review container: the configured harness, the proxy URL through the relay, and a model token
     // only in its credentials file, pinned to the default provider's model.
