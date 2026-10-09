@@ -383,6 +383,23 @@ describe('fixer API over HTTP', () => {
     expect(await call('failed', { reason: 'handoff refused: commit 0123456789ab does not name WEB-1042', attempts: 1 })).toMatchObject({ status: 200 });
   });
 
+  it('done is refused with 409 handoff-failed and the first line of the error when the hand-off throws, recording nothing (#308)', async () => {
+    await seedRunning();
+    const fake = fakeHandoff(async () => {
+      throw new Error('GitHub 422: not all refs are readable\nsecond line');
+    });
+    await start({ deps: { handoff: fake.handoff } });
+    const before = (await log()).length;
+    expect(await call('done', { summary: 'x' })).toEqual({
+      status: 409,
+      json: { error: 'handoff-failed', reason: 'the hand-off could not open the pull request: GitHub 422: not all refs are readable' },
+    });
+    expect((await log()).length).toBe(before);
+    expect(hooks.done).toEqual([]);
+    // The run goes on, so the reporter can end it as failed with the reason.
+    expect(await call('failed', { reason: 'the hand-off could not open the pull request: x', attempts: 1 })).toMatchObject({ status: 200 });
+  });
+
   it('a stop seen during the hand-off ends the done as run-finished, recording nothing (#262)', async () => {
     await seedRunning();
     const fake = fakeHandoff(async (r) => {

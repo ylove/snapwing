@@ -76,7 +76,7 @@ export type FixerReportResult =
   | { ok: false; code: FixerRefusal };
 
 /** A `done`'s result: also refused when the hand-off refuses the fixer's work (409, with the reason). */
-export type FixerDoneResult = FixerReportResult | { ok: false; code: 'handoff-refused'; reason: string };
+export type FixerDoneResult = FixerReportResult | { ok: false; code: 'handoff-refused' | 'handoff-failed'; reason: string };
 
 export type FixerArtifactResult =
   | { ok: true; seq: number; runId: string; artifact: ArtifactRef }
@@ -253,7 +253,14 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
       if (!run.ok) return run;
       const { runId } = run;
       const { summary, testsAdded } = parsed.value;
-      const h = await deps.handoff({ target, runId, outcome: 'done', summary, testsAdded, pushedBefore: pushedBranches(run.events), running: () => running(target, runId) });
+      let h: Awaited<ReturnType<typeof deps.handoff>>;
+      try {
+        h = await deps.handoff({ target, runId, outcome: 'done', summary, testsAdded, pushedBefore: pushedBranches(run.events), running: () => running(target, runId) });
+      } catch (e) {
+        // A git or GitHub failure ends the run as failed with the reason, rather than leaving the incident in fixing (#308).
+        const line = (e instanceof Error ? e.message : String(e)).split('\n')[0]?.trim() ?? '';
+        return { ok: false, code: 'handoff-failed', reason: `the hand-off could not open the pull request: ${line.slice(0, 500)}` };
+      }
       if (!h.ok) return h.code === 'stopped' ? { ok: false, code: 'run-finished' } : { ok: false, code: 'handoff-refused', reason: h.reason };
       const prNumber = h.prNumber;
       if (prNumber === undefined) throw new Error('fixer done: the hand-off opened no pull request');

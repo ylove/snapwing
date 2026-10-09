@@ -74,7 +74,7 @@ export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVer
           case 'done': {
             const r = await reporter.done(target, body.value);
             if (r.ok) return reply(r);
-            return r.code === 'handoff-refused' ? json(409, { error: r.code, reason: r.reason }) : reply(r);
+            return 'reason' in r ? json(409, { error: r.code, reason: r.reason }) : reply(r);
           }
           case 'failed':
             return reply(await reporter.failed(target, body.value));

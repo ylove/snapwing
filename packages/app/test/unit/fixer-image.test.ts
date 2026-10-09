@@ -411,6 +411,20 @@ describe('fixer role', () => {
     expect(posts('failed').map((c) => c.body)).toEqual([{ reason: 'handoff refused: the run left no bundle of its work branch; the fixer must commit its change on it', attempts: 1 }]);
   });
 
+  it.each([
+    [{ error: 'handoff-failed', reason: 'the hand-off could not open the pull request: GitHub 422: not all refs are readable' }, 'the hand-off could not open the pull request: GitHub 422: not all refs are readable'],
+    [{ error: 'pr-mismatch' }, 'the pull request did not match the run'],
+  ])('ends the run as failed with the reason when the server answers 409 %j on done (#308)', async (body, reason) => {
+    checkout();
+    doneAnswer = { status: 409, body };
+    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: 'pushed', testsAdded: [] }));
+
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
+
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(posts('failed').map((c) => c.body)).toEqual([{ reason, attempts: 1 }]);
+  });
+
   it('treats any other 409 on done like a stop', async () => {
     checkout();
     doneAnswer = { status: 409, body: { error: 'run-finished' } };

@@ -335,8 +335,8 @@ async function isDirectory(path: string): Promise<boolean> {
 
 // Fixer ------------------------------------------------------------------------------------------
 
-/** A 409 is a stop, except `handoff-refused` on `done`, which carries the server's reason. */
-type Reply = { kind: 'ok' } | { kind: 'stop' } | { kind: 'refused'; reason: string } | { kind: 'error'; message: string };
+/** A 409 is a stop, except on `done`: `handoff-refused` and `handoff-failed` carry the server's reason, and `pr-mismatch` ends the run as failed (#308). */
+type Reply = { kind: 'ok' } | { kind: 'stop' } | { kind: 'refused'; reason: string; verbatim?: true } | { kind: 'error'; message: string };
 
 async function runFixer(deps: WrapperDeps, job: Job, credentials: Credentials, modelVars: Record<string, string>, log: (l: string) => void): Promise<number> {
   const apiUrl = deps.env['SNAPWING_API_URL']?.trim().replace(/\/+$/, '') ?? '';
@@ -368,6 +368,10 @@ async function runFixer(deps: WrapperDeps, job: Job, credentials: Credentials, m
           if (op === 'done' && answer?.error === 'handoff-refused') {
             return { kind: 'refused', reason: typeof answer.reason === 'string' ? answer.reason.slice(0, 2000) : 'no reason given' };
           }
+          if (op === 'done' && answer?.error === 'handoff-failed') {
+            return { kind: 'refused', reason: typeof answer.reason === 'string' ? answer.reason.slice(0, 2000) : 'the hand-off failed', verbatim: true };
+          }
+          if (op === 'done' && answer?.error === 'pr-mismatch') return { kind: 'refused', reason: 'the pull request did not match the run', verbatim: true };
           return { kind: 'stop' };
         }
         await res.body?.cancel();
@@ -390,7 +394,7 @@ async function runFixer(deps: WrapperDeps, job: Job, credentials: Credentials, m
     if (r.kind === 'refused') {
       // The server recorded nothing; the run ends as a failure with its reason.
       log(`hand-off refused: ${r.reason}`);
-      return report('failed', { reason: `handoff refused: ${r.reason}`, attempts: 1 });
+      return report('failed', { reason: r.verbatim ? r.reason : `handoff refused: ${r.reason}`, attempts: 1 });
     }
     return op === 'done' ? EXIT_OK : EXIT_FAILED;
   };

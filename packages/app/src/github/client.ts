@@ -465,6 +465,9 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
   const call = createGitHubTransport(auth, options);
   const prRead: GitHubPermissions = { pull_requests: 'read' };
   const prWrite: GitHubPermissions = { pull_requests: 'write' };
+  // Opening or finding a PR by branch names reads the head and base refs; without contents: read GitHub answers 422 "not all refs are readable" (#308).
+  const prRefs: GitHubPermissions = { pull_requests: 'write', contents: 'read' };
+  const prRefsRead: GitHubPermissions = { pull_requests: 'read', contents: 'read' };
 
   async function json(request: GitHubRequest): Promise<unknown> {
     return parseJson((await call(request)).text);
@@ -582,13 +585,13 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
 
     async findOpenPullRequest(head, base) {
       const owner = options.repo.slice(0, options.repo.indexOf('/'));
-      const found = list(await json({ method: 'GET', path: `${repoPath}/pulls`, permissions: prRead, query: { state: 'open', head: `${owner}:${head}`, base, per_page: 1 } }));
+      const found = list(await json({ method: 'GET', path: `${repoPath}/pulls`, permissions: prRefsRead, query: { state: 'open', head: `${owner}:${head}`, base, per_page: 1 } }));
       return found.length === 0 ? undefined : toPullRequest(found[0]);
     },
 
     async createPullRequest(input) {
       const body = { title: input.title, head: input.head, base: input.base, body: input.body, ...(input.draft === undefined ? {} : { draft: input.draft }) };
-      return toPullRequest(await json({ method: 'POST', path: `${repoPath}/pulls`, permissions: prWrite, body }));
+      return toPullRequest(await json({ method: 'POST', path: `${repoPath}/pulls`, permissions: prRefs, body }));
     },
 
     async listPullRequestFiles(number) {

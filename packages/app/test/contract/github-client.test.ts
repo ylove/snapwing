@@ -165,6 +165,23 @@ describe('pull requests', () => {
     expect(tokenRequests[0]?.permissions).toEqual({ pull_requests: 'write' });
   });
 
+  it('opens and finds a pull request with a token that can read the refs; GitHub refuses one that cannot (#308)', async () => {
+    // Real GitHub: a token without contents: read cannot read the head and base refs (422).
+    const refusesWithoutContents = (): Response | undefined =>
+      tokenRequests.at(-1)?.permissions.contents === undefined
+        ? HttpResponse.json({ message: 'Validation Failed', errors: [{ resource: 'PullRequest', code: 'custom', message: 'not all refs are readable' }] }, { status: 422 })
+        : undefined;
+    server.use(
+      http.post(`${R}/pulls`, async ({ request }) => (await record(request), refusesWithoutContents() ?? HttpResponse.json(pullPayload, { status: 201 }))),
+      http.get(`${R}/pulls`, async ({ request }) => (await record(request), refusesWithoutContents() ?? HttpResponse.json([pullPayload]))),
+    );
+    const pr = await client.createPullRequest({ title: 't', head: 'fix/WEB-1042', base: 'main', body: 'b' });
+    expect(pr.number).toBe(418);
+    expect(tokenRequests[0]?.permissions).toEqual({ pull_requests: 'write', contents: 'read' });
+    expect((await client.findOpenPullRequest('fix/WEB-1042', 'main'))?.number).toBe(418);
+    expect(tokenRequests[1]?.permissions).toEqual({ pull_requests: 'read', contents: 'read' });
+  });
+
   it('creates a review pinned to a commit', async () => {
     server.use(
       http.post(`${R}/pulls/418/reviews`, async ({ request }) => (await record(request), HttpResponse.json({ id: 80, state: 'APPROVED', html_url: `https://github.com/${REPO}/pull/418#pullrequestreview-80` }))),

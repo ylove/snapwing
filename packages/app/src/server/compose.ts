@@ -166,7 +166,7 @@ import { anthropicProvider } from '@snapwing/pipeline/models/anthropic/index.ts'
 import { googleProviderFactory } from '@snapwing/pipeline/models/google/index.ts';
 import { openaiProvider } from '@snapwing/pipeline/models/openai/index.ts';
 import { createModelRouter, PROVIDER_KEY_ENV, resolveModelRoutes, MODEL_TASK_LIST } from '@snapwing/pipeline/models/router.ts';
-import type { HarnessPort, WorkItemRef } from '@snapwing/pipeline/ports/harness.ts';
+import type { HarnessPort, HarnessResult, WorkItemRef } from '@snapwing/pipeline/ports/harness.ts';
 import type { ModelPort } from '@snapwing/pipeline/ports/model.ts';
 import type { HarnessChoice, RunnerPort } from '@snapwing/pipeline/ports/runner.ts';
 import { SecretNotFoundError, type SecretsPort } from '@snapwing/pipeline/ports/secrets.ts';
@@ -905,15 +905,7 @@ export const compose: ComposeFn = async (deps) => {
             await reporter.checkpoint(targetOf(run.job.workItem), checkpoint);
           },
           onFinished: async (run, result) => {
-            const target = targetOf(run.job.workItem);
-            if (result.outcome === 'done') {
-              // The runner left the bundle in the run directory; `done` pushes it and opens the PR.
-              const r = await reporter.done(target, { summary: result.summary, testsAdded: result.testsAdded });
-              if (!r.ok && r.code === 'handoff-refused') await reporter.failed(target, { reason: `handoff refused: ${r.reason}`, attempts: 1 });
-            } else if (result.outcome === 'failed') {
-              await reporter.failed(target, result);
-            }
-            // `stopped`: the stop is already in the log; the run only acknowledges it.
+            await finishLocalRun(reporter, targetOf(run.job.workItem), result);
           },
         });
 
@@ -2096,6 +2088,42 @@ export function mergePrometheus(blocks: readonly string[]): string {
   }
   const lines = [...families.values()].flatMap((f) => [...f.meta, ...f.samples]);
   return lines.length === 0 ? '' : `${lines.join('\n')}\n`;
+}
+
+/**
+ * The local runner's result goes to the fixer API's reporter. A `done` the reporter does not accept, or
+ * that throws, ends the run as failed with the reason, so the incident never stays in fixing (#308).
+ */
+export async function finishLocalRun(reporter: Pick<FixerReporter, 'done' | 'failed'>, target: FixerTarget, result: HarnessResult): Promise<void> {
+  if (result.outcome === 'done') {
+    // The runner left the bundle in the run directory; `done` pushes it and opens the PR.
+    let r: Awaited<ReturnType<FixerReporter['done']>>;
+    try {
+      r = await reporter.done(target, { summary: result.summary, testsAdded: result.testsAdded });
+    } catch (e) {
+      const line = (e instanceof Error ? e.message : String(e)).split('\n')[0]?.trim() ?? '';
+      await reporter.failed(target, { reason: `the hand-off could not open the pull request: ${line.slice(0, 500)}`, attempts: 1 });
+      return;
+    }
+    if (!r.ok) await reporter.failed(target, { reason: handoffFailureReason(r), attempts: 1 });
+  } else if (result.outcome === 'failed') {
+    await reporter.failed(target, result);
+  }
+  // `stopped`: the stop is already in the log; the run only acknowledges it.
+}
+
+/** Why a `done` that was not accepted ends the run as failed (#308): the incident would otherwise stay in fixing. */
+function handoffFailureReason(r: Exclude<Awaited<ReturnType<FixerReporter['done']>>, { ok: true }>): string {
+  switch (r.code) {
+    case 'handoff-refused':
+      return `handoff refused: ${r.reason}`;
+    case 'handoff-failed':
+      return r.reason;
+    case 'pr-mismatch':
+      return 'the pull request did not match the run';
+    default:
+      return `the hand-off was not accepted (${r.code})`;
+  }
 }
 
 /** The local runner reports for the fixer's work item, which is the incident (`fixer.run`). */
