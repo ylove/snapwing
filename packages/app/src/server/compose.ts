@@ -206,7 +206,8 @@ import {
   type TeamsDispatchResult,
 } from '../adapters/teams/transport.ts';
 import { createQueue } from '../status/queue.ts';
-import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
+import { createPullRequestVerifier } from '../fixer-api/verify-pr.ts';
+import { createFixerReporter,type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
 import { createFixerRoutes } from '../fixer-api/routes.ts';
 import { createFixerGitToken } from '../fixer-api/git-token.ts';
 import { fixerTokenTtl, fixerTokenVerifier, issueFixerToken, type FixerTokenKeys } from '../fixer-api/token.ts';
@@ -796,6 +797,7 @@ export const compose: ComposeFn = async (deps) => {
   const reporter: FixerReporter = createFixerReporter({
     state,
     clock,
+    verifyPullRequest: createPullRequestVerifier({ state, github, botLogin: `${secret('GITHUB_APP_SLUG').trim()}[bot]` }),
     onDone: async ({ incidentId }) => {
       await handleFixerDone(fixerDeps, incidentId);
       await startReview(reviewDeps, { incidentId });
@@ -1779,6 +1781,8 @@ export const compose: ComposeFn = async (deps) => {
         secret: secret('GITHUB_WEBHOOK_SECRET'),
         github,
         botLogin: `${secret('GITHUB_APP_SLUG').trim()}[bot]`,
+        mappedLogins: async () => (await liveMap()).people.map((p) => p.handle),
+        debug: (line) => log.info(line),
       }),
     },
     // With docker the container holds no git token: its wrapper asks for a fresh one per git

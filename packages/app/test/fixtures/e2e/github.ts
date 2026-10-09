@@ -84,6 +84,8 @@ export class FakeGitHub {
   /** Every request the fake answered, as `METHOD /path`. */
   readonly calls: string[] = [];
   readonly people: GitHubPerson[] = [];
+  /** Who opened every pull request: the App's bot user. */
+  botLogin = BOT_LOGIN;
   /** Required checks no CI ever reports for any head (so they stay pending). */
   readonly silent = new Set<string>();
   /** Branches the app deleted, as `owner/name:branch`. */
@@ -185,9 +187,9 @@ export class FakeGitHub {
       mergeable: pr.state === 'open',
       merge_commit_sha: pr.mergeSha ?? null,
       html_url: `https://github.com/${pr.repo}/pull/${pr.number}`,
-      head: { sha: this.headSha(pr), ref: pr.head },
-      base: { ref: pr.base },
-      user: { login: BOT_LOGIN },
+      head: { sha: this.headSha(pr), ref: pr.head, repo: { full_name: pr.repo } },
+      base: { ref: pr.base, repo: { full_name: pr.repo } },
+      user: { login: this.botLogin },
       additions: files.reduce((n, f) => n + f.additions, 0),
       deletions: files.reduce((n, f) => n + f.deletions, 0),
       changed_files: files.length,
@@ -224,6 +226,7 @@ export class FakeGitHub {
         const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
         return person === undefined ? denied() : HttpResponse.json({ login: person.login, id: person.id });
       }),
+      http.get(`${GITHUB}/repos/:owner/:repo`, ({ request }) => (installation(request) ? HttpResponse.json({ default_branch: 'main' }) : denied())),
       http.get(`${GITHUB}/user/emails`, ({ request }) => {
         const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
         return person === undefined ? denied() : HttpResponse.json([{ email: person.email, primary: true, verified: true }]);

@@ -93,6 +93,10 @@ export interface GitHubWebhookDeps {
   github: (repo: string) => GitHubWebhookClient;
   /** The App's bot login (`<app slug>[bot]`); its pull requests and merges are not a human's. Default `snapwing[bot]`. */
   botLogin?: string;
+  /** GitHub logins of the map's people; a pull request from one attaches even when GitHub does not report write access. */
+  mappedLogins?: () => Promise<readonly string[]>;
+  /** One line for a pull request left out of an incident (#267). */
+  debug?: (line: string) => void;
   /** Which environment names are staging and production. Default `DEFAULT_DEPLOY_ENVIRONMENTS`. */
   environments?: Partial<Record<DeployStage, readonly string[]>>;
 }
@@ -186,6 +190,13 @@ async function pullRequestSteps(deps: GitHubWebhookDeps, repo: string, body: Rec
     const author = rec(pr['user']);
     const login = str(author, 'login');
     if (login === undefined || !isPerson(author, bot)) return [];
+    // Hardening (#267): a branch name alone never attaches a pull request. It must come from the
+    // repository itself (not a fork), by someone with write access or a mapped person.
+    const left = await leftOut(deps, repo, pr, login);
+    if (left !== undefined) {
+      deps.debug?.(`github webhook: pull request ${repo}#${number} left out of any incident: ${left}`);
+      return [];
+    }
     const incident = await incidentByBranch(deps, repo, [branch]);
     if (incident === undefined) return [];
     const occurredAt = time(pr['created_at']) ?? deps.clock().toISOString();
@@ -227,6 +238,19 @@ async function pullRequestSteps(deps: GitHubWebhookDeps, repo: string, body: Rec
     ];
   }
   return [];
+}
+
+const WRITE_ASSOCIATIONS: readonly string[] = ['OWNER', 'MEMBER', 'COLLABORATOR'];
+
+/** Why a pull request opened by the person `login` may not attach to an incident; undefined when it may. */
+async function leftOut(deps: GitHubWebhookDeps, repo: string, pr: Record<string, unknown>, login: string): Promise<string | undefined> {
+  const headRepo = str(rec(rec(pr['head'])['repo']), 'full_name');
+  if (headRepo === undefined || !sameRepo(headRepo, repo)) return 'its head is not in the repository';
+  const association = str(pr, 'author_association')?.toUpperCase();
+  if (association !== undefined && WRITE_ASSOCIATIONS.includes(association)) return undefined;
+  const mapped = (await deps.mappedLogins?.()) ?? [];
+  if (mapped.some((m) => sameLogin(m.replace(/^@/, ''), login))) return undefined;
+  return 'its author has no write access';
 }
 
 /** A `pr-opened` for PR `number` since the latest `filed`. */

@@ -85,6 +85,10 @@ export interface PullRequest {
   headRef: string;
   baseRef: string;
   authorLogin: string | null;
+  /** `owner/name` of the head repository; null when it was deleted. A fork differs from `baseRepo`. */
+  headRepo: string | null;
+  /** `owner/name` of the repository the pull request targets. */
+  baseRepo: string | null;
   additions: number;
   deletions: number;
   changedFiles: number;
@@ -217,6 +221,8 @@ export interface CommitComparison {
 
 export interface GitHubClient {
   getPullRequest(number: number): Promise<PullRequest>;
+  /** The repository's default branch. */
+  getDefaultBranch(): Promise<string>;
   listPullRequestFiles(number: number): Promise<PullRequestFile[]>;
   requestReviewers(number: number, reviewers: { users?: readonly string[]; teams?: readonly string[] }): Promise<void>;
   createReview(number: number, input: CreateReviewInput): Promise<Review>;
@@ -349,6 +355,8 @@ function toPullRequest(raw: unknown): PullRequest {
     headRef: str(head?.ref),
     baseRef: str(base?.ref),
     authorLogin: str(record(pr.user)?.login) || null,
+    headRepo: str(record(head?.repo)?.full_name) || null,
+    baseRepo: str(record(base?.repo)?.full_name) || null,
     additions: num(pr.additions),
     deletions: num(pr.deletions),
     changedFiles: num(pr.changed_files),
@@ -447,6 +455,13 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
 
   return {
     getPullRequest: fetchPullRequest,
+
+    async getDefaultBranch() {
+      const body = record(await json({ method: 'GET', path: repoPath, permissions: { metadata: 'read' } }));
+      const branch = str(body?.default_branch);
+      if (branch === '') throw new GitHubApiError(502, 'repository response had no default branch');
+      return branch;
+    },
 
     async listPullRequestFiles(number) {
       const raw = await paginate(`${repoPath}/pulls/${number}/files`, prRead, (page) => list(page));

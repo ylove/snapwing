@@ -379,6 +379,31 @@ describe('pull requests', () => {
     expect(githubCalls).toEqual([]);
   });
 
+  it('ignores a PR from a fork, or from an author without write access, even when the branch names the key (#267)', async () => {
+    await filed();
+    const fork = fixture('pull-request-opened');
+    (((fork['pull_request'] as Json)['head'] as Json)['repo'] as Json)['full_name'] = 'outsider/web';
+    expect(await deliver(route(), 'pull_request', fork)).toEqual({ status: 200, outcome: 'ignored' });
+
+    const lines: string[] = [];
+    for (const association of ['CONTRIBUTOR', 'NONE', 'FIRST_TIME_CONTRIBUTOR']) {
+      const outsider = fixture('pull-request-opened');
+      (outsider['pull_request'] as Json)['author_association'] = association;
+      expect(await deliver(route({ debug: (l) => lines.push(l) }), 'pull_request', outsider)).toEqual({ status: 200, outcome: 'ignored' });
+    }
+    expect(lines).toHaveLength(3);
+    expect(await ofType('pr-opened')).toEqual([]);
+    expect(await status()).not.toBe('in-review');
+  });
+
+  it('attaches the PR of a mapped person whose association GitHub does not report as write access', async () => {
+    await filed();
+    const body = fixture('pull-request-opened');
+    (body['pull_request'] as Json)['author_association'] = 'CONTRIBUTOR';
+    expect(await deliver(route({ mappedLogins: async () => ['@Dana-Dev'] }), 'pull_request', body)).toEqual({ status: 200, outcome: 'processed' });
+    expect(await ofType('pr-opened')).toHaveLength(1);
+  });
+
   it('lands a PR on the incident that owns the key, not a newer report linked to it', async () => {
     await filed();
     const dup = await linkedDuplicate();

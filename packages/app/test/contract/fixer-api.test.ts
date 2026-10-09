@@ -90,6 +90,7 @@ async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps
   const reporter = createFixerReporter({
     state: opts.state ?? state,
     clock: () => new Date(now),
+    verifyPullRequest: async () => ({ ok: true }),
     onDone: async (c) => void hooks.done.push(c),
     onFailed: async (c) => void hooks.failed.push(c),
     ...opts.deps,
@@ -286,6 +287,26 @@ describe('fixer API over HTTP', () => {
       { kind: 'diagnosis', artifact: ref2 },
       { kind: 'contract', artifact: (contract.json as { artifact: unknown }).artifact },
     ]);
+  });
+
+  it('done is refused with 409 pr-mismatch, recording nothing, when the reported pull request fails verification (#267)', async () => {
+    await seedRunning();
+    const asked: unknown[] = [];
+    await start({
+      deps: {
+        verifyPullRequest: async (target, report) => {
+          asked.push([target, report]);
+          return { ok: false, reason: 'the pull request is not on the run\'s work branch' };
+        },
+      },
+    });
+    expect(await call('done', { prNumber: 9, branch: 'fix/WEB-1042' })).toEqual({ status: 409, json: { error: 'pr-mismatch' } });
+    expect(asked).toEqual([[{ workItemId: INC, incidentId: INC }, { prNumber: 9, branch: 'fix/WEB-1042', summary: '', testsAdded: [] }]]);
+    expect(await types()).not.toContain('pr-opened');
+    expect(await types()).not.toContain('fixer-done');
+    expect(hooks.done).toEqual([]);
+    // The run is still going, so the fixer can report the right pull request.
+    expect(await call('checkpoint', { phase: 'pushed' })).toMatchObject({ status: 200 });
   });
 
   it('done appends fixer-done and pr-opened together and calls onDone; a duplicate done is 409', async () => {

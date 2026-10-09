@@ -11,6 +11,8 @@
 //   - the incident is in a terminal status, folded from the log (`incident-closed`),
 //   - no run is going: the latest `fixer-started` is followed by `fixer-done`, `fixer-failed`, or
 //     `stopped`, or there is none (`run-finished`).
+// A `done` is also refused, appending nothing, when its pull request fails verification against
+// GitHub (`pr-mismatch`, verify-pr.ts).
 //
 //   checkpoint   appends `fixer-checkpoint { phase, detail }`.
 //   artifact     stores the body as a new version of the incident's artifact of that kind (version 1
@@ -35,6 +37,7 @@ import type { ArtifactRef, EventPayloads, EventType, IncidentEvent, NewEvent } f
 import { activeRun, appendDecided, latest, newEvent } from '@snapwing/pipeline/fixer/job.ts';
 import { INITIAL_STATUS, isTerminalStatus, nextStatus, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import type { PullRequestVerifier } from './verify-pr.ts';
 import {
   parseArtifactInput,
   parseCheckpointInput,
@@ -50,7 +53,7 @@ export interface FixerTarget {
   incidentId: string;
 }
 
-export type FixerRefusal = 'unknown-incident' | 'incident-closed' | 'run-finished';
+export type FixerRefusal = 'unknown-incident' | 'incident-closed' | 'run-finished' | 'pr-mismatch';
 
 export type FixerReportResult =
   | { ok: true; seq: number; runId: string }
@@ -76,6 +79,8 @@ export interface FixerHookContext {
 export interface FixerReporterDeps {
   state: StatePort;
   clock: () => Date;
+  /** Checks the pull request a `done` reports before `pr-opened` is recorded (#267). */
+  verifyPullRequest: PullRequestVerifier;
   onDone?: (ctx: FixerHookContext) => Promise<void>;
   onFailed?: (ctx: FixerHookContext) => Promise<void>;
 }
@@ -182,7 +187,11 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
     },
 
     async done(target, input) {
-      const r = await report(target, parseDoneInput(input), (value, d) => [
+      const parsed = parseDoneInput(input);
+      if (parsed.ok && decideReport(await state.read(target.incidentId)).ok) {
+        if (!(await deps.verifyPullRequest(target, parsed.value)).ok) return { ok: false, code: 'pr-mismatch' };
+      }
+      const r = await report(target, parsed, (value, d) => [
         event(d, target, 'fixer-done', value),
         event(d, target, 'pr-opened', { prNumber: value.prNumber, branch: value.branch }),
       ]);
