@@ -51,6 +51,10 @@
 //
 // The fixer container runs as the server's uid:gid (`--user`, as test and review runs do) with HOME
 // and TMPDIR at its `/tmp`, so it can write the host-prepared checkout and the server can remove it.
+// Every container this runner starts (fixer, review, test, relay) has a read-only root filesystem
+// (#306); `/tmp`, which is HOME too, is a tmpfs (`tmpfsSize`, default 2g, counted against `--memory`),
+// so an agent CLI's config and caches and a package manager's cache live there and go with the
+// container. The mounts (`/work`, `/out`, `/run/snapwing`) are the only other writable paths.
 // After `docker run -d` the runner waits for the container in the background (`docker wait`) and
 // removes the scratch directory once the container is gone (`wait(runId)` resolves then). A container
 // whose end the runner cannot observe (the daemon unreachable, the server restarted) leaves its
@@ -193,6 +197,8 @@ export interface DockerRunnerOptions {
   cpus?: string;
   /** `--pids-limit`. Default 512. */
   pidsLimit?: number;
+  /** Size of the `/tmp` tmpfs (HOME and TMPDIR) of a fixer, review, or test container. Default `2g`. */
+  tmpfsSize?: string;
   /** SIGTERM to SIGKILL grace on cancel, ISO 8601. Default `PT10S`. */
   killGrace?: string;
   /**
@@ -240,6 +246,8 @@ export const RELAY_ALIAS = 'snapwing-api';
 export const RELAY_PORT = 8080;
 export const RELAY_URL = `http://${RELAY_ALIAS}:${RELAY_PORT}`;
 const RELAY_SCRIPT = '/opt/snapwing/infra/docker/fixer/relay.ts';
+/** Bumped whenever the relay's own `docker run` flags change (2: a tmpfs under its read-only root, #306). */
+const RELAY_REVISION = 'r2';
 /** The relay's CONNECT proxy to the allowlisted hosts, as containers reach it. */
 export const EGRESS_PROXY_URL = `http://${RELAY_ALIAS}:3128`;
 /** What a container with the proxy reaches directly: the relay's server paths and its own loopback. */
@@ -329,7 +337,11 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     });
   };
 
-  /** What every run container gets: a name, limits, no capabilities, and the server's uid:gid. */
+  /**
+   * What every run container gets: a name, limits, no capabilities, a read-only root with a tmpfs at
+   * `/tmp` (HOME and TMPDIR, executable, since a test runner may run what it builds there), and the
+   * server's uid:gid.
+   */
   const common = (name: string, net: string): string[] => [
     '--name', name,
     '--memory', options.memory ?? '4g',
@@ -337,6 +349,8 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     '--pids-limit', String(options.pidsLimit ?? 512),
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
+    '--read-only',
+    '--tmpfs', `/tmp:rw,exec,nosuid,nodev,size=${options.tmpfsSize ?? '2g'}`,
     '--network', net,
     ...user(options.testUser),
   ];
@@ -370,7 +384,8 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     if (options.relay === undefined) return;
     const relayNet = options.relay.network ?? 'bridge';
     const allow = (options.egress ?? []).join(',');
-    const label = `${options.image} ${options.relay.upstream} ${relayNet} ${network} ${allow === '' ? 'no-egress' : allow}`;
+    // The revision first, so a relay started with older flags is replaced too.
+    const label = `${RELAY_REVISION} ${options.image} ${options.relay.upstream} ${relayNet} ${network} ${allow === '' ? 'no-egress' : allow}`;
     const running = async (): Promise<boolean> => {
       const r = await cli(['inspect', '--format', '{{.State.Running}} {{index .Config.Labels "snapwing.relay"}}', RELAY_NAME]);
       if (r.code === 0 && r.stdout.trim() === `true ${label}`) return true;
@@ -386,6 +401,7 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
         '--label', `snapwing.relay=${label}`,
         '--restart', 'unless-stopped',
         '--read-only',
+        '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=16m',
         '--memory', '256m',
         '--pids-limit', '64',
         '--cap-drop', 'ALL',

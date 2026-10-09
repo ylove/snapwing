@@ -774,6 +774,13 @@ describe('the image definition', () => {
     expect(dockerfile).toMatch(/^ARG INSTALL_GEMINI=false$/m);
   });
 
+  it('pins every agent CLI to an exact release and turns self-updates off (#306)', () => {
+    const pins = Object.fromEntries([...dockerfile.matchAll(/^ARG (CLAUDE_CODE|CODEX|GEMINI)_VERSION=(.+)$/gm)].map((m) => [m[1], m[2]]));
+    expect(pins).toEqual({ CLAUDE_CODE: '2.1.286', CODEX: '0.162.0', GEMINI: '0.63.0' });
+    for (const v of Object.values(pins)) expect(v).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(instructions).toContain('ENV DISABLE_AUTOUPDATER=1');
+  });
+
   it('runs the wrapper as a non-root user under tini', () => {
     const users = instructions.filter((l) => l.startsWith('USER '));
     expect(users.at(-1)).toBe('USER snapwing');

@@ -17,7 +17,7 @@ import {
   type AdaptiveCard,
 } from '../../src/adapters/teams/cards/elements.ts';
 import { EXAMPLE_INCIDENT_ID, EXAMPLE_MENTIONS, renderExamples } from '../../src/adapters/teams/cards/examples.ts';
-import { midFlightChoiceOf } from '../../src/adapters/teams/cards/mid-flight.ts';
+import { buildMidFlightCard, midFlightChoiceOf } from '../../src/adapters/teams/cards/mid-flight.ts';
 import {
   EMOJI_VOCABULARY,
   buildStatusCard,
@@ -121,6 +121,19 @@ describe('teams cards', () => {
     expect(bodyText(c)).toContain('No answer in 10 minutes means **Let it finish**.');
     expect(midFlightChoiceOf('stop_it')).toBe('stop-it');
     expect(midFlightChoiceOf('nope')).toBeUndefined();
+  });
+
+  it('mid-flight (#306): a fixer-written branch is escaped text, and only the claimer is mentioned', () => {
+    const c = buildMidFlightCard(
+      ID,
+      { kind: 'mid-flight', issueKey: 'WEB-1', claimerUserId: 'U0WEBDEV1', runId: 'RUN1', runAgeMs: 240_000, branch: 'fix/<at>Pat</at> **x** [y](https://example.test)\u0000tail', choices: ['let-it-finish'], grace: 'PT10M' },
+      600_000,
+      { mentions: EXAMPLE_MENTIONS },
+    );
+    const text = bodyText(c);
+    expect(text).toContain('<at>Dana</at>, the fixer started on this 4 minutes ago and is on fix/&lt;at&gt;Pat&lt;/at&gt; \\*\\*x\\*\\* \\[y\\](https://example.test)tail.');
+    expect(text.match(/<at>/g)).toHaveLength(1);
+    expect(c.msteams?.entities?.map((e) => e.text)).toEqual(['<at>Dana</at>']);
   });
 
   it('resolution prompt and scope change (A 3): the message rides in data', () => {

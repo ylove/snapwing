@@ -7,7 +7,7 @@
 
 import { generateKeyPairSync } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -230,6 +230,23 @@ describe('compose under snapwing serve', () => {
     expect(err).toContain('missing secrets: SLACK_SIGNING_SECRET, GITHUB_APP_SLUG, GOOGLE_API_KEY');
     for (const value of Object.values(secrets)) expect(err).not.toContain(value);
     expect(calls).toEqual([]);
+  });
+
+  it('refuses a work root other users can read, and makes the default one private under the data directory (#306)', async () => {
+    const open = join(dir, 'open-work');
+    await mkdir(open, { mode: 0o755 });
+    await chmod(open, 0o755);
+    const refused = await serve(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], fakeSecrets(), {}, { SNAPWING_WORKDIR_ROOT: open });
+    expect(await refused.code).toBe(1);
+    expect(refused.err.join('\n')).toContain(`the work root ${open} (SNAPWING_WORKDIR_ROOT) has mode 0755, open to other users; run chmod 700 on it`);
+    expect((await stat(open)).mode & 0o777).toBe(0o755);
+
+    const data = join(dir, 'data');
+    const run = await serve(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], fakeSecrets(), {}, { SNAPWING_WORKDIR_ROOT: '', SNAPWING_DATA_DIR: data });
+    await run.ready;
+    expect((await stat(join(data, 'work'))).mode & 0o777).toBe(0o700);
+    run.signals.emit('SIGTERM');
+    expect(await run.code).toBe(0);
   });
 });
 
@@ -497,6 +514,11 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     const relayRun = runs.find((r) => r.name === 'snapwing-relay');
     expect(relayRun?.env['SNAPWING_RELAY_UPSTREAM']).toBe(containerApi);
     for (const run of [reviewRun, fixerRun]) expect(run.network).toBe('snapwing-runs');
+    // Every container has a read-only root with its HOME on a tmpfs (#306).
+    for (const run of runs) {
+      expect(run.readOnly, run.name).toBe(true);
+      expect(run.tmpfs[0], run.name).toMatch(/^\/tmp:rw,/);
+    }
     // The relay's egress proxy serves the default registries; only the fixer container is pointed at it.
     expect(relayRun?.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBe(DEFAULT_FIXER_EGRESS_ALLOW.join(','));
     expect(fixerRun.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
@@ -582,6 +604,8 @@ const REQUEST_BODY = buildImplementationRequest({
 interface ContainerRun {
   name: string;
   network: string;
+  readOnly: boolean;
+  tmpfs: string[];
   env: Record<string, string>;
   /** What the container's credentials file held (the wrapper takes it). */
   credentials: { fixerToken?: string; modelToken?: string };
@@ -620,6 +644,8 @@ async function main() {
   let name = '';
   let network = '';
   let creds = '';
+  let readOnly = false;
+  const tmpfs = [];
   const mounts = [];
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
@@ -635,11 +661,13 @@ async function main() {
       if (dst === '/run/snapwing') creds = src;
     } else if (a === '--name') name = args[++i];
     else if (a === '--network') network = args[++i];
+    else if (a === '--tmpfs') tmpfs.push(args[++i]);
+    else if (a === '--read-only') readOnly = true;
   }
   const relayFile = path.join(__dirname, 'relay-upstream');
   if (name === 'snapwing-relay') {
     fs.writeFileSync(relayFile, env.SNAPWING_RELAY_UPSTREAM);
-    fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, network, env, credentials: {}, calls: {}, mounts, holding: [] }) + '\\n');
+    fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, network, readOnly, tmpfs, env, credentials: {}, calls: {}, mounts, holding: [] }) + '\\n');
     return 0;
   }
   const viaRelay = (url) => url.replace('http://snapwing-api:8080', fs.readFileSync(relayFile, 'utf8'));
@@ -664,7 +692,7 @@ async function main() {
     if (credentials.fixerToken) calls.fixerToken = await call(credentials.fixerToken);
   }
   if (env.SNAPWING_REVIEW_FILE && mount !== '') fs.writeFileSync(path.join(mount, env.SNAPWING_REVIEW_FILE.slice('/work/'.length)), ${JSON.stringify(verdict)});
-  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, network, env, credentials, calls, mounts, holding }) + '\\n');
+  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, network, readOnly, tmpfs, env, credentials, calls, mounts, holding }) + '\\n');
   return 0;
 }
 main().then((code) => process.exit(code), (e) => { console.error(String(e)); process.exit(1); });

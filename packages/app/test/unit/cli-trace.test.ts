@@ -178,6 +178,33 @@ describe('snapwing trace', () => {
     expect(new Set(events.map((e) => e.incidentId))).toEqual(new Set([STOPPED]));
   });
 
+  it('prints no control, invisible, or bidirectional character from the log, text or --json (#306)', async () => {
+    const HOSTILE = '01JZ00000000000000000000E5';
+    const evil = 'tests red\u001b[2J\u001b]0;owned\u0007\r\nfake line\u009b31m\u202egnp.exe';
+    const state = await openState(tdb.options);
+    try {
+      const e = incident(state, HOSTILE);
+      await e('captured', at(4, 9), captured('Hostile report'));
+      await e('filed', at(4, 9, 1), { jiraKey: 'WEB-5' });
+      await e('fixer-started', at(4, 9, 2), { runId: 'run-5', harness: 'claude-code', attempt: 1 });
+      await e('fixer-failed', at(4, 9, 3), { reason: evil, attempts: 1 });
+    } finally {
+      await state.close();
+    }
+    const text = await run(['trace', 'WEB-5']);
+    expect(text.code).toBe(0);
+    expect(text.out).toMatch(/tests red \[2J \]0;owned +fake line 31m gnp\.exe after 1 attempts/);
+    // eslint-disable-next-line no-control-regex
+    expect(text.out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e]/);
+
+    const json = await run(['trace', 'WEB-5', '--json']);
+    // eslint-disable-next-line no-control-regex
+    expect(json.out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202a-\u202e]/);
+    expect(json.out).toContain('\\u009b31m\\u202egnp.exe');
+    const events = JSON.parse(json.out) as { type: string; payload: { reason?: string } }[];
+    expect(events.find((ev) => ev.type === 'fixer-failed')?.payload.reason).toBe(evil);
+  });
+
   it('exits 1 for an unknown incident and for bad arguments', async () => {
     const missing = await run(['trace', 'WEB-404']);
     expect(missing.code).toBe(1);

@@ -25,8 +25,9 @@ export function buildMidFlightCard(
   graceMs: number,
   opts: { mentions?: MentionFor; reduced?: boolean } = {},
 ): AdaptiveCard {
+  // The branch is the fixer's text (#306): it goes through `free` (escaped), and may not carry the marker.
   const marker = '\u0000';
-  const lead = midFlightText(c, marker).replace(/`/g, '');
+  const lead = midFlightText({ ...c, ...(c.branch === undefined ? {} : { branch: c.branch.replaceAll(marker, '') }) }, marker).replace(/`/g, '');
   const [before = '', after = ''] = lead.split(marker);
   const parts: Part[] = [free(before), who(c.claimerUserId), free(after)];
   return card(
