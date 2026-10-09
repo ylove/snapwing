@@ -54,7 +54,8 @@ const PREFIX = '[snapwing-test]';
 const REPO = 'ylove/snapwing-fixture-web';
 /** A file on the fixture repository's default branch (the durability test's scout names it too). */
 const FIXTURE_FILE = 'src/cart.ts';
-const ENDPOINT = 'http://snapwing.test';
+// Loopback: the client refuses plain http to any other host (#270); requests go to the in-process API anyway.
+const ENDPOINT = 'http://localhost';
 const NAMES = [
   'JIRA_BASE_URL',
   'JIRA_EMAIL',
