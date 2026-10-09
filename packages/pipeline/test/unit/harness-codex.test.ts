@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createCodexHarness, extractResult } from '../../src/harness/codex/index.ts';
+import { createCodexHarness, extractResult, proxyProviderArgs } from '../../src/harness/codex/index.ts';
 import type { HarnessCheckpoint, HarnessResult, HarnessRunOptions } from '../../src/ports/harness.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/harness/fake-cli.mjs', import.meta.url));
@@ -160,5 +160,27 @@ describe('codex harness: budget', () => {
   it('fails with a wall clock reason, not stopped, when the budget ends', async () => {
     const r = await run('hang', opts({ budget: { wallClock: 'PT0.5S', attempts: 3 } }));
     expect(r).toEqual({ outcome: 'failed', reason: 'budget-exceeded: wall clock PT0.5S exceeded', attempts: 1 });
+  });
+});
+
+describe('codex harness: model proxy (#296)', () => {
+  const PROXY = 'http://proxy.internal:8080/openai/v1';
+
+  for (const role of ['fixer', 'review'] as const) {
+    it(`points the ${role} role at the proxy through a provider entry, not only OPENAI_BASE_URL`, async () => {
+      const record = join(scratch, `record-proxy-${role}.json`);
+      await harness.run(workItem, `FAKE_MODE=no-json FAKE_RECORD=${record}`, scratch, opts({ role, env: { OPENAI_BASE_URL: PROXY, OPENAI_API_KEY: 'sk-test-not-real' } }));
+      const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[] };
+      const overrides = seen.argv.filter((_, i) => seen.argv[i - 1] === '-c');
+      expect(overrides).toContain('model_provider="snapwing-proxy"');
+      const provider = overrides.find((o) => o.startsWith('model_providers.snapwing-proxy='));
+      expect(provider).toContain(`base_url = "${PROXY}"`);
+      expect(provider).toContain('env_key = "OPENAI_API_KEY"');
+    });
+  }
+
+  it('adds no provider override without a proxy URL', () => {
+    expect(proxyProviderArgs(undefined)).toEqual([]);
+    expect(proxyProviderArgs('')).toEqual([]);
   });
 });
