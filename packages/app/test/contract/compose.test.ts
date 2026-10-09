@@ -48,6 +48,7 @@ import {
   slackSigned,
   slackWorld,
   JIRA_HOOK_SECRET,
+  OPS_AUTH,
 } from '../fixtures/e2e/world.ts';
 
 /** A harness that must never run in these tests: boot only builds it. */
@@ -171,7 +172,8 @@ describe('compose under snapwing serve', () => {
     expect(health.status).toBe(200);
     expect(await health.json()).toMatchObject({ ok: true });
 
-    const metrics = await (await fetch(`${url}/metrics`)).text();
+    expect((await fetch(`${url}/metrics`)).status).toBe(401);
+    const metrics = await (await fetch(`${url}/metrics`, { headers: OPS_AUTH })).text();
     expect(metrics).toContain('snapwing_jobs_parked 0');
     expect(metrics).toContain('snapwing_jira_drain_paused_seconds{workspace=');
     expect(metrics).toContain('snapwing_slack_drain_paused_seconds{workspace=');
@@ -268,6 +270,9 @@ describe('compose', () => {
 
     const http_ = await composeWith({ ...fakeSecrets(), SLACK_APP_TOKEN: 'xapp-test' }, { SNAPWING_SLACK_TRANSPORT: 'http' }, {});
     expect(http_.routes.map((r) => r.path)).toEqual(expect.arrayContaining(['/slack/events', '/slack/interactivity']));
+    // #272: the chat and Jira routes take about 1 MiB; the capture route keeps the server's limit.
+    const limit = (path: string): number | undefined => http_.routes.find((r) => r.path === path)?.maxBodyBytes;
+    expect([limit('/slack/events'), limit('/webhooks/jira'), limit('/capture')]).toEqual([1024 * 1024, 1024 * 1024, undefined]);
   });
 
   it('requires SLACK_APP_TOKEN when Socket Mode is asked for', async () => {

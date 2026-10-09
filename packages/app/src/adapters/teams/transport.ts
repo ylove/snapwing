@@ -38,7 +38,7 @@
 import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
-import type { Route } from '../../server/http.ts';
+import { SMALL_BODY_BYTES, type Route } from '../../server/http.ts';
 import { ACK_TEXT, ADAPTIVE_CARD_CONTENT_TYPE, type TeamsAck, type TeamsAdapter, type TeamsInbound } from './adapter.ts';
 import { writeTeamsMode, type TeamsMode } from './conversations.ts';
 import { GRAPH_PERMISSIONS, GraphPermissionError, type TeamsGraph } from './graph.ts';
@@ -416,9 +416,10 @@ export function createTeamsRoutes(dispatcher: TeamsDispatcher): Route[] {
       method: 'POST',
       path: TEAMS_MESSAGES_PATH,
       handler: async (req) => toResponse(await dispatcher.dispatch({ headers: req.headers, body: await req.text() })),
+      maxBodyBytes: SMALL_BODY_BYTES,
     },
-    { method: 'POST', path: TEAMS_NOTIFICATIONS_PATH, handler: (req) => dispatcher.notifications(req) },
-    { method: 'POST', path: TEAMS_LIFECYCLE_PATH, handler: (req) => dispatcher.lifecycle(req) },
+    { method: 'POST', path: TEAMS_NOTIFICATIONS_PATH, handler: (req) => dispatcher.notifications(req), maxBodyBytes: SMALL_BODY_BYTES },
+    { method: 'POST', path: TEAMS_LIFECYCLE_PATH, handler: (req) => dispatcher.lifecycle(req), maxBodyBytes: SMALL_BODY_BYTES },
   ];
 }
 

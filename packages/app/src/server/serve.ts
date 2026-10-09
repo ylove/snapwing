@@ -13,6 +13,10 @@
 // production secret (PRODUCTION_SECRETS) is present in the environment or the `.env` file, unless
 // `--allow-local-runner` is passed (#265); whenever it runs with it, it prints a warning to stderr.
 //
+// `/metrics` and the `/healthz` detail take the ops token, `SNAPWING_OPS_TOKEN` (the `.env` file, then the
+// environment; `ops.ts`, #272). Without it `/metrics` answers 401 and `/healthz` gives ok and each
+// platform's mode only; serve says so once at startup.
+//
 // Shutdown on SIGTERM or SIGINT, in order: the API's services stop, the API stops accepting and
 // finishes requests in flight; the worker's services stop, the worker stops polling and drains its
 // running handlers; the state store closes. Exit 0.
@@ -238,8 +242,13 @@ export async function runServe(args: readonly string[], io: CliIo, deps: ServeDe
     if (received === undefined && runApi) {
       const metrics = composed.metrics?.bind(composed);
       const health = composed.health?.bind(composed);
+      const token = (await secrets.get('SNAPWING_OPS_TOKEN').catch(() => '')).trim();
+      if (token === '') log('SNAPWING_OPS_TOKEN is not set: /metrics answers 401 and /healthz gives ok and mode only');
       api = createApiServer({
-        routes: [...opsRoutes({ state: () => state, ...(metrics === undefined ? {} : { metrics }), ...(health === undefined ? {} : { health }) }), ...composed.routes],
+        routes: [
+          ...opsRoutes({ state: () => state, ...(metrics === undefined ? {} : { metrics }), ...(health === undefined ? {} : { health }), ...(token === '' ? {} : { token }) }),
+          ...composed.routes,
+        ],
         port,
         host,
         onError: (e, req) => io.stderr(`snapwing serve: ${req.method} ${req.path} failed: ${errorMessage(e)}`),

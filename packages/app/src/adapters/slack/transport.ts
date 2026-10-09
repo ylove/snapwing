@@ -11,7 +11,7 @@
 // - The transport is chosen by `mode` ('http' | 'socket'); Socket Mode is for development (main 14.4).
 
 import type { ChannelSource } from '@snapwing/pipeline/contracts/incident.ts';
-import type { Route } from '../../server/http.ts';
+import { SMALL_BODY_BYTES, type Route } from '../../server/http.ts';
 import { parsedBodyOf, slackPayloadType, type SlackAdapter, type SlackInbound } from './adapter.ts';
 import type { SlackHome } from './home.ts';
 import type { SlackStatusQuery } from './status-query.ts';
@@ -149,9 +149,9 @@ export function createSlackRoutes(dispatcher: SlackDispatcher): Route[] {
   const handler = async (req: Request): Promise<Response> =>
     toResponse(await dispatcher.dispatch({ transport: 'http', headers: req.headers, body: await req.text() }));
   return [
-    { method: 'POST', path: SLACK_EVENTS_PATH, handler },
-    { method: 'POST', path: SLACK_INTERACTIVITY_PATH, handler },
-    { method: 'POST', path: SLACK_COMMANDS_PATH, handler },
+    { method: 'POST', path: SLACK_EVENTS_PATH, handler, maxBodyBytes: SMALL_BODY_BYTES },
+    { method: 'POST', path: SLACK_INTERACTIVITY_PATH, handler, maxBodyBytes: SMALL_BODY_BYTES },
+    { method: 'POST', path: SLACK_COMMANDS_PATH, handler, maxBodyBytes: SMALL_BODY_BYTES },
   ];
 }
 

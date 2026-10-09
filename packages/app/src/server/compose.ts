@@ -123,6 +123,7 @@ import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts'
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
 import { BUDGET_SPENT_TEXT, countModelCalls, createChatLimits } from '@snapwing/pipeline/policy/limits.ts';
+import type { StatusAccess } from '@snapwing/pipeline/status/ask.ts';
 import { answerMidFlight, handleMidFlightClaim, registerMidFlightJobs, type MidFlightDeps, type MidFlightPorts } from '@snapwing/pipeline/fixer/claims.ts';
 import { registerDigestJobs } from '@snapwing/pipeline/notify/digest.ts';
 import { createHolds } from '@snapwing/pipeline/signals/holds.ts';
@@ -237,7 +238,7 @@ import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/githu
 import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
 import { createChatRouter, personByChatId, type ChatRouter, type ChatSurface } from './chat.ts';
 import { createConfigWatch, DEFAULT_INSTRUCTIONS_FILE, DEFAULT_PLAYBOOK_FILE } from './config-watch.ts';
-import type { Route } from './http.ts';
+import { SMALL_BODY_BYTES, type Route } from './http.ts';
 import type { JobModule } from './worker.ts';
 
 /** The fixer's checkout token: its one repo, write to contents and pull requests, never `workflows`. */
@@ -1508,6 +1509,8 @@ export const compose: ComposeFn = async (deps) => {
       ? undefined
       : (() => {
           const { web: slackWeb, botUserId, workspaceDomain, authorOf, surface } = slack;
+          // A 4.3, A 4.4 (#272): status answers and standing watches for members only, about channels they are in.
+          const access: StatusAccess = { platform: 'slack', membership: (user) => authorOf.membership(user), inChannel: createSlackChannelAccess({ web: slackWeb, clock }) };
           const slackSignals = createSlackSignals({
             deps: signalDeps,
             getMap,
@@ -1519,6 +1522,7 @@ export const compose: ComposeFn = async (deps) => {
             model,
             limits: chatLimits,
             standing: state,
+            access,
             // A 3 (#294): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
             text: textSignalDeps,
             onOutcome: afterSignal,
@@ -1547,8 +1551,7 @@ export const compose: ComposeFn = async (deps) => {
             botUserId,
             authorOf,
             clock,
-            // A 4.3 (#272): members only, about channels they are in.
-            access: { platform: 'slack', membership: (user) => authorOf.membership(user), inChannel: createSlackChannelAccess({ web: slackWeb, clock }) },
+            access,
             onError: (e) => log.error(`slack status query: ${message(e)}`),
           });
           const slackHome = createSlackHome({
@@ -1589,6 +1592,7 @@ export const compose: ComposeFn = async (deps) => {
       ? undefined
       : (() => {
           const { appId, connector, graph, surface, teamsError } = teams;
+          const access = createTeamsStatusAccess({ graph, getMap, clock });
           // Reactions (Graph's diff and the bot's own messages) and thread replies, applied by `handleSignal`
           // with the Slack signals' deps. Its per-message chain is per process: with several API replicas
           // the kv reaction set can still race.
@@ -1604,6 +1608,7 @@ export const compose: ComposeFn = async (deps) => {
             model,
             limits: chatLimits,
             standing: state,
+            access,
             // Teams has no ephemerals: a standing watch is confirmed in the person's personal chat.
             confirmStanding: ({ aadObjectId, text }) => surface.personPost(aadObjectId, text),
             text: textSignalDeps,
@@ -1630,7 +1635,6 @@ export const compose: ComposeFn = async (deps) => {
             onError: teamsError('interactivity'),
             log: (line) => log.info(line),
           });
-          const access = createTeamsStatusAccess({ graph, getMap, clock });
           const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, access, onError: teamsError('status query') });
           const queue = teamsQueueRoutes(
             createTeamsQueue({
@@ -1814,7 +1818,7 @@ export const compose: ComposeFn = async (deps) => {
       statuses: jiraStatuses,
       ...(s.has('JIRA_WEBHOOK_SECRET') ? { secret: secret('JIRA_WEBHOOK_SECRET') } : {}),
       implementationPromptFieldId: customFieldIds['Implementation Prompt'] ?? '',
-    }) },
+    }), maxBodyBytes: SMALL_BODY_BYTES },
     {
       method: 'POST',
       path: GITHUB_WEBHOOK_PATH,

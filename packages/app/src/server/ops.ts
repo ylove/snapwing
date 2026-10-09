@@ -3,15 +3,21 @@
 //   GET /healthz   JSON `{ ok: true, platforms? }` (capture-client's `HealthResult`, which `snapwing
 //                  status` reads, #3) once the state store is open and migrated and answers a query;
 //                  `platforms` is each configured chat platform as compose reports it (`health`).
-//                  503 `{ ok: false, detail }` before. Unauthenticated, like `/metrics`
+//                  503 `{ ok: false, detail }` before. Open to anyone, but only a request with the ops
+//                  token sees the detail: without it each platform is its id, `ok`, and `mode`, and a
+//                  503 has no `detail` (#272)
 //   GET /metrics   Prometheus text format 0.0.4: outbox depth and oldest undrained row age per
 //                  target, the parked job count, reconciler corrections in the last hour, and
 //                  the event-log watermark lag in rows (0 on SQLite);
-//                  503 until the store is open
+//                  503 until the store is open. Only with the ops token: 401 otherwise, and always
+//                  when no token is set
+//
+// The ops token is `SNAPWING_OPS_TOKEN` (`serve.ts`), sent as `Authorization: Bearer <token>`.
 //
 // `openState` runs the migrations before it resolves, so "open" here means "open and migrated".
 // The store is passed as a getter so `snapwing serve` can listen before the store has opened.
 
+import { createHash, timingSafeEqual } from 'node:crypto';
 import type { HealthResult, PlatformHealth } from '@snapwing/capture-client/wire.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { OUTBOX_TARGETS } from '@snapwing/pipeline/contracts/state.ts';
@@ -25,6 +31,17 @@ export interface OpsRoutesOptions {
   readonly metrics?: () => Promise<string>;
   /** Each configured chat platform for `/healthz` (compose's `health`). */
   readonly health?: () => Promise<readonly PlatformHealth[]>;
+  /** The ops token (`SNAPWING_OPS_TOKEN`): `/metrics` and the `/healthz` detail need it. Absent: neither is served. */
+  readonly token?: string;
+}
+
+/** Whether the request carries the ops token as a bearer token; false when there is no token. */
+export function hasOpsToken(req: Request, token: string | undefined): boolean {
+  if (token === undefined || token === '') return false;
+  const match = /^Bearer\s+(\S+)\s*$/i.exec(req.headers.get('authorization') ?? '');
+  if (match?.[1] === undefined) return false;
+  const digest = (v: string): Buffer => createHash('sha256').update(v).digest();
+  return timingSafeEqual(digest(match[1]), digest(token));
 }
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4; charset=utf-8';
@@ -34,17 +51,19 @@ export function opsRoutes(options: OpsRoutesOptions): Route[] {
     {
       method: 'GET',
       path: '/healthz',
-      handler: async () => {
+      handler: async (req) => {
+        const detailed = hasOpsToken(req, options.token);
         const state = options.state();
         if (state === undefined) {
-          return json(503, { ok: false, detail: 'state store not open' });
+          return json(503, { ok: false, ...(detailed ? { detail: 'state store not open' } : {}) });
         }
         try {
           await pingState(state);
         } catch {
-          return json(503, { ok: false, detail: 'state store not answering' });
+          return json(503, { ok: false, ...(detailed ? { detail: 'state store not answering' } : {}) });
         }
-        const platforms = (await options.health?.()) ?? [];
+        const all = (await options.health?.()) ?? [];
+        const platforms = detailed ? all : all.map((p) => ({ id: p.id, ok: p.ok, ...(p.mode === undefined ? {} : { mode: p.mode }) }));
         const body: HealthResult = { ok: true, ...(platforms.length === 0 ? {} : { platforms }) };
         return json(200, body);
       },
@@ -52,7 +71,10 @@ export function opsRoutes(options: OpsRoutesOptions): Route[] {
     {
       method: 'GET',
       path: '/metrics',
-      handler: async () => {
+      handler: async (req) => {
+        if (!hasOpsToken(req, options.token)) {
+          return new Response('unauthorized', { status: 401, headers: { 'content-type': 'text/plain; charset=utf-8', 'www-authenticate': 'Bearer' } });
+        }
         const state = options.state();
         if (state === undefined) {
           return plain(503, 'state store not open');

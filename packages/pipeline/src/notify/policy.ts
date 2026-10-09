@@ -7,6 +7,10 @@
 //   sent a DM when their subscription is a DM one or they are not in the channel (`channelMembers`,
 //   when the caller knows it). A watcher who subscribed from the other chat platform cannot read the
 //   thread, so they get a DM too. A DM goes to the platform the watcher subscribed from.
+//   A standing watcher (surface or `all`) hears only about what a status answer would show them
+//   (`status/ask.ts`, #272): an incident with no chat thread, one they reported, or one in a channel
+//   they are known to be in (`channelMembers`) on the platform they subscribed from. An unknown member
+//   list shows them nothing. A watch on the incident itself was asked for in its thread and always applies.
 // - The playbook's `forcePush` (6.2): an incident whose priority is at least a forced priority, or on
 //   a forced surface, is pushed even with no watchers; the reporter is mentioned with the watchers.
 // - The reporter, on the staging check, always. That is a request, not a notification, so it skips
@@ -113,15 +117,24 @@ export function isForcePush(playbook: PlaybookNotifications, incident: NotifyInc
   );
 }
 
-/** The subscriptions that apply to `incident` (incident, surface, and `all`), one per user, ordered by user. */
-export function watchersOf(incident: NotifyIncident, subscriptions: readonly Subscription[]): Subscription[] {
+/** Whether a standing watcher may hear about `incident` (see the file header); an incident watch always may. */
+export function watcherMayHear(incident: NotifyIncident, s: Subscription, members: ReadonlySet<string> | undefined): boolean {
+  if (s.scopeKind === 'incident' || incident.platform === undefined || s.userId === incident.reporterId) return true;
+  return (s.platform === undefined || s.platform === incident.platform) && members?.has(s.userId) === true;
+}
+
+/**
+ * The subscriptions that apply to `incident` (incident, surface, and `all`) and that it may reach
+ * (`watcherMayHear` over `members`), one per user, ordered by user.
+ */
+export function watchersOf(incident: NotifyIncident, subscriptions: readonly Subscription[], members?: ReadonlySet<string>): Subscription[] {
   const seen = new Map<string, Subscription>();
   for (const s of subscriptions) {
     const applies =
       s.scopeKind === 'all' ||
       (s.scopeKind === 'incident' && s.scopeId === incident.id) ||
       (s.scopeKind === 'surface' && incident.surfaceId !== undefined && s.scopeId === incident.surfaceId);
-    if (!applies) continue;
+    if (!applies || !watcherMayHear(incident, s, members)) continue;
     const prior = seen.get(s.userId);
     // A thread subscription outranks a DM one for the same person: they chose to hear it in the thread.
     if (prior === undefined || (prior.channel === 'dm' && s.channel === 'thread')) seen.set(s.userId, s);
@@ -208,7 +221,7 @@ export function planNotices(input: PlanInput): Notice[] {
   }
 
   const forced = isForcePush(context.playbook, incident);
-  const watchers = watchersOf(incident, context.subscriptions).filter((s) => !(request && s.userId === reporter));
+  const watchers = watchersOf(incident, context.subscriptions, context.channelMembers).filter((s) => !(request && s.userId === reporter));
   const threadUsers: string[] = [];
   const dms: Subscription[] = [];
   for (const s of watchers) {

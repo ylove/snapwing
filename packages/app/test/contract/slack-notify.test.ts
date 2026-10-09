@@ -282,7 +282,7 @@ describe('a standing subscription asked for in a DM (A 4.4)', () => {
     expect((await state.getSubscriptions(incidentId)).filter((s) => s.userId === 'U0PAT')).toEqual([]);
   });
 
-  it('DMs the person on Slack about a Teams incident, which has no Slack thread or status message', async () => {
+  it('tells a standing watcher on Slack nothing about a Teams incident: that channel is never theirs (#272)', async () => {
     const query = createSlackStatusQuery({ web, state, standing: state, workspaceId: WS, getMap: () => Promise.resolve(dmMap), botUserId: 'U0BOT', clock: () => new Date(time) });
     await query.handleEvent(dm('U0PAT', 'keep me posted on the website', 'EvStanding4'));
     slack.messages = [];
@@ -329,8 +329,8 @@ describe('a standing subscription asked for in a DM (A 4.4)', () => {
     const report = await projector().drainOnce();
 
     expect(report.parked).toEqual([]);
-    expect(report.sent).toHaveLength(1);
-    expect(slack.messages).toEqual([{ channel: 'U0PAT', ts: expect.any(String), text: 'WEB-7 is filed.' }]);
+    expect(report.sent).toEqual([]);
+    expect(slack.messages).toEqual([]);
     expect(await state.drainOutbox('slack', 10, WS)).toEqual([]);
     // The Teams thread's own rows stay on the teams queue, with no notify row for the Slack watcher.
     expect((await state.drainOutbox('teams', 10, WS)).filter((r) => r.incidentId === incidentId).map((r) => r.op)).toEqual(['update-status']);

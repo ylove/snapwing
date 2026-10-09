@@ -8,7 +8,10 @@
 //   workspace map by their chat user id (`slackId` or `teamsId`).
 // - Authorization is `policy/authorize.ts` (main 16). A reporter tapping `Fix it` is answered with
 //   `ask-owner`: the platform says "I've asked @owner to approve" and reposts the card mentioning the
-//   owning engineer (main 8.2).
+//   owning engineer (main 8.2). The owner is asked once per incident (#272, a `seenWebhook` mark); a
+//   later such tap is told the owner was already asked, and nothing is reposted.
+// - `Not a bug` (`dismiss` on the fix preview at any level, and on the claim card) takes an engineer or
+//   the incident's reporter, the rule of the `not-a-bug` text signal (#272).
 // - `stop` (any card or status message) and `dismiss` at levels 2 and 3 call `stopIncident`; `Not a bug`
 //   there also appends `not-a-bug` and queues a Jira close to Done with resolution "Won't Do" (main 8.2),
 //   through the outbox in the same transaction.
@@ -92,6 +95,17 @@ export const DENY_TEXT: Readonly<Record<DenyReason, string>> = {
 };
 
 export const NOT_PENDING_TEXT = 'This card already has an answer.';
+
+/** A second `Fix it` from someone who cannot approve, after the owner was asked (#272). */
+export const ALREADY_ASKED_TEXT = 'The owning engineer has already been asked to approve this fix.';
+
+/** `Not a bug` from someone who is neither an engineer nor the reporter (#272). */
+export const NOT_A_BUG_REFUSED = 'Only the reporter or an engineer can mark this not a bug.';
+
+/** The `seenWebhook` scope that marks an incident whose owner was asked to approve. */
+const ASK_OWNER_SCOPE = 'ask-owner';
+/** How long that mark lasts: longer than any incident waits on a fix preview. */
+const ASK_OWNER_TTL_SEC = 30 * 24 * 60 * 60;
 
 const TEXT_SIGNAL_REFUSALS: Readonly<Partial<Record<string, string>>> = {
   'not-allowed': 'Only the person it asked, the reporter, or an engineer can answer this.',
@@ -231,7 +245,11 @@ export function createTapCore(options: TapCoreOptions): TapCore {
   const githubLinked = async (user: string): Promise<boolean> => (options.githubLinked === undefined ? false : await options.githubLinked(user));
   const mark = (outcome: InteractivityOutcome, line: string): TapResult => ({ outcome, reply: { kind: 'mark', line } });
 
-  function askOwner(tap: ChatTap, map: WorkspaceMap, incident: IncidentView | null, reason: DenyReason): TapResult {
+  async function askOwner(tap: ChatTap, map: WorkspaceMap, incident: IncidentView | null, reason: DenyReason): Promise<TapResult> {
+    // Once per incident: a repeated tap asks nobody again and reposts nothing.
+    if (await state.seenWebhook(ASK_OWNER_SCOPE, tap.incidentId, ASK_OWNER_TTL_SEC)) {
+      return refuse({ kind: 'denied', action: tap.action, reason }, ALREADY_ASKED_TEXT);
+    }
     const owner = approverFor(map, platform, incident);
     const ownerId = owner === undefined ? undefined : chatIdOf(owner, platform);
     return {
@@ -396,6 +414,13 @@ export function createTapCore(options: TapCoreOptions): TapCore {
       }
       const card = tap.card;
       if (card === 'pr-ready' || card === 'status' || card === 'mid-flight') return ignored('unknown-action');
+      if (tap.action === 'dismiss' && (card === 'fix-preview' || card === 'claimed')) {
+        const incident = await state.getIncident(tap.incidentId);
+        const reporter = incident?.reporterId;
+        if (actorFor(map, platform, tap.userId).role !== 'engineer' && (reporter === undefined || reporter !== tap.userId)) {
+          return refuse({ kind: 'denied', action: tap.action, reason: 'engineer-required' }, NOT_A_BUG_REFUSED);
+        }
+      }
       if (card === 'fix-preview' && tap.action === 'dismiss') {
         // At levels 2 and 3 the fixer already started and no card is waiting (main 8.2).
         if (levelOf(await state.getIncident(tap.incidentId)) >= 2) return stopTap(tap, map, true);

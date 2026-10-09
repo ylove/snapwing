@@ -35,6 +35,10 @@ export const TEAM_ID = 'T0001';
 /** Fakes only: none of these looks like a real credential. */
 /** The `JIRA_WEBHOOK_SECRET` of the fake secret set; Jira deliveries carry it as `?secret=` (#266). */
 export const JIRA_HOOK_SECRET = 'jira-hook-secret-test';
+/** The `SNAPWING_OPS_TOKEN` of the fake secret set: `/metrics` and the `/healthz` detail take it (#272). */
+export const OPS_TOKEN = 'ops-token-test-0123456789';
+/** The header that carries it. */
+export const OPS_AUTH = { authorization: `Bearer ${OPS_TOKEN}` };
 
 export function fakeSecrets(): Record<string, string> {
   return {
@@ -58,6 +62,7 @@ export function fakeSecrets(): Record<string, string> {
     SNAPWING_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
     SNAPWING_PUBLIC_URL: 'https://snapwing.example.com',
     SNAPWING_FIXER_TOKEN_SECRET: 'test-fixer-token-secret-0123456789abcdef',
+    SNAPWING_OPS_TOKEN: OPS_TOKEN,
     ANTHROPIC_API_KEY: 'test-anthropic-key',
     OPENAI_API_KEY: 'test-openai-key',
     GOOGLE_API_KEY: 'test-google-key',

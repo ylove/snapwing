@@ -105,14 +105,16 @@ describe('snapwing serve', () => {
         },
       ],
     });
-    const run = start(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], compose);
+    const run = start(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], compose, { SNAPWING_OPS_TOKEN: 'ops-token-for-tests-0123456789' });
     const { url } = await run.ready;
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 
     const health = await fetch(`${url}/healthz`);
     expect(health.status).toBe(200);
     expect(await health.json()).toMatchObject({ ok: true });
-    const metrics = await fetch(`${url}/metrics`);
+    // #272: the metrics take the ops token.
+    expect((await fetch(`${url}/metrics`)).status).toBe(401);
+    const metrics = await fetch(`${url}/metrics`, { headers: { authorization: 'Bearer ops-token-for-tests-0123456789' } });
     expect(metrics.status).toBe(200);
     const metricsText = await metrics.text();
     expect(metricsText).toContain('snapwing_jobs_parked 0');
@@ -132,7 +134,17 @@ describe('snapwing serve', () => {
     // The example config uses the local runner, which always warns (ADR 0017).
     expect(run.err).toEqual([`snapwing serve: ${LOCAL_RUNNER_WARNING}`]);
     expect(run.out.join('\n')).toContain('SIGTERM: shutting down');
+    expect(run.out.join('\n')).not.toContain('SNAPWING_OPS_TOKEN is not set');
     await expect(fetch(`${url}/healthz`)).rejects.toThrow();
+  });
+
+  it('says once that /metrics is closed when SNAPWING_OPS_TOKEN is not set', async () => {
+    const run = start(['--port', '0', '--host', '127.0.0.1', '--config', EXAMPLE_CONFIG], EMPTY_COMPOSE);
+    const { url } = await run.ready;
+    expect((await fetch(`${url}/metrics`, { headers: { authorization: 'Bearer anything' } })).status).toBe(401);
+    run.signals.emit('SIGTERM');
+    expect(await run.code).toBe(0);
+    expect(run.out.filter((l) => l.includes('SNAPWING_OPS_TOKEN is not set'))).toHaveLength(1);
   });
 
   it('runs the worker alone with --worker and still closes the store on SIGTERM', async () => {
