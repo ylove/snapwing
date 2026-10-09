@@ -3,6 +3,15 @@
 // contents), channel files (SharePoint through Graph) and personal-chat attachments (`contentUrl`
 // with the bot token). Mirrors `adapters/slack/reader.ts`.
 //
+// Which token goes where (#269):
+// - The bot token goes only to a Bot Connector attachment (`.../v3/attachments/{id}/views/{view}`) on an
+//   exact Bot Connector host (`TEAMS_SERVICE_HOSTS`, plus a configured service URL's host). Such a URL
+//   reaches the loader only from an activity's own attachments: a message read back from Graph never yields
+//   one (`toSourceMessage` drops it), so Graph content is read with the Graph token or not at all.
+// - An inline image (a Graph hosted content) is kept only when its URL names the message being read: the
+//   same team, channel, and message (a reply's URL names its root and itself). One naming any other message
+//   is dropped, so a message body cannot pull another conversation's image into the context.
+//
 // Without the RSC grant (`GraphPermissionError`) the reader reads nothing around the anchor; the
 // context source says so through `limitation`, and the scope preview reports it (15.2 history row).
 
@@ -12,6 +21,7 @@ import type { LoadImage, LoadRecording } from '@snapwing/pipeline/context/vision
 import type { Attachment, CanonicalIncidentPayload, SourceMessage } from '@snapwing/pipeline/contracts/incident.ts';
 import type { ContextLimitation, ContextSource } from '@snapwing/pipeline/engine/deps.ts';
 import type { ImageMimeType } from '@snapwing/pipeline/ports/model.ts';
+import { onTeamsServiceHost, teamsServiceHosts } from './connector.ts';
 import { GRAPH_BASE_URL, GraphApiError, GraphPermissionError, type GraphAttachment, type GraphMessage, type TeamsGraph } from './graph.ts';
 
 const IMAGE_TYPES: readonly string[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
@@ -28,8 +38,9 @@ const EXTENSION_TYPES: Readonly<Record<string, string>> = {
 };
 /** Graph returns a channel's messages newest first, 50 a page; the graph client caps the pages. */
 const PAGE_SIZE = 50;
-/** Hosts a personal-chat `contentUrl` may name before the bot token is sent to it. */
-const BOT_ATTACHMENT_HOSTS: readonly string[] = ['smba.trafficmanager.net', '.botframework.com', '.skype.com', '.microsoft.com'];
+/** A Bot Connector attachment's path (`{serviceUrl}v3/attachments/{id}/views/{view}`): the only URL the bot token is sent to. */
+const BOT_ATTACHMENT_PATH = /\/v3\/attachments\/[^/]+\/views\/[^/]+$/;
+const GRAPH_ORIGIN = new URL(GRAPH_BASE_URL).origin;
 
 /** Teams has no team in a personal chat or an unmapped channel: nothing to read around the anchor. */
 export class TeamsContextError extends Error {
@@ -47,7 +58,7 @@ export interface TeamsChatReaderOptions {
 export interface TeamsContextSourceOptions extends TeamsChatReaderOptions {
   /** The bot's Bot Framework token, for personal-chat attachments. Absent means those are not loaded. */
   botToken?: () => string | Promise<string>;
-  /** Extra hosts (the activity's `serviceUrl` host) that may receive the bot token. */
+  /** Exact hosts beside `TEAMS_SERVICE_HOSTS` that may receive the bot token (a configured `TEAMS_SERVICE_URL`'s host). */
   botHosts?: readonly string[];
   fetch?: typeof fetch;
 }
@@ -121,18 +132,73 @@ function fileAttachment(a: GraphAttachment): Attachment | undefined {
   return mimeType === undefined ? { kind, url: a.contentUrl } : { kind, url: a.contentUrl, mimeType };
 }
 
-export function toSourceMessage(m: GraphMessage, replyCount?: number): SourceMessage {
+/** Where a channel message lives: the team's group id and the channel. */
+export interface MessagePlace {
+  teamId: string;
+  channelId: string;
+}
+
+/** The team, channel, message, reply, and content a Graph hosted-content URL names; undefined for any other URL. */
+function hostedPartsOf(url: string): { team: string; channel: string; message: string; reply?: string } | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.origin !== GRAPH_ORIGIN) return undefined;
+  const found = HOSTED_PARTS.exec(parsed.pathname);
+  if (found === null) return undefined;
+  try {
+    const [, team, channel, message, reply] = found.map((p) => (p === undefined ? p : decodeURIComponent(p)));
+    if (team === undefined || channel === undefined || message === undefined) return undefined;
+    return { team, channel, message, ...(reply === undefined ? {} : { reply }) };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * True when a hosted-content URL names the message being read (#269): its team and channel, and the
+ * message itself (a root post), or its root and itself (a reply). Anything else is another message's image.
+ */
+function namesMessage(url: string, at: MessagePlace | undefined, messageId: string, parentId: string | undefined): boolean {
+  const parts = hostedPartsOf(url);
+  if (parts === undefined || at === undefined) return false;
+  if (parts.team.toLowerCase() !== at.teamId.toLowerCase() || parts.channel !== at.channelId) return false;
+  const reply = parentId !== undefined && parentId !== '' && parentId !== messageId;
+  return reply ? parts.message === parentId && parts.reply === messageId : parts.message === messageId && parts.reply === undefined;
+}
+
+/** A Bot Connector attachment URL, on any host: the bot token's kind of URL, which a Graph read never passes on. */
+function isBotAttachment(url: string): boolean {
+  try {
+    return BOT_ATTACHMENT_PATH.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A Graph message as a source message. `at` is where it was read from; an inline image or attachment that
+ * is a hosted content of any other message is dropped, as is anything shaped like a Bot Connector
+ * attachment (the bot token's), so nothing read back from Graph is ever fetched with the bot token.
+ */
+export function toSourceMessage(m: GraphMessage, at: MessagePlace | undefined, replyCount?: number): SourceMessage {
   const { text, mentions } = bodyToText(m);
   const attachments: Attachment[] = [];
+  const parentId = m.replyToId ?? undefined;
   if (m.body?.contentType === 'html') {
     for (const match of m.body.content.matchAll(IMG_SRC)) {
-      const src = match[1];
-      if (src !== undefined && HOSTED_CONTENT.test(decodeEntities(src))) attachments.push({ kind: 'image', url: decodeEntities(src) });
+      const src = match[1] === undefined ? undefined : decodeEntities(match[1]);
+      if (src !== undefined && HOSTED_CONTENT.test(src) && namesMessage(src, at, m.id, parentId)) attachments.push({ kind: 'image', url: src });
     }
   }
   for (const a of m.attachments ?? []) {
     const file = fileAttachment(a);
-    if (file !== undefined) attachments.push(file);
+    if (file === undefined || isBotAttachment(file.url)) continue;
+    if (hostedPartsOf(file.url) !== undefined && !namesMessage(file.url, at, m.id, parentId)) continue;
+    attachments.push(file);
   }
   const message: SourceMessage = {
     id: m.id,
@@ -180,7 +246,7 @@ export function createTeamsChatReader(graph: TeamsGraph, options: TeamsChatReade
           const t = Date.parse(m.createdDateTime);
           return t >= from && t <= to;
         })
-        .map((m) => toSourceMessage(m, replyCountOf(m)));
+        .map((m) => toSourceMessage(m, { teamId, channelId }, replyCountOf(m)));
       return nearestMidpoint(topLevel, oldest, latest, limit);
     },
 
@@ -192,7 +258,7 @@ export function createTeamsChatReader(graph: TeamsGraph, options: TeamsChatReade
         if (replies.length === 0) return [];
         const parent = await graph.message(teamId, channelId, parentId);
         const byId = new Map<string, SourceMessage>();
-        for (const m of [parent, ...replies]) byId.set(m.id, toSourceMessage(m, m.id === parentId ? replies.length : undefined));
+        for (const m of [parent, ...replies]) byId.set(m.id, toSourceMessage(m, { teamId, channelId }, m.id === parentId ? replies.length : undefined));
         return [...byId.values()].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp) || a.id.localeCompare(b.id));
       } catch (err) {
         if (err instanceof GraphPermissionError) return [];
@@ -236,21 +302,27 @@ function isDirect(payload: CanonicalIncidentPayload, teamId: string | undefined)
   return kind === 'personal' || (teamId === undefined && !payload.context.channelId.includes('@thread.'));
 }
 
-/** A personal-chat message has no Graph read; the activity the adapter normalized is the message. */
-function directMessage(payload: CanonicalIncidentPayload): SourceMessage {
+/**
+ * A personal-chat message has no Graph read; the activity the adapter normalized is the message. Its own
+ * attachments are the only URLs the bot token may go to; a hosted content in them must name this message
+ * (`at` is where it lives; a personal chat has no team, so none does).
+ */
+function directMessage(payload: CanonicalIncidentPayload, at?: MessagePlace, parentId?: string): SourceMessage {
   const raw = payload.context.rawPayloadSnapshot;
   const attachments: Attachment[] = [];
   const list = raw['attachments'];
+  const messageId = anchorIdOf(payload) ?? firstString(raw['activityId'], raw['id']) ?? payload.eventId;
   for (const item of Array.isArray(list) ? list : []) {
     const a = record(item);
     const contentType = firstString(a['contentType']) ?? '';
     const url = firstString(a['contentUrl'], record(a['content'])['downloadUrl']);
     if (url === undefined) continue;
+    if (hostedPartsOf(url) !== undefined && !namesMessage(url, at, messageId, parentId)) continue;
     const mimeType = contentType.includes('/') && !contentType.startsWith('application/vnd.microsoft.teams') ? contentType : extensionType(firstString(a['name']) ?? new URL(url).pathname);
     attachments.push({ kind: mimeType?.startsWith('image/') === true ? 'image' : 'file', url, ...(mimeType === undefined ? {} : { mimeType }) });
   }
   return {
-    id: anchorIdOf(payload) ?? firstString(raw['activityId'], raw['id']) ?? payload.eventId,
+    id: messageId,
     authorId: (payload.anchorAuthor ?? payload.reporter).id,
     text: payload.anchorText,
     timestamp: new Date(firstString(raw['timestamp']) ?? payload.timestamp).toISOString(),
@@ -278,13 +350,12 @@ const HOSTED_PARTS =
 
 /**
  * A downloader for an attachment URL: Graph for a hosted content (inline image) or a SharePoint file,
- * the bot token for a personal-chat `contentUrl` on a Bot Framework host. Undefined for anything else
- * (the token never goes to a host the loader was not told about).
+ * the bot token for a Bot Connector attachment (`.../v3/attachments/{id}/views/{view}`) on an exact Bot
+ * Connector host. Undefined for anything else: the token never goes to a host or a path outside that list.
  */
 function createDownloader(graph: TeamsGraph, options: TeamsContextSourceOptions): (url: string) => Promise<Uint8Array | undefined> {
   const doFetch: typeof fetch = options.fetch ?? ((input, init) => fetch(input, init));
-  const graphOrigin = new URL(GRAPH_BASE_URL).origin;
-  const botHosts = [...BOT_ATTACHMENT_HOSTS, ...(options.botHosts ?? [])];
+  const botHosts = teamsServiceHosts(options.botHosts);
   return async (url) => {
     let parsed: URL;
     try {
@@ -293,16 +364,15 @@ function createDownloader(graph: TeamsGraph, options: TeamsContextSourceOptions)
       return undefined;
     }
     if (parsed.protocol !== 'https:') return undefined;
-    const hosted = parsed.origin === graphOrigin ? HOSTED_PARTS.exec(parsed.pathname) : null;
+    const hosted = parsed.origin === GRAPH_ORIGIN ? HOSTED_PARTS.exec(parsed.pathname) : null;
     if (hosted !== null) {
       const [, team, channel, message, reply, content] = hosted.map((p) => (p === undefined ? p : decodeURIComponent(p)));
       if (team === undefined || channel === undefined || message === undefined || content === undefined) return undefined;
       return graph.hostedContent(team, channel, message, content, reply);
     }
     if (parsed.hostname.endsWith('.sharepoint.com')) return graph.downloadAttachment(url);
-    const host = parsed.hostname.toLowerCase();
-    const allowed = botHosts.some((h) => (h.startsWith('.') ? host.endsWith(h) : host === h));
-    if (!allowed || options.botToken === undefined) return undefined;
+    if (!onTeamsServiceHost(parsed, botHosts) || !BOT_ATTACHMENT_PATH.test(parsed.pathname) || parsed.username !== '' || parsed.password !== '') return undefined;
+    if (options.botToken === undefined) return undefined;
     const res = await doFetch(url, { headers: { Authorization: `Bearer ${await options.botToken()}`, Accept: '*/*' }, redirect: 'error' });
     return res.ok ? new Uint8Array(await res.arrayBuffer()) : undefined;
   };
@@ -370,11 +440,12 @@ export function createTeamsContextSource(graph: TeamsGraph, options: TeamsContex
       const id = anchorIdOf(payload);
       if (id === undefined) throw new GraphApiError(0, 'AnchorMissing', 'the payload names no Teams message');
       const parent = parentOf(payload);
+      const at = { teamId, channelId };
       try {
-        return { channelId, message: toSourceMessage(await fetchAnchor(teamId, channelId, id, parent)) };
+        return { channelId, message: toSourceMessage(await fetchAnchor(teamId, channelId, id, parent), at) };
       } catch (err) {
         // No RSC grant: the activity itself is the message (main 15.2), with nothing around it.
-        if (err instanceof GraphPermissionError) return { channelId, message: directMessage(payload) };
+        if (err instanceof GraphPermissionError) return { channelId, message: directMessage(payload, at, parent) };
         throw err;
       }
     },

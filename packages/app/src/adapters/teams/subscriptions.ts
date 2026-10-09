@@ -9,7 +9,9 @@
 //   does not name a team, finds its team. `since` is when the team's notifications started: when a
 //   subscription was asked for with no state kept, carried across renewals and recreations, so the signals
 //   never count a reaction older than it on a message they first see (`subscriptionSince`).
-// - `handleValidation(req)` answers Graph's `validationToken` handshake. `verifyNotification(body)` keeps
+// - `handleValidation(req)` answers Graph's `validationToken` handshake: the token echoed as `text/plain`
+//   with `nosniff`, and only when it is at most `MAX_VALIDATION_TOKEN` characters of printable ASCII (a 400
+//   otherwise), so the route never reflects markup or a large body (#269). `verifyNotification(body)` keeps
 //   only notifications whose `clientState` matches (constant time) and drops the rest, forged or not.
 //   `handleLifecycle(body)` runs the verified lifecycle events: `reauthorizationRequired` renews,
 //   `subscriptionRemoved` recreates, `missed` is reported so the caller can resync.
@@ -25,6 +27,11 @@ import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { readTeamsModeMark, writeTeamsMode } from './conversations.ts';
 import { GraphApiError, GraphPermissionError, GraphRateLimitError, type GraphSubscription, type TeamsGraph } from './graph.ts';
+
+/** The longest `validationToken` echoed back; Graph's are far shorter. */
+export const MAX_VALIDATION_TOKEN = 1024;
+const PRINTABLE = /^[\x20-\x7e]+$/;
+const TEXT_HEADERS = { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' } as const;
 
 /** Graph caps a channel-message subscription at 60 minutes. */
 export const SUBSCRIPTION_MAX_MS = 60 * 60 * 1000;
@@ -281,7 +288,8 @@ export function createTeamsSubscriptions(options: TeamsSubscriptionsOptions): Te
     handleValidation(req) {
       const token = new URL(req.url).searchParams.get('validationToken');
       if (token === null) return undefined;
-      return new Response(token, { status: 200, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+      if (token.length > MAX_VALIDATION_TOKEN || !PRINTABLE.test(token)) return new Response('', { status: 400, headers: TEXT_HEADERS });
+      return new Response(token, { status: 200, headers: TEXT_HEADERS });
     },
     verifyNotification(body) {
       if (typeof body !== 'object' || body === null) return [];

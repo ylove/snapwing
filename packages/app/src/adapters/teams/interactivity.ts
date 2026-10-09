@@ -37,6 +37,13 @@
 // (the transport says so, `TeamsInvokeBudget`) goes to the tapper's personal chat, since its card is
 // never shown.
 //
+// What a tap acts on comes from Snapwing's own card, never from the invoke alone (#269; main 16): the
+// client sends the button's `verb` and `data`, so a tap names its card (`replyToId`, in its conversation)
+// and the remembered card's button with that verb and incident supplies the data the tap acts on (the
+// incident, a mid-flight run, a text-signal message, the clarify mark). With no remembered button to read,
+// the incident the data names must live in the conversation tapped (its channel or chat), or the tap is
+// a queue card's (`stop`, `merge`) in the tapper's personal chat. Any other tap is ignored with one log line.
+//
 // An invoke does not carry the card it came from, so `rememberTeamsCards` wraps the Bot Connector client
 // and keeps every card with an `Action.Execute` button it posts or edits in kv
 // `teams-card:{conversation}:{activityId}` (30 days); compose wraps the connector the adapter and the
@@ -87,6 +94,7 @@ import {
   renderText,
   textBlock,
   type AdaptiveCard,
+  type ExecuteAction,
   type MentionEntity,
   type MentionFor,
 } from './cards/elements.ts';
@@ -222,6 +230,8 @@ export interface TeamsInteractivityOptions {
   onOutcome?: (outcome: TeamsTapOutcome) => void;
   /** Errors from best-effort work (the repost, remembering cards, an accepted tap's edit, the personal chat). */
   onError?: (error: unknown) => void;
+  /** One line for each tap ignored because its data does not match the card or conversation it came from. */
+  log?: (line: string) => void;
 }
 
 /** The transport's `TeamsInteractivity` plus `handleInvoke` for tests. */
@@ -334,6 +344,12 @@ const VERB_CARDS: Readonly<Record<string, CardKind>> = {
 /** The verbs the shared rules route before the card matters (status message, PR card, fix preview at levels 2 and 3). */
 const ROUTED_VERBS: ReadonlySet<string> = new Set(['stop', 'merge', 'request_changes', 'revert']);
 
+/** The queue card's buttons (`queue.ts`): it is never remembered, and it lives in the tapper's personal chat. */
+const QUEUE_VERBS: ReadonlySet<string> = new Set(['stop', 'merge']);
+
+/** A value from the invoke, safe on one log line. */
+const logSafe = (text: string): string => text.replace(/[^\w:.@;=-]/g, '?').slice(0, 80);
+
 /** The resolution question's verbs (A 3, `cards/signals.ts`). */
 const RESOLUTION_VERBS: readonly ResolutionChoice[] = ['close', 'keep-open'];
 /** The scope-change card's verbs (A 3, `cards/signals.ts`). */
@@ -392,6 +408,7 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
   const clock = options.clock ?? (() => new Date());
   const onError = options.onError ?? (() => undefined);
   const onOutcome = options.onOutcome ?? (() => undefined);
+  const log = options.log ?? (() => undefined);
   const cards = options.cardStore ?? createKvTeamsCardStore(options.cache);
   const core = createTapCore({
     platform: 'teams',
@@ -415,6 +432,28 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
       onError(err);
       return undefined;
     }
+  }
+
+  /**
+   * The tap with the data it acts on taken from Snapwing's own card (#269): the remembered card's button
+   * with the tapped verb and the named incident gives every field. With no such button, the invoke's data
+   * stands only when the incident it names lives in the tapped conversation, or the tap is a queue card's
+   * in the tapper's personal chat. A string is why the tap is ignored.
+   */
+  async function boundTap(inv: Invoke, stored: AdaptiveCard | undefined): Promise<Invoke | string> {
+    const buttons = (stored?.actions ?? []).filter((a): a is ExecuteAction => a.type === 'Action.Execute' && a.verb === inv.verb);
+    if (buttons.length > 0) {
+      const button = buttons.find((a) => rec(a.data)['incidentId'] === inv.incidentId);
+      if (button === undefined) return 'the card it tapped is about another incident';
+      const data: Record<string, string> = {};
+      for (const [k, v] of Object.entries(rec(button.data))) if (typeof v === 'string') data[k] = v;
+      return { ...inv, data, incidentId: data['incidentId'] ?? inv.incidentId };
+    }
+    const incident = await state.getIncident(inv.incidentId);
+    if (incident === null) return 'no such incident';
+    if (incident.channelId !== undefined && incident.channelId === splitConversationId(inv.conversationId).channelId) return inv;
+    if (inv.personal && QUEUE_VERBS.has(inv.verb)) return inv;
+    return 'the incident is not in the conversation tapped';
   }
 
   /** With no remembered card: `dismiss` is the claim card's while the incident waits on it (A 2.1), else the fix preview's. */
@@ -622,8 +661,13 @@ export function createTeamsInteractivity(options: TeamsInteractivityOptions): Te
     return handled(tapped, await markCard(inv, stored, line, mentions));
   }
 
-  async function handle(inv: Invoke): Promise<Handled> {
-    const stored = await storedCard(inv);
+  async function handle(tapped: Invoke): Promise<Handled> {
+    const stored = await storedCard(tapped);
+    const inv = await boundTap(tapped, stored);
+    if (typeof inv === 'string') {
+      log(`teams tap ignored: ${logSafe(tapped.verb)} on incident ${logSafe(tapped.incidentId)} by ${logSafe(tapped.userId)} in ${logSafe(tapped.conversationId)}: ${inv}`);
+      return handled({ kind: 'ignored', reason: 'tap-mismatch' }, undefined);
+    }
     const card = await cardFor(inv, stored);
     if (card === 'text-signal') return textSignalTap(inv, stored);
     if (card === 'answered') {

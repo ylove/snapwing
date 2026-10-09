@@ -22,7 +22,8 @@ export const LOGIN = 'https://login.microsoftonline.com';
 export const METADATA_URL = 'https://login.botframework.com/v1/.well-known/openidconfiguration';
 export const JWKS_URL = 'https://login.botframework.com/v1/.well-known/keys';
 export const ACCESS_TOKEN = 'test-teams-access-token';
-export const TEAMS_SECRETS = { TEAMS_APP_ID: APP_ID, TEAMS_APP_PASSWORD: APP_PASSWORD, TEAMS_TENANT_ID: TENANT };
+/** The fake Connector is at `SERVICE_URL`; naming it lets the service URL allowlist admit its host (#269). */
+export const TEAMS_SECRETS = { TEAMS_APP_ID: APP_ID, TEAMS_APP_PASSWORD: APP_PASSWORD, TEAMS_TENANT_ID: TENANT, TEAMS_SERVICE_URL: SERVICE_URL };
 /** The subscription's subscriptionId in the notifications the tests hand in. */
 export const SUBSCRIPTION_ID = '3c1f6a2e-0000-4000-8000-00000000f001';
 

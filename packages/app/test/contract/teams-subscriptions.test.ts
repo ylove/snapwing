@@ -8,6 +8,7 @@ import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/he
 import { GRAPH_BASE_URL, createTeamsGraph } from '../../src/adapters/teams/graph.ts';
 import { readTeamsMode, teamsModeKey, writeTeamsMode } from '../../src/adapters/teams/conversations.ts';
 import {
+  MAX_VALIDATION_TOKEN,
   REDUCED_RETRY_MS,
   SUBSCRIPTION_LIFETIME_MS,
   createTeamsSubscriptions,
@@ -275,6 +276,22 @@ describe('validation and clientState', () => {
     expect(res?.headers.get('content-type')).toContain('text/plain');
     expect(await res?.text()).toBe('Validation: Testing client application reachability');
     expect(subs.handleValidation(new Request(NOTIFY, { method: 'POST' }))).toBeUndefined();
+  });
+
+  it('echoes at most MAX_VALIDATION_TOKEN printable characters, with nosniff; anything else is a 400 (#269)', async () => {
+    const answer = (token: string) => subs.handleValidation(new Request(`${NOTIFY}?validationToken=${encodeURIComponent(token)}`, { method: 'POST' }));
+    const longest = 'v'.repeat(MAX_VALIDATION_TOKEN);
+    const ok = answer(longest);
+    expect(ok?.status).toBe(200);
+    expect(await ok?.text()).toBe(longest);
+    expect(ok?.headers.get('x-content-type-options')).toBe('nosniff');
+    for (const token of [`${longest}v`, '<b>\r\n</b>', 'tab\there', '\u202eevil', '']) {
+      const res = answer(token);
+      expect(res?.status).toBe(400);
+      expect(await res?.text()).toBe('');
+      expect(res?.headers.get('content-type')).toContain('text/plain');
+      expect(res?.headers.get('x-content-type-options')).toBe('nosniff');
+    }
   });
 
   const change = (clientState: unknown, id = 'sub-1', resource = "teams('T1')/channels('C1')/messages('M1')") => ({
