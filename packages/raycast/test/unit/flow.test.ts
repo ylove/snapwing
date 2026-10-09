@@ -92,6 +92,18 @@ describe('responses', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('tracked: opens only an https URL', async () => {
+    const step = {
+      kind: 'choose',
+      captureId: 'c2',
+      response: { kind: 'tracked', captureId: 'c2', issueKey: 'WEB-1', summary: 's', status: 'open', url: 'file:///etc/passwd' },
+    } as unknown as Parameters<typeof choose>[1];
+    vi.mocked(open).mockClear();
+    await choose(deps(), step, 'open');
+    await choose(deps(), { ...step, response: { ...(step as { response: object }).response, url: 'http://jira.example/WEB-1' } } as never, 'open');
+    expect(open).not.toHaveBeenCalled();
+  });
+
   it('new: shows the server wording, and the answer files it', async () => {
     vi.mocked(getSelectedText).mockResolvedValue('boom');
     json(200, {

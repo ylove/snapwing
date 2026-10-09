@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile, mkdir, chmod } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -83,6 +83,25 @@ describe('saveClientConfig', () => {
     await chmod(clientConfigPath(home), 0o644);
     await saveClientConfig({ endpoint: 'http://localhost:3000', token: 'secret' }, { home });
     expect((await stat(clientConfigPath(home))).mode & 0o777).toBe(0o600);
+  });
+
+  it('writes through a temp file in the same directory, leaving no stray files', async () => {
+    await saveClientConfig({ endpoint: 'https://a.example', token: 'one' }, { home });
+    await saveClientConfig({ endpoint: 'https://a.example', token: 'two' }, { home });
+    expect(await readdir(join(home, '.config', 'snapwing'))).toEqual(['client.json']);
+    expect(JSON.parse(await readFile(clientConfigPath(home), 'utf8'))).toEqual({ endpoint: 'https://a.example', token: 'two' });
+  });
+
+  it('refuses an http endpoint unless the host is loopback', async () => {
+    for (const bad of ['http://example.com', 'http://10.0.0.5:3000', 'http://localhost.evil.test']) {
+      await expect(saveClientConfig({ endpoint: bad, token: 't' }, { home })).rejects.toBeInstanceOf(CaptureConfigError);
+    }
+    for (const ok of ['http://localhost:1', 'http://127.0.0.1:1', 'http://[::1]:1', 'https://example.com']) {
+      await expect(saveClientConfig({ endpoint: ok, token: 't' }, { home })).resolves.toBeTypeOf('string');
+    }
+    await expect(loadClientConfig({ env: { SNAPWING_URL: 'http://example.com', SNAPWING_TOKEN: 't' }, home })).rejects.toBeInstanceOf(
+      CaptureConfigError,
+    );
   });
 
   it('refuses a bad endpoint or an empty token', async () => {
