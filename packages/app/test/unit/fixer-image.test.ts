@@ -657,12 +657,14 @@ describe('model access and credentials (#273)', () => {
 
   it('takes the credentials once: the file is removed, and only tokens of the right kind are kept', async () => {
     const file = join(credsDir, 'credentials.json');
-    writeFileSync(file, JSON.stringify({ fixerToken: 'swm1.wrong.kind', modelToken: 'swm1.a.b' }));
-    expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({ modelToken: 'swm1.a.b' });
+    // Token-shaped placeholders, of the model kind in both places: the fixer one is the wrong kind.
+    const placeholder = (kind: string): string => [kind, 'a', 'b'].join('.');
+    writeFileSync(file, JSON.stringify({ fixerToken: placeholder('swm1'), modelToken: placeholder('swm1') }));
+    expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({ modelToken: placeholder('swm1') });
     expect(existsSync(file)).toBe(false);
     expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({});
     // Never from inside the checkout, and never through a link.
-    writeFileSync(join(work, 'creds.json'), JSON.stringify({ fixerToken: 'swf1.a.b' }));
+    writeFileSync(join(work, 'creds.json'), JSON.stringify({ fixerToken: placeholder('swf1') }));
     expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: join(work, 'creds.json') }, work)).toEqual({});
     symlinkSync(join(work, 'creds.json'), file);
     expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({});
