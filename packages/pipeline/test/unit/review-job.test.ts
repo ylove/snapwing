@@ -19,6 +19,7 @@ import type { FixerJob, ReviewRunJob, ReviewRunner, ReviewRunResult, RunnerPort,
 import type { OpenedState } from '../../src/ports/state.ts';
 import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
 import {
+  AGENT_CONFIG_PATHS,
   combine,
   registerReviewJobs,
   REVIEW_CHECK_NAME,
@@ -1010,6 +1011,38 @@ describe(`review agent on a runner with a boundary (${TEST_DIALECT}; ADR 0017)`,
     const failed = await lastOf('review-failed');
     expect(failed?.payload.verdict).toBe('request-changes');
     expect(await storedVerdict(failed?.payload.review)).toMatchObject({ verdict: 'request-changes', reasons: ['Handle the empty cart in the total'] });
+  });
+
+  it('the agent\'s tree, on a runner or on the host, holds none of the checkout\'s agent CLI configuration (#263)', async () => {
+    const config = { '.claude/settings.json': '{}\n', '.codex/config.toml': '\n', '.gemini/settings.json': '{}\n', '.mcp.json': '{}\n' };
+    const seen = (dir: string): string[] => AGENT_CONFIG_PATHS.filter((p) => existsSync(join(dir, p)));
+    const visible: string[][] = [];
+
+    const runner = new FakeReviewingRunner();
+    const w = await setup({}, runner);
+    await fixerOpensPr(w, { ...FIXED, ...config });
+    runner.acts.push(async (job) => {
+      visible.push(seen(job.checkout));
+      await writeFile(join(job.checkout, job.verdictFile), JSON.stringify(REQUEST_CHANGES));
+    });
+    await review(w);
+    expect(visible).toEqual([[]]);
+    expect(runner.reviews[0]?.input).toContain('.gemini/settings.json');
+    expect(runner.reviews[0]?.total).toBe('fixed\n');
+  });
+
+  it('on the host too, the review agent\'s working tree holds none of the checkout\'s agent CLI configuration (#263)', async () => {
+    const config = { '.claude/settings.json': '{}\n', '.codex/config.toml': '\n', '.gemini/settings.json': '{}\n', '.mcp.json': '{}\n' };
+    const visible: string[][] = [];
+    const w = await setup();
+    await fixerOpensPr(w, { ...FIXED, ...config });
+    w.harness.script.push(async (call) => {
+      visible.push(AGENT_CONFIG_PATHS.filter((p) => existsSync(join(call.workdir, p))));
+      await writeFile(call.opts.env?.[REVIEW_FILE_ENV] ?? '', JSON.stringify(REQUEST_CHANGES));
+    });
+    await review(w);
+    expect(visible).toEqual([[]]);
+    expect(w.harness.calls[0]?.input).toContain('.codex/config.toml');
   });
 
   it('the verdict is read before the first test run: PR code in a test run that writes a verdict changes nothing (#263)', async () => {

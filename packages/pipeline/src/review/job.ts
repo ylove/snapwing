@@ -17,7 +17,8 @@
 //   2. Runs the configured review harness with `role: 'review'`. Its input is the request's
 //      constraints and the PR diff against the merge base, nothing else (prompts/review.xml). The
 //      agent reads the checkout and never runs the PR's code (#263): the built-in adapters give it
-//      read-only tools, and its verdict, the end of its final message, reaches `SNAPWING_REVIEW_FILE`
+//      read-only tools, its tree holds none of the checkout's agent CLI configuration
+//      (`AGENT_CONFIG_PATHS`), and its verdict, the end of its final message, reaches `SNAPWING_REVIEW_FILE`
 //      only after it has exited, written by the adapter (or the image's wrapper), never by anything
 //      the agent ran. `parseReviewVerdict` validates the file. Its environment carries no git
 //      credential: a reviewer never pushes. A harness that fails, stops, throws, or writes no valid
@@ -100,6 +101,12 @@ export const REVIEW_VERDICT_PATH = `.git/${SNAPWING_GIT_DIR}/verdict.json`;
 export const DEFAULT_REVIEW_HARNESS: HarnessChoice = Object.freeze({ adapter: 'claude-code' });
 /** Largest verdict file read back from an isolated review run, in bytes. */
 export const MAX_VERDICT_BYTES = 1024 * 1024;
+/**
+ * Agent CLI configuration a checkout may carry (MCP servers, hooks, extensions, tool commands). The
+ * review agent's working tree never holds it, so no review CLI configures itself from the pull
+ * request (#263); the diff still shows any change to it.
+ */
+export const AGENT_CONFIG_PATHS: readonly string[] = Object.freeze(['.claude', '.codex', '.gemini', '.mcp.json']);
 /** `createdBy` of the stored review artifacts. */
 export const REVIEW_AGENT = 'review-agent';
 /** The fixer attempt whose failed review escalates instead of retrying (main 11.1: retry once). */
@@ -433,6 +440,8 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
 
   let outcome: string;
   try {
+    // The proof reads commits, never this worktree, so the configuration can go from it too.
+    await withoutAgentConfig(prepared.workdir);
     const result = await deps.harness.run(input.workItem, reviewInput, prepared.workdir, {
       role: 'review',
       budget: reviewBudget(deps),
@@ -456,6 +465,11 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
   return parsed.ok ? parsed.verdict : { failure: `the review agent's verdict is invalid: ${parsed.error.message}` };
 }
 
+/** Removes `AGENT_CONFIG_PATHS` from a review agent's working tree (a link is removed, never followed). */
+async function withoutAgentConfig(tree: string): Promise<void> {
+  for (const path of AGENT_CONFIG_PATHS) await rm(join(tree, path), { recursive: true, force: true });
+}
+
 /**
  * Runs the review harness inside the runner's boundary. The tree is a self-contained copy at the
  * head; afterwards nothing here runs in it, and only the verdict file is read back from it.
@@ -471,6 +485,7 @@ async function runAgentIsolated(
   try {
     const built = await isolatedTree(checkout, tree, input.pr.headSha);
     if (!built.ok) return { failure: `could not prepare the review agent's tree: ${firstLine(built.out)}` };
+    await withoutAgentConfig(tree);
     await mkdir(join(tree, '.git', SNAPWING_GIT_DIR), { recursive: true });
     await writeFile(join(tree, REVIEW_INPUT_PATH), reviewInput);
   } catch (e) {

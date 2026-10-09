@@ -45,6 +45,7 @@ describe('codex harness: invocation', () => {
     expect(seen.argv.at(-1)).toBe('-');
     expect(seen.argv[seen.argv.indexOf('--model') + 1]).toBe('gpt-5-codex');
     expect(seen.argv).toContain('--output-last-message');
+    expect(seen.argv).not.toContain('--ignore-rules');
     expect(seen.stdin).toContain('<fixer-system-prompt');
     expect(seen.stdin).toContain('FAKE_MODE=done');
     expect(seen.argv.join(' ')).not.toContain('FAKE_MODE');
@@ -79,6 +80,7 @@ describe('codex harness: review role', () => {
     const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[]; stdin: string; env: Record<string, string> };
     expect(seen.stdin).toContain('<review-system-prompt');
     expect(seen.argv[seen.argv.indexOf('--sandbox') + 1]).toBe('read-only');
+    expect(seen.argv).toContain('--ignore-rules');
     expect(seen.env['SNAPWING_ROLE']).toBe('review');
     expect(seen.env).not.toHaveProperty('SNAPWING_REVIEW_FILE');
     // What the stand-in for untrusted code wrote during the run is replaced by the agent's verdict.

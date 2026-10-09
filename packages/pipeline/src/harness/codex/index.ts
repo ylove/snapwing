@@ -7,6 +7,10 @@
 //                                 nothing the agent runs may write anywhere. The verdict is the end of its final
 //                                 message, which codex itself writes to the last-message file below and
 //                                 ../cli-agent.ts writes to SNAPWING_REVIEW_FILE once the agent has exited.
+//   --ignore-rules                review role only: no execpolicy `.rules` file, the checkout's included. Codex
+//                                 loads a project's `.codex/config.toml` only for a trusted project, and the run's
+//                                 CODEX_HOME (in its empty scratch HOME) trusts none; the review job also leaves
+//                                 `.codex/` out of the agent's tree (#263)
 //   --skip-git-repo-check         never fail on the checkout's git state
 //   --output-last-message <file>  the agent's final message is written to this file (stdout carries progress)
 //   --model <model>               only when configured
@@ -43,7 +47,7 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
       const systemPrompt = await readFile(review ? REVIEW_PROMPT_URL : FIXER_PROMPT_URL, 'utf8');
       const scratch = await mkdtemp(join(tmpdir(), 'snapwing-codex-'));
       const lastMessageFile = join(scratch, 'last-message.txt');
-      const args = ['exec', '--sandbox', review ? 'read-only' : 'danger-full-access', '--skip-git-repo-check', '--output-last-message', lastMessageFile];
+      const args = ['exec', '--sandbox', review ? 'read-only' : 'danger-full-access', ...(review ? ['--ignore-rules'] : []), '--skip-git-repo-check', '--output-last-message', lastMessageFile];
       if (config.model !== undefined) args.push('--model', config.model);
       args.push('-');
       try {

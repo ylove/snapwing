@@ -12,7 +12,10 @@
 //   --model <model>        only when configured
 //
 // The review agent reads and never runs (main 11.1, #263): its verdict is the end of its final message,
-// which ../cli-agent.ts writes to SNAPWING_REVIEW_FILE once the agent has exited.
+// which ../cli-agent.ts writes to SNAPWING_REVIEW_FILE once the agent has exited. Gemini reads a
+// workspace `.gemini/` (settings with MCP servers, tool commands and hooks; extensions) whenever it
+// trusts the folder, and runs headless only in a trusted one, so the review job leaves `.gemini/` out
+// of the agent's tree; the run's user settings live in its empty scratch HOME.
 //
 // Stop, budget, and checkpoints are shared with the other adapters through ../cli-agent.ts and
 // ../process.ts (docs/harness-generic.md sections 5 to 7).
