@@ -5,7 +5,9 @@
 //
 // - The request body is read in full before the handler runs and handed over byte for byte, so
 //   `await req.arrayBuffer()` (or `req.text()`) gives exactly what the client sent, as a signature
-//   check (Slack, Jira, GitHub webhooks) needs. Bodies over `maxBodyBytes` get 413.
+//   check (Slack, Jira, GitHub webhooks) needs. Bodies over the route's `maxBodyBytes`, else the
+//   server's, get 413 (#272: the chat and Jira routes take `SMALL_BODY_BYTES`). The route is matched
+//   first, so an unknown path or method is answered without reading the body at all.
 // - Paths match exactly, segment by segment; a `:name` segment matches any one non-empty segment
 //   and is passed to the handler as `ctx.params.name` (decoded). A handler that needs no params
 //   is written `(req) => ...`. The query string is ignored for matching.
@@ -32,6 +34,8 @@ export interface Route {
   /** Absolute path, for example `/healthz` or `/fixer/:workItemId/checkpoint`. */
   readonly path: string;
   readonly handler: Handler;
+  /** Largest request body this route takes, in bytes; default the server's `maxBodyBytes`. */
+  readonly maxBodyBytes?: number;
 }
 
 export interface ApiServerOptions {
@@ -56,6 +60,9 @@ export interface ApiServer {
 }
 
 export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+
+/** The body limit of the chat and Jira webhook routes: their events are small JSON (#272). */
+export const SMALL_BODY_BYTES = 1024 * 1024;
 
 const METHODS: readonly HttpMethod[] = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
 
@@ -218,7 +225,14 @@ export function createApiServer(options: ApiServerOptions): ApiServer {
   };
 
   const handleNode = async (incoming: IncomingMessage, outgoing: ServerResponse): Promise<void> => {
-    const body = await readBody(incoming, maxBodyBytes);
+    const method = (incoming.method ?? 'GET').toUpperCase();
+    const match = route(method, new URL(incoming.url ?? '/', 'http://localhost').pathname);
+    if (match.kind !== 'found') {
+      incoming.resume();
+      await writeResponse(outgoing, await dispatch(toRequest(incoming, Buffer.alloc(0))), method === 'HEAD');
+      return;
+    }
+    const body = await readBody(incoming, match.route.maxBodyBytes ?? maxBodyBytes);
     if (body === 'too-large') {
       await writeResponse(outgoing, text(413, 'payload too large', { connection: 'close' }));
       return;

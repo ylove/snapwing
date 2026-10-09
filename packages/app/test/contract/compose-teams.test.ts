@@ -31,7 +31,7 @@ import { teamsUserKey } from '../../src/adapters/teams/chat-surface.ts';
 import { teamsModeKey } from '../../src/adapters/teams/conversations.ts';
 import { compose, MissingSecretsError, teamsClientState, type Composed, type ComposeOverrides, type TeamsInject } from '../../src/server/compose.ts';
 import { LOCAL_RUNNER_WARNING, runServe } from '../../src/server/serve.ts';
-import { bootComposed, BOT_USER, DEMO_LEVELS, DEMO_MAP, envFile, EXAMPLE_CONFIG, fakeSecrets, slackWorld, WORKSPACE_DOMAIN, type Booted } from '../fixtures/e2e/world.ts';
+import { bootComposed, BOT_USER, DEMO_LEVELS, DEMO_MAP, envFile, EXAMPLE_CONFIG, fakeSecrets, OPS_AUTH, slackWorld, WORKSPACE_DOMAIN, type Booted } from '../fixtures/e2e/world.ts';
 
 const idleHarness: HarnessPort = { run: () => Promise.reject(new Error('the harness was not expected to run')) };
 
@@ -369,7 +369,7 @@ describe('compose with Teams under snapwing serve', () => {
     // /healthz: Slack full; Teams reduced once the subscription is refused, naming the team and why.
     await vi.waitFor(
       async () => {
-        const health = (await (await fetch(`${url}/healthz`)).json()) as { ok: boolean; platforms?: unknown[] };
+        const health = (await (await fetch(`${url}/healthz`, { headers: OPS_AUTH })).json()) as { ok: boolean; platforms?: unknown[] };
         expect(health).toEqual({
           ok: true,
           platforms: [
@@ -382,7 +382,9 @@ describe('compose with Teams under snapwing serve', () => {
     );
     // The subscription went to TEAMS_PUBLIC_URL with the derived clientState.
     expect(teams.graph).toContain(`subscribe /teams/${TEAM}/channels/getAllMessages`);
-    const metrics = await (await fetch(`${url}/metrics`)).text();
+    // Without the ops token: each platform's mode, no detail (#272).
+    expect(await (await fetch(`${url}/healthz`)).json()).toEqual({ ok: true, platforms: [{ id: 'slack', ok: true, mode: 'full' }, { id: 'teams', ok: true, mode: 'reduced' }] });
+    const metrics = await (await fetch(`${url}/metrics`, { headers: OPS_AUTH })).text();
     expect(metrics).toContain('snapwing_teams_drain_paused_seconds{workspace=');
     expect(metrics).toContain('snapwing_outbox_parked_rows{target="teams"');
     expect(metrics.match(/^# TYPE snapwing_outbox_parked_rows /gm)).toHaveLength(1);

@@ -3,7 +3,9 @@
 
 import { request as httpRequest } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createApiServer, createRouter, type ApiServer, type Route } from '../../src/server/http.ts';
+import { createSlackRoutes, SLACK_EVENTS_PATH } from '../../src/adapters/slack/transport.ts';
+import { createTeamsRoutes, TEAMS_MESSAGES_PATH } from '../../src/adapters/teams/transport.ts';
+import { createApiServer, createRouter, SMALL_BODY_BYTES, type ApiServer, type Route } from '../../src/server/http.ts';
 
 const servers: ApiServer[] = [];
 
@@ -118,6 +120,34 @@ describe('createApiServer', () => {
     const res = await fetch(`${url}/upload`, { method: 'POST', body: 'x'.repeat(17) });
     expect(res.status).toBe(413);
     expect(called).toBe(false);
+  });
+
+  it("takes a route's own body limit over the server's, and reads no body for an unknown path (#272)", async () => {
+    const seen: number[] = [];
+    const echo = async (req: Request): Promise<Response> => (seen.push((await req.arrayBuffer()).byteLength), new Response('ok'));
+    const url = await serve(
+      [
+        { method: 'POST', path: '/small', handler: echo, maxBodyBytes: 8 },
+        { method: 'POST', path: '/big', handler: echo },
+      ],
+      { maxBodyBytes: 64 },
+    );
+    expect((await fetch(`${url}/small`, { method: 'POST', body: 'x'.repeat(9) })).status).toBe(413);
+    expect((await fetch(`${url}/small`, { method: 'POST', body: 'x'.repeat(8) })).status).toBe(200);
+    expect((await fetch(`${url}/big`, { method: 'POST', body: 'x'.repeat(64) })).status).toBe(200);
+    expect((await fetch(`${url}/big`, { method: 'POST', body: 'x'.repeat(65) })).status).toBe(413);
+    expect((await fetch(`${url}/nope`, { method: 'POST', body: 'x'.repeat(1000) })).status).toBe(404);
+    expect((await fetch(`${url}/small`, { method: 'GET' })).status).toBe(405);
+    expect(seen).toEqual([8, 64]);
+  });
+
+  it('caps the Slack and Teams routes at about 1 MiB', () => {
+    const slack = createSlackRoutes({ dispatch: () => Promise.resolve({ status: 200, body: '' }), idle: () => Promise.resolve() });
+    expect(slack.map((r) => r.maxBodyBytes)).toEqual([SMALL_BODY_BYTES, SMALL_BODY_BYTES, SMALL_BODY_BYTES]);
+    expect(slack.find((r) => r.path === SLACK_EVENTS_PATH)?.maxBodyBytes).toBe(1024 * 1024);
+    const teams = createTeamsRoutes({} as Parameters<typeof createTeamsRoutes>[0]);
+    expect(teams.map((r) => r.maxBodyBytes)).toEqual([SMALL_BODY_BYTES, SMALL_BODY_BYTES, SMALL_BODY_BYTES]);
+    expect(teams.find((r) => r.path === TEAMS_MESSAGES_PATH)).toBeDefined();
   });
 
   it('stop() stops accepting and waits for a request in flight', async () => {

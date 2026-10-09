@@ -191,6 +191,7 @@ describe('notify rows: watchers (A 4.4)', () => {
       filed(),
       context({
         subscriptions: [sub('U-PAT', 'surface', 'web'), sub('U-PAT', 'incident', INC), sub('U-BOSS', 'all', undefined), sub('U-OTHER', 'surface', 'api')],
+        channelMembers: new Set(['U-PAT', 'U-BOSS', 'U-OTHER']),
       }),
     );
     expect(rows).toHaveLength(1);
@@ -215,6 +216,23 @@ describe('notify rows: watchers (A 4.4)', () => {
     expect(new Set(rows.map((r) => r.id)).size).toBe(3);
   });
 
+  it('tells a standing watcher only about what a status answer would show them (#272)', () => {
+    const subs = [sub('U-IN', 'surface', 'web'), sub('U-OUT', 'all', undefined, 'dm'), sub(REPORTER, 'surface', 'web', 'dm'), sub('U-WATCH', 'incident', INC)];
+    const mentions = (ctx: NotifyContext) => filedScript().push(filed(), ctx).map((r) => [payloadOf(r).delivery, payloadOf(r).mentions]);
+    // In the channel, the incident's reporter, and a watch on the incident itself; not someone outside it.
+    expect(mentions(context({ subscriptions: subs, channelMembers: new Set(['U-IN', 'U-WATCH']) }))).toEqual([
+      ['thread', ['U-IN', 'U-WATCH']],
+      ['dm', [REPORTER]],
+    ]);
+    // A channel nobody could list shows a standing watcher nothing; a watch on the incident still applies.
+    expect(mentions(context({ subscriptions: subs }))).toEqual([
+      ['thread', ['U-WATCH']],
+      ['dm', [REPORTER]],
+    ]);
+    // An incident with no chat thread (the CLI) reaches every standing watcher.
+    expect(filedScript('cli').push(filed(), context({ subscriptions: [sub('U-OUT', 'all', undefined, 'dm')] }))).toHaveLength(1);
+  });
+
   it('tells an incident from the CLI by DM only, since it has no thread', () => {
     const s = filedScript('cli');
     const rows = s.push(filed(), context({ subscriptions: [sub('U-PAT', 'incident', INC, 'dm')] }));
@@ -234,39 +252,29 @@ describe('notify rows: watchers (A 4.4)', () => {
 describe('notify rows: a DM goes to the platform the watcher subscribed from', () => {
   const targets = (rows: readonly OutboxItem[]) => rows.map((r) => [r.target, payloadOf(r).delivery, payloadOf(r).mentions]);
 
-  it('sends a Slack-only watcher of a Teams incident a slack DM row, and keeps the thread row on teams', () => {
-    const s = filedScript('teams');
-    const rows = s.push(filed(), context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'dm', 'slack'), sub('AAD-IN', 'incident', INC, 'thread', 'teams')] }));
-    expect(targets(rows)).toEqual([
-      ['teams', 'thread', ['AAD-IN']],
-      ['slack', 'dm', ['U-SLACK']],
-    ]);
-    expect(rows[1]?.batchKey).toBe(`notify:${INC}:${String(s.seq)}:dm:U-SLACK`);
-    expect(new Set(rows.map((r) => r.id)).size).toBe(2);
-  });
-
-  it('sends a Teams-only watcher of a Slack incident a teams DM row', () => {
-    const s = filedScript('slack');
-    const rows = s.push(filed(), context({ subscriptions: [sub('AAD-TEAMS', 'surface', 'web', 'dm', 'teams'), sub('U-PAT', 'incident', INC, 'thread', 'slack')] }));
-    expect(targets(rows)).toEqual([
-      ['slack', 'thread', ['U-PAT']],
-      ['teams', 'dm', ['AAD-TEAMS']],
-    ]);
+  it('tells a standing watcher from the other platform nothing about a chat incident: that channel is never theirs (#272)', () => {
+    const teams = filedScript('teams');
+    const rows = teams.push(filed(), context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'dm', 'slack'), sub('AAD-IN', 'incident', INC, 'thread', 'teams')], channelMembers: new Set(['AAD-IN', 'U-SLACK']) }));
+    expect(targets(rows)).toEqual([['teams', 'thread', ['AAD-IN']]]);
+    const slack = filedScript('slack');
+    const back = slack.push(filed(), context({ subscriptions: [sub('AAD-TEAMS', 'surface', 'web', 'dm', 'teams'), sub('U-PAT', 'incident', INC, 'thread', 'slack')], channelMembers: new Set(['U-PAT']) }));
+    expect(targets(back)).toEqual([['slack', 'thread', ['U-PAT']]]);
   });
 
   it('tells a thread watcher from the other platform by DM there, not by a mention in a thread they cannot read', () => {
     // No member list is known, which would otherwise put every thread watcher in the thread.
     const s = filedScript('teams');
-    const rows = s.push(filed(), context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'thread', 'slack'), sub('AAD-PAT', 'surface', 'web', 'thread', 'teams')] }));
+    const rows = s.push(filed(), context({ subscriptions: [sub('U-SLACK', 'incident', INC, 'thread', 'slack'), sub('AAD-PAT', 'incident', INC, 'thread', 'teams')] }));
     expect(targets(rows)).toEqual([
       ['teams', 'thread', ['AAD-PAT']],
       ['slack', 'dm', ['U-SLACK']],
     ]);
+    expect(rows[1]?.batchKey).toBe(`notify:${INC}:${String(s.seq)}:dm:U-SLACK`);
   });
 
   it('keeps the old target for a subscription with no platform: the thread, or the incident\'s platform for a DM', () => {
     const teams = filedScript('teams');
-    const rows = teams.push(filed(), context({ subscriptions: [sub('U-OLD-DM', 'surface', 'web', 'dm'), sub('U-OLD-THREAD', 'surface', 'web')] }));
+    const rows = teams.push(filed(), context({ subscriptions: [sub('U-OLD-DM', 'surface', 'web', 'dm'), sub('U-OLD-THREAD', 'surface', 'web')], channelMembers: new Set(['U-OLD-DM', 'U-OLD-THREAD']) }));
     expect(targets(rows)).toEqual([
       ['teams', 'thread', ['U-OLD-THREAD']],
       ['teams', 'dm', ['U-OLD-DM']],
@@ -283,7 +291,8 @@ describe('notify rows: a DM goes to the platform the watcher subscribed from', (
   it('plans a DM with the watcher\'s platform and a thread message without one', () => {
     const notices = planNotices({
       milestone: 'live',
-      incident: { id: INC, jiraKey: KEY, surfaceId: 'web', platform: 'teams' },
+      // An incident with no chat thread: every standing watcher may hear about it (#272).
+      incident: { id: INC, jiraKey: KEY, surfaceId: 'web' },
       at: new Date(T0).toISOString(),
       seq: 1,
       context: context({ subscriptions: [sub('U-SLACK', 'surface', 'web', 'dm', 'slack'), sub('AAD-PAT', 'surface', 'web', 'thread', 'teams'), sub('U-OLD', 'all', undefined, 'dm')] }),

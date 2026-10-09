@@ -65,6 +65,7 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { classifyLexicon, classifyReaction } from '@snapwing/pipeline/signals/classify.ts';
 import { handleSignal, type SignalDeps, type SignalInput, type SignalOutcome } from '@snapwing/pipeline/signals/handler.ts';
 import type { ChatLimits } from '@snapwing/pipeline/policy/limits.ts';
+import { askerMayAsk, GUESTS_GET_NO_STATUS, type StatusAccess } from '@snapwing/pipeline/status/ask.ts';
 import { classifyLlm, type SignalMessage } from '@snapwing/pipeline/signals/llm.ts';
 import { applyStandingWatch, parseStandingWatch, resolveWatchTarget } from '@snapwing/pipeline/signals/standing.ts';
 import { resolveTarget } from '@snapwing/pipeline/signals/target.ts';
@@ -131,6 +132,8 @@ export interface TeamsSignalsOptions {
   limits?: Pick<ChatLimits, 'modelWork'>;
   /** Writes standing subscriptions (A 4.4). Absent: a surface watch in a thread is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
+  /** Who may hold a standing watch: members only (#272), as on Slack. Absent: anyone. */
+  access?: Pick<StatusAccess, 'membership'>;
   /** Tells the person their standing watch was applied (Teams has no ephemerals). Absent: nothing is said. */
   confirmStanding?: (input: { aadObjectId: string; text: string; teamId: string; channelId: string; rootId: string }) => Promise<void>;
   /** Text signals after filing (A 3, `signals/text.ts`). Absent: a thread reply is an intent signal only. */
@@ -561,6 +564,10 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     const request = standing === undefined ? undefined : parseStandingWatch(text);
     if (standing !== undefined && request !== undefined && resolveWatchTarget(map, request.target) !== undefined) {
       if ((await resolveTarget(deps.state, ref)) === null) return ignored('no-intent');
+      if (!(await askerMayAsk(options.access, user))) {
+        await options.confirmStanding?.({ aadObjectId: user, text: GUESTS_GET_NO_STATUS, teamId, channelId, rootId }).catch(onError);
+        return { kind: 'standing', changed: false };
+      }
       const outcome = await applyStandingWatch(standing, map, { workspaceId: deps.workspaceId, userId: user, text, channel: 'thread', platform: 'teams', now: deps.clock() });
       if (!outcome.handled) return ignored('no-intent');
       await options.confirmStanding?.({ aadObjectId: user, text: outcome.reply, teamId, channelId, rootId }).catch(onError);

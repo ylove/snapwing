@@ -114,8 +114,10 @@ describe('the wired hook (A 4.4)', () => {
     expect(await notifyRows(id)).toEqual([]);
   });
 
-  it('mentions a standing surface subscriber on a milestone', async () => {
+  it('mentions a standing surface subscriber in the channel on a milestone', async () => {
     time += 3_600_000;
+    if (!(state instanceof StateStore)) throw new Error('not a StateStore');
+    await state.kvSet(channelMembersKey(CHANNEL), JSON.stringify(['U-PAT', 'U-OTHER', 'U-ALL']));
     await state.subscribe({ workspaceId, userId: 'U-PAT', scopeKind: 'surface', scopeId: 'web', channel: 'thread', createdAt: iso() });
     await state.subscribe({ workspaceId, userId: 'U-OTHER', scopeKind: 'surface', scopeId: 'api', channel: 'thread', createdAt: iso() });
     const { id } = await filedIncident();
@@ -158,12 +160,13 @@ describe('the wired hook (A 4.4)', () => {
     expect(await notifyRows(low.id)).toEqual([]);
   });
 
-  it('sends the reporter the staging request regardless of the playbook, and a DM to a watcher outside the channel', async () => {
+  it('sends the reporter the staging request regardless of the playbook, a DM to a standing DM watcher, and nothing to one outside the channel (#272)', async () => {
     time += 3_600_000;
     await state.putConfigVersion('playbook', 'hash-empty', '<playbook xmlns="urn:snapwing:playbook:v1" version="1"/>');
     if (!(state instanceof StateStore)) throw new Error('not a StateStore');
-    await state.kvSet(channelMembersKey(CHANNEL), JSON.stringify([REPORTER]));
+    await state.kvSet(channelMembersKey(CHANNEL), JSON.stringify([REPORTER, 'U-NEAR']));
     await state.subscribe({ workspaceId, userId: 'U-FAR', scopeKind: 'surface', scopeId: 'web', channel: 'thread', createdAt: iso() });
+    await state.subscribe({ workspaceId, userId: 'U-NEAR', scopeKind: 'surface', scopeId: 'web', channel: 'dm', createdAt: iso() });
     const { id, seq } = await filedIncident();
     await notifyRows(id);
     time += 60_000;
@@ -179,9 +182,10 @@ describe('the wired hook (A 4.4)', () => {
     const staging = rows.filter((r) => payload(r).milestone === 'staging');
     expect(staging.map((r) => [payload(r).reason, payload(r).delivery, payload(r).mentions])).toEqual([
       ['request', 'thread', [REPORTER]],
-      ['watch', 'dm', ['U-FAR']],
+      ['watch', 'dm', ['U-NEAR']],
     ]);
     await state.unsubscribe({ workspaceId, userId: 'U-FAR', scopeKind: 'surface', scopeId: 'web' });
+    await state.unsubscribe({ workspaceId, userId: 'U-NEAR', scopeKind: 'surface', scopeId: 'web' });
   });
 
   it('asks the anchor\'s author, not the engineer whose trigger brought it in, to check staging', async () => {

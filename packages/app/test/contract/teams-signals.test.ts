@@ -232,7 +232,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     messages.set(messageId, { ...m, reactions });
   }
 
-  function setup(opts: { model?: ModelPort; text?: boolean; failClaim?: boolean } = {}) {
+  function setup(opts: { model?: ModelPort; text?: boolean; failClaim?: boolean; guests?: readonly string[] } = {}) {
     const onError = vi.fn();
     const getMap = () => Promise.resolve(MAP);
     const cache = createKvCache(state as unknown as StateStore);
@@ -312,6 +312,7 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
       },
       ...(opts.model === undefined ? {} : { model: opts.model }),
       ...(opts.text === true ? { text } : {}),
+      ...(opts.guests === undefined ? {} : { access: { membership: (u: string) => Promise.resolve(opts.guests?.includes(u) === true ? ('guest' as const) : ('member' as const)) } }),
       onOutcome: (o) => outcomes.push(o),
       onError,
     });
@@ -634,6 +635,16 @@ describe(`Teams signals (${TEST_DIALECT})`, () => {
     expect(requests[0]).toMatchObject({ task: 'segmentation', schemaName: 'signal' });
     expect(requests[0]?.prompt).toContain('The coupon field rejects every code since this morning');
     expect((await comments()).at(-1)?.payload.confidence).toBe(0.9);
+  });
+
+  it('a guest asking for a standing watch in the thread is told no and nothing is written (#272)', async () => {
+    await filed();
+    const w = setup({ guests: [PAT] });
+    const reply = fixture<GraphMessage>('reply-on-it');
+    messages.set('1790000100811', { ...reply, id: '1790000100811', from: { user: { id: PAT, userIdentityType: 'aadUser' } }, body: { contentType: 'html', content: '<p>keep me posted on the website</p>' } });
+    expect(await w.notify(replyCreated('1790000100811'))).toEqual([{ kind: 'standing', changed: false }]);
+    expect(await state.getSubscriptions(INC)).toEqual([]);
+    expect(w.standingReplies).toEqual([{ aadObjectId: PAT, text: 'Status answers are for members of this workspace.' }]);
   });
 
   it('reduced mode (no notifications): reactions on the bot\'s own messages count through messageReaction, once', async () => {

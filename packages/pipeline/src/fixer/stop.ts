@@ -7,7 +7,7 @@
 // `pr-opened`, or, for a run stopped mid-fix before it reported `done`, the PR its `pr-opened`
 // checkpoint names. Anything already pushed stays on the branch. A second stop (a `stopped` already newer than the last `filed`) appends
 // nothing and does nothing else. `stopped` is not terminal (B 5); a stop on a terminal incident is a
-// no-op.
+// no-op. The reason is free text from chat or Jira, so the PR comment carries it inert (`inertReason`, #272).
 
 import type { EventActor, EventSource, IncidentEvent } from '../contracts/events.ts';
 import { fixerRunKey } from '../contracts/jobs.ts';
@@ -102,6 +102,18 @@ function runPr(events: readonly IncidentEvent[]): number | undefined {
 
 function closeComment(actor: EventActor, issueKey: string | undefined, reason: string | undefined): string {
   const ticket = issueKey === undefined ? 'this incident' : issueKey;
-  const why = reason === undefined || reason.trim() === '' ? '' : ` Reason: ${reason.trim()}`;
+  const why = reason === undefined || reason.trim() === '' ? '' : ` Reason: ${inertReason(reason)}`;
   return `Stopped by ${actor.id} through Snapwing. Closing this PR for ${ticket}; the branch is kept.${why}`;
+}
+
+/** Longest reason a PR comment carries. */
+const MAX_REASON = 300;
+
+/**
+ * Free text as inert GitHub Markdown: one line, at most `MAX_REASON` characters, in a code span with
+ * no backtick of its own, so no mention, issue link, autolink, image, or HTML in it renders.
+ */
+export function inertReason(text: string): string {
+  const line = text.replace(/\s+/g, ' ').trim().replace(/`/g, "'");
+  return `\`${line.length > MAX_REASON ? `${line.slice(0, MAX_REASON - 3)}...` : line}\``;
 }

@@ -25,7 +25,7 @@ import {
   type FixerGitHubContext,
 } from '../../src/fixer/job.ts';
 import { jiraCreateBatchKey } from '../../src/state/projections/outbox/jira.ts';
-import { stopIncident } from '../../src/fixer/stop.ts';
+import { inertReason, stopIncident } from '../../src/fixer/stop.ts';
 import type { HarnessPort } from '../../src/ports/harness.ts';
 import type { FixerJob, RunnerPort } from '../../src/ports/runner.ts';
 import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
@@ -516,6 +516,19 @@ describe(`fixer job (${TEST_DIALECT})`, () => {
 
     await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER });
     expect(w.github.closed).toHaveLength(1);
+  });
+
+  it('carries a Stop reason into the PR comment inert: one line, in a code span, nothing that renders (#272)', async () => {
+    const w = await setup();
+    await started(w);
+    await reportDone(w, 87);
+    const reason = 'cc @org/security see #12 ![x](https://evil.example/p.png)\n<img src=x> `tick`';
+    await stopIncident(w.deps, { incidentId: INC, actor: ENGINEER, reason });
+    const comment = w.github.closed[0]?.comment ?? '';
+    expect(comment).toContain(" Reason: `cc @org/security see #12 ![x](https://evil.example/p.png) <img src=x> 'tick'`");
+    expect(comment.split('\n')).toHaveLength(1);
+    expect(comment).toContain(`Stopped by ${ENGINEER.id} through Snapwing.`);
+    expect(inertReason('x'.repeat(400))).toBe(`\`${'x'.repeat(297)}...\``);
   });
 
   it('stop mid-run after the fixer opened its PR but before done closes the PR its checkpoint names', async () => {

@@ -53,7 +53,7 @@ export interface StatusAccess {
 export const GUESTS_GET_NO_STATUS = 'Status answers are for members of this workspace.';
 
 /** Whether the asker gets status answers at all: true without `access`. */
-export async function askerMayAsk(access: StatusAccess | undefined, userId: string): Promise<boolean> {
+export async function askerMayAsk(access: Pick<StatusAccess, 'membership'> | undefined, userId: string): Promise<boolean> {
   return access === undefined || (await access.membership(userId).catch(() => 'external' as const)) === 'member';
 }
 

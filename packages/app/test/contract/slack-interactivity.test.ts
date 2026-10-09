@@ -23,6 +23,7 @@ import {
   type SlackInteractivity,
 } from '../../src/adapters/slack/interactivity.ts';
 import { createSlackDispatcher, type SlackActionPayload } from '../../src/adapters/slack/transport.ts';
+import { ALREADY_ASKED_TEXT, NOT_A_BUG_REFUSED } from '../../src/adapters/shared/taps.ts';
 import type { PostEphemeralArgs, PostMessageArgs, SlackWeb, UpdateMessageArgs } from '../../src/adapters/slack/web.ts';
 
 const exampleXml = readFileSync(new URL('../../../../examples/workspace-context.example.xml', import.meta.url), 'utf8');
@@ -353,6 +354,20 @@ describe('authorization (main 8.2, 16)', () => {
     expect(await types()).not.toContain('tapped');
   });
 
+  it('asks the owner once per incident: a second Fix it from anyone who cannot approve reposts nothing (#272)', async () => {
+    await seedPlanned(1);
+    await ix.handleAction(tap(REPORTER, 'triage_actions', 'approve_fix', TRIAGE_L1));
+    for (const who of [REPORTER, 'U0STRANGER']) {
+      const again = await ix.handleAction(tap(who, 'triage_actions', 'approve_fix', TRIAGE_L1));
+      expect(again).toEqual({ kind: 'denied', action: 'approve_fix', reason: 'engineer-required' });
+      expect(web.calls.ephemeral.at(-1)).toEqual({ channel: CHANNEL, user: who, text: ALREADY_ASKED_TEXT, thread_ts: THREAD });
+    }
+    expect(web.calls.post).toHaveLength(1);
+    expect(taps).toEqual([]);
+    // An engineer's Fix it still goes through.
+    expect(await ix.handleAction(tap(ENGINEER, 'triage_actions', 'approve_fix', TRIAGE_L1))).toMatchObject({ kind: 'tapped', choice: 'approve_fix' });
+  });
+
   it('a handleTap refusal with askOwner is answered the same way', async () => {
     await seedPlanned(1);
     tapOutcome = { accepted: false, reason: 'engineer-required', askOwner: true };
@@ -463,6 +478,24 @@ describe('stop and dismiss at levels 2 and 3 (main 8.2, 10.4)', () => {
     expect(transitions).toContainEqual({ issueKey: 'WEB-1042', to: 'done', resolution: JIRA_RESOLUTION_WONT_DO });
     expect(taps).toEqual([]);
     expect(web.calls.update[0]?.text).toBe(`<@${REPORTER}> marked this *Not a bug*.`);
+  });
+
+  it('Not a bug takes an engineer or the reporter, at every level and on the claim card (#272)', async () => {
+    await seedFixing(2);
+    const out = await ix.handleAction(tap('U0STRANGER', 'triage_actions', 'dismiss', TRIAGE_L2));
+    expect(out).toEqual({ kind: 'denied', action: 'dismiss', reason: 'engineer-required' });
+    expect(web.calls.ephemeral.at(-1)?.text).toBe(NOT_A_BUG_REFUSED);
+    expect(await types()).not.toContain('stopped');
+    expect(await ix.handleAction(tap(ENGINEER, 'triage_actions', 'dismiss', TRIAGE_L2))).toMatchObject({ kind: 'stopped', wontDo: true });
+  });
+
+  it('Not a bug at level 1 and on the claim card is refused to someone else, before it reaches the engine (#272)', async () => {
+    await seedPlanned(1);
+    expect(await ix.handleAction(tap('U0STRANGER', 'triage_actions', 'dismiss', TRIAGE_L1))).toMatchObject({ kind: 'denied', reason: 'engineer-required' });
+    const claim = [{ actionId: 'let-agent-take', label: 'Let the agent take it' }, { actionId: 'dismiss', label: 'Not a bug' }];
+    expect(await ix.handleAction(tap('U0STRANGER', 'claim_actions', 'dismiss', claim))).toMatchObject({ kind: 'denied', reason: 'engineer-required' });
+    expect(taps).toEqual([]);
+    expect(await ix.handleAction(tap(REPORTER, 'claim_actions', 'dismiss', claim))).toMatchObject({ kind: 'tapped', card: 'claimed', choice: 'dismiss' });
   });
 
   it('a second Not a bug after the first appends nothing more', async () => {

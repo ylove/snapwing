@@ -22,7 +22,9 @@
 //   website", "stop updating me on web") is a standing watch (`applyStandingWatch`, A 4.4), not a
 //   signal on the incident, and is confirmed to the asker ephemerally in the thread. It is checked
 //   before the lexicon, so "stop notifying me on web" never reads as a Stop. Only inside an incident's
-//   thread, like every message signal; "keep me posted" with no surface is the incident's `watch`.
+//   thread, like every message signal; "keep me posted" with no surface is the incident's `watch`. With
+//   `access`, a guest or someone from another organization is told `GUESTS_GET_NO_STATUS` and nothing
+//   is written (#272), as the status answers do.
 //
 // - Text signals beyond the intents (A 3), when `text` is given: every thread reply
 //   a person posts (the standing watch aside) also goes to `handleTextSignal`, after the intent path,
@@ -75,6 +77,7 @@ import {
 } from '@snapwing/pipeline/signals/text.ts';
 import type { Playbook } from '@snapwing/pipeline/config/playbook.ts';
 import type { ChatLimits } from '@snapwing/pipeline/policy/limits.ts';
+import { askerMayAsk, GUESTS_GET_NO_STATUS, type StatusAccess } from '@snapwing/pipeline/status/ask.ts';
 import { textSignalRefusal } from '../shared/taps.ts';
 import { parsedBodyOf, type SlackAdapter } from './adapter.ts';
 import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
@@ -121,6 +124,8 @@ export interface SlackSignalsOptions {
   limits?: Pick<ChatLimits, 'modelWork'>;
   /** Writes standing subscriptions (A 4.4). Absent: a surface watch in a thread is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
+  /** Who may hold a standing watch: members only (#272). Absent: anyone. */
+  access?: Pick<StatusAccess, 'membership'>;
   /** Text signals after filing (A 3, `signals/text.ts`). Absent: a thread reply is an intent signal only. */
   text?: TextSignalDeps;
   /** Called with what each event did (logs, tests). */
@@ -296,6 +301,10 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     const request = standing === undefined ? undefined : parseStandingWatch(text);
     if (standing !== undefined && request !== undefined && resolveWatchTarget(map, request.target) !== undefined) {
       if ((await resolveTarget(deps.state, ref)) === null) return ignored('no-intent');
+      if (!(await askerMayAsk(options.access, user))) {
+        await options.web?.postEphemeral({ channel, user, text: GUESTS_GET_NO_STATUS, thread_ts: threadTs }).catch(onError);
+        return { kind: 'standing', changed: false };
+      }
       const outcome = await applyStandingWatch(standing, map, { workspaceId: deps.workspaceId, userId: user, text, channel: 'thread', platform: 'slack', now: deps.clock() });
       if (!outcome.handled) return ignored('no-intent');
       await options.web?.postEphemeral({ channel, user, text: outcome.reply, thread_ts: threadTs }).catch(onError);

@@ -115,7 +115,35 @@ describe('createWorker', () => {
   });
 });
 
+const OPS_TOKEN = 'ops-token-for-tests-0123456789';
+
 describe('ops routes', () => {
+  // #272: the metrics and the health detail are for whoever holds the ops token.
+  it('/metrics answers 401 without the ops token, with a wrong one, and always when none is set', async () => {
+    const call = async (token: string | undefined, sent?: string): Promise<number> => {
+      const route = opsRoutes({ state: () => state, ...(token === undefined ? {} : { token }) }).find((r) => r.path === '/metrics');
+      const res = await route?.handler(new Request('http://local/metrics', sent === undefined ? {} : { headers: { authorization: sent } }), { params: {} });
+      return res?.status ?? 0;
+    };
+    expect(await call(OPS_TOKEN)).toBe(401);
+    expect(await call(OPS_TOKEN, 'Bearer not-the-token')).toBe(401);
+    expect(await call(OPS_TOKEN, OPS_TOKEN)).toBe(401);
+    expect(await call(undefined, 'Bearer anything')).toBe(401);
+    expect(await call(OPS_TOKEN, `Bearer ${OPS_TOKEN}`)).toBe(200);
+  });
+
+  it('/healthz shows each platform as id, ok, and mode without the token, and the detail with it', async () => {
+    const platforms = [{ id: 'teams', ok: true, mode: 'reduced' as const, detail: 'team T1 has no RSC grant' }, { id: 'slack', ok: true }];
+    const route = opsRoutes({ state: () => state, health: () => Promise.resolve(platforms), token: OPS_TOKEN }).find((r) => r.path === '/healthz');
+    const read = async (headers: Record<string, string> = {}): Promise<unknown> => (await route?.handler(new Request('http://local/healthz', { headers }), { params: {} }))?.json();
+    expect(await read()).toEqual({ ok: true, platforms: [{ id: 'teams', ok: true, mode: 'reduced' }, { id: 'slack', ok: true }] });
+    expect(await read({ authorization: `Bearer ${OPS_TOKEN}` })).toEqual({ ok: true, platforms });
+    const closed = opsRoutes({ state: () => undefined, token: OPS_TOKEN }).find((r) => r.path === '/healthz');
+    expect(await (await closed?.handler(new Request('http://local/healthz'), { params: {} }))?.json()).toEqual({ ok: false });
+    const detail = await closed?.handler(new Request('http://local/healthz', { headers: { authorization: `Bearer ${OPS_TOKEN}` } }), { params: {} });
+    expect(await detail?.json()).toEqual({ ok: false, detail: 'state store not open' });
+  });
+
   it('/healthz is 503 before the store is open and 200 once it is', async () => {
     let current: StateStore | undefined;
     const api = createApiServer({ routes: opsRoutes({ state: () => current }), port: 0, host: '127.0.0.1' });
@@ -157,13 +185,13 @@ describe('ops routes', () => {
     });
     await workflow.start('incident.process', {}, {});
 
-    const routes = opsRoutes({ state: () => state });
+    const routes = opsRoutes({ state: () => state, token: OPS_TOKEN });
     const metrics = routes.find((r) => r.path === '/metrics');
     if (metrics === undefined) {
       throw new Error('no /metrics route');
     }
     const read = async (): Promise<string> => {
-      const res = await metrics.handler(new Request('http://local/metrics'), { params: {} });
+      const res = await metrics.handler(new Request('http://local/metrics', { headers: { authorization: `Bearer ${OPS_TOKEN}` } }), { params: {} });
       expect(res.status).toBe(200);
       expect(res.headers.get('content-type')).toBe(PROMETHEUS_CONTENT_TYPE);
       return res.text();

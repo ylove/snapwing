@@ -9,9 +9,11 @@ import type { OutboxItem, OutboxTarget } from '../../src/contracts/state.ts';
 import type { WorkspaceMap } from '../../src/map/types.ts';
 import type { OpenedState } from '../../src/ports/state.ts';
 import { applyStandingWatch } from '../../src/signals/standing.ts';
+import { channelMembersKey } from '../../src/state/projections/notify-context.ts';
 import type { NotifyRow } from '../../src/state/projections/outbox/notify.ts';
 import { statusBatchKey, statusTargets, UPDATE_STATUS_OP } from '../../src/state/projections/outbox/status.ts';
 import { rebuild, snapshotProjections } from '../../src/state/rebuild.ts';
+import { StateStore } from '../../src/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../helpers/db.ts';
 
 const T0 = Date.parse('2026-10-01T15:00:00.000Z');
@@ -98,6 +100,9 @@ describe.each(['slack', 'teams'] as const)('%s incident', (platform) => {
 
   it('gets update-status and notify rows on its own target only', async () => {
     time += 3_600_000;
+    if (!(state instanceof StateStore)) throw new Error('not a StateStore');
+    // A standing watcher hears only about a channel they are in (#272).
+    await state.kvSet(channelMembersKey('C-FAKE'), JSON.stringify(['U-PAT']));
     await state.subscribe({ workspaceId, userId: 'U-PAT', scopeKind: 'surface', scopeId: 'web', channel: 'thread', createdAt: iso() });
     const id = await filedIncident(platform);
 
@@ -123,7 +128,7 @@ describe('a DM goes to the platform the watcher subscribed from', () => {
   it.each([
     ['teams', 'slack', 'U-FAKE-SLACK-ONLY'],
     ['slack', 'teams', 'AAD-FAKE-TEAMS-ONLY'],
-  ] as const)('a %s incident sends its DM to a watcher who asked on %s (%s) there', async (incident, asked, userId) => {
+  ] as const)("a %s incident's channel is never that of a standing watcher who asked on %s (%s): nothing is sent (#272)", async (incident, asked, userId) => {
     time += 3_600_000;
     const outcome = await applyStandingWatch(state, map, { workspaceId, userId, text: 'keep me posted on the website', channel: 'dm', platform: asked, now: new Date(time) });
     expect(outcome).toMatchObject({ handled: true, changed: true });
@@ -133,7 +138,7 @@ describe('a DM goes to the platform the watcher subscribed from', () => {
     const onIncident = (await drain(incident)).filter((r) => r.incidentId === id && r.op === 'notify');
     await state.unsubscribe({ workspaceId, userId, scopeKind: 'surface', scopeId: 'web' });
 
-    expect(dms.map(shape)).toEqual([[asked, 'dm', [userId]]]);
+    expect(dms.map(shape)).toEqual([]);
     expect(onIncident).toEqual([]);
   });
 

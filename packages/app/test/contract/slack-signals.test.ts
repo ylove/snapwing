@@ -174,7 +174,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     );
   }
 
-  function setup(opts: { model?: ModelPort; limits?: Pick<ChatLimits, 'modelWork'> } = {}) {
+  function setup(opts: { model?: ModelPort; limits?: Pick<ChatLimits, 'modelWork'>; guests?: readonly string[] } = {}) {
     const web = fakeWeb();
     const onError = vi.fn();
     const getMap = () => Promise.resolve(MAP);
@@ -216,6 +216,7 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
       standing: state,
       ...(opts.model === undefined ? {} : { model: opts.model }),
       ...(opts.limits === undefined ? {} : { limits: opts.limits }),
+      ...(opts.guests === undefined ? {} : { access: { membership: (u: string) => Promise.resolve(opts.guests?.includes(u) === true ? ('guest' as const) : ('member' as const)) } }),
       onOutcome: (o) => outcomes.push(o),
       onError,
     });
@@ -357,6 +358,15 @@ describe(`Slack signals through the dispatcher (${TEST_DIALECT})`, () => {
     // "keep me posted" with no surface is the incident's watch.
     await w.post(variant('signal-thread-reply', 'Ev0SIGWATCH3', { user: PAT, text: 'keep me posted' }));
     expect(w.outcomes.at(-1)).toMatchObject({ kind: 'signal', intent: 'watch', outcome: { handled: true, effect: 'watch' } });
+  });
+
+  it('a guest asking for a standing watch in the thread is told no and nothing is written (#272)', async () => {
+    await filed();
+    const w = setup({ guests: [PAT] });
+    await w.post(variant('signal-thread-reply', 'Ev0SIGGUEST1', { user: PAT, text: 'keep me posted on the website' }));
+    expect(w.outcomes).toEqual([{ kind: 'standing', changed: false }]);
+    expect(await state.getSubscriptions(INC)).toEqual([]);
+    expect(w.web.postEphemeral).toHaveBeenCalledWith(expect.objectContaining({ channel: CHANNEL, user: PAT, thread_ts: ANCHOR, text: 'Status answers are for members of this workspace.' }));
   });
 
   it('a reply the lexicon misses goes to the model with the earlier thread messages, only in an active incident thread', async () => {
