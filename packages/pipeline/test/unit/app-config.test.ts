@@ -58,6 +58,15 @@ describe('loadAppConfig', () => {
     });
   });
 
+  it('carries the pinned models and the token caps the model proxy enforces (#273), and refuses a bad cap', async () => {
+    const xml = example.replace('<harness fixer="claude-code" review="generic">', '<harness fixer="claude-code" review="generic" fixer-model="claude-opus-5-5" review-model="claude-sonnet-5-5" max-tokens="16000" max-run-tokens="2000000">');
+    expect(await validateAppConfig(xml)).toEqual({ valid: true, errors: [] });
+    expect(loadAppConfig(xml).harness).toMatchObject({ fixerModel: 'claude-opus-5-5', reviewModel: 'claude-sonnet-5-5', maxTokens: 16000, maxRunTokens: 2000000 });
+    const bad = xml.replace('max-tokens="16000"', 'max-tokens="0"');
+    expect((await validateAppConfig(bad)).valid).toBe(false);
+    expect(() => loadAppConfig(bad)).toThrow(/max-tokens="0"> must be a positive integer/);
+  });
+
   it('defaults the generic timeout to PT30M and carries the region', () => {
     const xml = example
       .replace('<runtime provider="local"/>', '<runtime provider="aws" region="us-east-2"/>')

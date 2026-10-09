@@ -10,7 +10,8 @@
 //   - the incident has no events (`unknown-incident`),
 //   - the incident is in a terminal status, folded from the log (`incident-closed`),
 //   - no run is going: the latest `fixer-started` is followed by `fixer-done`, `fixer-failed`, or
-//     `stopped`, or there is none (`run-finished`).
+//     `stopped`, or there is none (`run-finished`),
+//   - the report names a run (the fixer token's, #273) that is not the running one (`run-finished`).
 // A `done` is also refused, appending nothing, when the pull request the hand-off opened fails
 // verification against GitHub (`pr-mismatch`, verify-pr.ts).
 //
@@ -63,6 +64,8 @@ import {
 export interface FixerTarget {
   workItemId: string;
   incidentId: string;
+  /** The run the fixer token was issued for (#273): reports for any other run are refused. */
+  runId?: string;
 }
 
 export type FixerRefusal = 'unknown-incident' | 'incident-closed' | 'run-finished' | 'pr-mismatch';
@@ -112,13 +115,13 @@ export interface FixerReporter {
 
 type Decision = { ok: true; run: IncidentEvent<'fixer-started'>; workspaceId: string } | { ok: false; code: FixerRefusal };
 
-/** Whether a fixer may report on this log right now. */
-export function decideReport(events: readonly IncidentEvent[]): Decision {
+/** Whether a fixer may report on this log right now, for `runId` when it names one. */
+export function decideReport(events: readonly IncidentEvent[], runId?: string): Decision {
   const first = events[0];
   if (first === undefined) return { ok: false, code: 'unknown-incident' };
   if (isTerminalStatus(statusOf(events))) return { ok: false, code: 'incident-closed' };
   const run = activeRun(events);
-  if (run === undefined) return { ok: false, code: 'run-finished' };
+  if (run === undefined || (runId !== undefined && run.payload.runId !== runId)) return { ok: false, code: 'run-finished' };
   return { ok: true, run, workspaceId: first.workspaceId };
 }
 
@@ -161,7 +164,7 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
     let refusal: FixerRefusal = 'run-finished';
     let runId = '';
     const appended = await appendDecided(state, target.incidentId, (events) => {
-      const d = decideReport(events);
+      const d = decideReport(events, target.runId);
       if (!d.ok) {
         refusal = d.code;
         return undefined;
@@ -180,7 +183,7 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
 
   /** True while `runId` is still the incident's running run, with no stop and no end after it. */
   async function running(target: FixerTarget, runId: string): Promise<boolean> {
-    const d = decideReport(await state.read(target.incidentId));
+    const d = decideReport(await state.read(target.incidentId), target.runId);
     return d.ok && d.run.payload.runId === runId;
   }
 
@@ -196,7 +199,7 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
     if (hook === undefined) return;
     const events = await state.read(target.incidentId);
     const run = latest(events, 'fixer-started');
-    if (run === undefined) return;
+    if (run === undefined || (target.runId !== undefined && run.payload.runId !== target.runId)) return;
     const end = events.find((e) => e.seq > run.seq && (e.type === 'fixer-done' || e.type === 'fixer-failed' || e.type === 'stopped'));
     if (end?.type === type) await hook({ workItemId: target.workItemId, incidentId: target.incidentId, runId: run.payload.runId, seq: end.seq });
   }
@@ -208,7 +211,7 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
     hook: ((ctx: FixerHookContext) => Promise<void>) | undefined,
   ): Promise<{ ok: true; runId: string; events: IncidentEvent[] } | { ok: false; code: FixerRefusal }> {
     const events = await state.read(target.incidentId);
-    const d = decideReport(events);
+    const d = decideReport(events, target.runId);
     if (d.ok) return { ok: true, runId: d.run.payload.runId, events };
     if (d.code === 'run-finished') await healDuplicate(target, type, hook);
     return d;
@@ -224,7 +227,7 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
       const parsed = parseArtifactInput(input);
       if (!parsed.ok) return { ok: false, code: 'invalid', error: parsed.error };
       const before = await state.read(target.incidentId);
-      const d = decideReport(before);
+      const d = decideReport(before, target.runId);
       if (!d.ok) return d;
 
       const { kind, body, contentType } = parsed.value;
@@ -302,6 +305,8 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
 
     async stop(target) {
       const events = await state.read(target.incidentId);
+      // A token of an earlier run learns that its run is over.
+      if (target.runId !== undefined && latest(events, 'fixer-started')?.payload.runId !== target.runId && events.length > 0) return { ok: false, code: 'run-finished' };
       if (stopPending(events)) return { ok: true, stop: true };
       const d = decideReport(events);
       return d.ok || d.code === 'run-finished' ? { ok: true, stop: false } : d;

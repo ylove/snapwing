@@ -305,7 +305,7 @@ describe(`0008 one GitHub account, one chat user (${TEST_DIALECT})`, () => {
           row('slack', 'U-ALONE', 42, '2026-10-01T10:00:00.000Z'),
         ])
         .execute();
-      expect(await migrateState(db, TEST_DIALECT)).toEqual(['0008-linked-identity-unique-account']);
+      expect(await migrateState(db, TEST_DIALECT, MIGRATIONS.slice(0, 8))).toEqual(['0008-linked-identity-unique-account']);
       const rows = await db.selectFrom('linked_identities').select(['chat_user_id']).orderBy('chat_user_id').execute();
       expect(rows.map((r) => r.chat_user_id)).toEqual(['T-NEW', 'U-ALONE']);
       const again = legacy.insertInto('linked_identities').values(row('slack', 'U-THIRD', 41, '2026-10-03T10:00:00.000Z')).execute();

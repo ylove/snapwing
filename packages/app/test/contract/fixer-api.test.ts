@@ -8,11 +8,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { EventPayloads, EventType, IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { handleFixerDone, handleFixerFailed, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import type { OpenedState, StatePort } from '@snapwing/pipeline/ports/state.ts';
+import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import type { FixerHandoff, HandoffRequest, HandoffResult } from '../../src/fixer-api/handoff.ts';
 import { createFixerReporter, type FixerHookContext, type FixerReporterDeps } from '../../src/fixer-api/reporter.ts';
-import { createFixerRoutes, type FixerRoute } from '../../src/fixer-api/routes.ts';
+import { createFixerRoutes, type FixerRoute, type FixerRouteOptions } from '../../src/fixer-api/routes.ts';
 import {
   fixerTokenKeysFromEnv,
   fixerTokenTtl,
@@ -107,7 +108,7 @@ function fakeHandoff(answer?: (r: HandoffRequest) => Promise<HandoffResult>): { 
 
 let handoffs: HandoffRequest[];
 
-async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps> } = {}): Promise<void> {
+async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps>; routes?: FixerRouteOptions } = {}): Promise<void> {
   const fake = fakeHandoff();
   handoffs = fake.asked;
   const reporter = createFixerReporter({
@@ -119,11 +120,12 @@ async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps
     onFailed: async (c) => void hooks.failed.push(c),
     ...opts.deps,
   });
-  await serve(createFixerRoutes(reporter, fixerTokenVerifier(keys)));
+  if (!(state instanceof StateStore)) throw new Error('openState did not return a StateStore');
+  await serve(createFixerRoutes(reporter, fixerTokenVerifier(keys), { credentials: state, ...opts.routes }));
 }
 
-function token(workItemId = INC, incidentId = INC, ttl = 'PT45M'): string {
-  return issueFixerToken({ workItemId, incidentId, ttl }, keys);
+function token(workItemId = INC, incidentId = INC, ttl = 'PT45M', runId = RUN): string {
+  return issueFixerToken({ workItemId, incidentId, runId, ttl }, keys);
 }
 
 async function call(
@@ -211,7 +213,7 @@ describe('fixer tokens', () => {
     const v = verifyFixerToken(token(INC, OTHER_INC), INC, keys);
     expect(v).toEqual({
       ok: true,
-      claims: { workItemId: INC, incidentId: OTHER_INC, issuedAt: new Date(T0), expiresAt: new Date(T0 + 45 * MINUTE) },
+      claims: { workItemId: INC, incidentId: OTHER_INC, runId: RUN, issuedAt: new Date(T0), expiresAt: new Date(T0 + 45 * MINUTE) },
     });
   });
 
@@ -242,7 +244,7 @@ describe('fixer tokens', () => {
   });
 
   it('refuses a short or missing secret and an over-long TTL', () => {
-    expect(() => issueFixerToken({ workItemId: INC, incidentId: INC, ttl: 'PT1M' }, { ...keys, secret: 'short' })).toThrow(/at least 32/);
+    expect(() => issueFixerToken({ workItemId: INC, incidentId: INC, runId: RUN, ttl: 'PT1M' }, { ...keys, secret: 'short' })).toThrow(/at least 32/);
     expect(() => fixerTokenKeysFromEnv({}, keys.clock)).toThrow(/SNAPWING_FIXER_TOKEN_SECRET is not set/);
     expect(fixerTokenKeysFromEnv({ SNAPWING_FIXER_TOKEN_SECRET: FAKE_SECRET }, keys.clock).secret).toBe(FAKE_SECRET);
     expect(() => token(INC, INC, 'P2D')).toThrow(RangeError);
@@ -327,7 +329,7 @@ describe('fixer API over HTTP', () => {
     });
     expect(await call('done', { prNumber: 9, branch: 'fix/other' })).toEqual({ status: 409, json: { error: 'pr-mismatch' } });
     // What is verified is what the hand-off opened, never the number or branch the fixer named.
-    expect(asked).toEqual([[{ workItemId: INC, incidentId: INC }, { prNumber: 7, branch: 'fix/WEB-1042' }]]);
+    expect(asked).toEqual([[{ workItemId: INC, incidentId: INC, runId: RUN }, { prNumber: 7, branch: 'fix/WEB-1042' }]]);
     expect(await types()).not.toContain('pr-opened');
     expect(await types()).not.toContain('fixer-done');
     expect(hooks.done).toEqual([]);
@@ -503,7 +505,7 @@ describe('fixer API over HTTP', () => {
     await start();
     const before = (await log()).length;
     expect(await call('checkpoint', { phase: 'cloned' }, { token: null })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'missing-token' } });
-    const forged = issueFixerToken({ workItemId: INC, incidentId: INC, ttl: 'PT45M' }, { ...keys, secret: `${FAKE_SECRET}-attacker` });
+    const forged = issueFixerToken({ workItemId: INC, incidentId: INC, runId: RUN, ttl: 'PT45M' }, { ...keys, secret: `${FAKE_SECRET}-attacker` });
     expect(await call('checkpoint', { phase: 'cloned' }, { token: forged })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'bad-signature' } });
     expect(await call('stop', undefined, { token: 'not-a-token' })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'malformed' } });
 
@@ -539,6 +541,50 @@ describe('fixer API over HTTP', () => {
     expect(racer.conflicts).toBe(1);
     expect((await types()).slice(-2)).toEqual(['fixer-started', 'stopped']);
     expect(hooks.done).toEqual([]);
+  });
+});
+
+describe('run-bound tokens and artifact caps (#273)', () => {
+  it('refuses a revoked token on every route with 401, and appends nothing', async () => {
+    await seedRunning();
+    await start();
+    expect((await call('checkpoint', { phase: 'cloned' })).status).toBe(200);
+    if (!(state instanceof StateStore)) throw new Error('not a StateStore');
+    await state.revokeRunCredentials(RUN);
+    const before = (await log()).length;
+    for (const [op, body] of [['checkpoint', { phase: 'branched' }], ['artifact', { kind: 'diagnosis', body: 'x' }], ['done', { summary: 's', testsAdded: [] }], ['failed', { reason: 'r', attempts: 1 }], ['stop', undefined]] as const) {
+      expect(await call(op, body), op).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'revoked' } });
+    }
+    expect((await log()).length).toBe(before);
+    expect(hooks).toEqual({ done: [], failed: [] });
+  });
+
+  it("refuses a token of an earlier run of the same incident: it may not report for the run that replaced it", async () => {
+    await seedRunning();
+    await appendTo(INC, [ev('stopped', {}), ev('fixer-started', { runId: 'run-2', harness: 'claude-code', attempt: 2 })]);
+    await start();
+    const before = (await log()).length;
+    expect(await call('checkpoint', { phase: 'cloned' })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect(await call('artifact', { kind: 'diagnosis', body: 'x' })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect(await call('done', { summary: 's', testsAdded: [] })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    // Its stop poll says the run is over, which the wrapper treats as a stop.
+    expect(await call('stop')).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect((await log()).length).toBe(before);
+    expect(handoffs).toEqual([]);
+    // The current run's token reports as before.
+    expect((await call('checkpoint', { phase: 'cloned' }, { token: token(INC, INC, 'PT45M', 'run-2') })).status).toBe(200);
+  });
+
+  it('caps the artifacts one run writes, by count and by bytes (413), persisted per run', async () => {
+    await seedRunning();
+    await start({ routes: { artifactLimits: { maxArtifacts: 2, maxBytes: 200 } } });
+    expect((await call('artifact', { kind: 'diagnosis', body: 'a'.repeat(50) })).status).toBe(200);
+    expect(await call('artifact', { kind: 'diagnosis', body: 'b'.repeat(150) })).toEqual({ status: 413, json: { error: 'artifact-cap' } });
+    expect((await call('artifact', { kind: 'contract', body: 'c' })).status).toBe(200);
+    expect(await call('artifact', { kind: 'contract', body: 'd' })).toEqual({ status: 413, json: { error: 'artifact-cap' } });
+    if (!(state instanceof StateStore)) throw new Error('not a StateStore');
+    expect(await state.runCredentialUse(RUN)).toMatchObject({ artifacts: 2 });
+    expect((await log()).filter((e) => e.type === 'fixer-artifact')).toHaveLength(2);
   });
 });
 

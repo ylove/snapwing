@@ -26,11 +26,14 @@ import type { HarnessPort } from '@snapwing/pipeline/ports/harness.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkflowPort } from '@snapwing/pipeline/ports/workflow.ts';
 import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets.ts';
+import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { PgBossWorkflow } from '@snapwing/pipeline/workflow/pgboss/index.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createBareRepo, git } from '../../../pipeline/test/helpers/git.ts';
+import { verifyFixerToken } from '../../src/fixer-api/token.ts';
 import { verifyModelToken } from '../../src/model-proxy/token.ts';
+import { DEFAULT_FIXER_EGRESS_ALLOW } from '../../src/providers/docker/runner.ts';
 import type { SocketLike } from '../../src/adapters/slack/transport.ts';
 import { repoFullName, sameRepo } from '../../src/github/repo.ts';
 import { compose, mergePrometheus, MissingSecretsError, type Composed, type ComposeFn, type ComposeOverrides } from '../../src/server/compose.ts';
@@ -307,6 +310,38 @@ describe('compose', () => {
   });
 });
 
+describe('compose with the docker runtime: test containers (#273)', () => {
+  it('SNAPWING_TEST_EGRESS=off gives test runs no network; anything but on or off refuses to start', async () => {
+    const bin = join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(join(bin, 'docker'), fakeDocker(DEMO_GITHUB_TOKEN), { mode: 0o755 });
+    const state = await tdb.open();
+    const composed = await composeDirect({
+      secrets: fakeSecrets(),
+      env: { SNAPWING_FIXER_IMAGE: 'snapwing-fixer-test:1', SNAPWING_TEST_EGRESS: 'off' },
+      overrides: { slackBotUserId: BOT_USER },
+      state,
+      workflow: new InProcessWorkflow(state),
+      provider: 'docker',
+    });
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}:${savedPath ?? ''}`;
+    try {
+      await composed.deps?.review.runner?.runTests?.({ runId: TESTS_RUN, checkout: bin, command: 'npm test', timeoutMs: 20_000 });
+    } finally {
+      process.env['PATH'] = savedPath;
+    }
+    const runs = (await readFile(join(bin, 'runs.jsonl'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l) as ContainerRun);
+    expect(runs.map((r) => [r.name, r.network])).toEqual([[`snapwing-tests-${TESTS_RUN}`, 'none']]);
+    expect(Object.keys(runs[0]?.env ?? {}).filter((k) => /proxy/i.test(k))).toEqual([]);
+
+    const other = await tdb.open();
+    await expect(
+      composeDirect({ secrets: fakeSecrets(), env: { SNAPWING_FIXER_IMAGE: 'snapwing-fixer-test:1', SNAPWING_TEST_EGRESS: 'sometimes' }, overrides: { slackBotUserId: BOT_USER }, state: other, workflow: new InProcessWorkflow(other), provider: 'docker' }),
+    ).rejects.toThrow(/SNAPWING_TEST_EGRESS must be on or off/);
+  });
+});
+
 describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1)', () => {
   it('mounts the proxy only for docker, and only for providers whose key is set', async () => {
     const localState = await tdb.open();
@@ -381,7 +416,7 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
       http.post('https://api.anthropic.com/v1/messages', ({ request }) => {
         upstream.push({ apiKey: request.headers.get('x-api-key'), headers: JSON.stringify([...request.headers]) });
         if (request.headers.get('x-api-key') !== 'test-anthropic-key') return HttpResponse.json({ error: 'bad key' }, { status: 401 });
-        return HttpResponse.json({ id: 'msg-test', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'looks fine' }] });
+        return HttpResponse.json({ id: 'msg-test', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'looks fine' }], usage: { input_tokens: 12, output_tokens: 3 } });
       }),
     );
 
@@ -437,6 +472,11 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
         harness: { adapter: 'claude-code' },
         budget: { wallClock: 'PT30M', attempts: 1 },
       });
+
+      // A regression-proof test run: a fresh clone, so it gets the registries through the proxy by default.
+      const tree = join(dir, 'tests-tree');
+      await mkdir(tree);
+      await review.runner?.runTests?.({ runId: TESTS_RUN, checkout: tree, command: 'npm ci && npm test', timeoutMs: 20_000 });
     } finally {
       if (savedPath === undefined) delete process.env['PATH'];
       else process.env['PATH'] = savedPath;
@@ -452,33 +492,58 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     const fixerRun = runs.find((r) => r.name === `snapwing-fixer-${FIXER_RUN}`);
     if (reviewRun === undefined || fixerRun === undefined) throw new Error(`expected a review and a fixer container, got ${runs.map((r) => r.name).join(', ')}`);
 
-    // The review container: the configured harness, the proxy as its base URL, and a model token.
+    // Both containers reach the server only through the relay on the internal run network (#273), which
+    // forwards to SNAPWING_CONTAINER_API_URL.
+    const relayRun = runs.find((r) => r.name === 'snapwing-relay');
+    expect(relayRun?.env['SNAPWING_RELAY_UPSTREAM']).toBe(containerApi);
+    for (const run of [reviewRun, fixerRun]) expect(run.network).toBe('snapwing-runs');
+    // The relay's egress proxy serves the default registries; only the fixer container is pointed at it.
+    expect(relayRun?.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBe(DEFAULT_FIXER_EGRESS_ALLOW.join(','));
+    expect(fixerRun.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
+    expect(reviewRun.env['HTTPS_PROXY']).toBeUndefined();
+    const testsRun = runs.find((r) => r.name === `snapwing-tests-${TESTS_RUN}`);
+    expect(testsRun?.network).toBe('snapwing-runs');
+    expect(testsRun?.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
+    expect(Object.keys(testsRun?.env ?? {}).filter((k) => k.startsWith('SNAPWING_'))).toEqual([]);
+
+    // The review container: the configured harness, the proxy URL through the relay, and a model token
+    // only in its credentials file, pinned to the default provider's model.
     expect(reviewRun.env['SNAPWING_ROLE']).toBe('review');
     expect(reviewRun.env['SNAPWING_HARNESS']).toBe('generic');
     expect(reviewRun.env['SNAPWING_HARNESS_TEMPLATE']).toBe('aider');
-    expect(reviewRun.env['ANTHROPIC_BASE_URL']).toBe(`${containerApi}/model/${INC}/anthropic`);
-    expect(reviewRun.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
+    expect(reviewRun.env['SNAPWING_MODEL_PROXY_URL']).toBe(`http://snapwing-api:8080/model/${INC}`);
+    for (const name of ['SNAPWING_FIXER_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL']) expect(reviewRun.env[name]).toBeUndefined();
+    expect(reviewRun.credentials.fixerToken).toBeUndefined();
     expect(reviewRun.calls.modelToken).toEqual({ status: 200, body: expect.stringContaining('looks fine') });
     const keys = { secret: secrets['SNAPWING_FIXER_TOKEN_SECRET'] ?? '', clock: () => new Date() };
-    const reviewToken = verifyModelToken(reviewRun.env['ANTHROPIC_API_KEY'] ?? '', INC, keys);
+    const reviewToken = verifyModelToken(reviewRun.credentials.modelToken ?? '', INC, keys);
     if (!reviewToken.ok) throw new Error(`review model token: ${reviewToken.reason}`);
-    expect(reviewToken.claims.runId).toBe(reviewRun.env['SNAPWING_RUN_ID']);
+    expect(reviewToken.claims).toMatchObject({ runId: reviewRun.env['SNAPWING_RUN_ID'], provider: 'anthropic', model: 'claude-sonnet-5-5', maxTokens: 32_000 });
     // The review's wall clock (PT30M) plus the margin.
     expect(reviewToken.claims.expiresAt.getTime() - reviewToken.claims.issuedAt.getTime()).toBe(35 * 60_000);
+    // Revoked once the review returned: the same token is refused now.
+    if (!(state instanceof StateStore)) throw new Error('openState did not return a StateStore');
+    expect(await state.runCredentialsRevoked(reviewToken.claims.runId)).toBe(true);
 
-    // The fixer container: its fixer API URL, and the model proxy where it reaches the server.
-    expect(fixerRun.env['SNAPWING_API_URL']).toBe('http://fixer-api.invalid');
-    expect(fixerRun.env['ANTHROPIC_BASE_URL']).toBe(`${containerApi}/model/${INC}/anthropic`);
-    expect(fixerRun.env['SNAPWING_FIXER_TOKEN']).toMatch(/^swf1\./);
+    // The fixer container: the fixer API and the model proxy through the relay, both tokens in its
+    // credentials file, each bound to the run.
+    expect(fixerRun.env['SNAPWING_API_URL']).toBe('http://snapwing-api:8080');
+    expect(fixerRun.env['SNAPWING_MODEL_PROXY_URL']).toBe(`http://snapwing-api:8080/model/${INC}`);
+    expect(fixerRun.env['SNAPWING_HARNESS_MODEL']).toBe('claude-sonnet-5-5');
+    expect(fixerRun.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
+    const fixerToken = verifyFixerToken(fixerRun.credentials.fixerToken ?? '', INC, keys);
+    expect(fixerToken).toMatchObject({ ok: true, claims: { runId: FIXER_RUN } });
     expect(fixerRun.calls.modelToken).toEqual({ status: 200, body: expect.stringContaining('looks fine') });
     // A fixer token is not a model token: the proxy refuses it and never calls the provider.
     expect(fixerRun.calls.fixerToken?.status).toBe(401);
     expect(upstream).toHaveLength(2);
+    // The proxy metered both runs in the state store.
+    expect(await state.runCredentialUse(FIXER_RUN)).toMatchObject({ modelRequests: 1, inputTokens: 12, outputTokens: 3 });
 
     // No GitHub credential entered the fixer container (#262): the runner cloned with the installation
-    // token on the host, and the container got its checkout, an empty hand-off directory, and nothing else.
+    // token on the host, and the container got its checkout, an empty hand-off directory, its credentials, and nothing else.
     const scratch = join(dir, 'work', 'fixer', FIXER_RUN);
-    expect(fixerRun.mounts).toEqual([`${join(scratch, 'work')}:/work`, `${join(scratch, 'out')}:/out`]);
+    expect(fixerRun.mounts).toEqual([`${join(scratch, 'work')}:/work`, `${join(scratch, 'out')}:/out`, `${join(scratch, 'creds')}:/run/snapwing`]);
     expect(fixerRun.holding).toEqual([]);
     expect(JSON.stringify(fixerRun.env)).not.toContain(DEMO_GITHUB_TOKEN);
     for (const name of ['SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_GIT_CREDENTIAL_SOCKET']) expect(fixerRun.env[name]).toBeUndefined();
@@ -502,6 +567,7 @@ const REPO = 'github.com/fake-org/web';
 const REPO_FULL = 'fake-org/web';
 const INC = '01K6COMPOSEREVIEW000000001';
 const FIXER_RUN = '01K6COMPOSEFIXERRUN0000001';
+const TESTS_RUN = '01K6COMPOSETESTSRUN0000001';
 const PR = 418;
 const BRANCH = 'fix/WEB-1042';
 const REQUEST_BODY = buildImplementationRequest({
@@ -515,7 +581,10 @@ const REQUEST_BODY = buildImplementationRequest({
 /** What the fake docker CLI recorded of one container. */
 interface ContainerRun {
   name: string;
+  network: string;
   env: Record<string, string>;
+  /** What the container's credentials file held (the wrapper takes it). */
+  credentials: { fixerToken?: string; modelToken?: string };
   calls: { modelToken?: { status: number; body: string }; fixerToken?: { status: number; body: string } };
   /** Every `-v` the container got. */
   mounts: string[];
@@ -524,10 +593,13 @@ interface ContainerRun {
 }
 
 /**
- * A fake `docker` CLI (a Node script): `run` builds the container's environment from `-e` exactly as
- * docker would, then acts as the agent inside: one model call through `ANTHROPIC_BASE_URL` with the
- * container's `ANTHROPIC_API_KEY`, one with its fixer token when it has one, and a review writes an
- * approving verdict to `SNAPWING_REVIEW_FILE` in the mounted tree. Each run is appended to `runs.jsonl`.
+ * A fake `docker` CLI (a Node script). The run network is internal and the relay is missing, so the
+ * runner starts the relay; its upstream is where `http://snapwing-api:8080` leads afterwards. `run`
+ * builds the container's environment from `-e` exactly as docker would, then acts as the wrapper inside:
+ * it takes the credentials file from the `/run/snapwing` mount, makes one model call through
+ * `SNAPWING_MODEL_PROXY_URL` with the model token, one with the fixer token when it has one, and a
+ * review writes an approving verdict to `SNAPWING_REVIEW_FILE` in the mounted tree. Each run is
+ * appended to `runs.jsonl`.
  */
 function fakeDocker(probe: string): string {
   const verdict = JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] });
@@ -540,10 +612,14 @@ function filesUnder(dir) {
   return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(path.join(dir, e.name)) : e.isFile() ? [path.join(dir, e.name)] : []));
 }
 async function main() {
+  if (args[0] === 'network' && args[1] === 'inspect') return process.stdout.write('true bridge true\\n'), 0;
+  if (args[0] === 'inspect') return process.stderr.write('Error: No such object\\n'), 1;
   if (args[0] !== 'run') return 0;
   const env = {};
   let mount = '';
   let name = '';
+  let network = '';
+  let creds = '';
   const mounts = [];
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
@@ -556,11 +632,26 @@ async function main() {
       mounts.push(args[++i]);
       const [src, dst] = args[i].split(':');
       if (dst === '/work') mount = src;
+      if (dst === '/run/snapwing') creds = src;
     } else if (a === '--name') name = args[++i];
+    else if (a === '--network') network = args[++i];
+  }
+  const relayFile = path.join(__dirname, 'relay-upstream');
+  if (name === 'snapwing-relay') {
+    fs.writeFileSync(relayFile, env.SNAPWING_RELAY_UPSTREAM);
+    fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, network, env, credentials: {}, calls: {}, mounts, holding: [] }) + '\\n');
+    return 0;
+  }
+  const viaRelay = (url) => url.replace('http://snapwing-api:8080', fs.readFileSync(relayFile, 'utf8'));
+  let credentials = {};
+  if (creds !== '') {
+    const file = path.join(creds, 'credentials.json');
+    credentials = JSON.parse(fs.readFileSync(file, 'utf8'));
+    fs.rmSync(file);
   }
   const holding = mounts.flatMap((m) => filesUnder(m.split(':')[0])).filter((f) => fs.readFileSync(f).includes(probe));
   const call = async (key) => {
-    const res = await fetch(env.ANTHROPIC_BASE_URL + '/v1/messages', {
+    const res = await fetch(viaRelay(env.SNAPWING_MODEL_PROXY_URL) + '/anthropic/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'anthropic-version': '2023-06-01', 'x-api-key': key },
       body: JSON.stringify({ model: 'claude-test', max_tokens: 16, messages: [{ role: 'user', content: 'review this' }] }),
@@ -568,12 +659,12 @@ async function main() {
     return { status: res.status, body: await res.text() };
   };
   const calls = {};
-  if (env.ANTHROPIC_BASE_URL) {
-    calls.modelToken = await call(env.ANTHROPIC_API_KEY);
-    if (env.SNAPWING_FIXER_TOKEN) calls.fixerToken = await call(env.SNAPWING_FIXER_TOKEN);
+  if (env.SNAPWING_MODEL_PROXY_URL) {
+    calls.modelToken = await call(credentials.modelToken);
+    if (credentials.fixerToken) calls.fixerToken = await call(credentials.fixerToken);
   }
   if (env.SNAPWING_REVIEW_FILE && mount !== '') fs.writeFileSync(path.join(mount, env.SNAPWING_REVIEW_FILE.slice('/work/'.length)), ${JSON.stringify(verdict)});
-  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, env, calls, mounts, holding }) + '\\n');
+  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, network, env, credentials, calls, mounts, holding }) + '\\n');
   return 0;
 }
 main().then((code) => process.exit(code), (e) => { console.error(String(e)); process.exit(1); });

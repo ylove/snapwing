@@ -1,13 +1,37 @@
 // The `docker` RunnerPort (main 14.3, main 10.2): runs one fixer job as a detached `docker run --rm`
 // container on this host (any VPS). The container is the image's own entrypoint; it reads its job
 // from `SNAPWING_*` environment variables, works in the checkout mounted at `/work`, leaves its work
-// as a bundle in `/out`, and reports through the fixer API (B 9) with the per-work-item token. The
-// runner never mounts anything else, and passes nothing secret but that token and the per-run model
-// token: no GitHub credential of any kind enters the container (#262).
+// as a bundle in `/out`, and reports through the fixer API (B 9) with its run's token. The runner mounts
+// nothing else but the run's credentials directory, and passes nothing secret but that token and the
+// per-run model token: no GitHub credential of any kind enters the container (#262).
 //
-// Env values go to the docker CLI through its own environment and `-e NAME` (no value), so no token
-// ever appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to
-// find its daemon, not the server's environment.
+// Credentials (#273): the fixer token and the model token are in no variable. The runner writes them to
+// `credentials.json` in a directory of the run's own (`<run>/creds`, 0700, the file 0600) mounted at
+// `/run/snapwing`; the image's wrapper reads the file and removes it before any harness starts, so no
+// process in the container can read them from a file or from `/proc/*/environ`. Both tokens name the
+// run: `revoke(runId)` (the state store) ends them when the fixer container is gone, when `cancel`
+// stops it (before `docker stop`), and when a review run returns.
+//
+// Network (#273): fixer and review containers join `network` (default `snapwing-runs`), a docker
+// `--internal` network whose bridge has no address of the host's (`inhibit_ipv4`): it has no route out
+// and no way to the host, so no host port, no cloud metadata service (169.254.169.254), and no internet.
+// The runner creates it when it is missing and refuses to start a run on a network that lets either
+// through. With `relay`, the only other thing on it is the relay container (`snapwing-relay`, the
+// image's relay.ts, alias `snapwing-api`): it reaches the server on `relay.network` (default docker's
+// `bridge`) and forwards only the fixer API and model proxy paths to `relay.upstream` (`RELAY_URL`).
+// With `egress` (an allowlist of hosts, `DEFAULT_FIXER_EGRESS_ALLOW` from compose), the relay also
+// serves an HTTP CONNECT proxy (`EGRESS_PROXY_URL`) to port 443 of those hosts and no others, refusing
+// any whose name resolves to a loopback, link-local, private, or shared address (egress.ts), and fixer
+// containers get it in the standard proxy variables (`egressEnv`), with `snapwing-api` and loopback
+// left direct. Review containers never get it: the review agent only reads. The runner (re)starts the
+// relay when it is missing or was started for another image, upstream, network, or allowlist.
+// Containers of concurrent runs share the internal network. Test containers join it with the same
+// proxy, since each tests a fresh clone that needs its dependencies installed; they get `--network none`
+// with `testEgress: false` or without egress, and `testNetwork` names a network of the operator's own.
+//
+// Env values go to the docker CLI through its own environment and `-e NAME` (no value), so no value ever
+// appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to find its
+// daemon, not the server's environment.
 //
 // The work item is prepared on the host before the container starts, because nothing in the
 // container can turn an artifact id into a request, and because the clone needs a credential:
@@ -18,8 +42,8 @@
 // and writes the request to `.git/snapwing/implementation-request.xml` and the review to
 // `.git/snapwing/review.json`, named in the container as `SNAPWING_PRIOR_REVIEW_FILE` under `/work`.
 // The installation token from `git.token` is used for that clone on the host only. The container
-// gets `work/` at `/work` and `out/` at `/out`, never the run directory itself, so it cannot touch
-// the record. The wrapper points `core.hooksPath` at `/work/.git/snapwing/hooks`, so the host paths in
+// gets `work/` at `/work`, `out/` at `/out`, and `creds/` at `/run/snapwing`, never the run directory
+// itself, so it cannot touch the record. The wrapper points `core.hooksPath` at `/work/.git/snapwing/hooks`, so the host paths in
 // the prepared `.git/config` are never needed, and once the harness has committed it writes the
 // bundle of the work branch (`SNAPWING_WORK_BRANCH` since `SNAPWING_BASE_SHA`) to
 // `SNAPWING_HANDOFF_FILE` in `/out`. The server imports that bundle, checks it, and pushes it
@@ -30,21 +54,23 @@
 // After `docker run -d` the runner waits for the container in the background (`docker wait`) and
 // removes the scratch directory once the container is gone (`wait(runId)` resolves then). A container
 // whose end the runner cannot observe (the daemon unreachable, the server restarted) leaves its
-// directory behind (it holds a checkout and maybe a bundle, no token); `sweep` at the next startup removes it once it
-// is older than the longest wall clock plus a margin and no `snapwing-fixer-<runId>` container of
+// directory behind (a checkout, maybe a bundle, at most a credentials file the wrapper never took, whose
+// tokens expire with the run); `sweep` at the next startup removes it once it is older than the longest
+// wall clock plus a margin and no `snapwing-fixer-<runId>` container of
 // any state exists (`sweepScratch`, shared with the `local` runner). When docker cannot list its
 // containers, the sweep removes nothing.
 //
 // `runFixer` resolves once `docker run -d` has created the container. It rejects, starting nothing and
 // leaving no directory, when the work item cannot be prepared (a missing or wrong-kind artifact, a
-// request that does not parse, no token, a failed clone) or when docker refuses (bad image, bad name,
-// no daemon). `cancel` is `docker stop -t <grace>`: SIGTERM, then SIGKILL after the grace; `--rm`
+// request that does not parse, no token, a failed clone), when the run network is refused, or when
+// docker refuses (bad image, bad name, no daemon). `cancel` is `docker stop -t <grace>`: SIGTERM, then SIGKILL after the grace; `--rm`
 // removes the container afterwards. A container that is already gone makes `cancel` a no-op.
 //
 // `runTests` runs one regression-proof test run (main 11.1, ADR 0017) in the same image, as an
 // attached `docker run --rm` named `snapwing-tests-<runId>`: the command is `sh -c <command>` in place
 // of the image's entrypoint, the caller's prepared tree is the only mount, and the container gets the
-// caller's env and nothing else, no token of any kind (the review job checked the tree out on the host).
+// caller's env and nothing else, no token of any kind (the review job checked the tree out on the host),
+// plus the egress proxy variables when it joins the run network (above).
 // It runs as the server's uid and gid, so every file it writes in the tree stays removable by the
 // server, with HOME and TMPDIR at the container's `/tmp`. The exit code is the one docker reports for
 // the container; docker's own failure (exit 125: no daemon, no image) rejects, so a test command that
@@ -54,18 +80,21 @@
 // `runReview` runs the review agent (main 11.1, ADR 0017) the same way, attached, as
 // `snapwing-review-<runId>`, but with the image's own entrypoint (its wrapper starts the configured
 // harness, as for a fixer) and `SNAPWING_ROLE=review`: the caller's self-contained tree at the head is
-// the only mount, the review input file and `SNAPWING_REVIEW_FILE` lie inside it, and there is no git
-// credential and no fixer API token (nor `SNAPWING_API_URL`: a reviewer reports nothing to the fixer
+// the only mount besides its credentials (`<workdirRoot>/<runId>/creds`, only with a model proxy, removed
+// when the run returns), the review input file and `SNAPWING_REVIEW_FILE` lie inside it, and there is no
+// git credential and no fixer API token (nor `SNAPWING_API_URL`: a reviewer reports nothing to the fixer
 // API). Past the review budget's wall clock the container is killed. The pull request's code never
 // runs in this container (#263): the agent only reads, the tests run in `runTests` containers that
 // mount trees of their own, and the wrapper alone writes `SNAPWING_REVIEW_FILE`, after the agent has
 // exited.
 //
 // Model access (ADR 0017, amendment 1): no model provider key ever enters a container. With
-// `env.modelProxy` configured, a fixer or review container gets the server's model proxy as each CLI's
-// base URL and a per-run model token (`issueModelToken`, `app/src/model-proxy/`) under the
-// conventional key names, so code in the container can at worst spend model calls for its own work
-// item until the token expires. Without it the container has no model access at all.
+// `env.modelProxy` configured, a fixer or review container gets the server's model proxy URL
+// (`SNAPWING_MODEL_PROXY_URL`), the model its role is pinned to (`SNAPWING_HARNESS_MODEL`), and a per-run
+// model token (`issueModelToken`, `app/src/model-proxy/`) in its credentials file; the wrapper serves the
+// agent's model calls on loopback and adds the token itself. So code in the container can at worst
+// spend model calls for its own run, within the proxy's caps, until the run is revoked. Without a proxy
+// the container has no model access at all.
 
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -81,9 +110,9 @@ import { PRIOR_REVIEW_ENV, sweepScratch, type LocalRunnerGit, type ScratchSweep,
 import { parseDuration } from '@snapwing/pipeline/util/duration.ts';
 
 export interface DockerRunnerEnv {
-  /** The fixer API base URL the container reaches (B 9), as seen from inside the container. */
+  /** The fixer API base URL the container reaches (B 9), as seen from inside the container (`RELAY_URL` with a relay). */
   apiUrl: string;
-  /** The scoped token for the job's work item (`issueFixerToken`); fixer containers only. */
+  /** The run's fixer token (`issueFixerToken`: the work item and the run); fixer containers only, in the credentials file. */
   token: (job: FixerJob) => string;
   /**
    * The server's model proxy (ADR 0017, amendment 1). Absent: containers get no model access. Never
@@ -107,8 +136,18 @@ export interface DockerModelProxy {
    * `http://snapwing-api:8080/model` (`MODEL_PROXY_PREFIX` on the API).
    */
   url: string;
-  /** Mints the run's model token (`issueModelToken`): scoped to the work item, short-lived. */
+  /** Mints the run's model token (`issueModelToken`): scoped to the work item and the run, short-lived. */
   token: (run: ModelTokenRequest) => string;
+  /** The model a role's harness is started with (`SNAPWING_HARNESS_MODEL`); the token pins it at the proxy either way. */
+  model?: (role: 'fixer' | 'review') => string | undefined;
+}
+
+/** The relay that is the only way out of the run network (#273). */
+export interface DockerRelay {
+  /** The server's API as the relay reaches it, for example `http://host.docker.internal:3000`. */
+  upstream: string;
+  /** The network the relay reaches `upstream` on. Default `bridge`. */
+  network?: string;
 }
 
 export interface DockerRunnerOptions {
@@ -116,8 +155,24 @@ export interface DockerRunnerOptions {
   image: string;
   /** The docker binary. Default `docker`, found on PATH. */
   docker?: string;
-  /** `--network`; the docker default when omitted. */
+  /** The internal network fixer and review containers join. Default `DEFAULT_RUN_NETWORK`; one that is not `--internal` is refused. */
   network?: string;
+  /** A network of the operator's own for test runs, with no proxy; replaces `testEgress`. */
+  testNetwork?: string;
+  /** Starts and keeps the relay on `network` (#273). Without it, something else must make the API reachable there. */
+  relay?: DockerRelay;
+  /**
+   * Hosts the relay's CONNECT proxy reaches on port 443 for fixer containers (#273), each lowercase and
+   * exact or `*.<suffix>` (`parseEgressAllow`). Default none: no proxy. Needs `relay`.
+   */
+  egress?: readonly string[];
+  /**
+   * Test runs join the run network with the egress proxy, as fixer runs do. Default true; false, or no
+   * egress, gives them `--network none`.
+   */
+  testEgress?: boolean;
+  /** Revokes a run's tokens (#273): after its fixer container is gone, before `cancel` stops it, and after a review run. */
+  revoke?: (runId: string) => Promise<void>;
   env: DockerRunnerEnv;
   /**
    * Where the implementation request and review artifacts are read from. Required by `runFixer`
@@ -174,6 +229,67 @@ export const DOCKER_WORKDIR = '/work';
 export const DOCKER_OUTDIR = '/out';
 /** The bundle's path in the fixer container (`SNAPWING_HANDOFF_FILE`). */
 export const DOCKER_HANDOFF_FILE = `${DOCKER_OUTDIR}/${HANDOFF_BUNDLE_FILE}`;
+/** Where a container finds its credentials directory, and the file in it the wrapper reads and removes (#273). */
+export const DOCKER_CREDENTIALS_DIR = '/run/snapwing';
+export const DOCKER_CREDENTIALS_FILE = `${DOCKER_CREDENTIALS_DIR}/credentials.json`;
+/** The internal network fixer and review containers join by default (#273). */
+export const DEFAULT_RUN_NETWORK = 'snapwing-runs';
+export const RELAY_NAME = 'snapwing-relay';
+/** The relay's name on the run network, and the base URL containers reach the server at through it. */
+export const RELAY_ALIAS = 'snapwing-api';
+export const RELAY_PORT = 8080;
+export const RELAY_URL = `http://${RELAY_ALIAS}:${RELAY_PORT}`;
+const RELAY_SCRIPT = '/opt/snapwing/infra/docker/fixer/relay.ts';
+/** The relay's CONNECT proxy to the allowlisted hosts, as containers reach it. */
+export const EGRESS_PROXY_URL = `http://${RELAY_ALIAS}:3128`;
+/** What a container with the proxy reaches directly: the relay's server paths and its own loopback. */
+export const EGRESS_NO_PROXY = `${RELAY_ALIAS},localhost,127.0.0.1,::1`;
+/**
+ * The hosts a fixer container reaches through the proxy unless SNAPWING_FIXER_EGRESS_ALLOW says
+ * otherwise: the public package registries (npm, which pnpm and corepack's pnpm and yarn 1 also use;
+ * yarn; PyPI; Go modules; crates.io; RubyGems; Maven Central; NuGet), all on HTTPS.
+ */
+export const DEFAULT_FIXER_EGRESS_ALLOW: readonly string[] = Object.freeze([
+  'registry.npmjs.org',
+  'registry.yarnpkg.com',
+  'repo.yarnpkg.com',
+  'pypi.org',
+  'files.pythonhosted.org',
+  'proxy.golang.org',
+  'sum.golang.org',
+  'index.crates.io',
+  'static.crates.io',
+  'rubygems.org',
+  'index.rubygems.org',
+  'repo.maven.apache.org',
+  'repo1.maven.org',
+  'api.nuget.org',
+]);
+const EGRESS_HOST = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/** SNAPWING_TEST_EGRESS: unset, blank, or `on` for test runs behind the egress proxy; `off` for `--network none`. Throws on anything else. */
+export function parseTestEgress(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === '' || value === 'on') return true;
+  if (value === 'off') return false;
+  throw new Error(`SNAPWING_TEST_EGRESS must be on or off, not ${JSON.stringify(raw)}`);
+}
+
+/**
+ * SNAPWING_FIXER_EGRESS_ALLOW: unset or blank for `DEFAULT_FIXER_EGRESS_ALLOW`, `none` for no egress,
+ * else comma-separated hosts, each exact or `*.<suffix>`, replacing the default. Throws on anything else.
+ */
+export function parseEgressAllow(raw: string | undefined): readonly string[] {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === '') return DEFAULT_FIXER_EGRESS_ALLOW;
+  if (value === 'none') return [];
+  const hosts = value.split(',').map((h) => h.trim()).filter((h) => h !== '');
+  const bad = hosts.filter((h) => !EGRESS_HOST.test(h));
+  if (bad.length > 0) throw new Error(`SNAPWING_FIXER_EGRESS_ALLOW: not a host name or *.<suffix>: ${bad.join(', ')}`);
+  return [...new Set(hosts)];
+}
+/** A bridge option that leaves the host no address on the network, so a container cannot reach the host through it. */
+const INHIBIT_IPV4 = 'com.docker.network.bridge.inhibit_ipv4';
 export const DOCKER_NAME_PREFIX = 'snapwing-fixer-';
 export const DOCKER_TESTS_PREFIX = 'snapwing-tests-';
 export const DOCKER_REVIEW_PREFIX = 'snapwing-review-';
@@ -196,18 +312,120 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
   const docker = options.docker ?? 'docker';
   const workdirRoot = options.workdirRoot ?? join(tmpdir(), 'snapwing-fixer');
   const graceSec = Math.max(1, Math.ceil(parseDuration(options.killGrace ?? 'PT10S') / 1000));
+  const network = options.network ?? DEFAULT_RUN_NETWORK;
   /** Fixer runs being prepared or whose container has not been seen to end. */
   const runs = new Map<string, Promise<void>>();
+  const revoke = async (runId: string): Promise<void> => {
+    await options.revoke?.(runId);
+  };
 
-  const cli = (args: string[], extra: Record<string, string> = {}): Promise<{ code: number; stderr: string }> => {
+  const cli = (args: string[], extra: Record<string, string> = {}): Promise<{ code: number; stdout: string; stderr: string }> => {
     return new Promise((resolve, reject) => {
-      execFile(docker, args, { env: cliEnv(extra), encoding: 'utf8' }, (err, _stdout, stderr) => {
-        if (err === null) return resolve({ code: 0, stderr });
-        if (typeof err.code === 'number') return resolve({ code: err.code, stderr });
+      execFile(docker, args, { env: cliEnv(extra), encoding: 'utf8' }, (err, stdout, stderr) => {
+        if (err === null) return resolve({ code: 0, stdout, stderr });
+        if (typeof err.code === 'number') return resolve({ code: err.code, stdout, stderr });
         reject(err);
       });
     });
   };
+
+  /** What every run container gets: a name, limits, no capabilities, and the server's uid:gid. */
+  const common = (name: string, net: string): string[] => [
+    '--name', name,
+    '--memory', options.memory ?? '4g',
+    '--cpus', options.cpus ?? '2',
+    '--pids-limit', String(options.pidsLimit ?? 512),
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges',
+    '--network', net,
+    ...user(options.testUser),
+  ];
+
+  /** One preparation at a time, so two runs starting together never race on the network or the relay. */
+  let egressQueue: Promise<void> = Promise.resolve();
+  const prepareEgress = (): Promise<void> => {
+    const next = egressQueue.then(ensureEgress);
+    egressQueue = next.catch(() => undefined);
+    return next;
+  };
+
+  /**
+   * The run network and, with `relay`, the relay on it. The network is created when missing, internal
+   * and with no address of the host's on its bridge (`inhibit_ipv4`), so neither the internet nor the
+   * host is reachable from it; one that lets either through is refused.
+   */
+  async function ensureEgress(): Promise<void> {
+    const inspect = (): ReturnType<typeof cli> => cli(['network', 'inspect', '--format', `{{.Internal}} {{.Driver}} {{index .Options "${INHIBIT_IPV4}"}}`, network]);
+    let net = await inspect();
+    if (net.code !== 0 && /not found|no such network/i.test(net.stderr)) {
+      const created = await cli(['network', 'create', '--internal', '-o', `${INHIBIT_IPV4}=true`, '--label', 'snapwing.managed=true', network]);
+      if (created.code !== 0 && !/already exists/i.test(created.stderr)) throw new Error(`docker network create failed (exit ${created.code}): ${firstLine(created.stderr)}`);
+      net = await inspect();
+    }
+    if (net.code !== 0) throw new Error(`docker network inspect failed (exit ${net.code}): ${firstLine(net.stderr)}`);
+    const [internal, driver, inhibit] = net.stdout.trim().split(/\s+/);
+    if (internal !== 'true' || (driver === 'bridge' && inhibit !== 'true')) {
+      throw new Error(`docker network ${network} lets run containers reach ${internal === 'true' ? 'the host' : 'the host and the internet'}; remove it (snapwing creates it --internal with ${INHIBIT_IPV4}) or name another`);
+    }
+    if (options.relay === undefined) return;
+    const relayNet = options.relay.network ?? 'bridge';
+    const allow = (options.egress ?? []).join(',');
+    const label = `${options.image} ${options.relay.upstream} ${relayNet} ${network} ${allow === '' ? 'no-egress' : allow}`;
+    const running = async (): Promise<boolean> => {
+      const r = await cli(['inspect', '--format', '{{.State.Running}} {{index .Config.Labels "snapwing.relay"}}', RELAY_NAME]);
+      if (r.code === 0 && r.stdout.trim() === `true ${label}`) return true;
+      if (r.code === 0) await cli(['rm', '-f', RELAY_NAME]);
+      return false;
+    };
+    if (await running()) return;
+    const relayEnv: Record<string, string> = { SNAPWING_RELAY_UPSTREAM: options.relay.upstream, ...(allow === '' ? {} : { SNAPWING_RELAY_EGRESS_ALLOW: allow }) };
+    const started = await cli(
+      [
+        'run', '-d',
+        '--name', RELAY_NAME,
+        '--label', `snapwing.relay=${label}`,
+        '--restart', 'unless-stopped',
+        '--read-only',
+        '--memory', '256m',
+        '--pids-limit', '64',
+        '--cap-drop', 'ALL',
+        '--security-opt', 'no-new-privileges',
+        '--network', relayNet,
+        '--add-host', 'host.docker.internal:host-gateway',
+        ...Object.keys(relayEnv).flatMap((k) => ['-e', k]),
+        '--entrypoint', 'node',
+        options.image,
+        '--disable-warning=ExperimentalWarning', RELAY_SCRIPT,
+      ],
+      relayEnv,
+    );
+    if (started.code !== 0) {
+      // Another process started it first.
+      if (/already in use/i.test(started.stderr) && (await running())) return;
+      throw new Error(`docker run ${RELAY_NAME} failed (exit ${started.code}): ${firstLine(started.stderr)}`);
+    }
+    const joined = await cli(['network', 'connect', '--alias', RELAY_ALIAS, network, RELAY_NAME]);
+    if (joined.code !== 0 && !/already exists/i.test(joined.stderr)) throw new Error(`docker network connect failed (exit ${joined.code}): ${firstLine(joined.stderr)}`);
+  }
+
+  /** The proxy variables of a container that may reach the allowlisted hosts; empty without egress. */
+  function egressEnv(): Record<string, string> {
+    if (options.relay === undefined || (options.egress ?? []).length === 0) return {};
+    const env: Record<string, string> = {};
+    for (const name of ['HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy']) env[name] = EGRESS_PROXY_URL;
+    for (const name of ['NO_PROXY', 'no_proxy']) env[name] = EGRESS_NO_PROXY;
+    // Node's own fetch and http (corepack's downloads among them) read those only when asked to.
+    env['NODE_USE_ENV_PROXY'] = '1';
+    return env;
+  }
+
+  /** The run's credentials file in `dir/creds`, and the mount the container reads it from. */
+  async function credentialsMount(dir: string, credentials: RunCredentials): Promise<string[]> {
+    const creds = join(dir, 'creds');
+    await mkdir(creds, { mode: 0o700 });
+    await writeFile(join(creds, 'credentials.json'), JSON.stringify(credentials), { mode: 0o600 });
+    return ['-v', `${creds}:${DOCKER_CREDENTIALS_DIR}`];
+  }
 
   return {
     async runFixer(job) {
@@ -250,21 +468,18 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
           await writeFile(join(layout.checkout, FIXER_REVIEW_FILE), work.review, { mode: 0o600 });
           jobEnv[PRIOR_REVIEW_ENV] = `${DOCKER_WORKDIR}/${FIXER_REVIEW_FILE}`;
         }
+        const creds = await credentialsMount(scratch, fixerCredentials(job, options.env));
+        Object.assign(jobEnv, egressEnv());
+        await prepareEgress();
 
         const args = [
           'run',
           '--rm',
           '-d',
-          '--name', name,
-          '--memory', options.memory ?? '4g',
-          '--cpus', options.cpus ?? '2',
-          '--pids-limit', String(options.pidsLimit ?? 512),
-          '--cap-drop', 'ALL',
-          '--security-opt', 'no-new-privileges',
-          ...(options.network === undefined ? [] : ['--network', options.network]),
-          ...user(options.testUser),
+          ...common(name, network),
           '-v', `${layout.checkout}:${DOCKER_WORKDIR}`,
           '-v', `${layout.out}:${DOCKER_OUTDIR}`,
+          ...creds,
           '-w', DOCKER_WORKDIR,
           ...Object.keys(jobEnv).flatMap((k) => ['-e', k]),
           '-e', 'HOME=/tmp',
@@ -275,14 +490,19 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
         if (r.code !== 0) throw new Error(`docker run failed (exit ${r.code}): ${firstLine(r.stderr)}`);
       } catch (e) {
         if (created) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
+        await revoke(job.runId).catch(() => undefined);
         runs.delete(job.runId);
         settle();
         throw e;
       }
-      void afterExit(name, scratch).finally(() => {
-        runs.delete(job.runId);
-        settle();
-      });
+      // A run whose end docker could not show may still be going: its tokens end with its budget instead.
+      void afterExit(name, scratch)
+        .then((ended) => (ended ? revoke(job.runId) : undefined))
+        .catch(() => undefined)
+        .finally(() => {
+          runs.delete(job.runId);
+          settle();
+        });
       return { runId: job.runId };
     },
 
@@ -310,6 +530,8 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
 
     async cancel(runId) {
       const name = containerName(runId);
+      // The tokens end first: nothing the container does in its grace period is accepted.
+      await revoke(runId).catch(() => undefined);
       const r = await cli(['stop', '-t', String(graceSec), name]);
       if (r.code === 0 || /no such (container|object)/i.test(r.stderr)) return;
       throw new Error(`docker stop failed (exit ${r.code}): ${firstLine(r.stderr)}`);
@@ -318,18 +540,14 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     async runTests(job) {
       const name = testContainerName(job.runId);
       if (!Number.isFinite(job.timeoutMs) || job.timeoutMs <= 0) throw new Error(`invalid test timeout: ${String(job.timeoutMs)}`);
-      const env = testEnv(job.env);
+      const proxy = options.testNetwork === undefined && options.testEgress !== false ? egressEnv() : {};
+      const proxied = Object.keys(proxy).length > 0;
+      const env = { ...testEnv(job.env), ...proxy };
+      if (proxied) await prepareEgress();
       const args = [
         'run',
         '--rm',
-        '--name', name,
-        '--memory', options.memory ?? '4g',
-        '--cpus', options.cpus ?? '2',
-        '--pids-limit', String(options.pidsLimit ?? 512),
-        '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges',
-        ...(options.network === undefined ? [] : ['--network', options.network]),
-        ...user(options.testUser),
+        ...common(name, proxied ? network : (options.testNetwork ?? 'none')),
         '-v', `${job.checkout}:${DOCKER_WORKDIR}`,
         '-w', DOCKER_WORKDIR,
         ...Object.keys(env).flatMap((k) => ['-e', k]),
@@ -352,30 +570,38 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
       const timeoutMs = parseDuration(job.budget.wallClock);
       if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error(`invalid review wall clock: ${job.budget.wallClock}`);
       const env = reviewEnv(job, options.env);
-      const args = [
-        'run',
-        '--rm',
-        '--name', name,
-        '--memory', options.memory ?? '4g',
-        '--cpus', options.cpus ?? '2',
-        '--pids-limit', String(options.pidsLimit ?? 512),
-        '--cap-drop', 'ALL',
-        '--security-opt', 'no-new-privileges',
-        ...(options.network === undefined ? [] : ['--network', options.network]),
-        ...user(options.testUser),
-        '-v', `${job.checkout}:${DOCKER_WORKDIR}`,
-        '-w', DOCKER_WORKDIR,
-        ...Object.keys(env).flatMap((k) => ['-e', k]),
-        '-e', 'HOME=/tmp',
-        '-e', 'TMPDIR=/tmp',
-        options.image,
-      ];
-      const r = await attached(args, env, timeoutMs, () => cli(['kill', name]).then(() => undefined, () => undefined));
-      if (r.timedOut) return r;
-      if (r.exitCode === DOCKER_RUN_FAILED || r.exitCode === null) {
-        throw new Error(`docker run failed (exit ${r.exitCode ?? 'none'}): ${lastLine(r.output)}`);
+      const credentials = reviewCredentials(job, options.env);
+      // The credentials directory is the run's own, removed with the run.
+      const scratch = join(workdirRoot, job.runId);
+      let created = false;
+      try {
+        await mkdir(workdirRoot, { recursive: true });
+        await mkdir(scratch, { mode: 0o700 });
+        created = true;
+        const creds = credentials === undefined ? [] : await credentialsMount(scratch, credentials);
+        await prepareEgress();
+        const args = [
+          'run',
+          '--rm',
+          ...common(name, network),
+          '-v', `${job.checkout}:${DOCKER_WORKDIR}`,
+          ...creds,
+          '-w', DOCKER_WORKDIR,
+          ...Object.keys(env).flatMap((k) => ['-e', k]),
+          '-e', 'HOME=/tmp',
+          '-e', 'TMPDIR=/tmp',
+          options.image,
+        ];
+        const r = await attached(args, env, timeoutMs, () => cli(['kill', name]).then(() => undefined, () => undefined));
+        if (r.timedOut) return r;
+        if (r.exitCode === DOCKER_RUN_FAILED || r.exitCode === null) {
+          throw new Error(`docker run failed (exit ${r.exitCode ?? 'none'}): ${lastLine(r.output)}`);
+        }
+        return r;
+      } finally {
+        await revoke(job.runId).catch(() => undefined);
+        if (created) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
       }
-      return r;
     },
   };
 
@@ -384,15 +610,16 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
    * which docker reports as no such container) and then removes its scratch directory. When docker
    * cannot say the container ended, the directory stays: removing it under a live run would be worse.
    */
-  async function afterExit(name: string, scratch: string): Promise<void> {
+  async function afterExit(name: string, scratch: string): Promise<boolean> {
     for (let attempt = 1; attempt <= WAIT_ATTEMPTS; attempt++) {
       const r = await cli(['wait', name]).catch((e: unknown) => ({ code: -1, stderr: e instanceof Error ? e.message : String(e) }));
       if (r.code === 0 || /no such (container|object)/i.test(r.stderr)) {
         await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
-        return;
+        return true;
       }
       if (attempt < WAIT_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, WAIT_RETRY_MS));
     }
+    return false;
   }
 
   /**
@@ -513,10 +740,30 @@ function inTree(rel: string, what: string): string {
   return `${DOCKER_WORKDIR}/${rel}`;
 }
 
+/** What the runner writes to a run's credentials file for the wrapper alone (#273). */
+export interface RunCredentials {
+  fixerToken?: string;
+  modelToken?: string;
+}
+
+function modelRun(job: FixerJob | ReviewRunJob, role: 'fixer' | 'review'): ModelTokenRequest {
+  return { runId: job.runId, workItem: job.workItem, role, wallClock: job.budget.wallClock };
+}
+
+/** A fixer run's credentials: its fixer token, and its model token with a model proxy. */
+export function fixerCredentials(job: FixerJob, env: DockerRunnerEnv): RunCredentials {
+  return { fixerToken: env.token(job), ...(env.modelProxy === undefined ? {} : { modelToken: env.modelProxy.token(modelRun(job, 'fixer')) }) };
+}
+
+/** A review run's credentials: its model token with a model proxy, else none. */
+export function reviewCredentials(job: ReviewRunJob, env: DockerRunnerEnv): RunCredentials | undefined {
+  return env.modelProxy === undefined ? undefined : { modelToken: env.modelProxy.token(modelRun(job, 'review')) };
+}
+
 /**
  * A review container's whole environment (docs/harness-generic.md section 7): the harness contract
  * variables with `SNAPWING_ROLE=review`, the input and verdict files inside the mount, and the model
- * proxy when configured. No git credential, no fixer token, no API URL.
+ * proxy and credentials file when configured. No git credential, no token, no API URL.
  */
 export function reviewEnv(job: ReviewRunJob, env: DockerRunnerEnv): Record<string, string> {
   const out: Record<string, string> = {
@@ -533,7 +780,7 @@ export function reviewEnv(job: ReviewRunJob, env: DockerRunnerEnv): Record<strin
     SNAPWING_REVIEW_INPUT_FILE: inTree(job.inputFile, 'review input file'),
     SNAPWING_REVIEW_FILE: inTree(job.verdictFile, 'review verdict file'),
   };
-  return { ...out, ...modelEnv(env.modelProxy, { runId: job.runId, workItem: job.workItem, role: 'review', wallClock: job.budget.wallClock }) };
+  return { ...out, ...modelEnv(env.modelProxy, modelRun(job, 'review')) };
 }
 
 function harnessEnv(harness: HarnessChoice): Record<string, string> {
@@ -541,23 +788,17 @@ function harnessEnv(harness: HarnessChoice): Record<string, string> {
 }
 
 /**
- * The model proxy as each CLI's base URL, and the run's model token under the conventional key names
- * (ADR 0017, amendment 1). Empty without a proxy. The base URL carries the work item, which the proxy
- * checks against the token.
+ * The model proxy for the wrapper (ADR 0017, amendment 1): its URL, which carries the work item the
+ * proxy checks against the token, the credentials file the token is in, and the role's pinned model.
+ * Empty without a proxy. No token: that is in the credentials file (#273).
  */
 export function modelEnv(proxy: DockerModelProxy | undefined, run: ModelTokenRequest): Record<string, string> {
   if (proxy === undefined) return {};
-  const base = `${proxy.url.replace(/\/+$/, '')}/${encodeURIComponent(run.workItem.id)}`;
-  const token = proxy.token(run);
+  const model = proxy.model?.(run.role);
   return {
-    SNAPWING_MODEL_PROXY_URL: base,
-    ANTHROPIC_BASE_URL: `${base}/anthropic`,
-    ANTHROPIC_API_KEY: token,
-    OPENAI_BASE_URL: `${base}/openai/v1`,
-    OPENAI_API_KEY: token,
-    CODEX_API_KEY: token,
-    GOOGLE_GEMINI_BASE_URL: `${base}/google`,
-    GEMINI_API_KEY: token,
+    SNAPWING_MODEL_PROXY_URL: `${proxy.url.replace(/\/+$/, '')}/${encodeURIComponent(run.workItem.id)}`,
+    SNAPWING_CREDENTIALS_FILE: DOCKER_CREDENTIALS_FILE,
+    ...(model === undefined || model === '' ? {} : { SNAPWING_HARNESS_MODEL: model }),
   };
 }
 
@@ -568,10 +809,11 @@ export interface FixerHandoffEnv {
 }
 
 /**
- * The container's environment: the harness contract variables (docs/harness-generic.md), API access,
- * the hand-off (the work branch, the commit its bundle starts after, and where the bundle goes) once
- * the checkout is prepared, and the model proxy when configured. `runFixer` adds
- * `SNAPWING_PRIOR_REVIEW_FILE` on a retry. There is no GitHub credential of any kind (#262).
+ * The container's environment: the harness contract variables (docs/harness-generic.md), the API URL
+ * and the credentials file the fixer token is in (#273), the hand-off (the work branch, the commit its
+ * bundle starts after, and where the bundle goes) once the checkout is prepared, and the model proxy
+ * when configured. `runFixer` adds `SNAPWING_PRIOR_REVIEW_FILE` on a retry. There is no token and no
+ * GitHub credential of any kind in it (#262).
  */
 export function fixerEnv(job: FixerJob, env: DockerRunnerEnv, handoff?: FixerHandoffEnv): Record<string, string> {
   const out: Record<string, string> = {
@@ -587,7 +829,7 @@ export function fixerEnv(job: FixerJob, env: DockerRunnerEnv, handoff?: FixerHan
     SNAPWING_HARNESS: job.harness.adapter,
     SNAPWING_IMPLEMENTATION_REQUEST_ARTIFACT: job.implementationRequestArtifactId,
     SNAPWING_API_URL: env.apiUrl,
-    SNAPWING_FIXER_TOKEN: env.token(job),
+    SNAPWING_CREDENTIALS_FILE: DOCKER_CREDENTIALS_FILE,
   };
   if (job.harness.adapter === 'generic') out['SNAPWING_HARNESS_TEMPLATE'] = job.harness.templateId;
   if (handoff !== undefined) {
@@ -597,7 +839,7 @@ export function fixerEnv(job: FixerJob, env: DockerRunnerEnv, handoff?: FixerHan
   }
   if (job.implementationRequestVersion !== undefined) out['SNAPWING_IMPLEMENTATION_REQUEST_VERSION'] = String(job.implementationRequestVersion);
   if (job.review !== undefined) out['SNAPWING_REVIEW_ARTIFACT'] = JSON.stringify(job.review);
-  return { ...out, ...modelEnv(env.modelProxy, { runId: job.runId, workItem: job.workItem, role: 'fixer', wallClock: job.budget.wallClock }) };
+  return { ...out, ...modelEnv(env.modelProxy, modelRun(job, 'fixer')) };
 }
 
 function lastLine(s: string): string {

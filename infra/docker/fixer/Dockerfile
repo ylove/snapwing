@@ -42,7 +42,7 @@ WORKDIR /opt/snapwing
 RUN printf '{ "private": true, "type": "module" }\n' > package.json \
  && mkdir -p /etc/snapwing/generic
 COPY packages/pipeline/src packages/pipeline/src
-COPY infra/docker/fixer/wrapper.ts infra/docker/fixer/entrypoint.ts infra/docker/fixer/
+COPY infra/docker/fixer/wrapper.ts infra/docker/fixer/entrypoint.ts infra/docker/fixer/forward.ts infra/docker/fixer/egress.ts infra/docker/fixer/relay.ts infra/docker/fixer/
 
 # The default non-root user. The docker runner starts every run (fixer, review, tests) as the server's
 # uid:gid with HOME and TMPDIR at /tmp, so a run can write the tree the server prepared and the server
