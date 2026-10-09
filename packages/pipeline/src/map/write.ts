@@ -74,7 +74,7 @@ function serialize(map: WorkspaceMap): string {
   line(1, `<${open('surfaces', [['fallbackSurface', map.fallbackSurface]])}>`);
   for (const s of map.surfaces) {
     line(2, `<${open('surface', [['id', s.id], ['label', s.label]])}>`);
-    line(3, `<repo>${escapeText(s.repo)}</repo>`);
+    line(3, `<${open('repo', [['base', s.repoBase]])}>${escapeText(s.repo)}</repo>`);
     leaf(3, 'jira', [['project', s.jira.project], ['defaultIssueType', s.jira.defaultIssueType]]);
     if (s.components.length > 0) {
       line(3, '<components>');
@@ -236,7 +236,7 @@ function apply(doc: Document, root: Element, edit: MapEdit): void {
     case 'addSurface': {
       const s = edit.surface;
       const el = make(doc, 'surface', [['id', s.id], ['label', s.label]]);
-      appendChild(el, make(doc, 'repo', [])).appendChild(doc.createTextNode(s.repo));
+      appendChild(el, make(doc, 'repo', [['base', s.repoBase]])).appendChild(doc.createTextNode(s.repo));
       appendChild(el, make(doc, 'jira', [['project', s.jira.project], ['defaultIssueType', s.jira.defaultIssueType]]));
       if (s.components.length > 0) {
         const components = appendChild(el, make(doc, 'components', []));

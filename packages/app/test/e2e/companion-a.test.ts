@@ -41,8 +41,9 @@
 //
 // The staging and stall rows merge or wait on CI without touching the fixture's `main`: the test makes
 // a `test/` branch from `main`, protects it as the fixture's owner through `gh` (the App cannot
-// administer branches), and the scripted fixer opens its pull request against it (helpers/fake-agent.mjs
-// `pr-base`) with a regression test the review's proof runs (`regression-test`, SNAPWING_TEST_COMMAND).
+// administer branches), and the row's map names it as the surface's repo base (#310), so the server
+// opens the pull request against it. The scripted fixer adds a regression test the review's proof runs
+// (`regression-test`, SNAPWING_TEST_COMMAND).
 // So these rows always use the scripted fixer, and they skip, with a warning, when `gh` cannot
 // administer the fixture. The review agent is the scripted one in every row.
 //
@@ -129,6 +130,8 @@ interface MapOptions {
   engineerEmail?: boolean;
   /** The escalation row's three mapped people with no Slack account. */
   mappedOnly?: boolean;
+  /** The surface's `<repo base>`: the branch the fixes target (#310). Absent: the repository default. */
+  repoBase?: string;
 }
 
 /**
@@ -142,7 +145,7 @@ function workspaceMap(o: MapOptions): string {
 <workspace xmlns="urn:snapwing:workspace:v1" org="snapwing-e2e" updated="2026-10-03T00:00:00Z">
   <surfaces>
     <surface id="fixture-web" label="Fixture storefront">
-      <repo>github.com/ylove/snapwing-fixture-web</repo>
+      <repo${o.repoBase === undefined ? '' : ` base="${o.repoBase}"`}>github.com/ylove/snapwing-fixture-web</repo>
       <jira project="${live.projectKey}" defaultIssueType="Bug" />
     </surface>
   </surfaces>
@@ -314,7 +317,11 @@ interface BootOptions extends MapOptions {
   testCommand?: string;
 }
 
-async function boot(name: string, o: BootOptions, before?: (r: Row) => Promise<void>): Promise<Row> {
+/**
+ * Boots a row's server. `before` runs first, and the branch it returns becomes the row map's repo base,
+ * so the map the server loads at start already names it.
+ */
+async function boot(name: string, options: BootOptions, before?: (r: Row) => Promise<string | undefined>): Promise<Row> {
   const r: Row = {
     name,
     dir: await mkdtemp(join(tmpdir(), `snapwing-e2e-a-${name}-`)),
@@ -327,7 +334,8 @@ async function boot(name: string, o: BootOptions, before?: (r: Row) => Promise<v
     files: [],
   };
   current = r;
-  if (before !== undefined) await before(r);
+  const repoBase = before === undefined ? undefined : await before(r);
+  const o: BootOptions = repoBase === undefined ? options : { ...options, repoBase };
   // Absent files mean the defaults: no playbook, no instructions, whatever the working directory holds.
   const playbookPath = join(r.dir, 'playbook.xml');
   if (o.playbook !== undefined) await writeFile(playbookPath, o.playbook);
@@ -359,7 +367,7 @@ async function boot(name: string, o: BootOptions, before?: (r: Row) => Promise<v
 
 /**
  * A `test/` branch at `main`'s head, protected with `contexts` as its required checks, as the scripted
- * fixer's pull request base (`pr-base`), with the regression test it adds (`regression-test`) and the
+ * surface's base for the row's map (returned, for `boot`), with the regression test it adds (`regression-test`) and the
  * review released up front (`release-review`), so the review approves straight away.
  */
 async function testBase(r: Row, suffix: string, contexts: readonly string[]): Promise<string> {
@@ -368,7 +376,6 @@ async function testBase(r: Row, suffix: string, contexts: readonly string[]): Pr
   r.branches.add(branch);
   await admin.protect(branch, contexts);
   r.protected.add(branch);
-  await writeFile(join(r.dir, 'pr-base'), branch);
   await writeFile(join(r.dir, 'regression-test'), 'yes');
   await writeFile(join(r.dir, 'release-review'), 'go');
   return branch;
@@ -660,6 +667,7 @@ describe.skipIf(!ready)('e2e rows on Slack (A 8)', () => {
     const r = await boot('staging', { level: 3, testCommand: TEST_COMMAND }, async (row) => {
       base = await testBase(row, 'staging', ['snapwing/review']);
       for (const env of ['staging', 'production']) if (!(await admin.hasEnvironment(env))) row.environments.add(env);
+      return base;
     });
     await reportAndTrigger(r, bugReport('staging verification'));
     const key = await untilFiled(r);
@@ -873,7 +881,7 @@ describe.skipIf(!ready)('e2e rows on Slack (A 8)', () => {
 
   it.skipIf(!ghAdmin)('stall: CI that never reports gets the heartbeat after monitor.heartbeat and the owner mention after monitor.stallAfter', async () => {
     const r = await boot('stall', { level: 2, playbook: STALL_PLAYBOOK, testCommand: TEST_COMMAND }, async (row) => {
-      await testBase(row, 'stall', [SUPPRESSED_CI]);
+      return testBase(row, 'stall', [SUPPRESSED_CI]);
     });
     await reportAndTrigger(r, bugReport('stall'));
     const key = await untilFiled(r);

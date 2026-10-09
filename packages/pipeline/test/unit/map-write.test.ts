@@ -25,6 +25,21 @@ describe('writeWorkspaceMap', () => {
     });
   }
 
+  it('keeps a surface repo base through parse, write and edit (#310)', async () => {
+    const withBase = example.replace('<repo>github.com/acme/mobile</repo>', '<repo base="release/2">github.com/acme/mobile</repo>');
+    const map = await parseWorkspaceMap(withBase);
+    expect(map.surfaces.find((s) => s.id === 'mobile')).toMatchObject({ repo: 'github.com/acme/mobile', repoBase: 'release/2' });
+    expect(map.surfaces.find((s) => s.id === 'admin')?.repoBase).toBeUndefined();
+    const written = await writeWorkspaceMap(map);
+    expect(written.ok).toBe(true);
+    if (written.ok) {
+      expect(written.xml).toContain('<repo base="release/2">github.com/acme/mobile</repo>');
+      expect(await parseWorkspaceMap(written.xml)).toEqual(map);
+    }
+    const added = await edited([{ kind: 'addSurface', surface: { id: 'docs', label: 'Docs', repo: 'github.com/acme/docs', repoBase: 'main-next', jira: { project: 'DOC', defaultIssueType: 'Task' }, components: [] } }]);
+    expect(added.map.surfaces.find((s) => s.id === 'docs')?.repoBase).toBe('main-next');
+  });
+
   it('round-trips a map with every element, Teams channels, and changedBy', async () => {
     const full = `<?xml version="1.0" encoding="UTF-8"?>
 <workspace xmlns="urn:snapwing:workspace:v1" org="a &amp; b" updated="2026-10-03T00:00:00Z">

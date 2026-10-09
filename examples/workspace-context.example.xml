@@ -3,7 +3,9 @@
 
   <surfaces fallbackSurface="web">
     <surface id="web" label="Website">
-      <repo>github.com/acme/web</repo>
+      <!-- Optional base: the branch this surface's fixes start from and open pull requests into.
+           Without it they target the repository's default branch. -->
+      <repo base="develop">github.com/acme/web</repo>
       <jira project="WEB" defaultIssueType="Bug" />
       <components>
         <component id="nav" label="Navigation" />

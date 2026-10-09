@@ -106,10 +106,12 @@ function convert(xml: string): WorkspaceMap {
 
 function surface(n: Node): MapSurface {
   const jira = node(n['jira']);
+  const repoBase = typeof n['repo'] === 'object' ? optAttr(node(n['repo']), 'base') : undefined;
   return {
     id: attr(n, 'id'),
     label: attr(n, 'label'),
     repo: text(n['repo']),
+    ...(repoBase === undefined ? {} : { repoBase }),
     jira: { project: attr(jira, 'project'), defaultIssueType: attr(jira, 'defaultIssueType') },
     components: list(node(n['components'])['component']).map((c): MapComponent => ({ id: attr(c, 'id'), label: attr(c, 'label') })),
   };
