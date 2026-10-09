@@ -28,6 +28,8 @@ export interface MapSurface {
   id: string;
   label: string;
   repo: string;
+  /** The branch this surface's fixes start from and open pull requests into (#310). Absent: the repository default. */
+  repoBase?: string;
   jira: { project: string; defaultIssueType: string };
   components: MapComponent[];
 }

@@ -197,6 +197,8 @@ interface Scene {
   options?: EngineOptions;
   /** Vision readings by image ref: true is a sensitive reading. */
   readings?: Record<string, boolean>;
+  /** Sets the base branch (`<repo base>`) of the mobile surface, which the test channel routes to (#310). */
+  repoBase?: string;
   /** Overrides the map's `fallbackSurface` (the example map names `web`). */
   fallbackSurface?: string;
   admit?: EngineDeps['admit'];
@@ -239,7 +241,10 @@ function setup(scene: Scene = {}): Harness {
     ]),
     jiraSearch: fakeJira(scene.jira ?? []),
     cache: createKvCache(state),
-    map: { ...withLevel(baseMap, scene.level ?? 0), ...(scene.fallbackSurface === undefined ? {} : { fallbackSurface: scene.fallbackSurface }) },
+    map: {
+      ...withLevel(baseMap, scene.level ?? 0),
+      surfaces: baseMap.surfaces.map((s) => (s.id === 'mobile' ? { ...s, ...(scene.repoBase === undefined ? {} : { repoBase: scene.repoBase }) } : s)),
+      ...(scene.fallbackSurface === undefined ? {} : { fallbackSurface: scene.fallbackSurface }) },
     clock: () => new Date(now),
     ...(scene.options === undefined ? {} : { options: scene.options }),
     ...(scene.admit === undefined ? {} : { admit: scene.admit }),
@@ -498,6 +503,20 @@ describe('levels (main 14.1)', () => {
     await file(h, 'APP-104');
     expect(await outbox()).toMatchObject([{ op: 'transition', payload: { issueKey: 'APP-104', to: 'in-progress' } }]);
     expect((await types(h)).slice(-2)).toEqual(['filed', 'waiting-changed']);
+  });
+
+  it.each([
+    ['a surface base reaches the request handoff (#310)', 'develop', 'base="develop"'],
+    ['no surface base leaves the handoff without one, so the repository default applies', undefined, undefined],
+  ])('%s', async (_name, repoBase, expected) => {
+    const h = setup({ level: 3, ...(repoBase === undefined ? {} : { repoBase }) });
+    await inbound(h);
+    await tap(h, 'scope-preview', 'looks-right');
+    const planned = (await events(h)).find((e): e is IncidentEvent<'planned'> => e.type === 'planned');
+    const ref = planned?.payload.implementationRequest;
+    const xml = (await state.getArtifact(ref?.artifactId ?? '', ref?.version)).body;
+    if (expected === undefined) expect(xml).not.toContain('base=');
+    else expect(xml).toContain(expected);
   });
 });
 

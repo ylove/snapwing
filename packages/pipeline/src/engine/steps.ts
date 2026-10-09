@@ -769,7 +769,9 @@ export async function fileConfirmStep(env: StepEnv, phase: Extract<Phase, { kind
 
 function synthesisContext(env: StepEnv, resolution: Resolution, needsClarification: boolean): SynthesisContext {
   const surface = resolution.surfaceId === undefined ? undefined : findSurface(env.map, resolution.surfaceId);
-  return { payload: env.payload, resolution, ...(surface === undefined ? {} : { surface }), needsClarification };
+  return { payload: env.payload, resolution, ...(surface === undefined ? {} : { surface }),
+    ...(surface?.repoBase === undefined ? {} : { base: surface.repoBase }),
+    needsClarification };
 }
 
 /**

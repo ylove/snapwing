@@ -106,7 +106,15 @@
 
   <xs:complexType name="SurfaceType">
     <xs:sequence>
-      <xs:element name="repo" type="NonEmptyString"/>
+      <xs:element name="repo">
+        <xs:complexType>
+          <xs:simpleContent>
+            <xs:extension base="NonEmptyString">
+              <xs:attribute name="base" type="NonEmptyString" use="optional"/>
+            </xs:extension>
+          </xs:simpleContent>
+        </xs:complexType>
+      </xs:element>
       <xs:element name="jira" type="JiraType"/>
       <xs:element name="components" minOccurs="0">
         <xs:complexType>

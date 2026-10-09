@@ -31,6 +31,7 @@ describe('workspace-context example', () => {
       id: 'web',
       label: 'Website',
       repo: 'github.com/acme/web',
+      repoBase: 'develop',
       jira: { project: 'WEB', defaultIssueType: 'Bug' },
       components: [
         { id: 'nav', label: 'Navigation' },
