@@ -80,6 +80,7 @@ import { reviewRunnerOf, testRunnerOf, type HarnessChoice, type ReviewRunner, ty
 import type { StatePort } from '../ports/state.ts';
 import type { WorkflowPort } from '../ports/workflow.ts';
 import { parseImplementationRequest, type ImplementationRequest } from '../prompts/implementation-request.ts';
+import { githubCode, githubText } from '../util/github-text.ts';
 import { repoFullName } from '../util/repo.ts';
 import { ulid } from '../util/ulid.ts';
 import { isolatedTree, proveRegression, selectTestFiles, type RegressionResult, type RegressionStatus } from './regression.ts';
@@ -715,16 +716,21 @@ function checkTitle(v: ReviewVerdict): string {
   return 'Review agent: escalate to a human';
 }
 
-/** The review body and check run summary: the verdict, its reasons, and each violation. */
+/**
+ * The review body and check run summary: the verdict, its reasons, and each violation. The reasons,
+ * notes, and paths are the review agent's, which read the fixer's diff (#306): each is one line of
+ * plain text (`githubText`), or a path in a code span (`githubCode`), so none mentions anyone, links,
+ * or adds a heading or a list item of its own.
+ */
 export function reviewBody(v: ReviewVerdict, headSha: string): string {
   const lines = [`**Snapwing review agent: ${v.verdict}** (${shortSha(headSha)})`];
   if (v.reasons.length > 0) {
-    lines.push('', ...v.reasons.map((r) => `- ${r}`));
+    lines.push('', ...v.reasons.map((r) => `- ${githubText(r)}`));
   }
   if (v.constraintViolations.length > 0) {
-    lines.push('', 'Constraint violations:', ...v.constraintViolations.map((c) => `- ${c.constraint}${c.file === undefined ? '' : ` \`${c.file}\``}: ${c.note}`));
+    lines.push('', 'Constraint violations:', ...v.constraintViolations.map((c) => `- ${githubText(c.constraint)}${c.file === undefined ? '' : ` \`${githubCode(c.file)}\``}: ${githubText(c.note)}`));
   }
-  if (v.regressionTest !== undefined) lines.push('', `Regression test: \`${v.regressionTest.path}\``);
+  if (v.regressionTest !== undefined) lines.push('', `Regression test: \`${githubCode(v.regressionTest.path)}\``);
   return lines.join('\n');
 }
 

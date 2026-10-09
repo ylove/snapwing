@@ -126,6 +126,22 @@ function refused(r: HandoffResult): string {
   return r.reason;
 }
 
+describe('the pull request text (#306)', () => {
+  it('opens it with the fixer summary as plain text: no mention, cross-reference, link, image, or HTML', async () => {
+    const p = await run();
+    await commit(p, { 'src/cart.ts': 'export const total = 2;\n' }, `${KEY}: guard the null cart total`);
+    await bundle(p);
+    const summary = 'Ping @acme/security about #12\n\n![x](https://track.example/p.png) [docs](https://phish.example) <img src=x>';
+
+    expect(await handoff()(request({ summary, testsAdded: ['test/a`b.ts\nevil'] }))).toMatchObject({ ok: true });
+
+    const pr = pulls[0];
+    expect(pr?.title).toBe(`${KEY}: Ping @\u200bacme/security about #\u200b12`);
+    expect(pr?.body).toContain('Ping @&#8203;acme/security about #&#8203;12\n\n!\\[x\\](https://track.example/p.png) \\[docs\\](https://phish.example) &lt;img src=x&gt;');
+    expect(pr?.body).toContain('- `test/a b.ts evil`');
+  });
+});
+
 describe('the fixer hand-off (#262)', () => {
   it('imports the bundle, pushes exactly the work branch with a token minted for the push, and opens the pull request as the App', async () => {
     const p = await run();

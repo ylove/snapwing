@@ -122,13 +122,14 @@
 // (`sweep`, older than the fixer wall clock plus a margin). The review's checkout gets
 // `contents: read` and `metadata: read` only; the review posts through the server's own client,
 // never from inside the harness. With docker, the API reads a run's bundle from the runner's scratch
-// directory, so the API and the worker share `SNAPWING_WORKDIR_ROOT` on one host.
+// directory, so the API and the worker share `SNAPWING_WORKDIR_ROOT` on one host. It defaults to `work`
+// under the data directory (SNAPWING_DATA_DIR, else `~/.local/state/snapwing`), and startup creates it
+// 0700 or refuses one owned by another user or open to others (`work-root.ts`, #306).
 //
 // Startup fails, listing every missing secret by name (never a value), before anything is built.
 
 import { createHash, createHmac } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AppConfig, HarnessAdapter, HarnessConfig, ModelProvider } from '@snapwing/pipeline/config/app-config.ts';
 import type { EventType, IncidentEvent } from '@snapwing/pipeline/contracts/events.ts';
@@ -251,6 +252,7 @@ import { fetchScreenshot, screenshotFilename, textToAdf, type LoadScreenshot } f
 import { createModelProxyRoutes, MODEL_PROXY_PREFIX, type ModelProviderUpstream, type ModelProxyProvider } from '../model-proxy/routes.ts';
 import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier, type ModelGrant } from '../model-proxy/token.ts';
 import { createDockerRunner, parseEgressAllow, parseTestEgress, RELAY_URL, type DockerModelProxy } from '../providers/docker/runner.ts';
+import { ensurePrivateWorkRoot, workRoot as resolveWorkRoot } from './work-root.ts';
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
 import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
@@ -773,7 +775,9 @@ export const compose: ComposeFn = async (deps) => {
     onPlaybook: (xml) => state.putConfigVersion('playbook', createHash('sha256').update(xml).digest('hex'), xml),
   });
   const cache = createKvCache(store);
-  const workRoot = env['SNAPWING_WORKDIR_ROOT']?.trim() || join(tmpdir(), 'snapwing-work');
+  // Private to this server's user (#306): runs keep checkouts and credentials files there.
+  const workRoot = resolveWorkRoot(env);
+  await ensurePrivateWorkRoot(workRoot);
 
   // Platform clients.
   const web: SlackWeb | undefined = slackOn ? createSlackWeb({ token: secret('SLACK_BOT_TOKEN') }) : undefined;

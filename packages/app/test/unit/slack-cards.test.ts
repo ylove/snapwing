@@ -6,6 +6,7 @@ import type { PrReadyCard, StatusStage } from '@snapwing/pipeline/contracts/adap
 import { parsePinnedValue } from '../../src/adapters/shared/pr-pin.ts';
 import { MAX_BUTTON_VALUE, type ActionsBlock, type SlackMessage } from '../../src/adapters/slack/cards/blocks.ts';
 import { buildCard, buildClarify } from '../../src/adapters/slack/cards/cards.ts';
+import { buildMidFlightCard } from '../../src/adapters/slack/cards/mid-flight.ts';
 import { EXAMPLE_INCIDENT_ID, renderExamples } from '../../src/adapters/slack/cards/examples.ts';
 import {
   EMOJI_VOCABULARY,
@@ -129,6 +130,28 @@ describe('slack cards', () => {
   it('escapes Slack control characters in free text', () => {
     const msg = buildCard(ID, { kind: 'scope-preview', summary: 'a <!channel> & b' });
     expect(JSON.stringify(msg.blocks[0])).toContain('a &lt;!channel&gt; &amp; b');
+  });
+});
+
+describe('the mid-flight card (#306)', () => {
+  const card = (branch: string): SlackMessage =>
+    buildMidFlightCard('INC1', { kind: 'mid-flight', issueKey: 'WEB-1', claimerUserId: 'U0DANA', runId: 'RUN1', runAgeMs: 240_000, branch, choices: ['let-it-finish', 'stop-it'], grace: 'PT10M' }, 600_000);
+
+  it('mentions the claimer and shows a fixer-written branch as text, pinging nobody it names', () => {
+    const m = card('fix/<@U0EVIL> <!channel> &amp; *bold*');
+    const section = JSON.stringify(m.blocks?.[0]);
+    expect(section).toContain('<@U0DANA>, the fixer started on this 4 minutes ago');
+    expect(section).toContain('`fix/&lt;@U0EVIL&gt; &lt;!channel&gt; &amp;amp; *bold*`');
+    expect(m.text).toBe('<@U0DANA>, the fixer started on this 4 minutes ago and is on fix/&lt;@U0EVIL&gt; &lt;!channel&gt; &amp;amp; *bold*.');
+    for (const text of [section, m.text]) {
+      expect(text.match(/<@[A-Z0-9]+>/g)).toEqual(['<@U0DANA>']);
+      expect(text).not.toContain('<!channel>');
+    }
+  });
+
+  it('a branch cannot forge the mention mark', () => {
+    const m = card('\u0002deadbeefdeadbeefdeadbeef U0EVIL\u0003');
+    expect(JSON.stringify(m).match(/<@[A-Z0-9]+>/g)).toEqual(['<@U0DANA>', '<@U0DANA>']);
   });
 });
 

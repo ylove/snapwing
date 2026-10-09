@@ -411,7 +411,7 @@ describe('createDockerRunner runFixer', () => {
 
 describe('createDockerRunner network and relay (#273)', () => {
   const relay = { upstream: 'http://host.docker.internal:3000' };
-  const LABEL = `snapwing-fixer:test ${relay.upstream} bridge snapwing-runs no-egress`;
+  const LABEL = `r2 snapwing-fixer:test ${relay.upstream} bridge snapwing-runs no-egress`;
   const egress = (): string[][] => allCalls().filter(isEgress).map((c) => c.args);
 
   it('creates the run network internal, with no host address on its bridge, when it is missing', async () => {
@@ -451,6 +451,7 @@ describe('createDockerRunner network and relay (#273)', () => {
     expect(run[run.indexOf('--label') + 1]).toBe(`snapwing.relay=${LABEL}`);
     expect(run[run.indexOf('--network') + 1]).toBe('bridge');
     for (const flag of ['--read-only', '--cap-drop', '--restart']) expect(run).toContain(flag);
+    expect(run[run.indexOf('--tmpfs') + 1]).toBe('/tmp:rw,noexec,nosuid,nodev,size=16m');
     expect(run.slice(-3)).toEqual(['snapwing-fixer:test', '--disable-warning=ExperimentalWarning', '/opt/snapwing/infra/docker/fixer/relay.ts']);
     expect(allCalls().find((c) => c.args.includes('snapwing-relay') && c.args[0] === 'run')?.env['SNAPWING_RELAY_UPSTREAM']).toBe(relay.upstream);
     expect(steps[3]).toEqual(['network', 'connect', '--alias', 'snapwing-api', 'snapwing-runs', 'snapwing-relay']);
@@ -463,7 +464,7 @@ describe('createDockerRunner network and relay (#273)', () => {
     await r.runFixer(job());
     const relayRun = allCalls().find((c) => c.args[0] === 'run' && c.args.includes('snapwing-relay'))!;
     expect(relayRun.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBe('registry.npmjs.org,*.pythonhosted.org');
-    expect(relayRun.args[relayRun.args.indexOf('--label') + 1]).toBe(`snapwing.relay=snapwing-fixer:test ${relay.upstream} bridge snapwing-runs registry.npmjs.org,*.pythonhosted.org`);
+    expect(relayRun.args[relayRun.args.indexOf('--label') + 1]).toBe(`snapwing.relay=r2 snapwing-fixer:test ${relay.upstream} bridge snapwing-runs registry.npmjs.org,*.pythonhosted.org`);
     const fixer = calls()[0]!;
     expect(fixer.env).toMatchObject({
       HTTPS_PROXY: 'http://snapwing-api:3128',
@@ -525,7 +526,7 @@ describe('createDockerRunner network and relay (#273)', () => {
     expect(egress().map((a) => a[0])).toEqual(['network', 'inspect']);
 
     writeFileSync(join(dir, 'calls.log'), '');
-    writeFileSync(join(dir, 'relay'), 'true snapwing-fixer:old http://elsewhere:3000 bridge snapwing-runs');
+    writeFileSync(join(dir, 'relay'), `true ${LABEL.replace('r2 ', 'r1 ')}`);
     await runner({ relay }).runReview({ ...job({ runId: '01J9ZREVIEWRUN000000000009' }), checkout: join(dir, 'tree'), inputFile: 'in.xml', verdictFile: 'v.json', budget: { wallClock: 'PT1M', attempts: 1 } });
     expect(egress().map((a) => a.slice(0, 2))).toEqual([
       ['network', 'inspect'],
@@ -534,6 +535,26 @@ describe('createDockerRunner network and relay (#273)', () => {
       ['run', '-d'],
       ['network', 'connect'],
     ]);
+  });
+});
+
+describe('createDockerRunner read-only containers (#306)', () => {
+  it('runs fixer, review, and test containers with a read-only root and an executable tmpfs at /tmp, their HOME', async () => {
+    const r = runner({ tmpfsSize: '3g' });
+    await r.runFixer(job());
+    await r.runReview({ ...job({ runId: '01J9ZREVIEWRUN000000000007' }), checkout: join(dir, 'tree'), inputFile: 'in.xml', verdictFile: 'v.json', budget: { wallClock: 'PT1M', attempts: 1 } });
+    await r.runTests({ runId: '01J9ZTESTRUN00000000000007', checkout: join(dir, 'tree'), command: 'true', timeoutMs: 20_000 });
+    const runs = calls().filter((c) => c.args[0] === 'run');
+    expect(runs.map((c) => c.args[c.args.indexOf('--name') + 1]?.replace(/-[0-9A-Z]+$/, ''))).toEqual(['snapwing-fixer', 'snapwing-review', 'snapwing-tests']);
+    for (const c of runs) {
+      expect(c.args).toContain('--read-only');
+      expect(c.args[c.args.indexOf('--tmpfs') + 1]).toBe('/tmp:rw,exec,nosuid,nodev,size=3g');
+      expect(c.args.filter((a) => a.startsWith('HOME='))).toEqual(['HOME=/tmp']);
+    }
+    writeFileSync(join(dir, 'calls.log'), '');
+    await runner().runTests({ runId: '01J9ZTESTRUN00000000000008', checkout: join(dir, 'tree'), command: 'true', timeoutMs: 20_000 });
+    const a = calls()[0]!.args;
+    expect(a[a.indexOf('--tmpfs') + 1]).toBe('/tmp:rw,exec,nosuid,nodev,size=2g');
   });
 });
 
