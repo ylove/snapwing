@@ -52,6 +52,8 @@ export interface CliRunInput {
    * exited. Stop, budget, and a non-zero exit map as for the fixer, and leave no verdict file.
    */
   reviewMessage?: (stdout: string, extra: string | undefined) => string | undefined;
+  /** Called with the run's scratch HOME before the CLI starts, for user-level settings the CLI needs (#297). */
+  prepareHome?: (home: string) => Promise<void>;
 }
 
 /** The review agent's system prompt, shared by every CLI adapter that supports the review role. */
@@ -71,6 +73,7 @@ export async function runCliAgent(input: CliRunInput): Promise<HarnessResult> {
 async function runInScratch(input: CliRunInput, scratch: ScratchHome): Promise<HarnessResult> {
   const { opts } = input;
   const wallClockMs = parseDuration(opts.budget.wallClock);
+  await input.prepareHome?.(scratch.home);
   const env = buildEnv(input, scratch);
 
   let stdout = '';

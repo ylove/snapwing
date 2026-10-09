@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
-import { createGeminiHarness, extractResult } from '../../src/harness/gemini/index.ts';
+import { createGeminiHarness, extractResult, GEMINI_USER_SETTINGS } from '../../src/harness/gemini/index.ts';
 import type { HarnessCheckpoint, HarnessResult, HarnessRunOptions } from '../../src/ports/harness.ts';
 
 const FAKE = fileURLToPath(new URL('../fixtures/harness/fake-cli.mjs', import.meta.url));
@@ -55,6 +55,16 @@ describe('gemini harness: invocation', () => {
       GEMINI_API_KEY: 'test-key-not-real',
     });
     expect(seen.env).not.toHaveProperty('SERVER_ONLY_VAR');
+  });
+
+  it('skips the trust prompt and writes user settings with an auth type into the run home', async () => {
+    const record = join(scratch, 'record-home.json');
+    const r = await harness.run(workItem, `FAKE_MODE=done FAKE_RECORD=${record}`, scratch, opts());
+    expect(r.outcome).toBe('done');
+    const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[]; env: Record<string, string>; settings?: string };
+    expect(seen.argv).toContain('--skip-trust');
+    expect(GEMINI_USER_SETTINGS.security.auth.selectedType).toBe('gemini-api-key');
+    expect(JSON.parse(seen.settings ?? 'null')).toEqual(GEMINI_USER_SETTINGS);
   });
 
   it('reports a missing binary as failed', async () => {

@@ -2,7 +2,7 @@
 // A fake `codex` (argv starts with `exec`) or `gemini` (anything else) binary for unit tests. It never
 // contacts a model. Behavior is chosen by a `FAKE_MODE=<name>` token in the stdin text;
 // `FAKE_RECORD=<path>` makes it write what it saw.
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import process from 'node:process';
 import { setInterval, setTimeout } from 'node:timers';
 
@@ -21,6 +21,13 @@ if (recordPath) {
       argv,
       stdin,
       cwd: process.cwd(),
+      settings: (() => {
+        try {
+          return readFileSync(`${process.env.HOME}/.gemini/settings.json`, 'utf8');
+        } catch {
+          return undefined;
+        }
+      })(),
       env: Object.fromEntries(
         Object.entries(process.env).filter(([k]) => k.startsWith('SNAPWING_') || ['SERVER_ONLY_VAR', 'OPENAI_API_KEY', 'GEMINI_API_KEY'].includes(k)),
       ),

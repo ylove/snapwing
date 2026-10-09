@@ -9,6 +9,11 @@
 //                          (read_file, read_many_files, list_directory, glob, search_file_content); other
 //                          tools, run_shell_command included, are not approved, and in non-interactive mode
 //                          that means denied
+//   --skip-trust           trust the checkout for this session; headless gemini exits 55 in an untrusted folder (#297).
+//                          Trust lets gemini read workspace settings, so the review role relies on the review job having
+//                          removed the tree's .gemini/ before the agent starts (#263). The fixer keeps workspace config:
+//                          it already runs the repository's own code in the container, so a workspace .gemini/ adds only
+//                          spend through the model proxy, which the per-run token and budget bound.
 //   --model <model>        only when configured
 //
 // The review agent reads and never runs (main 11.1, #263): its verdict is the end of its final message,
@@ -20,7 +25,7 @@
 // Stop, budget, and checkpoints are shared with the other adapters through ../cli-agent.ts and
 // ../process.ts (docs/harness-generic.md sections 5 to 7).
 
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HarnessPort, HarnessResult } from '../../ports/harness.ts';
@@ -37,6 +42,19 @@ export interface GeminiHarnessConfig {
 }
 
 const REVIEW_TOOLS: readonly string[] = ['read_file', 'read_many_files', 'list_directory', 'glob', 'search_file_content'];
+/**
+ * The run's user-level settings. Headless gemini 0.63 exits 41 ("Invalid auth method selected") with no auth
+ * type chosen; `gemini-api-key` reads GEMINI_API_KEY (the per-run proxy token) and sends it to
+ * GOOGLE_GEMINI_BASE_URL (the proxy), both set in the run's environment (#297).
+ */
+export const GEMINI_USER_SETTINGS = { security: { auth: { selectedType: 'gemini-api-key' } } } as const;
+
+async function writeUserSettings(home: string): Promise<void> {
+  const dir = join(home, '.gemini');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'settings.json'), `${JSON.stringify(GEMINI_USER_SETTINGS, null, 2)}\n`, { mode: 0o600 });
+}
+
 const FIXER_PROMPT_URL = new URL('../../prompts/fixer.xml', import.meta.url);
 
 export function createGeminiHarness(config: GeminiHarnessConfig = {}): HarnessPort {
@@ -47,7 +65,7 @@ export function createGeminiHarness(config: GeminiHarnessConfig = {}): HarnessPo
     async run(workItem, implementationRequest, workdir, opts): Promise<HarnessResult> {
       const review = opts.role === 'review';
       const systemPrompt = await readFile(review ? REVIEW_PROMPT_URL : FIXER_PROMPT_URL, 'utf8');
-      const args = ['--prompt', systemPrompt, '--output-format', 'json'];
+      const args = ['--prompt', systemPrompt, '--output-format', 'json', '--skip-trust'];
       if (review) args.push('--allowed-tools', REVIEW_TOOLS.join(','));
       else args.push('--yolo');
       if (config.model !== undefined) args.push('--model', config.model);
@@ -65,6 +83,7 @@ export function createGeminiHarness(config: GeminiHarnessConfig = {}): HarnessPo
           checkpointFile: join(scratch, 'checkpoints.jsonl'),
           extract: (stdout) => extractResult(stdout),
           ...(review ? { reviewMessage: (stdout: string) => messageOf(finalMessage(stdout)) } : {}),
+          prepareHome: writeUserSettings,
           inheritEnv: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GEMINI_BASE_URL'],
         });
       } finally {
