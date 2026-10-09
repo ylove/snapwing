@@ -199,6 +199,7 @@ interface Scene {
   readings?: Record<string, boolean>;
   /** Overrides the map's `fallbackSurface` (the example map names `web`). */
   fallbackSurface?: string;
+  admit?: EngineDeps['admit'];
 }
 
 interface Harness {
@@ -241,6 +242,7 @@ function setup(scene: Scene = {}): Harness {
     map: { ...withLevel(baseMap, scene.level ?? 0), ...(scene.fallbackSurface === undefined ? {} : { fallbackSurface: scene.fallbackSurface }) },
     clock: () => new Date(now),
     ...(scene.options === undefined ? {} : { options: scene.options }),
+    ...(scene.admit === undefined ? {} : { admit: scene.admit }),
   };
   const engine = new IncidentOrchestrator(deps);
   engine.register();
@@ -331,6 +333,19 @@ describe('handleInbound', () => {
     expect(await h.engine.handleInbound('slack', { signature: 'sig-test', payload: again })).toEqual({ status: 200 });
     await wf.drain();
     expect(await state.read(again.eventId)).toEqual([]);
+  });
+
+  it('asks `admit` first; a refusal starts nothing, acknowledges nothing, and leaves the key for a later try (#272)', async () => {
+    const asked: string[] = [];
+    let open = false;
+    const h = setup({ admit: (source, p) => (asked.push(`${source}:${p.reporter.id}`), Promise.resolve(open)) });
+    expect(await h.engine.handleInbound('slack', h.raw)).toBeUndefined();
+    await wf.drain();
+    expect(await types(h)).toEqual([]);
+    open = true;
+    await inbound(h);
+    expect(asked).toEqual([`slack:${REPORTER.id}`, `slack:${REPORTER.id}`]);
+    expect(await types(h)).toEqual(['captured', 'context-assembled', 'waiting-changed']);
   });
 
   it('rejects an unauthenticated request and an unknown channel before doing anything', async () => {

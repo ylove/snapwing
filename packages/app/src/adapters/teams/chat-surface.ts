@@ -27,6 +27,9 @@
 //   `mention` and `mentionUser` return a mark (`adapters/shared/mention-marks.ts`), and a text post
 //   turns those marks into `<at>` tags with entities and escapes `<` and `>` everywhere else. An `<at>...</at>` inside user text (an incident
 //   summary, a digest line, a task summary) is shown as text, with no entity, and notifies nobody.
+// - Teams reads a message's text as Markdown, so the same escape also turns the link and emphasis
+//   characters (`[`, `]`, `*`, `_`, `~`, a backtick, a backslash) into character references (#269): user text
+//   cannot add a link or restyle the bot's words. The mention tags this surface emits are never escaped.
 
 import type { MidFlightCard } from '@snapwing/pipeline/fixer/claims.ts';
 import type { MapPerson, WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -131,9 +134,15 @@ export function teamsPerson(map: WorkspaceMap, ref: string): string {
 
 const AT_TAG = /<at>([^<]*)<\/at>/g;
 
-/** Escapes what Teams reads as markup in a message's text, so user text can never open an `<at>` tag. */
+/** The Markdown link and emphasis characters, as the character references Teams shows as themselves. */
+const MARKDOWN_REFS: Readonly<Record<string, string>> = { '[': '&#91;', ']': '&#93;', '*': '&#42;', _: '&#95;', '~': '&#126;', '`': '&#96;', '\\': '&#92;' };
+
+/**
+ * Escapes what Teams reads as markup in a message's text: user text can never open an `<at>` tag, and
+ * never add a Markdown link or emphasis.
+ */
 function escapeText(text: string): string {
-  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return text.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/[[\]*_~`\\]/g, (c) => MARKDOWN_REFS[c] ?? c);
 }
 
 /**

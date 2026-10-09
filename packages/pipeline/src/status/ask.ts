@@ -7,13 +7,20 @@
 // rows and the logs of the asking channel's open incidents, resolves, then loads the log, claims and
 // subscriptions of whatever the resolution named and answers over that. A handful of indexed reads; the
 // whole answer stays well under a second.
+//
+// With `access` (A 4.3, #272) an answer covers only what the asker may see: an incident from a channel
+// on the asker's platform they are in, one they reported or own, and one with no chat channel (a CLI
+// or Raycast capture). Another platform's channel is never theirs. `askerMayAsk` is false for a guest
+// or someone from another organization, whom the adapters answer with `GUESTS_GET_NO_STATUS` instead.
 
 import type { IncidentEvent } from '../contracts/events.ts';
 import type { StatusAnswer, StatusQuery } from '../contracts/signals.ts';
+import type { IncidentActor } from '../contracts/incident.ts';
 import type { Claim, IncidentView, Subscription } from '../contracts/state.ts';
 import { isTerminalStatus } from '../lifecycle/machine.ts';
 import type { WorkspaceMap } from '../map/types.ts';
-import type { StatePort } from '../ports/state.ts';
+import type { Membership } from '../policy/autonomy.ts';
+import type { ChatPlatform, StatePort } from '../ports/state.ts';
 import { createStatusQueries, type QueryResolution } from './query.ts';
 
 /** The slice of the state port a status question reads. */
@@ -29,6 +36,70 @@ export interface StatusAskOptions {
   timeZone?: string;
   /** Most incident rows read per question. Default 500. */
   incidentLimit?: number;
+  /** Scopes each answer to what the asker may see (see the file header). Absent: everything. */
+  access?: StatusAccess;
+}
+
+/** Who may hear about what (#272), on one chat platform. */
+export interface StatusAccess {
+  platform: ChatPlatform;
+  /** Member, guest, or external; only a member gets status answers. */
+  membership(userId: string): Promise<Membership>;
+  /** Whether the user is in the channel now (a short cache is fine). */
+  inChannel(channelId: string, userId: string): Promise<boolean>;
+}
+
+/** What a guest or external person is told when they ask for a status. */
+export const GUESTS_GET_NO_STATUS = 'Status answers are for members of this workspace.';
+
+/** Whether the asker gets status answers at all: true without `access`. */
+export async function askerMayAsk(access: StatusAccess | undefined, userId: string): Promise<boolean> {
+  return access === undefined || (await access.membership(userId).catch(() => 'external' as const)) === 'member';
+}
+
+/** How long `briefMembers` trusts a channel's member list. */
+export const MEMBERS_TTL_MS = 60_000;
+/** Channels `briefMembers` remembers before the oldest is dropped. */
+const MAX_CHANNELS = 500;
+
+/**
+ * `StatusAccess.inChannel` over a platform's live member list, remembered for `MEMBERS_TTL_MS`. A list
+ * that cannot be read (any error) has nobody in it.
+ */
+export function briefMembers(list: (channelId: string) => Promise<Iterable<string>>, clock: () => Date = () => new Date()): StatusAccess['inChannel'] {
+  const known = new Map<string, { at: number; members: Promise<ReadonlySet<string>> }>();
+  return async (channelId, userId) => {
+    const now = clock().getTime();
+    let entry = known.get(channelId);
+    if (entry === undefined || now - entry.at >= MEMBERS_TTL_MS) {
+      entry = { at: now, members: list(channelId).then((m) => new Set(m), () => new Set<string>()) };
+      known.delete(channelId);
+      known.set(channelId, entry);
+      if (known.size > MAX_CHANNELS) known.delete(known.keys().next().value as string);
+    }
+    return (await entry.members).has(userId);
+  };
+}
+
+/** The incidents `asker` may hear about (see the file header). */
+export async function visibleTo(access: StatusAccess, asker: IncidentActor, incidents: readonly IncidentView[]): Promise<IncidentView[]> {
+  const channels = new Map<string, Promise<boolean>>();
+  const inChannel = (channelId: string): Promise<boolean> => {
+    let known = channels.get(channelId);
+    if (known === undefined) {
+      known = access.inChannel(channelId, asker.id).catch(() => false);
+      channels.set(channelId, known);
+    }
+    return known;
+  };
+  const seen = await Promise.all(
+    incidents.map(async (i) => {
+      const chat = i.source === 'slack' || i.source === 'teams';
+      if (!chat || i.channelId === undefined || i.reporterId === asker.id || (i.ownerRef !== undefined && i.ownerRef === asker.name)) return true;
+      return i.source === access.platform && (await inChannel(i.channelId));
+    }),
+  );
+  return incidents.filter((_, n) => seen[n] === true);
 }
 
 const JIRA_KEY_ONLY = /^[A-Z][A-Z0-9]+-\d+\s*[?!.]*$/i;
@@ -83,7 +154,8 @@ export function createStatusAsk(options: StatusAskOptions): (query: StatusQuery)
 
   return async (query) => {
     const map = await options.getMap();
-    const incidents = await state.findIncidents({ workspaceId: options.workspaceId, limit });
+    const rows = await state.findIncidents({ workspaceId: options.workspaceId, limit });
+    const incidents = options.access === undefined ? rows : await visibleTo(options.access, query.asker, rows);
     const logs = new Map<string, IncidentEvent[]>();
     // The asking channel's open incidents: a thread can match only through `captured.threadId` in the log.
     const channelId = query.context.channelId;

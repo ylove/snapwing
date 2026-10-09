@@ -24,6 +24,9 @@
 // user is `unknown` and so gets the reporter or lead shape, never the engineer one. A person the answer
 // mentions who is not in the map is named as Teams names them (their user record, with `cache`).
 //
+// With `access` (#272), as on Slack: an answer covers only incidents the asker may see, and a guest or
+// someone from another organization gets `GUESTS_GET_NO_STATUS` in place of any answer or standing watch.
+//
 // `createStatusQueries` is pure over a snapshot and `events(id)` is synchronous, so each question first
 // loads the incident rows and the logs of the asking channel's open incidents, resolves, then loads the
 // log, claims and subscriptions of whatever the resolution named and answers over that. A handful of
@@ -37,7 +40,7 @@ import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { isUnlinkGithub, unlinkGithubReply } from '../shared/unlink-github.ts';
 import type { GitHubOAuth } from '../../github/oauth.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
-import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
+import { askerMayAsk, createStatusAsk, GUESTS_GET_NO_STATUS, looksLikeStatusQuestion, surfaceWords, type StatusAccess, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
 import { pinData } from '../shared/pr-pin.ts';
 import { ADAPTIVE_CARD_CONTENT_TYPE } from './adapter.ts';
 import type { TeamsConnector, TeamsOutgoingActivity } from './connector.ts';
@@ -65,6 +68,8 @@ export interface TeamsStatusQueryOptions {
   timeZone?: string;
   /** Most incident rows read per question. Default 500. */
   incidentLimit?: number;
+  /** Who may hear about what (see the file header). Absent: every asker, every incident. */
+  access?: StatusAccess;
   onError?: (error: unknown) => void;
 }
 
@@ -261,6 +266,10 @@ export function createTeamsStatusQuery(options: TeamsStatusQueryOptions): TeamsS
         const map = await options.getMap();
         if (request.kind === 'unlink' && options.identity !== undefined) {
           await post(request, { type: 'message', text: await unlinkGithubReply(options.identity, 'teams', request.asker) });
+          return;
+        }
+        if (!(await askerMayAsk(options.access, request.asker))) {
+          await post(request, { type: 'message', text: GUESTS_GET_NO_STATUS });
           return;
         }
         if (request.kind === 'standing' && options.standing !== undefined) {

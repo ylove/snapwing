@@ -418,6 +418,25 @@ describe('mention tags inside user text', () => {
   });
 });
 
+describe('Markdown in plain bot text (#269)', () => {
+  const DEV_ENTITY = { type: 'mention', text: '<at>teamsDev</at>', mentioned: { id: DEV_AAD, name: 'teamsDev' } };
+
+  it('escapes link and emphasis characters in user text, and keeps the mentions this surface emits', async () => {
+    const summary = 'Pay [here](https://attacker.test/login) *now* or __never__ ~~ok~~ `run` \\o/';
+    await router.threadPost(INCIDENT, { text: `@teamsDev, ${summary}`, mentionUserId: DEV_AAD });
+    expect(calls[0]?.body.text).toBe(
+      '<at>teamsDev</at>, Pay &#91;here&#93;(https://attacker.test/login) &#42;now&#42; or &#95;&#95;never&#95;&#95; &#126;&#126;ok&#126;&#126; &#96;run&#96; &#92;o/',
+    );
+    expect(calls[0]?.body.entities).toEqual([DEV_ENTITY]);
+  });
+
+  it('escapes them in channel and person posts too, around a mention mark', async () => {
+    await surface.channelPost(CHANNEL, `${surface.mentionUser(DEV_AAD)} see [the log](https://attacker.test) _now_`);
+    expect(calls[0]?.body.text).toBe('<at>teamsDev</at> see &#91;the log&#93;(https://attacker.test) &#95;now&#95;');
+    expect(calls[0]?.body.entities).toEqual([DEV_ENTITY]);
+  });
+});
+
 describe('the PR card and the GitHub link prompt', () => {
   it('posts the card in the thread with Merge for a viewer who can, and records it as role pr', async () => {
     await surface.prReady.postPrReady({ channel: CHANNEL, threadId: ROOT }, INCIDENT, prCard, { canMerge: true });

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import type { CanonicalIncidentPayload } from '@snapwing/pipeline/contracts/incident.ts';
@@ -239,7 +239,7 @@ describe('image loader', () => {
       }),
     );
     const html = `<p>see</p><img src="${CH}/messages/m1/hostedContents/hc1/$value" alt="x">`;
-    const src = toSourceMessage({ ...message('m1', 0), body: { contentType: 'html', content: html } } as never);
+    const src = toSourceMessage({ ...message('m1', 0), body: { contentType: 'html', content: html } } as never, { teamId: T, channelId: C });
     expect(src.text).toBe('see');
     expect(src.attachments).toHaveLength(1);
     const image = await loader(src.attachments[0]!);
@@ -262,7 +262,7 @@ describe('image loader', () => {
         return new HttpResponse(PNG);
       }),
     );
-    const m = toSourceMessage({ ...message('m2', 0), attachments: [{ id: 'a', contentType: 'reference', contentUrl: url, name: 'screen.png' }] } as never);
+    const m = toSourceMessage({ ...message('m2', 0), attachments: [{ id: 'a', contentType: 'reference', contentUrl: url, name: 'screen.png' }] } as never, { teamId: T, channelId: C });
     expect(m.attachments).toEqual([{ kind: 'image', url, mimeType: 'image/png' }]);
     const image = await loader(m.attachments[0]!);
     expect(image?.mimeType).toBe('image/png');
@@ -311,5 +311,118 @@ describe('image loader', () => {
     expect(await source.loadRecording(att('ok.mp4'))).toEqual(video);
     expect(await source.loadRecording(att('bad.mp4'))).toBeUndefined();
     expect(await source.loadRecording({ kind: 'file', url: 'https://contoso.sharepoint.com/a.pdf', mimeType: 'application/pdf' })).toBeUndefined();
+  });
+});
+
+describe('which token goes where, and whose inline images (#269)', () => {
+  const ATTACHMENT = 'https://smba.trafficmanager.net/amer/v3/attachments/x/views/original';
+  let requests: { url: string; auth: string | null }[];
+
+  // Every request the loaders make, answered with an image unless a test says otherwise.
+  beforeEach(() => {
+    requests = [];
+    server.use(
+      http.all(/.*/, ({ request }) => {
+        requests.push({ url: request.url, auth: request.headers.get('authorization') });
+        return new HttpResponse(PNG);
+      }),
+    );
+  });
+
+  it('sends the bot token only to a Bot Connector attachment on an exact Bot Connector host', async () => {
+    const loader = createTeamsImageLoader(graph, { botToken: () => 'bot-token', botHosts: ['smba.test'] });
+    const allowed = [
+      ATTACHMENT,
+      'https://smba.infra.gcc.teams.microsoft.com/gcc/v3/attachments/x/views/original',
+      // A configured service URL's host (`botHosts`).
+      'https://smba.test/amer/v3/attachments/x/views/original',
+    ];
+    for (const url of allowed) expect((await loader({ kind: 'image', url, mimeType: 'image/png' }))?.mimeType).toBe('image/png');
+    expect(requests).toEqual(allowed.map((url) => ({ url, auth: 'Bearer bot-token' })));
+
+    requests = [];
+    const refused = [
+      // Any other Microsoft host, however it looks.
+      'https://us-api.asm.skype.com/v1/objects/0-wus-d2-x/views/imgo',
+      'https://example.microsoft.com/amer/v3/attachments/x/views/original',
+      'https://api.botframework.com/v3/attachments/x/views/original',
+      // A look-alike, a subdomain, another port, plain http.
+      'https://smba.trafficmanager.net.attacker.test/amer/v3/attachments/x/views/original',
+      'https://x.smba.trafficmanager.net/amer/v3/attachments/x/views/original',
+      'https://smba.trafficmanager.net:8443/amer/v3/attachments/x/views/original',
+      'http://smba.trafficmanager.net/amer/v3/attachments/x/views/original',
+      // The right host, but not an attachment.
+      'https://smba.trafficmanager.net/amer/v3/conversations/19%3Ax/members',
+    ];
+    for (const url of refused) expect(await loader({ kind: 'image', url, mimeType: 'image/png' })).toBeUndefined();
+    expect(requests).toEqual([]);
+  });
+
+  it("fetches a personal chat's own attachment, from the activity, with the bot token", async () => {
+    const dm = payload(
+      { channelId: 'a:1personal', rawPayloadSnapshot: { conversationType: 'personal', attachments: [{ contentType: 'image/png', contentUrl: ATTACHMENT }] } },
+      'teams-a:1personal-1790000100123',
+    );
+    const source = createTeamsContextSource(graph, { botToken: () => 'bot-token' });
+    const anchor = await source.anchor(dm);
+    expect((await source.loadImage(anchor.message.attachments[0]!))?.mimeType).toBe('image/png');
+    expect(requests).toEqual([{ url: ATTACHMENT, auth: 'Bearer bot-token' }]);
+  });
+
+  it('never passes on a Bot Connector attachment read back from Graph, so Graph content never meets the bot token', async () => {
+    const sharepoint = 'https://contoso.sharepoint.com/sites/team/Shared Documents/General/screen.png';
+    server.use(
+      http.get(`${CH}/messages/${ANCHOR_ID}`, () =>
+        HttpResponse.json(
+          message(ANCHOR_ID, 0, {
+            body: { contentType: 'html', content: `<p>see</p><img src="${ATTACHMENT}">` },
+            attachments: [
+              { id: 'a', contentType: 'image/png', contentUrl: ATTACHMENT, name: 'a.png' },
+              { id: 'b', contentType: 'image/png', contentUrl: 'https://smba.test/amer/v3/attachments/y/views/original', name: 'b.png' },
+              { id: 'c', contentType: 'reference', contentUrl: sharepoint, name: 'screen.png' },
+            ],
+          }),
+        ),
+      ),
+    );
+    const source = createTeamsContextSource(graph, { botToken: () => 'bot-token', botHosts: ['smba.test'] });
+    const anchor = await source.anchor(payload());
+    expect(anchor.message.attachments).toEqual([{ kind: 'image', url: sharepoint, mimeType: 'image/png' }]);
+    for (const a of anchor.message.attachments) expect((await source.loadImage(a))?.mimeType).toBe('image/png');
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.auth).toBe('Bearer graph-token');
+  });
+
+  it('keeps an inline image only when its URL names the message being read', async () => {
+    const hosted = (path: string): string => `${G}/teams/${path}/hostedContents/hc/$value`;
+    const channel = encodeURIComponent(C);
+    const own = hosted(`${T}/channels/${channel}/messages/m1`);
+    const others = [
+      hosted(`${T}/channels/${channel}/messages/m9`),
+      hosted(`${T}/channels/${encodeURIComponent('19:other@thread.tacv2')}/messages/m1`),
+      hosted(`T9/channels/${channel}/messages/m1`),
+      hosted(`${T}/channels/${channel}/messages/m1/replies/r1`),
+    ];
+    const at = { teamId: T, channelId: C };
+    const html = [own, ...others].map((u) => `<img src="${u}">`).join('');
+    expect(toSourceMessage({ ...message('m1', 0), body: { contentType: 'html', content: html } } as never, at).attachments).toEqual([{ kind: 'image', url: own }]);
+    // A reply's own image names its root and itself; its root's image is not the reply's.
+    const replyOwn = hosted(`${T}/channels/${channel}/messages/m1/replies/r1`);
+    const reply = { ...message('r1', 5, { replyToId: 'm1' }), body: { contentType: 'html', content: `<img src="${replyOwn}"><img src="${own}">` } };
+    expect(toSourceMessage(reply as never, at).attachments).toEqual([{ kind: 'image', url: replyOwn }]);
+    // Another message's hosted content as an attachment is dropped the same way; with no place known, none is kept.
+    const attached = { ...message('m1', 0), attachments: [{ id: 'x', contentType: 'image/png', contentUrl: others[0], name: 'x.png' }] };
+    expect(toSourceMessage(attached as never, at).attachments).toEqual([]);
+    expect(toSourceMessage({ ...message('m1', 0), body: { contentType: 'html', content: html } } as never, undefined).attachments).toEqual([]);
+
+    // Read through the context source, and from a personal chat's own attachments: the same rule.
+    server.use(http.get(`${CH}/messages/${ANCHOR_ID}`, () => HttpResponse.json(message(ANCHOR_ID, 0, { body: { contentType: 'html', content: `<img src="${own}">` } }))));
+    expect((await createTeamsContextSource(graph).anchor(payload())).message.attachments).toEqual([]);
+    const dm = payload(
+      { channelId: 'a:1personal', rawPayloadSnapshot: { conversationType: 'personal', attachments: [{ contentType: 'image/png', contentUrl: own }] } },
+      'teams-a:1personal-1790000100123',
+    );
+    expect((await createTeamsContextSource(graph).anchor(dm)).message.attachments).toEqual([]);
+    expect(requests).toEqual([]);
   });
 });

@@ -61,7 +61,8 @@ const ANCHOR_AT = '2026-10-08T09:02:00.000Z';
 const SECOND = '1790845500000';
 const SECOND_AT = '2026-10-08T09:05:00.000Z';
 
-const TEAMS_SECRETS = { TEAMS_APP_ID: APP_ID, TEAMS_APP_PASSWORD: APP_PASSWORD, TEAMS_TENANT_ID: TENANT };
+/** The fake Connector is at `SERVICE_URL`; naming it lets the service URL allowlist admit its host (#269). */
+const TEAMS_SECRETS = { TEAMS_APP_ID: APP_ID, TEAMS_APP_PASSWORD: APP_PASSWORD, TEAMS_TENANT_ID: TENANT, TEAMS_SERVICE_URL: SERVICE_URL };
 
 function fixture(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(new URL(`../fixtures/teams/${path}`, import.meta.url), 'utf8')) as Record<string, unknown>;
@@ -658,7 +659,8 @@ describe('compose with and without Teams', () => {
     const noSlack: Record<string, string> = { ...fakeSecrets(), ...TEAMS_SECRETS };
     for (const name of ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET']) delete noSlack[name];
     let inject: TeamsInject | undefined;
-    const composed = await composeOnly(noSlack, { teamsInject: (fn) => (inject = fn) });
+    const lines: string[] = [];
+    const composed = await composeOnly(noSlack, { teamsInject: (fn) => (inject = fn) }, { info: (l) => lines.push(l), error: (l) => lines.push(l) });
     expect(composed.deps?.chat.platforms).toEqual(['teams']);
     expect(paths(composed).filter((p) => p.includes('/slack/'))).toEqual([]);
     expect(paths(composed)).toEqual(expect.arrayContaining(TEAMS_ROUTES));
@@ -676,6 +678,17 @@ describe('compose with and without Teams', () => {
     // The HTTP route still refuses the same activity without a token.
     const route = composed.routes.find((r) => r.path === '/teams/messages');
     expect((await route?.handler(activityRequest('http://snapwing.test', queue, null), { params: {} }))?.status).toBe(401);
+
+    // #269: the same command from another tenant is ignored with one log line; one naming a serviceUrl off the
+    // Bot Connector allowlist is refused before any call, so the bot token never goes there.
+    const OTHER_TENANT = '0b0b0b0b-0000-4000-8000-0000000000ff';
+    const personal = fixture('activities/personal-text.json') as { conversation: Record<string, unknown> };
+    const foreign = { ...queue, conversation: { ...personal.conversation, tenantId: OTHER_TENANT }, channelData: { tenant: { id: OTHER_TENANT } } };
+    expect(await inject({ activity: foreign })).toEqual({ status: 200 });
+    expect(lines.filter((l) => l.includes(`tenant ${OTHER_TENANT}`))).toHaveLength(1);
+    expect(await inject({ activity: { ...queue, serviceUrl: 'https://attacker.test/amer/' } })).toEqual({ status: 200 });
+    expect(lines.some((l) => l.includes('serviceUrl refused: host not allowed'))).toBe(true);
+    expect(teams.connector.filter((c) => c.kind === 'send')).toHaveLength(1);
 
     // A team the subscriptions marked reduced shows in /healthz with the reason.
     const state = await tdb.open();

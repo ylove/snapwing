@@ -64,6 +64,7 @@ import type { ModelPort } from '@snapwing/pipeline/ports/model.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { classifyLexicon, classifyReaction } from '@snapwing/pipeline/signals/classify.ts';
 import { handleSignal, type SignalDeps, type SignalInput, type SignalOutcome } from '@snapwing/pipeline/signals/handler.ts';
+import type { ChatLimits } from '@snapwing/pipeline/policy/limits.ts';
 import { classifyLlm, type SignalMessage } from '@snapwing/pipeline/signals/llm.ts';
 import { applyStandingWatch, parseStandingWatch, resolveWatchTarget } from '@snapwing/pipeline/signals/standing.ts';
 import { resolveTarget } from '@snapwing/pipeline/signals/target.ts';
@@ -126,6 +127,8 @@ export interface TeamsSignalsOptions {
   githubLinked?: (aadObjectId: string) => Promise<boolean>;
   /** The LLM pass (A 1.2). Absent: a reply the lexicon misses is not a signal. */
   model?: ModelPort;
+  /** The chat limits on model work (main 16), as on Slack (`slack/signals.ts`). Absent: unlimited. */
+  limits?: Pick<ChatLimits, 'modelWork'>;
   /** Writes standing subscriptions (A 4.4). Absent: a surface watch in a thread is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
   /** Tells the person their standing watch was applied (Teams has no ephemerals). Absent: nothing is said. */
@@ -568,6 +571,8 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     const thread = (): Promise<SignalMessage[]> => (earlier ??= threadContext(teamId, channelId, rootId, message));
     const actor = actorOf(map, user);
     const deepLink = message.webUrl ?? teamsMessageLink(channelId, message.id, teamId, rootId);
+    let allowed: boolean | undefined;
+    const mayUseModel = (): boolean => (allowed ??= options.limits?.modelWork(user, `teams:${channelId}:${rootId}`) === undefined);
 
     const activeIncident = async (filed: boolean): Promise<boolean> => {
       const target = await resolveTarget(deps.state, ref);
@@ -582,7 +587,7 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
         classified = lexicon;
       } else if (options.model !== undefined) {
         // The model reads only replies in an active incident's thread (A 1.2).
-        if (!(await activeIncident(false))) return ignored('no-intent');
+        if (!(await activeIncident(false)) || !mayUseModel()) return ignored('no-intent');
         const answer = await classifyLlm(signals, { id: message.id, authorId: user, text, timestamp }, await thread(), options.model).catch((e: unknown) => {
           onError(e);
           return { intent: 'none' as const };
@@ -611,8 +616,10 @@ export function createTeamsSignals(options: TeamsSignalsOptions): TeamsSignals {
     const textMessage: TextMessage = { id: message.id, authorId: user, text, timestamp, ...(mentions.length === 0 ? {} : { mentions }) };
     const read = await (async (): Promise<TextSignalOutcome> => {
       const modelReads = textDeps.model !== undefined && classifyTextLexicon({ signals }, textMessage).kind === 'none';
-      const context = modelReads && (await activeIncident(true)) ? await thread() : [];
-      return handleTextSignal(textDeps, {
+      const reads = modelReads && (await activeIncident(true)) && mayUseModel();
+      const context = reads ? await thread() : [];
+      const { model: _model, ...lexiconOnly } = textDeps;
+      return handleTextSignal(modelReads && !reads ? lexiconOnly : textDeps, {
         platform: 'teams',
         thread: { channel: channelId, rootId },
         message: textMessage,

@@ -22,8 +22,11 @@
 //   interactivity is told (`TeamsInvokeBudget`), so a refusal that lands after "Working on it" reaches the
 //   tapper in their personal chat instead of on a card nobody sees. Handlers
 //   that answer nothing (status, commands, signals, mode check) run after the 200, as Slack's do.
+// - Tenant: with `tenantId` (the install's, `TEAMS_TENANT_ID`), an authenticated activity whose tenant
+//   (`channelData.tenant.id`, `conversation.tenantId`) is another, or that names none, is ignored: a 200
+//   and one log line; nothing is captured, tapped, read as a signal, or answered (#269).
 // - `POST /teams/notifications` and `POST /teams/lifecycle` (Graph): the `validationToken` handshake
-//   is answered with the token; otherwise only notifications whose `clientState` matches are kept (a body
+//   is answered with the token (capped and checked, `subscriptions.ts`); otherwise only notifications whose `clientState` matches are kept (a body
 //   where none matches is 403 and touches nothing) and Graph gets its 202 at once. Change notifications go
 //   to the signals (#7 diffs the reactions); lifecycle notifications to `handleLifecycle`, whose outcomes
 //   (a `missed` one means resync) go to `onLifecycle`.
@@ -126,6 +129,10 @@ export interface TeamsDispatcherOptions {
   onLifecycle?: (outcomes: readonly LifecycleOutcome[]) => Promise<void> | void;
   /** Default {@link TEAMS_INVOKE_BUDGET_MS}. */
   invokeBudgetMs?: number;
+  /** The install's tenant (`TEAMS_TENANT_ID`). An activity from any other tenant, or naming none, is ignored. Absent: not checked. */
+  tenantId?: string;
+  /** One line for each activity the tenant check ignores. */
+  log?: (line: string) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -178,6 +185,12 @@ function fromBot(activity: Rec): boolean {
   return from !== '' && from === str(rec(activity['recipient'])['id']);
 }
 
+/** The tenants an activity names (`channelData.tenant.id`, `conversation.tenantId`), lower-cased, once each; empty when it names none. */
+function tenantsOf(activity: Rec): string[] {
+  const named = [str(rec(rec(activity['channelData'])['tenant'])['id']), str(rec(activity['conversation'])['tenantId'])];
+  return [...new Set(named.filter((t) => t !== '').map((t) => t.toLowerCase()))];
+}
+
 function isAck(v: unknown): v is TeamsAck {
   return typeof rec(v)['status'] === 'number';
 }
@@ -188,7 +201,15 @@ export function createTeamsDispatcher(options: TeamsDispatcherOptions): TeamsDis
   const { adapter } = options;
   const onError = options.onError ?? (() => undefined);
   const budgetMs = options.invokeBudgetMs ?? TEAMS_INVOKE_BUDGET_MS;
+  const installTenant = options.tenantId?.trim().toLowerCase() || undefined;
   const inFlight = new Set<Promise<unknown>>();
+
+  /** True when the activity is from the install's tenant (or no tenant is configured). */
+  function fromInstallTenant(activity: Rec): boolean {
+    if (installTenant === undefined) return true;
+    const tenants = tenantsOf(activity);
+    return tenants.length > 0 && tenants.every((t) => t === installTenant);
+  }
 
   function track<T>(work: Promise<T>): Promise<T> {
     const settled = work.then(
@@ -304,6 +325,11 @@ export function createTeamsDispatcher(options: TeamsDispatcherOptions): TeamsDis
   async function route(inbound: Extract<TeamsInbound, { transport: 'http' }>): Promise<TeamsDispatchResult> {
     const activity = rec(inbound.activity);
     const type = str(activity['type']);
+    if (!fromInstallTenant(activity)) {
+      const named = tenantsOf(activity).map((t) => t.replace(/[^\w-]/g, '?').slice(0, 64));
+      options.log?.(`teams: ignored a ${type.replace(/[^\w]/g, '?').slice(0, 32) || 'typeless'} activity from ${named.length === 0 ? 'no tenant' : `tenant ${named.join(', ')}`}, not the install's`);
+      return empty(200);
+    }
     if (type === 'message') return message(inbound, activity);
     if (type === 'invoke') {
       const name = str(activity['name']);

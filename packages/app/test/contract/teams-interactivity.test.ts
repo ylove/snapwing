@@ -1036,6 +1036,89 @@ describe('onAction, as the transport calls it', () => {
   });
 });
 
+// What a tap acts on (#269) -------------------------------------------------------------------------
+
+describe("a tap acts on its remembered card's data, or on an incident in the conversation tapped (#269)", () => {
+  const OTHER_INC = '01K6TEAMSTAP0000000000002';
+  const OTHER_CHANNEL = '19:9e8d7c6b5a4f3e2d1c0b@thread.tacv2';
+  let logged: string[];
+
+  beforeEach(() => {
+    logged = [];
+    ix = make({ log: (line) => logged.push(line) });
+  });
+
+  /** `activity` as if tapped in another conversation; `channelData` keeps naming the incident's channel. */
+  function inConversation(activity: Record<string, unknown>, conversation: Record<string, unknown>): Record<string, unknown> {
+    return { ...activity, conversation: { tenantId: TENANT, ...conversation } };
+  }
+
+  it('a button whose data names another incident than the remembered button does nothing, with one log line', async () => {
+    await seedPlanned(1);
+    const card = build(scope);
+    const id = await post(card);
+    const forged = await ix.handleInvoke(invoke(RAE, { verb: 'looks-right', data: { incidentId: OTHER_INC } }, id));
+    expect(forged).toEqual({ outcome: { kind: 'ignored', reason: 'tap-mismatch' } });
+    expect(taps).toEqual([]);
+    expect(seen).toEqual([]);
+    expect(await store.get(THREAD, id)).toEqual(card);
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain(`incident ${OTHER_INC}`);
+    expect(logged[0]).toContain('another incident');
+  });
+
+  it("the remembered button's data is what the tap acts on, whatever else the invoke carries", async () => {
+    await seedFixing(2);
+    const card = build(midFlight);
+    const id = await post(card);
+    const button = executeAction(card, 'stop_it');
+    expect(button.data).toMatchObject({ runId: RUN, claimerId: SAM });
+    // The invoke names another run and another claimer: the card's run stops and the card's claimer takes over.
+    const out = await ix.handleInvoke(invoke(SAM, { verb: 'stop_it', data: { ...button.data, runId: 'run-forged', claimerId: MO } }, id));
+    expect(out.outcome).toMatchObject({ kind: 'mid-flight', incidentId: INC, answer: { accepted: true, choice: 'stop-it' } });
+    expect(cancelled).toEqual([RUN]);
+    expect(assigned).toEqual([SAM]);
+
+    // A clarify mark the status message's Stop never carried does not make the Stop a clarify answer.
+    const status = buildStatusCard(INC, { ...makeStatusUpdate('fixing', { issueKey: 'WEB-1042' }), actions: ['stop'] });
+    const statusId = await post(status);
+    const stop = await ix.handleInvoke(invoke(SAM, { verb: 'stop', data: { incidentId: INC, card: 'clarify' } }, statusId));
+    expect(stop.outcome).toMatchObject({ kind: 'stopped', incidentId: INC });
+    expect(taps).toEqual([]);
+    expect(logged).toEqual([]);
+  });
+
+  it('with no remembered card, a tap naming an incident of another conversation, or no incident, does nothing', async () => {
+    await seedPlanned(1);
+    const card = build(scope);
+    const choice = executeAction(card, 'looks-right');
+    // Tapped in another channel's thread; the channel data the client sends still names the incident's channel.
+    const other = inConversation(invoke(RAE, choice, undefined), { isGroup: true, conversationType: 'channel', id: `${OTHER_CHANNEL};messageid=${ROOT}` });
+    expect((await ix.handleInvoke(other)).outcome).toEqual({ kind: 'ignored', reason: 'tap-mismatch' });
+    // A card in the tapper's personal chat is no card choice's.
+    const personal = inConversation(invoke(RAE, choice, '1790000999999'), { conversationType: 'personal', id: PERSONAL });
+    expect((await ix.handleInvoke(personal)).outcome).toEqual({ kind: 'ignored', reason: 'tap-mismatch' });
+    const unknown = await ix.handleInvoke(invoke(RAE, { verb: 'looks-right', data: { incidentId: UNKNOWN_INC } }, undefined));
+    expect(unknown).toEqual({ outcome: { kind: 'ignored', reason: 'tap-mismatch' } });
+    expect(taps).toEqual([]);
+    expect(seen).toEqual([]);
+    expect(logged).toHaveLength(3);
+    expect(logged[0]).toContain('not in the conversation tapped');
+    expect(logged[2]).toContain('no such incident');
+    // The same tap in the incident's own thread goes through.
+    expect((await ix.handleInvoke(invoke(RAE, choice, undefined))).outcome).toMatchObject({ kind: 'tapped', card: 'scope-preview', choice: 'looks-right' });
+  });
+
+  it("a queue card's Stop in the tapper's personal chat goes through with no remembered card", async () => {
+    await seedFixing(2);
+    const stop = inConversation(invoke(SAM, { verb: 'stop', data: { incidentId: INC } }, '1790000999999'), { conversationType: 'personal', id: PERSONAL });
+    const out = await ix.handleInvoke(stop);
+    expect(out.outcome).toEqual({ kind: 'stopped', incidentId: INC, outcome: { stopped: true, cancelledRun: RUN } });
+    expect(cancelled).toEqual([RUN]);
+    expect(logged).toEqual([]);
+  });
+});
+
 // The remembering connector -----------------------------------------------------------------------
 
 describe('rememberTeamsCards', () => {
