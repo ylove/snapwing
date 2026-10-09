@@ -350,6 +350,25 @@ describe('secrets', () => {
     });
   });
 
+  it('masks a registered token in say output and saved state, though it never came through a question', async () => {
+    const kv = memoryKv();
+    const token = 'owner-token-from-sign-in-0042';
+    const steps = [
+      step('teams', [], async (ctx) => {
+        const owner = ctx.redact(new SecretValue(token));
+        ctx.io.say(`signed in with ${owner.reveal()}`);
+        await ctx.progress({ note: `bearer ${token}` });
+        return { status: 'done' };
+      }),
+    ];
+    const t = terminal([]);
+    const result = await run(steps, createKvOnboardingStore(kv), t.io);
+    expect(t.lines.join('\n')).toContain('signed in with [secret]');
+    expect(t.lines.join('\n')).not.toContain(token);
+    expect(kv.raw.get(ONBOARDING_STATE_KEY) ?? '').not.toContain(token);
+    expect(result.state.steps['teams']?.data).toEqual({ note: 'bearer [secret]' });
+  });
+
   it('is the one upsertEnv the bootstrap scripts use', () => {
     expect(scriptUpsertEnv).toBe(upsertEnv);
   });

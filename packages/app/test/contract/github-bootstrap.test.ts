@@ -1,4 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -189,6 +190,53 @@ describe('bootstrap app (manifest flow)', () => {
     const state = new URL((/action="([^"]+)"/.exec(page)?.[1] ?? '').replaceAll('&amp;', '&')).searchParams.get('state') ?? '';
     expect((await fetch(`${local}/callback?code=bad&state=${state}`)).status).toBe(500);
     await settled;
+  });
+
+  it('answers only to 127.0.0.1:<port> and localhost:<port> as the Host', async () => {
+    server.use(http.post(`${API}/app-manifests/:code/conversions`, () => HttpResponse.json(conversion, { status: 201 })));
+    let local = '';
+    const result = runApp(deps({ openUrl: (url) => (local = url) }));
+    await expect.poll(() => local).not.toBe('');
+    const { port } = new URL(local);
+    const statusFor = (host: string): Promise<number> =>
+      new Promise((resolve, reject) => {
+        const req = httpRequest({ host: '127.0.0.1', port: Number(port), path: '/', headers: { Host: host } }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.once('error', reject);
+        req.end();
+      });
+    expect(await statusFor(`evil.example:${port}`)).toBe(403);
+    expect(await statusFor('127.0.0.1')).toBe(403);
+    expect(await statusFor(`127.0.0.1:${port}`)).toBe(200);
+    expect(await statusFor(`localhost:${port}`)).toBe(200);
+    const page = await (await fetch(local)).text();
+    const state = new URL((/action="([^"]+)"/.exec(page)?.[1] ?? '').replaceAll('&amp;', '&')).searchParams.get('state') ?? '';
+    expect((await fetch(`${local}/callback?code=c0de&state=${state}`)).status).toBe(200);
+    await result;
+  });
+
+  it('refuses a conversion that belongs to a different owner than the one named, and compares case-insensitively', async () => {
+    server.use(http.post(`${API}/app-manifests/:code/conversions`, () => HttpResponse.json({ ...conversion, owner: { login: 'someone-else' } }, { status: 201 })));
+    let local = '';
+    const rejected = runApp(deps({ openUrl: (u) => (local = u) }), { org: 'Acme' });
+    const settled = expect(rejected).rejects.toThrow(/under someone-else, not Acme/);
+    await expect.poll(() => local).not.toBe('');
+    const page = await (await fetch(local)).text();
+    const state = new URL((/action="([^"]+)"/.exec(page)?.[1] ?? '').replaceAll('&amp;', '&')).searchParams.get('state') ?? '';
+    expect((await fetch(`${local}/callback?code=c0de&state=${state}`)).status).toBe(500);
+    await settled;
+    await expect(readFile(join(root, 'secrets/github-app.pem'), 'utf8')).rejects.toThrow();
+
+    server.use(http.post(`${API}/app-manifests/:code/conversions`, () => HttpResponse.json({ ...conversion, owner: { login: 'ACME' } }, { status: 201 })));
+    local = '';
+    const accepted = runApp(deps({ openUrl: (u) => (local = u) }), { org: 'acme' });
+    await expect.poll(() => local).not.toBe('');
+    const page2 = await (await fetch(local)).text();
+    const state2 = new URL((/action="([^"]+)"/.exec(page2)?.[1] ?? '').replaceAll('&amp;', '&')).searchParams.get('state') ?? '';
+    expect((await fetch(`${local}/callback?code=c0de&state=${state2}`)).status).toBe(200);
+    await accepted;
   });
 });
 

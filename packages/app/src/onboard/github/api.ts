@@ -2,12 +2,12 @@
 // `.env.live` file the bootstrap script keeps, and one small GitHub REST client. The onboarding step
 // and `scripts/github-bootstrap.ts` both build on it. A secret value is never logged here.
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createEnvFileSecrets } from '@snapwing/pipeline/providers/local/secrets.ts';
 import { SecretNotFoundError } from '@snapwing/pipeline/ports/secrets.ts';
 import { GitHubApiError, errorMessage } from '../../github/auth.ts';
-import { upsertEnv } from '../interview/env.ts';
+import { upsertEnv, writeFileAtomic } from '../interview/env.ts';
 
 export { upsertEnv };
 
@@ -56,7 +56,7 @@ async function readIfExists(path: string): Promise<string> {
 
 export async function updateEnvFile(d: BootstrapDeps, entries: Readonly<Record<string, string>>): Promise<void> {
   const path = join(d.root, ENV_FILE);
-  await writeFile(path, upsertEnv(await readIfExists(path), entries), { mode: 0o600 });
+  await writeFileAtomic(path, upsertEnv(await readIfExists(path), entries));
 }
 
 export function envSecrets(d: BootstrapDeps): ReturnType<typeof createEnvFileSecrets> {

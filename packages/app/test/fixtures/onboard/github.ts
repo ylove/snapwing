@@ -24,6 +24,8 @@ export interface GitHubAccount {
   /** The `webhook_secret` the conversion returns (GitHub returns none for a manifest App). */
   webhookSecret: string | null;
   slug: string;
+  /** The `owner.login` the conversion reports; default: `account`. */
+  conversionOwner?: string;
   /** What the conversion hands out besides the slug. */
   app: { id: number; clientId: string; clientSecret: string; pem: string };
   installationId: number;
@@ -69,7 +71,7 @@ export function githubOnboardHandlers(gh: GitHubAccount, api = GITHUB_API): Http
     http.post(`${api}/app-manifests/:code/conversions`, ({ params }) => {
       gh.conversions.push(String(params['code']));
       return HttpResponse.json(
-        { id: gh.app.id, slug: gh.slug, client_id: gh.app.clientId, client_secret: gh.app.clientSecret, webhook_secret: gh.webhookSecret, pem: gh.app.pem },
+        { id: gh.app.id, slug: gh.slug, client_id: gh.app.clientId, client_secret: gh.app.clientSecret, webhook_secret: gh.webhookSecret, pem: gh.app.pem, owner: { login: gh.conversionOwner ?? gh.account } },
         { status: 201 },
       );
     }),

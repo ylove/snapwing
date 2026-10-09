@@ -209,7 +209,7 @@ export function listenForRedirect(port: number, state: string): Promise<Redirect
       if (good) deliver(code);
     });
     server.once('error', () => resolve(undefined));
-    server.listen(port, () => {
+    server.listen(port, '127.0.0.1', () => {
       server.removeAllListeners('error');
       resolve({
         wait: (timeoutMs) => Promise.race([arrived, new Promise<undefined>((r) => setTimeout(() => r(undefined), timeoutMs).unref())]),

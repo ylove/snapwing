@@ -237,6 +237,20 @@ describe('onboarding step 3: the GitHub App', () => {
     expect(gh.conversions).toEqual([]);
   });
 
+  it('writes nothing when GitHub reports the new App under a different owner than the one named', async () => {
+    gh.conversionOwner = 'mallory';
+    const { result, lines, envText } = await interview(['org', 'acme', '', 'stop'], { env: PUBLIC, steps: [runtime, step(GIVES_UP)] });
+    expect(result.state.steps['github']?.status).toBe('blocked');
+    expect(lines.join('\n')).toContain('under mallory, not acme');
+    expect(envText).not.toContain('GITHUB_');
+  });
+
+  it('accepts the owner in another letter case', async () => {
+    gh.conversionOwner = 'ACME';
+    const { result } = await interview(['org', 'acme', ''], { env: PUBLIC });
+    expect(result.state.steps['github']?.status).toBe('done');
+  });
+
   it('creates the App with the inactive placeholder webhook when Snapwing has no public address', async () => {
     gh.webhookSecret = 'from-github-0123456789abcdef';
     const { result, lines, envText } = await interview(['user', 'acme', ''], { env: {} });

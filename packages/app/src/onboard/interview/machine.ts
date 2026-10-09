@@ -23,7 +23,8 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { parseDotenv } from '@snapwing/pipeline/providers/local/secrets.ts';
-import { writeEnvFile } from './env.ts';
+import { envNotIgnoredWarning, writeEnvFile } from './env.ts';
+import { Redactor } from './redactor.ts';
 import { InterviewAborted, scopedIO, SecretValue, type InterviewIO } from './io.ts';
 import { emptyState, type JsonObject, type OnboardingState, type OnboardingStore, type StepRecord, type StepStatus } from './state.ts';
 import type { OnboardStep, StepContext, StepNeed, StepOutcome } from './step.ts';
@@ -139,36 +140,11 @@ export class StepNeedsUnmetError extends Error {
   override readonly name = 'StepNeedsUnmetError';
 }
 
-const MIN_REDACT_LENGTH = 6;
-
 /**
  * Names `readEnv` treats as secret (#276): anything that names a token, secret, key, password or private
  * value, plus `DATABASE_URL`, which can carry a password. Everything else (ids, URLs) is read unredacted.
  */
 const SECRET_NAME = /TOKEN|SECRET|KEY|PASSWORD|PASSWD|PRIVATE|CREDENTIAL|^DATABASE_URL$/i;
-
-/** Collects every secret a run sees and scrubs them from what is saved. */
-class Redactor {
-  readonly #values = new Set<string>();
-
-  add(secret: SecretValue): SecretValue {
-    const text = secret.reveal();
-    if (text.length >= MIN_REDACT_LENGTH) this.#values.add(text);
-    return secret;
-  }
-
-  text(s: string): string {
-    let out = s;
-    for (const v of this.#values) out = out.split(v).join('[secret]');
-    return out;
-  }
-
-  record(record: StepRecord): StepRecord {
-    const json = JSON.stringify(record);
-    const clean = this.text(json);
-    return clean === json ? record : (JSON.parse(clean) as StepRecord);
-  }
-}
 
 function blockedLines(step: OnboardStep, record: StepRecord): string {
   const b = record.blocked;
@@ -187,11 +163,14 @@ export async function runInterview(options: RunInterviewOptions): Promise<Interv
   const envPath = isAbsolute(envFile) ? envFile : join(options.workdir, envFile);
   const redactor = new Redactor();
   const io: InterviewIO = {
-    say: (text) => options.io.say(text),
+    say: (text) => options.io.say(redactor.text(text)),
     ask: (q) => options.io.ask(q),
     choose: (q) => options.io.choose(q),
     secret: async (q) => redactor.add(await options.io.secret(q)),
   };
+
+  const ignoreWarning = await envNotIgnoredWarning(envPath);
+  if (ignoreWarning !== undefined) io.say(ignoreWarning);
 
   const loaded = await store.load();
   let state = loaded ?? emptyState(now());
@@ -251,6 +230,7 @@ export async function runInterview(options: RunInterviewOptions): Promise<Interv
         const secret = new SecretValue(value);
         return SECRET_NAME.test(name) || writtenSecrets.has(name) ? redactor.add(secret) : secret;
       },
+      redact: (secret) => redactor.add(secret),
       openUrl: options.openUrl ?? (() => Promise.resolve()),
     };
 

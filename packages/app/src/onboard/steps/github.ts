@@ -152,6 +152,7 @@ export function createGitHubStep(deps: GitHubStepDeps = {}): OnboardStep {
             publicUrl,
             name,
             ...(ownerType === 'org' ? { org: owner } : {}),
+            owner,
             timeoutMs: deps.createWaitMs ?? 5 * 60 * 1000,
             ...(deps.manifestPath === undefined ? {} : { manifestPath: deps.manifestPath }),
             onConverted: async (c) => {

@@ -19,7 +19,8 @@
 // Never prints a secret, one line per check. The report also carries structured facts (`teamManaged`,
 // `statusProblems`, `authRefused`) so the onboarding step can speak plain language without parsing lines.
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { writeFileAtomicSync } from '../interview/env.ts';
 import { loadAppConfig } from '@snapwing/pipeline/config/app-config.ts';
 import {
   describeJiraStatuses,
@@ -393,7 +394,7 @@ export async function runBootstrap(opts: BootstrapOptions): Promise<BootstrapRep
       return `${changed.length} line(s) would change`;
     }
     if (opts.writeEnv) await opts.writeEnv(ids);
-    else writeFileSync(envFilePath, updateEnvText(before, ids));
+    else writeFileAtomicSync(envFilePath, updateEnvText(before, ids));
     return `wrote ${changed.map(([k]) => k).join(', ')}`;
   });
 

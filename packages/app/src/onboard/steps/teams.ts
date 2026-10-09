@@ -308,7 +308,7 @@ export function createTeamsStep(deps: TeamsStepDeps = {}): OnboardStep {
 
     // ---- the team owner, the teams, the channels ----------------------------------------------------
     io.say('A team owner has to approve the install, so they sign in next. If that is not you, they can do it with you on a call.');
-    const ownerToken = await signIn(ctx, appId, tenantId);
+    const ownerToken = ctx.redact(await signIn(ctx, appId, tenantId));
     const graph: TeamsGraph = createTeamsGraph({
       token: ownerToken.reveal(),
       fetch: doFetch,

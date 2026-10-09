@@ -105,6 +105,17 @@ describe.skipIf(NPM === undefined)(title, () => {
     expect(tarballs.app).toMatch(/snapwing-app-.*\.tgz$/);
   });
 
+  it('ships an npm-shrinkwrap.json in both tarballs, with integrity on every pinned package', async () => {
+    for (const tgz of [tarballs.pipeline, tarballs.app]) {
+      const raw = (await run('tar', ['-xzOf', tgz, 'package/npm-shrinkwrap.json'], root, env)).stdout;
+      const lock = JSON.parse(raw) as { lockfileVersion: number; packages: Record<string, { integrity?: string; inBundle?: boolean }> };
+      expect(lock.lockfileVersion).toBe(3);
+      for (const [path, entry] of Object.entries(lock.packages)) {
+        if (path !== '' && entry.inBundle !== true) expect(entry.integrity, path).toMatch(/^sha512-/);
+      }
+    }
+  });
+
   it('packs only tracked files: untracked env files, keys, and databases stay out of both tarballs', async () => {
     const dummies = [
       'packages/pipeline/src/.env',

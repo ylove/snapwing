@@ -53,6 +53,8 @@ export interface StepContext {
   writeEnv(entries: Readonly<Record<string, string | SecretValue>>): Promise<void>;
   /** A key from `.env`, else the process environment; undefined when unset or empty. */
   readEnv(name: string): Promise<SecretValue | undefined>;
+  /** Registers a secret the step obtained itself (a sign-in token) so it is masked in saved state, errors, and `say` output. */
+  redact(secret: SecretValue): SecretValue;
   /** Opens a URL in the installer's browser, best effort. The step also prints it. */
   openUrl(url: string): Promise<void>;
   readonly now: () => Date;
