@@ -23,7 +23,9 @@
 // Abuse limits, after the token is accepted: each token gets a fixed window of sends and a fixed window
 // of answers (429 with `Retry-After`, in whole seconds), and an image over `CAPTURE_IMAGE_MAX_BYTES`
 // decoded is a 413 before the engine, the vision pass, or kv sees it. Polling and status reads are not
-// limited: they only read, and a client polls on a timer while a capture settles.
+// limited: they only read, and a client polls on a timer while a capture settles. `GET /queue` has its
+// own, looser window, as it can reach GitHub for pull request state. `POST /capture` also has its own
+// body limit and refuses an image whose first bytes are not its declared type (400).
 
 import { CAPTURE_ROUTES, validateAnswerRequest, validateCaptureRequest, type LookupResponse } from '@snapwing/capture-client/wire.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
@@ -62,6 +64,13 @@ export const CAPTURE_WAIT_MS = 8_000;
 const POLL_MS = 100;
 /** The largest image a capture accepts, decoded. Well under the model's own image limit. */
 export const CAPTURE_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+/**
+ * The largest `POST /capture` body, bytes: a 5 MiB image is about 6.7 MiB of base64, plus the JSON
+ * around it. Tighter than the server-wide limit, which the other routes keep.
+ */
+export const CAPTURE_BODY_MAX_BYTES = 7 * 1024 * 1024;
+/** `GET /queue` calls per token per window: each one can look up pull requests on GitHub. */
+export const CAPTURE_QUEUE_PER_WINDOW = 30;
 /** The rate-limit window. */
 export const CAPTURE_RATE_WINDOW_MS = 60_000;
 /**
@@ -93,6 +102,18 @@ function unauthorized(): Response {
 function decodedBytes(base64: string): number {
   const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
   return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+/** The image type the first bytes show, among the types a capture accepts, else undefined. */
+export function sniffCaptureImage(data: Uint8Array): string | undefined {
+  const starts = (...bytes: number[]): boolean => bytes.every((b, i) => data[i] === b);
+  if (starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (starts(0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (starts(0x47, 0x49, 0x46, 0x38)) return 'image/gif';
+  if (data.length >= 12 && starts(0x52, 0x49, 0x46, 0x46) && data[8] === 0x57 && data[9] === 0x45 && data[10] === 0x42 && data[11] === 0x50) {
+    return 'image/webp';
+  }
+  return undefined;
 }
 
 /** A fixed-window counter per key. In memory, so per process: with several replicas each one allows its own. */
@@ -127,6 +148,7 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
 
   const sends = new RateLimiter(CAPTURE_SENDS_PER_WINDOW);
   const answers = new RateLimiter(CAPTURE_ANSWERS_PER_WINDOW);
+  const queues = new RateLimiter(CAPTURE_QUEUE_PER_WINDOW);
 
   /** The token's map person, or undefined (401). `limiter` counts the call against the token's window. */
   async function identify(req: Request, limiter?: RateLimiter): Promise<MapPerson | Response | undefined> {
@@ -134,8 +156,8 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
     if (token === undefined) return undefined;
     const verified = await state.verifyCaptureToken(token);
     if (verified === null || verified.workspaceId !== options.workspaceId) return undefined;
-    const handle = verified.person.toLowerCase();
-    const person = (await options.map()).people.find((p) => p.handle.toLowerCase() === handle);
+    // Exactly: the map keeps handles unique case-sensitively, so a case-folded match could name another person.
+    const person = (await options.map()).people.find((p) => p.handle === verified.person);
     if (person === undefined) return undefined;
     const wait = limiter?.hit(verified.tokenId, Date.now());
     return wait === undefined ? person : tooManyRequests(wait);
@@ -166,15 +188,19 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
   /** Whether `person` sent the capture (and so may read and answer it). */
   async function owns(captureId: string, person: MapPerson): Promise<boolean> {
     const record = await readCaptureRecord(cache, captureId);
-    return record?.people.some((p) => p.toLowerCase() === person.handle.toLowerCase()) === true;
+    return record?.people.some((p) => p === person.handle) === true;
   }
 
-  async function body(req: Request): Promise<unknown> {
+  function parseJson(raw: string): unknown {
     try {
-      return JSON.parse(await req.text()) as unknown;
+      return JSON.parse(raw) as unknown;
     } catch {
       return undefined;
     }
+  }
+
+  async function body(req: Request): Promise<unknown> {
+    return parseJson(await req.text());
   }
 
   /** The incident that owns the Jira key: never a report linked to it, which may be newer. */
@@ -191,7 +217,11 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         const person = await identify(req, sends);
         if (person === undefined) return unauthorized();
         if (person instanceof Response) return person;
-        const parsed = validateCaptureRequest(await body(req));
+        const raw = await req.text();
+        if (Buffer.byteLength(raw) > CAPTURE_BODY_MAX_BYTES) {
+          return json(413, { error: `that request is too large (limit ${CAPTURE_BODY_MAX_BYTES / (1024 * 1024)} MB)` });
+        }
+        const parsed = validateCaptureRequest(parseJson(raw));
         if (!parsed.ok) return json(400, { error: parsed.error });
         const request = parsed.value;
         if ('image' in request && !(CAPTURE_IMAGE_TYPES as readonly string[]).includes(request.mimeType)) {
@@ -200,6 +230,10 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
         // Before the engine, so before the vision pass and before any kv write.
         if ('image' in request && decodedBytes(request.image) > CAPTURE_IMAGE_MAX_BYTES) {
           return json(413, { error: `that image is too large (limit ${CAPTURE_IMAGE_MAX_BYTES / (1024 * 1024)} MB)` });
+        }
+        // The bytes must be the declared type: a mislabelled file never reaches the vision pass.
+        if ('image' in request && sniffCaptureImage(Buffer.from(request.image.slice(0, 32), 'base64')) !== request.mimeType) {
+          return json(400, { error: 'the image does not match its mimeType' });
         }
         const inbound: CaptureInbound = { request, person };
         const ack = await engine.handleInbound(request.source, inbound);
@@ -255,8 +289,9 @@ export function createCaptureRoutes(options: CaptureRoutesOptions): Route[] {
       method: 'GET',
       path: CAPTURE_ROUTES.queue,
       async handler(req) {
-        const person = await caller(req);
+        const person = await identify(req, queues);
         if (person === undefined) return unauthorized();
+        if (person instanceof Response) return person;
         return json(200, await options.queue(viewerOf(person)));
       },
     },

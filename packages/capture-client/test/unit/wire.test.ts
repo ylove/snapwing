@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAPTURE_ROUTES,
+  CAPTURE_SURFACE_MAX_CHARS,
+  CAPTURE_TEXT_MAX_CHARS,
+  CAPTURE_URL_MAX_CHARS,
   validateAnswerRequest,
   validateCaptureRequest,
   validateChoice,
@@ -11,6 +14,15 @@ import {
 } from '../../src/wire.ts';
 
 describe('validateCaptureRequest', () => {
+  it('caps text, context.url and surface', () => {
+    expect(validateCaptureRequest({ source: 'cli', text: 'x'.repeat(CAPTURE_TEXT_MAX_CHARS) }).ok).toBe(true);
+    expect(validateCaptureRequest({ source: 'cli', text: 'x'.repeat(CAPTURE_TEXT_MAX_CHARS + 1) }).ok).toBe(false);
+    expect(validateCaptureRequest({ source: 'cli', text: 'x', context: { url: 'u'.repeat(CAPTURE_URL_MAX_CHARS) } }).ok).toBe(true);
+    expect(validateCaptureRequest({ source: 'cli', text: 'x', context: { url: 'u'.repeat(CAPTURE_URL_MAX_CHARS + 1) } }).ok).toBe(false);
+    expect(validateCaptureRequest({ source: 'cli', text: 'x', surface: 's'.repeat(CAPTURE_SURFACE_MAX_CHARS) }).ok).toBe(true);
+    expect(validateCaptureRequest({ source: 'cli', text: 'x', surface: 's'.repeat(CAPTURE_SURFACE_MAX_CHARS + 1) }).ok).toBe(false);
+  });
+
   it('accepts text with surface and context', () => {
     const r = validateCaptureRequest({
       text: 'checkout is blank',

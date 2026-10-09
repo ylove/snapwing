@@ -30,7 +30,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createCaptureClient, type CaptureClient } from '@snapwing/capture-client/client.ts';
 import { CaptureAuthError, CaptureServerError } from '@snapwing/capture-client/errors.ts';
 import { formatRendered, renderChoices } from '@snapwing/capture-client/render.ts';
-import { CAPTURE_ROUTES } from '@snapwing/capture-client/wire.ts';
+import { CAPTURE_ROUTES, CAPTURE_SURFACE_MAX_CHARS, CAPTURE_TEXT_MAX_CHARS, CAPTURE_URL_MAX_CHARS } from '@snapwing/capture-client/wire.ts';
 import type { ImageReading } from '@snapwing/pipeline/contracts/incident.ts';
 import { DEMO_GITHUB_TOKEN, GITHUB_API, GitHubWorld, githubHandlers } from '@snapwing/pipeline/demo/msw/github.ts';
 import { DEMO_JIRA_EMAIL, DEMO_JIRA_TOKEN, JIRA_BASE, JiraWorld, jiraHandlers } from '@snapwing/pipeline/demo/msw/jira.ts';
@@ -40,14 +40,14 @@ import type { HarnessPort } from '@snapwing/pipeline/ports/harness.ts';
 import { parseWorkspaceMap } from '@snapwing/pipeline/map/parse.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
-import { CAPTURE_ANSWERS_PER_WINDOW, CAPTURE_IMAGE_MAX_BYTES, CAPTURE_SENDS_PER_WINDOW } from '../../src/adapters/capture/routes.ts';
 import { createQueue } from '../../src/status/queue.ts';
+import { CAPTURE_ANSWERS_PER_WINDOW, CAPTURE_BODY_MAX_BYTES, CAPTURE_IMAGE_MAX_BYTES, CAPTURE_QUEUE_PER_WINDOW, CAPTURE_SENDS_PER_WINDOW, sniffCaptureImage } from '../../src/adapters/capture/routes.ts';
 import { createApiServer, type ApiServer } from '../../src/server/http.ts';
 import { opsRoutes } from '../../src/server/ops.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
 import { JIRA_HOOK_SECRET, bootComposed, DEMO_MAP, EXAMPLE_CONFIG, fakeSecrets, slackWorld, type Booted } from '../fixtures/e2e/world.ts';
 
-const ENDPOINT = 'http://snapwing.test';
+const ENDPOINT = 'http://localhost';
 const TEST_TIMEOUT = 60_000;
 /** The help surface's repository tree (level 0 in the demo map, so filing never starts a fixer). */
 const HELP_TREE = ['src/refunds/policy.ts', 'content/articles/refund-policy.md'];
@@ -58,6 +58,10 @@ const VAGUE = 'the total is blank after applying a promo code';
 const TRACKED_TEXT = 'The portal export button does nothing';
 /** Eight bytes of PNG signature: the model is scripted, so the bytes only need to round trip. */
 const PNG = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex').toString('base64');
+/** A PNG signature followed by filler to `size` bytes: right type, arbitrary content. */
+function pngOfSize(size: number): string {
+  return Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(size - 8, 7)]).toString('base64');
+}
 const idleHarness: HarnessPort = { run: () => Promise.reject(new Error('the harness was not expected to run')) };
 
 const TRIAGE = {
@@ -530,7 +534,7 @@ describe('the capture API through capture-client', () => {
   it('refuses an image over 5 MB with a 413 before the vision pass or any kv write', { timeout: TEST_TIMEOUT }, async () => {
     const w = await world();
     const cli = await w.clientFor('helpDev');
-    const big = Buffer.alloc(CAPTURE_IMAGE_MAX_BYTES + 1, 7).toString('base64');
+    const big = pngOfSize(CAPTURE_IMAGE_MAX_BYTES + 1);
     const err = await cli.sendImage(big, 'image/png').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CaptureServerError);
     expect(err).toMatchObject({ status: 413, message: 'That image is too large (limit 5 MB).' });
@@ -538,8 +542,67 @@ describe('the capture API through capture-client', () => {
     expect(await w.booted.state.ctx.db.selectFrom('kv').select('k').execute()).toEqual([]);
     expect(await w.booted.state.findIncidents({ workspaceId: w.workspaceId })).toEqual([]);
     // Exactly at the limit is fine.
-    const edge = Buffer.alloc(CAPTURE_IMAGE_MAX_BYTES, 7).toString('base64');
+    const edge = pngOfSize(CAPTURE_IMAGE_MAX_BYTES);
     expect(await cli.sendImage(edge, 'image/png')).toMatchObject({ kind: 'new' });
+    settled(w);
+  });
+
+  it('refuses an image whose bytes are not its declared type with a 400, and accepts each real type', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const cli = await w.clientFor('helpDev');
+    const jpeg = Buffer.from('ffd8ffe000104a46494600', 'hex').toString('base64');
+    const err = await cli.sendImage(jpeg, 'image/png').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(CaptureServerError);
+    expect(err).toMatchObject({ status: 400 });
+    expect(await cli.sendImage(Buffer.from('not an image at all').toString('base64'), 'image/png').catch((e: unknown) => e)).toMatchObject({ status: 400 });
+    expect(w.model.calls).toEqual([]);
+    expect(await w.booted.state.findIncidents({ workspaceId: w.workspaceId })).toEqual([]);
+    for (const [bytes, type] of [
+      ['89504e470d0a1a0a0000000d49484452', 'image/png'],
+      ['ffd8ffe000104a46494600', 'image/jpeg'],
+      ['474946383961', 'image/gif'],
+      ['52494646240000005745425056503820', 'image/webp'],
+    ] as const) {
+      expect(sniffCaptureImage(Buffer.from(bytes, 'hex'))).toBe(type);
+    }
+    settled(w);
+  });
+
+  it('caps text, context.url and surface with a 400, and the whole POST /capture body with a 413', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const a = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webDev' });
+    const post = (body: string): Promise<Response> =>
+      w.api.fetch(new Request(`${ENDPOINT}${CAPTURE_ROUTES.send}`, { method: 'POST', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' }, body }));
+    expect((await post(JSON.stringify({ source: 'cli', text: 'x'.repeat(CAPTURE_TEXT_MAX_CHARS + 1) }))).status).toBe(400);
+    expect((await post(JSON.stringify({ source: 'cli', text: 'x', context: { url: 'https://e.test/' + 'x'.repeat(CAPTURE_URL_MAX_CHARS) } }))).status).toBe(400);
+    expect((await post(JSON.stringify({ source: 'cli', text: 'x', surface: 's'.repeat(CAPTURE_SURFACE_MAX_CHARS + 1) }))).status).toBe(400);
+    expect((await post(JSON.stringify({ source: 'cli', text: 'x'.repeat(CAPTURE_BODY_MAX_BYTES) }))).status).toBe(413);
+    expect(w.model.calls).toEqual([]);
+    expect(await w.booted.state.findIncidents({ workspaceId: w.workspaceId })).toEqual([]);
+    settled(w);
+  });
+
+  it('limits GET /queue per token with a 429 and Retry-After', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const a = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webDev' });
+    const b = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webDev' });
+    const get = (token: string): Promise<Response> =>
+      w.api.fetch(new Request(`${ENDPOINT}${CAPTURE_ROUTES.queue}`, { headers: { authorization: `Bearer ${token}` } }));
+    for (let i = 0; i < CAPTURE_QUEUE_PER_WINDOW; i++) expect((await get(a.token)).status).toBe(200);
+    const limited = await get(a.token);
+    expect(limited.status).toBe(429);
+    expect(Number(limited.headers.get('retry-after'))).toBeGreaterThanOrEqual(1);
+    expect((await get(b.token)).status).toBe(200);
+    settled(w);
+  });
+
+  it('matches a token holder to the map by exact handle: a case-folded handle is a 401', { timeout: TEST_TIMEOUT }, async () => {
+    const w = await world();
+    const folded = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webdev' });
+    const res = await w.api.fetch(new Request(`${ENDPOINT}${CAPTURE_ROUTES.queue}`, { headers: { authorization: `Bearer ${folded.token}` } }));
+    expect(res.status).toBe(401);
+    const exact = await w.booted.state.issueCaptureToken({ workspaceId: w.workspaceId, person: 'webDev' });
+    expect((await w.api.fetch(new Request(`${ENDPOINT}${CAPTURE_ROUTES.queue}`, { headers: { authorization: `Bearer ${exact.token}` } }))).status).toBe(200);
     settled(w);
   });
 

@@ -171,6 +171,12 @@ async function openSession(name: string, io: CliIo, env: CaptureEnv): Promise<Se
   return { client, endpoint: config.endpoint, recorder };
 }
 
+/** `text` without control characters (escape sequences, carriage returns, and the like) except newline. */
+export function stripControl(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '');
+}
+
 /** Prints a failure the way a person can act on it; returns the exit code. */
 function report(name: string, io: CliIo, error: unknown): number {
   if (error instanceof CaptureAuthError) {
@@ -187,7 +193,7 @@ function report(name: string, io: CliIo, error: unknown): number {
     error instanceof CaptureConfigError ||
     error instanceof ScreenshotError
   ) {
-    io.stderr(`snapwing ${name}: ${error.message}`);
+    io.stderr(stripControl(`snapwing ${name}: ${error.message}`));
     return 1;
   }
   throw error;
@@ -238,7 +244,7 @@ async function converse(
     if (options.json) io.stdout(JSON.stringify(session.recorder.last ?? response));
 
     if (response.kind === 'pending') {
-      if (!options.json && !saidPending) io.stdout(formatRendered(renderChoices(response)));
+      if (!options.json && !saidPending) io.stdout(stripControl(formatRendered(renderChoices(response))));
       saidPending = true;
       if (waited >= timeout) {
         io.stderr(`Still working on capture ${response.captureId}. Check again later.`);
@@ -252,7 +258,7 @@ async function converse(
     saidPending = false;
 
     const rendered = renderChoices(response);
-    if (!options.json) io.stdout(formatRendered(rendered));
+    if (!options.json) io.stdout(stripControl(formatRendered(rendered)));
     if (rendered.done) return 0;
 
     let choice;
@@ -268,7 +274,7 @@ async function converse(
         io.stderr(`--choice ${value} is not one of the choices here (${ids}).`);
         return 1;
       }
-      if (!options.json) io.stdout(`> ${choice.label}`);
+      if (!options.json) io.stdout(stripControl(`> ${choice.label}`));
     } else {
       choice = await askChoice(env.prompter, rendered.choices, io.stderr);
       if (choice === undefined) {
@@ -280,7 +286,7 @@ async function converse(
     if (response.kind === 'tracked') {
       // "Open it" and "Not now" are the client's own; the server is not asked.
       if (choice.id === 'open') {
-        if (!options.json) io.stdout(response.url);
+        if (!options.json) io.stdout(stripControl(response.url));
         await env.openUrl(response.url);
       }
       return 0;
@@ -452,18 +458,18 @@ export async function runStatus(args: readonly string[], io: CliIo, env: Capture
   try {
     if (parsed.key !== undefined) {
       const status = await session.client.status(parsed.key);
-      io.stdout(parsed.json ? JSON.stringify(session.recorder.last ?? status) : formatTicketStatus(status));
+      io.stdout(parsed.json ? JSON.stringify(session.recorder.last ?? status) : stripControl(formatTicketStatus(status)));
       return 0;
     }
     const health = await session.client.health();
     const healthRaw = session.recorder.last;
     if (!health.ok && !parsed.json) {
-      io.stdout(formatHealth(session.endpoint, health, platformsOf(healthRaw)));
+      io.stdout(stripControl(formatHealth(session.endpoint, health, platformsOf(healthRaw))));
       return 1;
     }
     const queue = await session.client.queue();
     if (parsed.json) io.stdout(JSON.stringify(session.recorder.last ?? queue));
-    else io.stdout(`${formatHealth(session.endpoint, health, platformsOf(healthRaw))}\n\n${formatQueue(queue)}`);
+    else io.stdout(stripControl(`${formatHealth(session.endpoint, health, platformsOf(healthRaw))}\n\n${formatQueue(queue)}`));
     return health.ok ? 0 : 1;
   } catch (error) {
     if (parsed.key === undefined && error instanceof CaptureServerError && !parsed.json) {
@@ -486,7 +492,7 @@ export async function runStop(args: readonly string[], io: CliIo, env: CaptureEn
   try {
     const result = await session.client.stop(parsed.key);
     if (parsed.json) io.stdout(JSON.stringify(session.recorder.last ?? result));
-    else io.stdout(result.stopped ? `Stopped ${result.issueKey}.` : `Nothing to stop on ${result.issueKey}.`);
+    else io.stdout(stripControl(result.stopped ? `Stopped ${result.issueKey}.` : `Nothing to stop on ${result.issueKey}.`));
     return 0;
   } catch (error) {
     return report('stop', io, error);

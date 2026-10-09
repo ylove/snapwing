@@ -1,4 +1,5 @@
-import { CaptureAuthError, CaptureServerError, CaptureTimeoutError } from './errors.ts';
+import { isLoopbackHost } from './config.ts';
+import { CaptureAuthError, CaptureConfigError, CaptureServerError, CaptureTimeoutError } from './errors.ts';
 import {
   CAPTURE_ROUTES,
   validateHealthResult,
@@ -50,6 +51,16 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 
 export function createCaptureClient(options: CaptureClientOptions): CaptureClient {
   const base = options.endpoint.replace(/\/+$/, '');
+  // A token must not cross the network in the clear: http is for this machine only (main 16).
+  let url: URL;
+  try {
+    url = new URL(base);
+  } catch (cause) {
+    throw new CaptureConfigError(`The endpoint ${options.endpoint} is not a URL.`, { cause });
+  }
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopbackHost(url.hostname))) {
+    throw new CaptureConfigError(`The endpoint ${options.endpoint} is not an https URL (http is allowed only for localhost, 127.0.0.1 and ::1).`);
+  }
   const doFetch: FetchLike = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 

@@ -209,6 +209,16 @@ function optStr(r: Rec, key: string, at: string): Validation<string | undefined>
   return ok(v);
 }
 
+/** Request field caps (main 15.3): the server and the clients share them. */
+export const CAPTURE_TEXT_MAX_CHARS = 64 * 1024;
+export const CAPTURE_URL_MAX_CHARS = 2048;
+export const CAPTURE_SURFACE_MAX_CHARS = 64;
+
+function capped(v: Validation<string | undefined>, max: number, what: string): Validation<string | undefined> {
+  if (v.ok && v.value !== undefined && v.value.length > max) return fail(`${what} is too long (limit ${max} characters)`);
+  return v;
+}
+
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
 
 export function validateChoice(input: unknown, at = 'choice.'): Validation<Choice> {
@@ -235,14 +245,14 @@ export function validateCaptureRequest(input: unknown): Validation<CaptureReques
   if (!isRec(input)) return fail('request must be an object');
   const source = input['source'];
   if (source !== 'cli' && source !== 'raycast') return fail("source must be 'cli' or 'raycast'");
-  const surface = optStr(input, 'surface', '');
+  const surface = capped(optStr(input, 'surface', ''), CAPTURE_SURFACE_MAX_CHARS, 'surface');
   if (!surface.ok) return surface;
 
   let context: CaptureContext | undefined;
   const rawContext = input['context'];
   if (rawContext !== undefined) {
     if (!isRec(rawContext)) return fail('context must be an object');
-    const url = optStr(rawContext, 'url', 'context.');
+    const url = capped(optStr(rawContext, 'url', 'context.'), CAPTURE_URL_MAX_CHARS, 'context.url');
     if (!url.ok) return url;
     context = url.value === undefined ? {} : { url: url.value };
   }
@@ -259,6 +269,7 @@ export function validateCaptureRequest(input: unknown): Validation<CaptureReques
   if (hasText) {
     const text = reqStr(input, 'text', '');
     if (!text.ok) return text;
+    if (text.value.length > CAPTURE_TEXT_MAX_CHARS) return fail(`text is too long (limit ${CAPTURE_TEXT_MAX_CHARS} characters)`);
     return ok({ ...base, text: text.value });
   }
   const image = reqStr(input, 'image', '');

@@ -246,7 +246,21 @@ describe('login and logout', () => {
     expect(await run(['login', '--token', TOKEN])).toBe(1);
     expect(await run(['login', '--url', BASE], [''])).toBe(1);
     expect(await run(['login', '--url', 'ftp://x', '--token', TOKEN])).toBe(1);
-    expect(err.join('\n')).toContain('not an http or https URL');
+    expect(err.join('\n')).toContain('not an https URL');
+  });
+
+  it('refuses an http endpoint off loopback, and allows https and loopback http', async () => {
+    expect(await run(['login', '--url', 'http://snapwing.example.com', '--token', TOKEN])).toBe(1);
+    expect(err.join('\n')).toContain('not an https URL');
+    expect(await run(['login', '--url', 'https://snapwing.example.com', '--token', TOKEN])).toBe(0);
+    expect(await run(['login', '--url', 'http://127.0.0.1:3000', '--token', TOKEN])).toBe(0);
+    expect(await run(['login', '--url', 'http://[::1]:3000', '--token', TOKEN])).toBe(0);
+  });
+
+  it('reads the token from stdin with --token -', async () => {
+    stdinText = `${TOKEN}\n`;
+    expect(await run(['login', '--url', BASE, '--token', '-'])).toBe(0);
+    expect((await loadClientConfig({ env: {}, home }))?.token).toBe(TOKEN);
   });
 
   it('the capture commands say how to log in when there is no config, and read SNAPWING_URL and SNAPWING_TOKEN', async () => {
@@ -310,6 +324,15 @@ describe('say, log, shot', () => {
     opened = [];
     expect(await run(['say', 'cart blank'], ['2'])).toBe(0);
     expect(opened).toEqual([]);
+  });
+
+  it('strips control characters other than newline from server text before printing', async () => {
+    await login();
+    first = { kind: 'not-filed', captureId: 'cap-1', reason: 'src/a.ts\u001b[2J\u001b]0;pwned\u0007\rok' };
+    expect(await run(['say', 'x'])).toBe(0);
+    // eslint-disable-next-line no-control-regex
+    expect(stdout()).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(stdout()).toContain('src/a.ts[2J]0;pwnedok');
   });
 
   it('not filed is an outcome, exit 0', async () => {

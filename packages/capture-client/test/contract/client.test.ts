@@ -145,7 +145,7 @@ describe('capture client calls', () => {
   it('uses an injected fetch', async () => {
     const calls: string[] = [];
     const c = createCaptureClient({
-      endpoint: 'http://snapwing.test',
+      endpoint: 'http://localhost',
       token: TOKEN,
       fetch: (input) => {
         calls.push(input);
@@ -153,7 +153,7 @@ describe('capture client calls', () => {
       },
     });
     expect(await c.health()).toEqual({ ok: true });
-    expect(calls).toEqual(['http://snapwing.test/healthz']);
+    expect(calls).toEqual(['http://localhost/healthz']);
   });
 });
 

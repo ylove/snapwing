@@ -142,12 +142,21 @@ export async function sendScreenshot(
   }
 }
 
+/** Only an https URL is opened: a server-supplied link must not launch another scheme. */
+export function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 /** The user picked a choice on a `choose` step. */
 export async function choose(deps: FlowDeps, step: ChooseStep, choiceId: string): Promise<Step> {
   try {
     const response = step.response;
     if (response.kind === 'tracked') {
-      if (choiceId === 'open') await deps.openUrl(response.url);
+      if (choiceId === 'open' && isHttpsUrl(response.url)) await deps.openUrl(response.url);
       return { kind: 'done', hud: `Already tracked as ${response.issueKey}` };
     }
     return await advance(deps, await deps.client.answer(step.captureId, choiceId));

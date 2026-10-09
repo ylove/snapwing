@@ -13,10 +13,11 @@ import { CaptureConfigError } from '@snapwing/capture-client/errors.ts';
 import type { CaptureEnv } from './capture.ts';
 import type { CliIo } from './state.ts';
 
-export const LOGIN_USAGE = `Usage: snapwing login --url <endpoint> [--token <token>]
+export const LOGIN_USAGE = `Usage: snapwing login --url <endpoint> [--token <token> | --token -]
 
   --url <endpoint>   the Snapwing server, such as https://snapwing.example.com or http://localhost:3000
   --token <token>    your capture token (swc_...); without it you are asked for it, and it is not echoed
+  --token -         read the token from standard input, so it stays out of the process list
 
 Stores both for shot, say, log, status, and stop. SNAPWING_URL and SNAPWING_TOKEN, when set, win
 over what is stored.`;
@@ -49,7 +50,8 @@ export async function runLogin(args: readonly string[], io: CliIo, env: CaptureE
     io.stderr(`snapwing login: --url is required\n${LOGIN_USAGE}`);
     return 1;
   }
-  const token = (values.token ?? (await env.prompter.hidden('Capture token: ')))?.trim();
+  const given = values.token === '-' ? (await env.readStdin()).split('\n')[0] : values.token;
+  const token = (given ?? (await env.prompter.hidden('Capture token: ')))?.trim();
   if (token === undefined || token === '') {
     io.stderr('snapwing login: no token given.');
     return 1;
