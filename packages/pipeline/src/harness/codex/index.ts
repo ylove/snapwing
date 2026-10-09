@@ -14,6 +14,9 @@
 //   --skip-git-repo-check         never fail on the checkout's git state
 //   --output-last-message <file>  the agent's final message is written to this file (stdout carries progress)
 //   --model <model>               only when configured
+//   -c model_provider=...         the model proxy (main 14, ADR 0017, #296). Codex 0.162 ignores OPENAI_BASE_URL and
+//                                 calls the provider's public host, so a `snapwing-proxy` provider entry is passed as
+//                                 `-c` overrides: base_url from the run's OPENAI_BASE_URL, key from OPENAI_API_KEY.
 //
 // Codex has no system prompt flag, so the stdin text is the fixer prompt (src/prompts/fixer.xml, or review.xml for the review role) followed
 // by the implementation request. Stop, budget, and checkpoints are shared with the other adapters through
@@ -35,6 +38,18 @@ export interface CodexHarnessConfig {
   killGraceMs?: number;
 }
 
+const PROXY_PROVIDER = 'snapwing-proxy';
+
+/**
+ * The `-c` overrides that make codex send every model call to the run's model proxy (#296). Without a base URL
+ * (no proxy, a local run) codex keeps its own provider settings. The URL is a TOML string, so JSON quoting is exact.
+ */
+export function proxyProviderArgs(baseUrl: string | undefined): string[] {
+  if (baseUrl === undefined || baseUrl === '') return [];
+  const provider = `{ name = "Snapwing model proxy", base_url = ${JSON.stringify(baseUrl)}, env_key = "OPENAI_API_KEY", wire_api = "responses" }`;
+  return ['-c', `model_provider="${PROXY_PROVIDER}"`, '-c', `model_providers.${PROXY_PROVIDER}=${provider}`];
+}
+
 const FIXER_PROMPT_URL = new URL('../../prompts/fixer.xml', import.meta.url);
 
 export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort {
@@ -48,6 +63,7 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
       const scratch = await mkdtemp(join(tmpdir(), 'snapwing-codex-'));
       const lastMessageFile = join(scratch, 'last-message.txt');
       const args = ['exec', '--sandbox', review ? 'read-only' : 'danger-full-access', ...(review ? ['--ignore-rules'] : []), '--skip-git-repo-check', '--output-last-message', lastMessageFile];
+      args.push(...proxyProviderArgs(opts.env?.['OPENAI_BASE_URL'] ?? process.env['OPENAI_BASE_URL']));
       if (config.model !== undefined) args.push('--model', config.model);
       args.push('-');
       try {
