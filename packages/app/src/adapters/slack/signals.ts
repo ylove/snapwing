@@ -16,7 +16,8 @@
 // - A reply goes through the lexicon (`classifyLexicon`) first. One that misses it and sits in an
 //   active incident's thread (the root resolves and the incident is not terminal) goes to the model
 //   (`classifyLlm`, task `segmentation`) with the earlier thread messages as context, when `model` is
-//   given.
+//   given. With `limits` (main 16), one message's model passes take one slot of the replier's and the
+//   thread's windows; over either, or over the day's model budget, the reply gets the lexicon only.
 // - A reply that asks for a standing subscription by naming a surface ("keep me posted on the
 //   website", "stop updating me on web") is a standing watch (`applyStandingWatch`, A 4.4), not a
 //   signal on the incident, and is confirmed to the asker ephemerally in the thread. It is checked
@@ -73,6 +74,7 @@ import {
   type TextSignalPorts,
 } from '@snapwing/pipeline/signals/text.ts';
 import type { Playbook } from '@snapwing/pipeline/config/playbook.ts';
+import type { ChatLimits } from '@snapwing/pipeline/policy/limits.ts';
 import { textSignalRefusal } from '../shared/taps.ts';
 import { parsedBodyOf, type SlackAdapter } from './adapter.ts';
 import { createSlackAuthorOf, type SlackAuthorOf } from './authorship.ts';
@@ -115,6 +117,8 @@ export interface SlackSignalsOptions {
   web?: Pick<SlackWeb, 'conversationsReplies' | 'postEphemeral'> & Partial<Pick<SlackWeb, 'updateMessage'>>;
   /** The LLM pass (A 1.2). Absent: a reply the lexicon misses is not a signal. */
   model?: ModelPort;
+  /** The chat limits on model work (main 16). Absent: unlimited. */
+  limits?: Pick<ChatLimits, 'modelWork'>;
   /** Writes standing subscriptions (A 4.4). Absent: a surface watch in a thread is not intercepted. */
   standing?: Pick<StatePort, 'subscribe' | 'unsubscribe'>;
   /** Text signals after filing (A 3, `signals/text.ts`). Absent: a thread reply is an intent signal only. */
@@ -302,6 +306,9 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     let earlier: Promise<SignalMessage[]> | undefined;
     const thread = (): Promise<SignalMessage[]> => (earlier ??= threadContext(channel, threadTs, ts));
     const actor = actorOf(map, user);
+    // Both model passes on this message take one slot, asked for when the first of them would run.
+    let allowed: boolean | undefined;
+    const mayUseModel = (): boolean => (allowed ??= options.limits?.modelWork(user, `slack:${channel}:${threadTs}`) === undefined);
 
     /** The thread's root is an open incident's (and, with `filed`, one with its own issue). */
     const activeIncident = async (filed: boolean): Promise<boolean> => {
@@ -317,7 +324,7 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
         classified = lexicon;
       } else if (options.model !== undefined) {
         // The model reads only replies in an active incident's thread (A 1.2).
-        if (!(await activeIncident(false))) return ignored('no-intent');
+        if (!(await activeIncident(false)) || !mayUseModel()) return ignored('no-intent');
         const answer = await classifyLlm(signals, { id: ts, authorId: user, text, timestamp }, await thread(), options.model).catch((e: unknown) => {
           onError(e);
           return { intent: 'none' as const };
@@ -342,8 +349,10 @@ export function createSlackSignals(options: SlackSignalsOptions): SlackSignals {
     /** A 3: the thread is read only when the model will see the message and the incident takes text signals. */
     const textSignal = async (textDeps: TextSignalDeps, message: TextMessage): Promise<TextSignalOutcome> => {
       const modelReads = textDeps.model !== undefined && classifyTextLexicon({ signals }, message).kind === 'none';
-      const earlierMessages = modelReads && (await activeIncident(true)) ? await thread() : [];
-      return handleTextSignal(textDeps, {
+      const reads = modelReads && (await activeIncident(true)) && mayUseModel();
+      const earlierMessages = reads ? await thread() : [];
+      const { model: _model, ...lexiconOnly } = textDeps;
+      return handleTextSignal(modelReads && !reads ? lexiconOnly : textDeps, {
         platform: 'slack',
         thread: { channel, rootId: threadTs },
         message,

@@ -18,6 +18,7 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { channelPlatform } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import { channelMembersKey } from '@snapwing/pipeline/state/projections/notify-context.ts';
+import { briefMembers, type StatusAccess } from '@snapwing/pipeline/status/ask.ts';
 import { CHANNEL_MEMBERS_REFRESH_MS, CHANNEL_MEMBERS_TTL_SEC } from '../slack/channel-members.ts';
 import { GraphApiError, GraphPermissionError, type GraphMember, type TeamsGraph } from './graph.ts';
 
@@ -89,4 +90,27 @@ export function createTeamsChannelMembers(options: TeamsChannelMembersOptions): 
   }
 
   return { refresh, refreshAll };
+}
+
+/**
+ * Who may hear about what on Teams (A 4.3, #272), as `adapters/slack` gives it: a member is whoever
+ * Graph names and is not a guest (`userType` Guest or an `#EXT#` account); without a Graph answer
+ * (no `User.Read.All`) only a person the map lists. A channel's members come from Graph live, remembered
+ * briefly (`briefMembers`); a channel the map gives no team, or Graph will not list, has nobody in it.
+ */
+export function createTeamsStatusAccess(options: { graph: Pick<TeamsGraph, 'user' | 'channelMembers'>; getMap: () => Promise<WorkspaceMap>; clock?: () => Date }): StatusAccess {
+  const { graph } = options;
+  return {
+    platform: 'teams',
+    async membership(aadObjectId) {
+      const user = await graph.user(aadObjectId).catch(() => undefined);
+      if (user === undefined) return (await options.getMap()).people.some((p) => p.teamsId === aadObjectId) ? 'member' : 'external';
+      return user.userType?.toLowerCase() === 'guest' || /#EXT#/i.test(user.userPrincipalName ?? '') ? 'guest' : 'member';
+    },
+    inChannel: briefMembers(async (channelId) => {
+      const team = (await options.getMap()).channels.find((c) => c.id === channelId && channelPlatform(c) === 'teams')?.teamId;
+      if (team === undefined || team === '') return [];
+      return (await graph.channelMembers(team, channelId)).flatMap((m) => (typeof m.userId === 'string' && m.userId !== '' ? [m.userId] : []));
+    }, options.clock),
+  };
 }

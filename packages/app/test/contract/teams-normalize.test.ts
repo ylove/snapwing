@@ -346,4 +346,13 @@ describe('who triggers caps the level (guest, external, fail closed)', () => {
     expect(incident(await fromReaction({ reactorAadId: GUEST, reactors: [GUEST, GONE] }, withTenant())).levelCap).toEqual(CAP);
     expect(incident(await fromReaction({ reactorAadId: GUEST, reactors: [GUEST, SAM] }, withTenant())).levelCap).toBeUndefined();
   });
+
+  it("caps a member's reaction on a message a guest wrote (#272); a bot's message caps nothing", async () => {
+    users[GUEST] = { id: GUEST, displayName: 'Gus Guest', userPrincipalName: 'gus@contoso.onmicrosoft.com', mail: null, userType: 'Guest' };
+    const base = reactionMessage();
+    const byGuest = { ...base, from: { user: { id: GUEST, displayName: 'Gus Guest', userIdentityType: 'aadUser' } } };
+    expect(incident(await fromReaction({ message: byGuest }, withTenant())).levelCap).toEqual(CAP);
+    const byBot = { ...base, from: { application: { id: 'some-app', displayName: 'Deploy bot' } } };
+    expect(incident(await fromReaction({ message: byBot }, withTenant())).levelCap).toBeUndefined();
+  });
 });

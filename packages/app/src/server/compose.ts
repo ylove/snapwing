@@ -120,6 +120,7 @@ import type { LoadImage, LoadRecording } from '@snapwing/pipeline/context/vision
 import { IncidentOrchestrator } from '@snapwing/pipeline/engine/orchestrator.ts';
 import { fixerBudget, fixerBudgetExpired, handleFixerDone, handleFixerFailed, runFixerJob, startFixer, type FixerDeps } from '@snapwing/pipeline/fixer/job.ts';
 import { stopIncident } from '@snapwing/pipeline/fixer/stop.ts';
+import { BUDGET_SPENT_TEXT, countModelCalls, createChatLimits } from '@snapwing/pipeline/policy/limits.ts';
 import { answerMidFlight, handleMidFlightClaim, registerMidFlightJobs, type MidFlightDeps, type MidFlightPorts } from '@snapwing/pipeline/fixer/claims.ts';
 import { registerDigestJobs } from '@snapwing/pipeline/notify/digest.ts';
 import { createHolds } from '@snapwing/pipeline/signals/holds.ts';
@@ -172,7 +173,8 @@ import { createCaptureRoutes } from '../adapters/capture/routes.ts';
 import { createSlackAdapter, type SlackInbound } from '../adapters/slack/adapter.ts';
 import { createSlackAuthorOf } from '../adapters/slack/authorship.ts';
 import { createSlackChatSurface, type SlackChatSurface } from '../adapters/slack/chat-surface.ts';
-import { CHANNEL_MEMBERS_REFRESH_MS, observeChannelMembers } from '../adapters/slack/channel-members.ts';
+import { CHANNEL_MEMBERS_REFRESH_MS, createSlackChannelAccess, observeChannelMembers } from '../adapters/slack/channel-members.ts';
+import { createTeamsStatusAccess } from '../adapters/teams/channel-members.ts';
 import { createSlackInteractivity, observeReactionRemoval } from '../adapters/slack/interactivity.ts';
 import { createSlackContextSource } from '../adapters/slack/reader.ts';
 import { createSlackHome } from '../adapters/slack/home.ts';
@@ -762,13 +764,21 @@ export const compose: ComposeFn = async (deps) => {
     Object.fromEntries(Object.entries(CUSTOM_FIELD_ENV).map(([field, name]) => [field, secret(name).trim()])),
   );
 
-  const model: ModelPort =
+  // main 16 (#272): the chat limits, and the playbook's daily budget over every model call.
+  const chatLimits = createChatLimits({
+    budget: () => configWatch.playbook().limits.modelCallsPerDay,
+    clock,
+    onSpent: (budget) => log.error(`model budget: ${budget} calls today; chat starts no new model work until the next UTC day (playbook <limits modelCallsPerDay>)`),
+  });
+  const model: ModelPort = countModelCalls(
     overrides.model ??
-    createModelRouter(
-      config.models,
-      { anthropic: anthropicProvider, openai: openaiProvider, google: googleProviderFactory },
-      Object.fromEntries(Object.values(PROVIDER_KEY_ENV).flatMap((name) => (s.has(name) ? [[name, s.get(name)]] : []))),
-    );
+      createModelRouter(
+        config.models,
+        { anthropic: anthropicProvider, openai: openaiProvider, google: googleProviderFactory },
+        Object.fromEntries(Object.values(PROVIDER_KEY_ENV).flatMap((name) => (s.has(name) ? [[name, s.get(name)]] : []))),
+      ),
+    () => chatLimits.countCall(),
+  );
   const resolveHarness = overrides.resolveHarness ?? harnessResolver(config.harness);
   const fixerChoice = harnessChoice(config.harness, config.harness.fixer);
   const reviewChoice = harnessChoice(config.harness, config.harness.review);
@@ -1079,6 +1089,18 @@ export const compose: ComposeFn = async (deps) => {
     startFixer: (incidentId) => startFixer(fixerDeps, { incidentId, attempt: 1 }),
     // A 1.4: reactions on the anchor before the incident existed count from its creation.
     onCaptured: (incidentId) => adoptPendingSignals(signalDeps, incidentId),
+    // main 16: a new chat incident takes a slot of its person's window and needs budget left; the
+    // first refusal on a day the budget is spent tells that person.
+    admit: async (source, payload) => {
+      if (source !== 'slack' && source !== 'teams') return true;
+      const refused = chatLimits.newIncident(payload.reporter.id);
+      if (refused === undefined) return true;
+      log.info(`chat limits: a new ${source} incident from ${payload.reporter.id} was not started (${refused})`);
+      if (refused === 'budget' && chatLimits.budgetNotice()) {
+        await chat.surface(source)?.personPost(payload.reporter.id, BUDGET_SPENT_TEXT).catch((e: unknown) => log.error(`chat limits: ${message(e)}`));
+      }
+      return false;
+    },
   };
   const engine = new IncidentOrchestrator(engineDeps);
 
@@ -1480,6 +1502,7 @@ export const compose: ComposeFn = async (deps) => {
             githubLinked: surface.githubLinked,
             web: slackWeb,
             model,
+            limits: chatLimits,
             standing: state,
             // A 3 (#294): thread replies to `handleTextSignal`, claim reactions to `acceptHandoff`.
             text: textSignalDeps,
@@ -1509,6 +1532,8 @@ export const compose: ComposeFn = async (deps) => {
             botUserId,
             authorOf,
             clock,
+            // A 4.3 (#272): members only, about channels they are in.
+            access: { platform: 'slack', membership: (user) => authorOf.membership(user), inChannel: createSlackChannelAccess({ web: slackWeb, clock }) },
             onError: (e) => log.error(`slack status query: ${message(e)}`),
           });
           const slackHome = createSlackHome({
@@ -1562,6 +1587,7 @@ export const compose: ComposeFn = async (deps) => {
             handleInbound: (source, raw) => engine.handleInbound(source, raw),
             githubLinked: surface.githubLinked,
             model,
+            limits: chatLimits,
             standing: state,
             // Teams has no ephemerals: a standing watch is confirmed in the person's personal chat.
             confirmStanding: ({ aadObjectId, text }) => surface.personPost(aadObjectId, text),
@@ -1588,7 +1614,8 @@ export const compose: ComposeFn = async (deps) => {
             clock,
             onError: teamsError('interactivity'),
           });
-          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, onError: teamsError('status query') });
+          const access = createTeamsStatusAccess({ graph, getMap, clock });
+          const statusQuery = createTeamsStatusQuery({ connector, state, workspaceId, getMap, standing: state, identity: oauth, cache, clock, access, onError: teamsError('status query') });
           const queue = teamsQueueRoutes(
             createTeamsQueue({
               connector,

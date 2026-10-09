@@ -76,4 +76,7 @@
   <!-- 8. Recordings -->
   <recordings maxDuration="PT3M" sampleFps="1" />
 
+  <!-- 9. Limits: model calls per UTC day; once spent, chat starts no new model work until the next day -->
+  <limits modelCallsPerDay="5000" />
+
 </playbook>

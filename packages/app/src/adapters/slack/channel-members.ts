@@ -17,6 +17,7 @@
 // default. Any other failure goes to `onError`.
 
 import { channelMembersKey } from '@snapwing/pipeline/state/projections/notify-context.ts';
+import { briefMembers } from '@snapwing/pipeline/status/ask.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import { parsedBodyOf, type SlackAdapter } from './adapter.ts';
@@ -166,4 +167,26 @@ export function observeChannelMembers(adapter: SlackAdapter, members: Pick<Slack
       return result;
     },
   };
+}
+
+/** Pages read for an access check; a member past them is not seen (fail closed). */
+const ACCESS_MAX_PAGES = 20;
+
+/**
+ * Whether a user is in a channel right now, for the status answers (A 4.3, #272): `conversations.members`
+ * read live and remembered briefly (`briefMembers`), not the notification policy's longer-lived kv
+ * list. A channel Slack will not list (any error) has nobody in it.
+ */
+export function createSlackChannelAccess(options: { web: Pick<SlackWeb, 'conversationsMembers'>; clock?: () => Date }): (channel: string, user: string) => Promise<boolean> {
+  return briefMembers(async (channel) => {
+    const members: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < ACCESS_MAX_PAGES; page++) {
+      const got = await options.web.conversationsMembers({ channel, limit: PAGE_LIMIT, ...(cursor === undefined ? {} : { cursor }) });
+      members.push(...got.members);
+      cursor = got.nextCursor;
+      if (cursor === undefined) break;
+    }
+    return members;
+  }, options.clock);
 }

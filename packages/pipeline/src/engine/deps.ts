@@ -138,6 +138,12 @@ export interface EngineDeps {
    * them on the next signal on the anchor instead.
    */
   onCaptured?: (incidentId: string) => Promise<unknown>;
+  /**
+   * main 16 (#272): whether an inbound incident may start (the chat limits: per person, and the daily
+   * model budget). False: no job starts, the key is not marked seen, and nothing is acknowledged; the hook
+   * tells the person when it should. Absent: every incident starts.
+   */
+  admit?: (source: ChannelSource, payload: CanonicalIncidentPayload) => Promise<boolean>;
 }
 
 export const DEFAULT_TAP_TIMEOUT = 'PT24H';

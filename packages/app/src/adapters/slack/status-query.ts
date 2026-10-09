@@ -22,13 +22,17 @@
 //
 // The asker's role comes from the workspace map (`people[].slackId`); an unmapped user is `unknown`
 // and so gets the reporter or lead shape, never the engineer one.
+//
+// With `access` (#272) an answer covers only incidents the asker may see (`status/ask.ts`: channels
+// they are in, `createSlackChannelAccess`), and a guest or someone from another organization gets
+// `GUESTS_GET_NO_STATUS` in place of any answer or standing watch.
 
 import type { IncidentActor } from '@snapwing/pipeline/contracts/incident.ts';
 import type { StatusAnswer, StatusQuery } from '@snapwing/pipeline/contracts/signals.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
-import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
+import { askerMayAsk, createStatusAsk, GUESTS_GET_NO_STATUS, looksLikeStatusQuestion, surfaceWords, type StatusAccess, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
 import { statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { actions, section, type SlackBlock } from './cards/blocks.ts';
 import { isUnlinkGithub, unlinkGithubReply } from '../shared/unlink-github.ts';
@@ -70,6 +74,8 @@ export interface SlackStatusQueryOptions {
   fetch?: typeof fetch;
   /** Most incident rows read per question. Default 500. */
   incidentLimit?: number;
+  /** Who may hear about what (see the file header). Absent: every asker, every incident. */
+  access?: StatusAccess;
   onError?: (error: unknown) => void;
 }
 
@@ -185,6 +191,10 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
   }
 
   async function replyTo(request: Request, post: (message: { text: string; blocks: SlackBlock[] }) => Promise<void>): Promise<void> {
+    if (!(await askerMayAsk(options.access, request.asker))) {
+      await post({ text: GUESTS_GET_NO_STATUS, blocks: [section(GUESTS_GET_NO_STATUS)] });
+      return;
+    }
     const map = await options.getMap();
     const answer = await ask({
       asker: actorFor(map, request.asker),
@@ -261,6 +271,10 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
           return;
         }
         if (request.standing === true && options.standing !== undefined) {
+          if (!(await askerMayAsk(options.access, request.asker))) {
+            await web.postMessage({ channel: request.channelId, text: GUESTS_GET_NO_STATUS });
+            return;
+          }
           const outcome = await applyStandingWatch(options.standing, await options.getMap(), {
             workspaceId: options.workspaceId,
             userId: request.asker,

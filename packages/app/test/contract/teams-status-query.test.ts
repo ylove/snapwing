@@ -14,6 +14,7 @@ import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import type { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import { createTeamsStatusAccess } from '../../src/adapters/teams/channel-members.ts';
 import { createTeamsConnector } from '../../src/adapters/teams/connector.ts';
 import { teamsUserKey } from '../../src/adapters/teams/conversations.ts';
 import { createTeamsStatusQuery, type TeamsStatusQuery } from '../../src/adapters/teams/status-query.ts';
@@ -397,6 +398,45 @@ describe('the status command', () => {
   it('is only a command to the bot: an unaddressed channel message is not one', () => {
     const channelMessage = { ...mention(REPORTER, 'status WEB-1042'), entities: [], text: 'status WEB-1042' };
     expect(teams.intercepts(channelMessage)).toBe(false);
+  });
+});
+
+describe('who may hear about what (#272)', () => {
+  const GUEST = '9e8d7c6b-0000-4000-8000-00000000ab01';
+  function scoped(): TeamsStatusQuery {
+    const scopedMap: WorkspaceMap = { ...map, channels: [...map.channels, { id: CHANNEL, name: 'web-bugs-teams', surface: 'web', triggerEmoji: [], platform: 'teams', teamId: 'team-1' }] };
+    const graph = {
+      user: (aad: string) => Promise.resolve({ id: aad, userType: aad === GUEST ? 'Guest' : 'Member' }),
+      channelMembers: (team: string, channel: string) => Promise.resolve(team === 'team-1' && channel === CHANNEL ? [{ id: 'm1', userId: ENGINEER, roles: [] }] : []),
+    };
+    return createTeamsStatusQuery({
+      connector: createTeamsConnector({ token: async () => 'teams-test-token', botId: BOT }),
+      state,
+      standing: state,
+      workspaceId: WS,
+      getMap: () => Promise.resolve(scopedMap),
+      clock: () => new Date(T0),
+      access: createTeamsStatusAccess({ graph, getMap: () => Promise.resolve(scopedMap), clock: () => new Date(T0) }),
+      onError: (e) => errors.push(e),
+    });
+  }
+
+  it('answers only about incidents from channels the asker is in', async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    await seed(CART_A, 'Cart total blank', 'checkout', { channel: OTHER_CHANNEL });
+    teams = scoped();
+    const text = await answerTo(chat(ENGINEER, "what's open on the website?"));
+    expect(text).toContain('WEB-1042');
+    expect(text).not.toContain('WEB-1051');
+  });
+
+  it('gives a guest no status answer and no standing watch', async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    teams = scoped();
+    await teams.handle(chat(GUEST, 'WEB-1042'));
+    await teams.handle(chat(GUEST, 'keep me posted on the website'));
+    expect(sent.map((m) => m.body.text)).toEqual(['Status answers are for members of this workspace.', 'Status answers are for members of this workspace.']);
+    expect(await state.getSubscriptions(NAV.id)).toEqual([]);
   });
 });
 

@@ -18,6 +18,7 @@
 //
 // Who a person is to the workspace, for the reactors who count toward a trigger (#170), in order:
 //
+//   external  a bot user (a bot is never a member, #272).
 //   external  `users.info` fails or was not given (fail closed), or its `team_id` is not the
 //             workspace's (someone from another organization in a Slack Connect channel). On
 //             Enterprise Grid, a user from another workspace of the same organization (same
@@ -44,6 +45,8 @@ export interface SlackAuthorOf {
   plainly(event: SlackEvent): 'own' | 'bot' | undefined;
   /** Member, guest, or external, from `users.info` (see the file header). */
   membership(user: string): Promise<Membership>;
+  /** True when `users.info` says the user is a bot; false when it fails or was not given (#272: a bot is no reactor). */
+  isBot?(user: string): Promise<boolean>;
 }
 
 /** The `users.info` fields authorship reads. */
@@ -117,7 +120,7 @@ export function createSlackAuthorOf(options: SlackAuthorshipOptions): SlackAutho
 
   async function membership(user: string): Promise<Membership> {
     const facts = await factsOf(user);
-    if (facts === undefined) return 'external';
+    if (facts === undefined || facts.is_bot === true) return 'external';
     if (options.teamId !== undefined && options.teamId !== '' && facts.team_id !== options.teamId && !sameOrganization(facts)) return 'external';
     return facts.is_restricted === true || facts.is_ultra_restricted === true ? 'guest' : 'member';
   }
@@ -140,5 +143,6 @@ export function createSlackAuthorOf(options: SlackAuthorshipOptions): SlackAutho
     if (map.people.some((p) => p.slackId === user)) return 'person';
     return (await isBotUser(user)) ? 'bot' : 'person';
   };
-  return Object.assign(authorOf, { plainly, membership });
+  const isBot = async (user: string): Promise<boolean> => (await factsOf(user))?.is_bot === true;
+  return Object.assign(authorOf, { plainly, membership, isBot });
 }

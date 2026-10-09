@@ -20,8 +20,9 @@
 //
 // Who triggers counts, as on Slack (`triggerCap`): a person is a member, a guest (`userType` Guest, or an
 // `#EXT#` guest account), or external (an activity from another tenant than the install's, or a Graph
-// lookup that failed or was not given: fail closed). With no member among the people who triggered, the
-// payload carries `levelCap`, so the level is at most 1.
+// lookup that failed or was not given: fail closed). With no member among the people who triggered, or
+// a reported message a guest or external person wrote (#272), the payload carries `levelCap`, so the
+// level is at most 1. A bot's message caps nothing.
 
 import type { CanonicalIncidentPayload, IncidentActor, LevelCap } from '@snapwing/pipeline/contracts/incident.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
@@ -390,13 +391,13 @@ async function actionCommand(activity: Rec, invoke: string, ctx: TeamsNormalizeC
 
   const rootId = conv.conversationType === 'channel' ? str(message['replyToId']) || conv.splitRoot || anchorId : undefined;
   const reporter = await actor(ctx, invokerAad, str(from['name']));
-  const levelCap = await triggerCapOf(ctx, [invokerAad], conv.tenantId);
 
   // The anchor's author, when a person other than the invoker wrote it; a bot's post has none.
   const author = rec(message['from']);
   const authorUser = rec(author['user']);
   const authorAad = str(authorUser['id']);
   const byPerson = authorAad !== '' && Object.keys(rec(author['application'])).length === 0 && str(authorUser['userIdentityType']) !== 'bot';
+  const levelCap = (await triggerCapOf(ctx, [invokerAad], conv.tenantId)) ?? (byPerson ? await triggerCapOf(ctx, [authorAad]) : undefined);
   const anchorAuthor = byPerson && authorAad !== invokerAad ? await actor(ctx, authorAad, str(authorUser['displayName'])) : undefined;
 
   const body = rec(message['body']);
@@ -500,9 +501,9 @@ async function reaction(trigger: TeamsReactionTrigger, ctx: TeamsNormalizeContex
   if (reactors.size < min) return ignored('below-min-reactors');
 
   const reporter = await actor(ctx, trigger.reactorAadId, '');
-  const levelCap = await triggerCapOf(ctx, [...reactors]);
   const authorUser = message.from?.user ?? undefined;
   const byPerson = authorUser !== undefined && (message.from?.application ?? undefined) === undefined && authorUser.userIdentityType !== 'bot';
+  const levelCap = (await triggerCapOf(ctx, [...reactors])) ?? (byPerson ? await triggerCapOf(ctx, [authorUser.id]) : undefined);
   const anchorAuthor =
     byPerson && authorUser.id !== trigger.reactorAadId ? await actor(ctx, authorUser.id, authorUser.displayName ?? '') : undefined;
 

@@ -222,6 +222,9 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
     U0GUEST: { team_id: TEAM, is_restricted: true },
     U0SINGLE: { team_id: TEAM, is_ultra_restricted: true },
     U0OUTSIDER: { team_id: 'T0OTHERORG' },
+    // The fixtures' anchor author.
+    U0AUTHOR: { team_id: TEAM },
+    U0ALERTBOT: { team_id: TEAM, is_bot: true },
   };
   /** `users.info` from `people`; anyone else fails. Records who was asked. */
   function lookup(asked: string[] = []) {
@@ -244,7 +247,7 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
     const { raw, reactionsGet } = trigger('U0MEMBER', ['U0MEMBER']);
     expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toBeUndefined();
     expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toBeUndefined();
-    expect(asked).toEqual(['U0MEMBER']);
+    expect(asked).toEqual(['U0MEMBER', 'U0AUTHOR']);
   });
 
   it('caps a trigger from a guest (multi- or single-channel) or an external user at level 1, and still files it', async () => {
@@ -258,11 +261,11 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
     }
   });
 
-  it('lets a member among the reactors lift the cap, asking the one who reacted first and stopping at a member', async () => {
+  it('lets a member among the reactors lift the cap, asking the one who reacted first, then each reactor (a bot does not count), then the author', async () => {
     const asked: string[] = [];
     const { raw, reactionsGet } = trigger('U0GUEST', ['U0OUTSIDER', 'U0MEMBER', 'U0SINGLE']);
     expect(incident(await normalizeSlack(raw, ctx({ authorOf: lookup(asked), reactionsGet }))).levelCap).toBeUndefined();
-    expect(asked).toEqual(['U0GUEST', 'U0OUTSIDER', 'U0MEMBER']);
+    expect(asked).toEqual(['U0GUEST', 'U0OUTSIDER', 'U0MEMBER', 'U0SINGLE', 'U0AUTHOR']);
   });
 
   it('minReactors="2": a guest and a member trigger uncapped; two guests trigger capped at 1; one guest alone does not', async () => {
@@ -281,7 +284,7 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
     expect(await authorOf.membership('U0NOBODY')).toBe('external');
     const { raw, reactionsGet } = trigger('U0NOBODY', ['U0NOBODY']);
     expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toEqual(CAP);
-    expect(asked).toEqual(['U0NOBODY', 'U0NOBODY']);
+    expect(asked).toEqual(['U0NOBODY', 'U0NOBODY', 'U0NOBODY']);
   });
 
   it('caps every trigger without a users.info lookup, and compares teams only when the workspace team is known', async () => {
@@ -312,6 +315,34 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
     expect(incident(await normalizeSlack(fixture('message-im-text'), ctx())).levelCap).toEqual(CAP);
   });
 
+  // #272: the reported message's author counts too, and bots count for nothing.
+  it("caps a member's reaction or shortcut on a message a guest or external person wrote", async () => {
+    const authorOf = lookup();
+    for (const author of ['U0GUEST', 'U0OUTSIDER', 'U0NOBODY']) {
+      const raw = reaction({ user: 'U0MEMBER', item_user: author });
+      const reactionsGet = () => Promise.resolve({ text: 't', reactions: [{ name: 'bug', users: ['U0MEMBER'] }] });
+      expect(incident(await normalizeSlack(raw, ctx({ authorOf, reactionsGet }))).levelCap).toEqual(CAP);
+      const shortcut = fixture('message-action') as { message: Record<string, unknown> };
+      const byGuest = { ...shortcut, message: { ...shortcut.message, user: author }, user: { id: 'U0MEMBER', name: 'm' } };
+      expect(incident(await normalizeSlack(byGuest, ctx({ authorOf }))).levelCap).toEqual(CAP);
+    }
+  });
+
+  it("caps nothing for a bot's message, and never counts a bot as a reactor or a member", async () => {
+    const authorOf = lookup();
+    const reactionsGet = () => Promise.resolve({ text: 't', reactions: [{ name: 'bug', users: ['U0MEMBER'] }], author: { user: 'U0ALERTBOT', bot_id: 'B0ALERT' } });
+    expect(incident(await normalizeSlack(reaction({ user: 'U0MEMBER' }), ctx({ authorOf, reactionsGet }))).levelCap).toBeUndefined();
+    expect(await authorOf.membership('U0ALERTBOT')).toBe('external');
+    expect(await normalizeSlack(reaction({ user: 'U0ALERTBOT' }), ctx({ authorOf, reactionsGet }))).toEqual({ kind: 'ignored', reason: 'bot-reaction' });
+    // minReactors 2: a guest plus a bot is one reactor, and the bot lifts no cap.
+    const fire = trigger('U0GUEST', ['U0GUEST', 'U0ALERTBOT'], 'fire');
+    expect(await normalizeSlack(fire.raw, ctx({ authorOf, reactionsGet: fire.reactionsGet }))).toEqual({ kind: 'ignored', reason: 'below-min-reactors' });
+    const three = trigger('U0GUEST', ['U0GUEST', 'U0ALERTBOT', 'U0SINGLE'], 'fire');
+    const p = incident(await normalizeSlack(three.raw, ctx({ authorOf, reactionsGet: three.reactionsGet })));
+    expect(p.levelCap).toEqual(CAP);
+    expect(p.context.rawPayloadSnapshot['reactors']).toEqual(['U0GUEST', 'U0SINGLE']);
+  });
+
   describe('Enterprise Grid', () => {
     const ORG = 'E0ORG';
     const grid: Record<string, SlackUserFacts> = {
@@ -320,6 +351,7 @@ describe('normalizeSlack: who reacted with the trigger (#170)', () => {
       U0SIBLINGGUEST: { team_id: 'T0SIBLING', enterprise_user: { enterprise_id: ORG }, is_restricted: true },
       U0OTHERORG: { team_id: 'T0ELSEWHERE', enterprise_user: { enterprise_id: 'E0OTHER' } },
       U0NOORG: { team_id: 'T0ELSEWHERE' },
+      U0AUTHOR: { team_id: TEAM },
     };
     const authorOf = (enterpriseId: string | undefined) =>
       createSlackAuthorOf({

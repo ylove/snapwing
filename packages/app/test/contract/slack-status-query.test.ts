@@ -12,6 +12,7 @@ import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import type { SlackAdapter } from '../../src/adapters/slack/adapter.ts';
 import { createSlackAuthorOf } from '../../src/adapters/slack/authorship.ts';
+import { createSlackChannelAccess } from '../../src/adapters/slack/channel-members.ts';
 import { createSlackStatusQuery, looksLikeStatusQuestion, type SlackStatusQuery } from '../../src/adapters/slack/status-query.ts';
 import { createSlackDispatcher } from '../../src/adapters/slack/transport.ts';
 import type { PostEphemeralArgs, PostMessageArgs, SlackWeb } from '../../src/adapters/slack/web.ts';
@@ -411,6 +412,60 @@ describe('wiring and speed', () => {
     const text = await answerTo(mention(ENGINEER, 'where are we with this?', { threadTs: NAV.anchor }));
     expect(Date.now() - started).toBeLessThan(1000);
     expect(text).toContain('WEB-1042');
+  });
+});
+
+describe('who may hear about what (#272)', () => {
+  const GUEST = 'U0GUEST';
+  /** The status query with access: the asker is in `CHANNEL` only, and `GUEST` is a guest. */
+  function scoped(): { sq: SlackStatusQuery; listed: string[] } {
+    const listed: string[] = [];
+    const web: Pick<SlackWeb, 'postMessage' | 'postEphemeral' | 'conversationsMembers'> = {
+      postMessage: (a) => (posts.push(a), Promise.resolve({ channel: a.channel, ts: '1759396000.000900' })),
+      postEphemeral: (a) => (ephemerals.push(a), Promise.resolve({})),
+      conversationsMembers: ({ channel }) => (listed.push(channel), channel === CHANNEL ? Promise.resolve({ members: [ENGINEER, REPORTER] }) : Promise.reject(new Error('not_in_channel'))),
+    };
+    const sq = createSlackStatusQuery({
+      web: web as SlackWeb,
+      state,
+      standing: state,
+      workspaceId: WS,
+      getMap: () => Promise.resolve(map),
+      botUserId: BOT,
+      clock: () => new Date(T0),
+      access: { platform: 'slack', membership: (u) => Promise.resolve(u === GUEST ? 'guest' : 'member'), inChannel: createSlackChannelAccess({ web, clock: () => new Date(T0) }) },
+      onError: (e) => errors.push(e),
+    });
+    return { sq, listed };
+  }
+
+  it("answers only about incidents from channels the asker is in, remembering a channel's members briefly", async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    await seed(CART_A, 'Cart total blank', 'checkout', { channel: OTHER_CHANNEL });
+    const { sq: scopedSq, listed } = scoped();
+    await scopedSq.handleEvent(dm(ENGINEER, 'WEB-1051'));
+    expect(posts[0]?.text).not.toContain('WEB-1051');
+    await scopedSq.handleEvent(dm(ENGINEER, 'WEB-1042'));
+    expect(posts[1]?.text).toContain('WEB-1042');
+    await scopedSq.handleEvent(dm(ENGINEER, "what's open on the website?"));
+    expect(posts[2]?.text).toContain('WEB-1042');
+    expect(posts[2]?.text).not.toContain('WEB-1051');
+    expect(listed.sort()).toEqual([OTHER_CHANNEL, CHANNEL]);
+    // The reporter of an incident in a channel they left still hears about it.
+    await seed(CART_B, 'Coupon rejected', 'checkout', { channel: OTHER_CHANNEL });
+    await scopedSq.handleEvent(dm(REPORTER, 'WEB-1060'));
+    expect(posts[3]?.text).toContain('WEB-1060');
+  });
+
+  it('gives a guest no status answer and no standing watch, however asked', async () => {
+    await seed(NAV, 'Nav menu missing on pricing page', 'nav');
+    const { sq: scopedSq } = scoped();
+    await scopedSq.handleEvent(mention(GUEST, 'WEB-1042'));
+    await scopedSq.handleEvent(dm(GUEST, 'WEB-1042'));
+    await scopedSq.handleEvent(dm(GUEST, 'keep me posted on the website'));
+    await scopedSq.handleCommand({ command: '/snapwing-status', text: 'WEB-1042', userId: GUEST, channelId: CHANNEL, responseUrl: '' });
+    expect([...posts, ...ephemerals].map((p) => p.text)).toEqual(Array(4).fill('Status answers are for members of this workspace.'));
+    expect(await state.getSubscriptions(NAV.id)).toEqual([]);
   });
 });
 
