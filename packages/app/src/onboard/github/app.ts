@@ -7,12 +7,13 @@
 // calls `runManifestFlow` and keeps the credentials as secrets itself.
 
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { join } from 'node:path';
 import { assetPath } from '@snapwing/pipeline/util/assets.ts';
 import { GitHubApiError, errorMessage, signAppJwt } from '../../github/auth.ts';
+import { writeFileAtomic } from '../interview/env.ts';
 import { apiBase, DEFAULT_FIXTURE_REPO, ENV_FILE, isRecord, must, PEM_FILE, PLACEHOLDER_HOOK_URL, readPublicUrl, str, updateEnvFile, webBase, type BootstrapDeps, type GitHubDeps } from './api.ts';
 
 export const DEFAULT_MANIFEST_PATH = assetPath('manifests/github-app.json');
@@ -40,6 +41,11 @@ function substitute(value: unknown, vars: Readonly<Record<string, string>>): unk
   return value;
 }
 
+/** True when `host` is `127.0.0.1:<port>` or `localhost:<port>`. */
+export function allowedHost(host: string | undefined, port: number): boolean {
+  return host === `127.0.0.1:${port}` || host?.toLowerCase() === `localhost:${port}`;
+}
+
 function escapeHtml(s: string): string {
   return s.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
@@ -65,6 +71,8 @@ export interface Conversion {
   /** GitHub returns none when the manifest had no hook_attributes. */
   webhookSecret: string | null;
   pem: string;
+  /** The account GitHub says owns the App (`owner.login`); null when the response names none. */
+  owner: string | null;
 }
 
 function parseConversion(body: unknown): Conversion {
@@ -77,6 +85,7 @@ function parseConversion(body: unknown): Conversion {
     clientSecret: str(body['client_secret'], 'client_secret'),
     webhookSecret: typeof body['webhook_secret'] === 'string' && body['webhook_secret'] !== '' ? body['webhook_secret'] : null,
     pem: str(body['pem'], 'pem'),
+    owner: isRecord(body['owner']) && typeof body['owner']['login'] === 'string' ? body['owner']['login'] : null,
   };
 }
 
@@ -87,6 +96,11 @@ export interface ManifestFlowOptions {
   name?: string;
   /** Create the App under this organization instead of the signed-in user. */
   org?: string;
+  /**
+   * The account the installer named (an organization or their own login). The conversion must report this
+   * owner, compared case-insensitively, or the credentials are refused. Defaults to `org`.
+   */
+  owner?: string;
   port?: number;
   /** Give up waiting for the redirect after this many ms. Default 10 minutes. */
   timeoutMs?: number;
@@ -127,12 +141,15 @@ export async function runManifestFlow(d: GitHubDeps, options: ManifestFlowOption
 
   let page = '';
   let handling = false;
+  let boundPort = 0;
   const server: Server = createServer((req, res) => {
-    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     const reply = (status: number, html: string): void => {
       res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       res.end(html);
     };
+    // Only the installer's own browser, at the address this flow printed: a rebinding page answers to its own name.
+    if (!allowedHost(req.headers.host, boundPort)) return reply(403, 'forbidden host');
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
     if (url.pathname === '/' && req.method === 'GET') return reply(200, page);
     if (url.pathname !== '/callback' || req.method !== 'GET') return reply(404, 'not found');
     const code = url.searchParams.get('code') ?? '';
@@ -158,6 +175,10 @@ export async function runManifestFlow(d: GitHubDeps, options: ManifestFlowOption
     });
     if (!res.ok) throw new GitHubApiError(res.status, `manifest code exchange failed: ${await errorMessage(res)}`);
     const app = parseConversion(await res.json());
+    const expected = options.owner ?? options.org;
+    if (expected !== undefined && app.owner?.toLowerCase() !== expected.toLowerCase()) {
+      throw new Error(`GitHub reported the new App under ${app.owner ?? 'no owner'}, not ${expected}; its credentials were not saved`);
+    }
     await options.onConverted?.(app);
     return app;
   }
@@ -168,6 +189,7 @@ export async function runManifestFlow(d: GitHubDeps, options: ManifestFlowOption
   });
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('local server has no port');
+  boundPort = address.port;
   const local = `http://127.0.0.1:${address.port}`;
   const manifest = await buildManifest({
     publicUrl: options.publicUrl,
@@ -207,7 +229,7 @@ export async function runApp(d: BootstrapDeps, options: AppOptions = {}): Promis
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     onConverted: async (c) => {
       await mkdir(join(d.root, 'secrets'), { recursive: true, mode: 0o700 });
-      await writeFile(join(d.root, PEM_FILE), c.pem.endsWith('\n') ? c.pem : `${c.pem}\n`, { mode: 0o600 });
+      await writeFileAtomic(join(d.root, PEM_FILE), c.pem.endsWith('\n') ? c.pem : `${c.pem}\n`);
       await updateEnvFile(d, {
         GITHUB_APP_ID: c.id,
         GITHUB_APP_CLIENT_ID: c.clientId,

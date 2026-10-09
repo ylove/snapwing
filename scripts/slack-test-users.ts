@@ -8,7 +8,8 @@
 
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
+import { writeFileAtomic } from '../packages/app/src/onboard/interview/env.ts';
 import { createServer, type Server } from 'node:http';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -201,14 +202,13 @@ export async function runCreateApp(d: Deps, options: { force?: boolean } = {}): 
   if (typeof appId !== 'string' || typeof clientId !== 'string' || typeof clientSecret !== 'string' || clientId === '' || clientSecret === '') {
     throw new Error(`apps.manifest.create returned no client credentials${typeof appId === 'string' ? ` (the app was created: ${appId}; delete it at https://api.slack.com/apps)` : ''}`);
   }
-  await writeFile(
+  await writeFileAtomic(
     join(d.root, ENV_FILE),
     upsertEnv(await readEnvFile(d), {
       SLACK_TEST_DRIVER_APP_ID: appId,
       SLACK_TEST_DRIVER_CLIENT_ID: clientId,
       SLACK_TEST_DRIVER_CLIENT_SECRET: clientSecret,
     }),
-    { mode: 0o600 },
   );
   d.log(`Created the Snapwing Test Driver app (${appId}); stored SLACK_TEST_DRIVER_APP_ID, SLACK_TEST_DRIVER_CLIENT_ID, SLACK_TEST_DRIVER_CLIENT_SECRET in ${ENV_FILE}.`);
   d.log('Next: set SLACK_TEST_CHANNEL in .env.live if needed, then sign in to Slack as the reporter and run `pnpm slack:test-users reporter`.');
@@ -294,10 +294,9 @@ export async function runStore(d: Deps, role: Role, options: StoreOptions = {}):
     if (env[ROLE_KEYS[other].id] === me.userId) {
       throw new Error(`${me.user} is already stored as the ${other}; sign in as a different Slack user for the ${role} (nothing was written)`);
     }
-    await writeFile(
+    await writeFileAtomic(
       join(d.root, ENV_FILE),
       upsertEnv(await readEnvFile(d), { [ROLE_KEYS[role].token]: token, [ROLE_KEYS[role].id]: me.userId }),
-      { mode: 0o600 },
     );
     d.log(`Stored the ${role} (${me.user}, ${me.userId}) in ${ENV_FILE}: ${ROLE_KEYS[role].token}, ${ROLE_KEYS[role].id}.`);
     if (!ch.isMember) d.log(`warn ${me.user} is not in ${channel} yet; invite them to the channel before the e2e run.`);

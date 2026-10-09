@@ -10,8 +10,10 @@
 // are installed together). The pipeline stage also gets the root `schemas/` and `manifests/` at its
 // package root, where `assetPath` (pipeline/src/util/assets.ts) finds them once installed. `demo/`, the
 // Slack test-driver manifest, and the Teams icon generator are for development and do not ship. Only files git tracks are staged
-// (never an untracked `.env`, key, or database), and the pack fails if a staged path looks like a
-// secret (see `SECRET_PATH`). The
+// (never an untracked `.env`, key, or database), the pack refuses when a tracked file under the shipped paths
+// has uncommitted changes (only committed content ships), and it fails if a staged path looks like a
+// secret (see `SECRET_PATH`). Each tarball also carries an `npm-shrinkwrap.json` generated from
+// pnpm-lock.yaml (`scripts/shrinkwrap.mjs`), so an install of it is pinned and integrity-checked. The
 // app stage bundles `@snapwing/capture-client` (no dependencies of its own) so two tarballs suffice.
 // Writes to `--out` (default a fresh temp directory) and prints each tarball's path, or one JSON
 // object `{ pipeline, app }` with `--json`.
@@ -19,10 +21,11 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { readLock, shrinkwrapFor } from './shrinkwrap.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PACKAGES = join(ROOT, 'packages');
@@ -30,8 +33,15 @@ const ASSET_DIRS = ['schemas', 'manifests'];
 /** Tracked files that are not shipped even though they sit under an asset directory. A trailing `/` names a directory. */
 const NOT_SHIPPED = ['manifests/slack/test-driver.manifest.yaml', 'manifests/teams/make-icons.mjs'];
 const isShipped = (file) => !NOT_SHIPPED.some((skip) => (skip.endsWith('/') ? file.startsWith(skip) : file === skip));
-/** Paths that must never be staged: env files, keys, a `secrets/` directory, SQLite databases. */
-const SECRET_PATH = /(^|\/)(\.env[^/]*|[^/]*\.pem|[^/]*\.key|secrets|[^/]*\.sqlite[^/]*)(\/|$)/;
+/**
+ * Paths that must never be staged. Covers everything `.gitignore` lists under env and secrets, keys and
+ * credentials, and local databases: `.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.private-key*`,
+ * `secrets/`, `.secrets/`, `*.secret`, `*.secrets.*`, `credentials*.json`, `service-account*.json`,
+ * `*.sqlite*`, `*.db`.
+ */
+const SECRET_PATH =
+  /(^|\/)(\.env[^/]*|[^/]*\.(pem|key|p12|pfx|secret|db)|[^/]*\.private-key[^/]*|[^/]*\.secrets\.[^/]*|\.?secrets|credentials[^/]*\.json|service-account[^/]*\.json|[^/]*\.sqlite[^/]*)(\/|$)/;
+export const isSecretPath = (file) => SECRET_PATH.test(file);
 const BUNDLED = ['@snapwing/capture-client'];
 
 const readJson = (path) => JSON.parse(readFileSync(path, 'utf8'));
@@ -62,8 +72,18 @@ function shippedManifest(manifest, workspace) {
   return Object.keys(dependencies).length === 0 ? rest : { ...rest, dependencies };
 }
 
+/** Refuses to pack while a tracked file under `paths` differs from the commit: only committed content ships. */
+function assertCommitted(paths) {
+  const raw = execFileSync('git', ['status', '--porcelain', '--untracked-files=no', '-z', '--', ...paths], { cwd: ROOT, encoding: 'utf8' });
+  const dirty = raw.split('\0').filter((entry) => entry !== '');
+  if (dirty.length > 0) {
+    throw new Error(`pack refused: uncommitted changes under the shipped paths (${dirty.map((e) => e.slice(3)).join(', ')}); commit or revert them`);
+  }
+}
+
 /** Files git tracks under `paths` (repository-relative), so ignored and untracked files never ship. */
 function trackedFiles(paths) {
+  assertCommitted(paths);
   const raw = execFileSync('git', ['ls-files', '-z', '--', ...paths], { cwd: ROOT, encoding: 'utf8' });
   return raw.split('\0').filter((f) => f !== '' && isShipped(f));
 }
@@ -71,7 +91,7 @@ function trackedFiles(paths) {
 /** Copies the tracked files under `paths` (repository-relative) into `dest`, below `base`; refuses secrets. */
 function stageTracked(paths, base, dest) {
   for (const file of trackedFiles(paths)) {
-    if (SECRET_PATH.test(file)) throw new Error(`pack refused: ${file} looks like a secret and is tracked; remove it or rename it`);
+    if (isSecretPath(file)) throw new Error(`pack refused: ${file} looks like a secret and is tracked; remove it or rename it`);
     const to = join(dest, relative(base, join(ROOT, file)));
     mkdirSync(dirname(to), { recursive: true });
     copyFileSync(join(ROOT, file), to);
@@ -94,27 +114,32 @@ function npmPack(stage, out) {
   return join(out, result.filename);
 }
 
-function stageAndPack(name, workspace, stageRoot, out, extra) {
+function stageAndPack(name, workspace, stageRoot, out, lock, extra) {
   const pkg = workspace.get(name);
   const stage = join(stageRoot, name.replace('/', '-'));
   mkdirSync(stage, { recursive: true });
   copyFiles(pkg, stage);
   cpSync(join(ROOT, 'LICENSE'), join(stage, 'LICENSE'));
   const manifest = shippedManifest(pkg.manifest, workspace);
-  writeFileSync(join(stage, 'package.json'), `${JSON.stringify(extra(stage, manifest), null, 2)}\n`);
+  const extended = extra(stage, manifest);
+  const finalManifest = { ...extended, files: [...(extended.files ?? []), 'npm-shrinkwrap.json'] };
+  writeFileSync(join(stage, 'package.json'), `${JSON.stringify(finalManifest, null, 2)}\n`);
+  const shrinkwrap = shrinkwrapFor({ lock, importer: `packages/${basename(pkg.dir)}`, manifest: finalManifest, bundled: finalManifest.bundleDependencies ?? [] });
+  writeFileSync(join(stage, 'npm-shrinkwrap.json'), `${JSON.stringify(shrinkwrap, null, 2)}\n`);
   return npmPack(stage, out);
 }
 
 export function packCli(out) {
   const workspace = workspacePackages();
+  const lock = readLock(ROOT);
   const stageRoot = mkdtempSync(join(tmpdir(), 'snapwing-pack-stage-'));
   try {
     mkdirSync(out, { recursive: true });
-    const pipeline = stageAndPack('@snapwing/pipeline', workspace, stageRoot, out, (stage, manifest) => {
+    const pipeline = stageAndPack('@snapwing/pipeline', workspace, stageRoot, out, lock, (stage, manifest) => {
       stageTracked(ASSET_DIRS, ROOT, stage);
       return manifest;
     });
-    const app = stageAndPack('@snapwing/app', workspace, stageRoot, out, (stage, manifest) => {
+    const app = stageAndPack('@snapwing/app', workspace, stageRoot, out, lock, (stage, manifest) => {
       for (const name of BUNDLED) {
         const dep = workspace.get(name);
         const into = join(stage, 'node_modules', name);

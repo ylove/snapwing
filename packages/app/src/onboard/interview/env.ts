@@ -5,7 +5,10 @@
 // serve` reads them (`--env-file`, default `.env`), and nowhere else: never the map, the config, or
 // the onboarding state.
 
-import { chmod, readFile, rename, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { closeSync, fchmodSync, openSync, renameSync, rmSync, writeSync } from 'node:fs';
+import { open, readFile, rename, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -77,8 +80,58 @@ async function readIfExists(path: string): Promise<string> {
 export async function writeEnvFile(path: string, entries: Readonly<Record<string, string>>): Promise<void> {
   if (Object.keys(entries).length === 0) return;
   const next = upsertEnv(await readIfExists(path), entries);
-  const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.tmp`);
-  await writeFile(tmp, next, { mode: 0o600 });
-  await chmod(tmp, 0o600);
-  await rename(tmp, path);
+  await writeFileAtomic(path, next);
+}
+
+/**
+ * Writes `text` to `path` mode 0600 through a sibling temp file: random name, created exclusively
+ * (`wx`, so a planted file or link is never followed), renamed into place, and removed if anything fails.
+ */
+export async function writeFileAtomic(path: string, text: string): Promise<void> {
+  const tmp = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
+  try {
+    const handle = await open(tmp, 'wx', 0o600);
+    try {
+      await handle.writeFile(text);
+      await handle.chmod(0o600);
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, path);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+}
+
+/** The synchronous twin of {@link writeFileAtomic}, for the bootstrap scripts. */
+export function writeFileAtomicSync(path: string, text: string): void {
+  const tmp = join(dirname(path), `.${basename(path)}.${randomBytes(8).toString('hex')}.tmp`);
+  try {
+    const fd = openSync(tmp, 'wx', 0o600);
+    try {
+      writeSync(fd, text);
+      fchmodSync(fd, 0o600);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+/**
+ * A one-line warning when `envPath` sits in a checkout and the checkout would not ignore it, so the
+ * first `add .` would commit the secrets. Undefined when it is ignored, or when there is no checkout.
+ */
+export function envNotIgnoredWarning(envPath: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    execFile('git', ['check-ignore', '-q', '--', basename(envPath)], { cwd: dirname(envPath), timeout: 5000 }, (error) => {
+      // Exit 0: ignored. Exit 1: inside a checkout and not ignored. Anything else (128, no program): say nothing.
+      const code = (error as (Error & { code?: unknown }) | null)?.code;
+      resolve(code === 1 ? `${basename(envPath)} is not ignored by git. Add it to .gitignore before you commit, or your secrets will be committed.` : undefined);
+    });
+  });
 }

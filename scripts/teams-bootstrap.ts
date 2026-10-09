@@ -10,6 +10,7 @@
 // non-zero with one line per failed check.
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFileAtomicSync } from '../packages/app/src/onboard/interview/env.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -81,7 +82,7 @@ async function main(): Promise<void> {
   const report = await runTeamsBootstrap({
     env,
     readEnvFile: () => (existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''),
-    writeEnvFile: (text) => writeFileSync(ENV_FILE, text),
+    writeEnvFile: (text) => writeFileAtomicSync(ENV_FILE, text),
   });
   for (const line of formatReport(report)) console.log(line);
   process.exitCode = report.ok ? 0 : 1;
