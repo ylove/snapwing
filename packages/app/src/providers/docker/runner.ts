@@ -54,7 +54,10 @@
 // harness, as for a fixer) and `SNAPWING_ROLE=review`: the caller's self-contained tree at the head is
 // the only mount, the review input file and `SNAPWING_REVIEW_FILE` lie inside it, and there is no git
 // credential and no fixer API token (nor `SNAPWING_API_URL`: a reviewer reports nothing to the fixer
-// API). Past the review budget's wall clock the container is killed.
+// API). Past the review budget's wall clock the container is killed. The pull request's code never
+// runs in this container (#263): the agent only reads, the tests run in `runTests` containers that
+// mount trees of their own, and the wrapper alone writes `SNAPWING_REVIEW_FILE`, after the agent has
+// exited.
 //
 // Model access (ADR 0017, amendment 1): no model provider key ever enters a container. With
 // `env.modelProxy` configured, a fixer or review container gets the server's model proxy as each CLI's

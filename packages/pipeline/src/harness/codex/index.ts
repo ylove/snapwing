@@ -3,9 +3,14 @@
 // Flags used (checked against `codex exec --help`, Codex CLI, 2026-10):
 //   exec                          non-interactive run; a trailing `-` reads the prompt from stdin
 //   --sandbox danger-full-access  the fixer container is the boundary and `git push` needs the network
-//   --sandbox workspace-write     the review role instead: it can run commands and read, but not write outside the
-//                                 workdir and temp dirs. Codex has no per-tool allow list, and read-only would block
-//                                 the verdict file (SNAPWING_REVIEW_FILE), so this is the tightest sandbox that works.
+//   --sandbox read-only           the review role instead (main 11.1, #263): codex has no per-tool allow list, so
+//                                 nothing the agent runs may write anywhere. The verdict is the end of its final
+//                                 message, which codex itself writes to the last-message file below and
+//                                 ../cli-agent.ts writes to SNAPWING_REVIEW_FILE once the agent has exited.
+//   --ignore-rules                review role only: no execpolicy `.rules` file, the checkout's included. Codex
+//                                 loads a project's `.codex/config.toml` only for a trusted project, and the run's
+//                                 CODEX_HOME (in its empty scratch HOME) trusts none; the review job also leaves
+//                                 `.codex/` out of the agent's tree (#263)
 //   --skip-git-repo-check         never fail on the checkout's git state
 //   --output-last-message <file>  the agent's final message is written to this file (stdout carries progress)
 //   --model <model>               only when configured
@@ -21,7 +26,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HarnessPort, HarnessResult } from '../../ports/harness.ts';
-import { REVIEW_PROMPT_URL, resultFromMessage, runCliAgent, type Extracted } from '../cli-agent.ts';
+import { messageOf, REVIEW_PROMPT_URL, resultFromMessage, runCliAgent, type Extracted } from '../cli-agent.ts';
 import { DEFAULT_KILL_GRACE_MS } from '../process.ts';
 
 export interface CodexHarnessConfig {
@@ -57,7 +62,7 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
       const systemPrompt = await readFile(review ? REVIEW_PROMPT_URL : FIXER_PROMPT_URL, 'utf8');
       const scratch = await mkdtemp(join(tmpdir(), 'snapwing-codex-'));
       const lastMessageFile = join(scratch, 'last-message.txt');
-      const args = ['exec', '--sandbox', review ? 'workspace-write' : 'danger-full-access', '--skip-git-repo-check', '--output-last-message', lastMessageFile];
+      const args = ['exec', '--sandbox', review ? 'read-only' : 'danger-full-access', ...(review ? ['--ignore-rules'] : []), '--skip-git-repo-check', '--output-last-message', lastMessageFile];
       args.push(...proxyProviderArgs(opts.env?.['OPENAI_BASE_URL'] ?? process.env['OPENAI_BASE_URL']));
       if (config.model !== undefined) args.push('--model', config.model);
       args.push('-');
@@ -73,7 +78,7 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
           checkpointFile: join(scratch, 'checkpoints.jsonl'),
           extraFile: lastMessageFile,
           extract: extractResult,
-          doneOnExit: review,
+          ...(review ? { reviewMessage: (stdout: string, lastMessage: string | undefined) => messageOf(finalMessage(stdout, lastMessage)) } : {}),
           inheritEnv: ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL'],
         });
       } finally {
@@ -85,7 +90,12 @@ export function createCodexHarness(config: CodexHarnessConfig = {}): HarnessPort
 
 /** The result is the end of the last-message file; stdout (progress text) is the fallback if the file is missing. */
 export function extractResult(stdout: string, lastMessage: string | undefined): Extracted {
+  const message = finalMessage(stdout, lastMessage);
+  return typeof message === 'string' ? resultFromMessage(message) : message;
+}
+
+/** The agent's final message: the last-message file, else stdout. */
+export function finalMessage(stdout: string, lastMessage: string | undefined): string | { kind: 'error'; message: string } {
   const message = (lastMessage ?? stdout).trim();
-  if (message === '') return { kind: 'error', message: 'codex printed no final message' };
-  return resultFromMessage(message);
+  return message === '' ? { kind: 'error', message: 'codex printed no final message' } : message;
 }

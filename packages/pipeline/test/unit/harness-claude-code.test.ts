@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -83,7 +83,7 @@ describe('claude-code harness: invocation', () => {
     expect(r.outcome === 'failed' ? r.reason : '').toMatch(/^harness workdir: .*server's own tree/);
   });
 
-  it('runs the review role with review.xml, read and run tools only, and the verdict file env', async () => {
+  it('runs the review role with review.xml and read-only tools, never the checkout\'s settings or MCP servers (#263)', async () => {
     const record = join(scratch, 'record-review.json');
     const reviewFile = join(scratch, 'verdict.json');
     const r = await harness.run(workItem, `FAKE_MODE=verdict FAKE_RECORD=${record}`, scratch, opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile } }));
@@ -91,12 +91,55 @@ describe('claude-code harness: invocation', () => {
     const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[]; env: Record<string, string> };
     expect(seen.argv[seen.argv.indexOf('--append-system-prompt') + 1]).toContain('<review-system-prompt');
     const tools = seen.argv[seen.argv.indexOf('--allowedTools') + 1]?.split(',');
-    expect(tools).toEqual(['Bash', 'Read', 'Glob', 'Grep']);
-    expect(seen.env).toMatchObject({ SNAPWING_ROLE: 'review', SNAPWING_REVIEW_FILE: reviewFile });
-    expect(JSON.parse(readFileSync(reviewFile, 'utf8'))).toMatchObject({ verdict: 'approve' });
+    expect(tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(seen.argv[seen.argv.indexOf('--setting-sources') + 1]).toBe('user');
+    expect(seen.argv).toContain('--strict-mcp-config');
+    // The agent reports in its final message and is never told where the verdict file is.
+    expect(seen.env['SNAPWING_ROLE']).toBe('review');
+    expect(seen.env).not.toHaveProperty('SNAPWING_REVIEW_FILE');
+    expect(JSON.parse(readFileSync(reviewFile, 'utf8'))).toEqual({ verdict: 'request-changes', reasons: ['Handle the empty cart'], constraintViolations: [] });
   });
 
-  it('does not read stdout for a review: exit 0 is done even with no JSON result', async () => {
+  it('a fixer run keeps its tools and settings', async () => {
+    const record = join(scratch, 'record-fixer-flags.json');
+    await harness.run(workItem, `FAKE_MODE=done FAKE_RECORD=${record}`, scratch, opts());
+    const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[] };
+    expect(seen.argv[seen.argv.indexOf('--allowedTools') + 1]).toBe('Bash,Edit,Write,Read,Glob,Grep');
+    expect(seen.argv).not.toContain('--setting-sources');
+    expect(seen.argv).not.toContain('--strict-mcp-config');
+  });
+
+  it('writes the verdict from the final message after the agent exits, replacing what anything wrote there during the run (#263)', async () => {
+    const reviewFile = join(scratch, 'verdict-tampered.json');
+    const r = await harness.run(workItem, `FAKE_MODE=verdict FAKE_TAMPER=${reviewFile}`, scratch, opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile } }));
+    expect(r.outcome).toBe('done');
+    expect(JSON.parse(readFileSync(reviewFile, 'utf8'))).toMatchObject({ verdict: 'request-changes' });
+  });
+
+  it('a review that fails or stops leaves no verdict file, not even one written during the run', async () => {
+    const reviewFile = join(scratch, 'verdict-left.json');
+    writeFileSync(reviewFile, '{"verdict":"approve","reasons":[],"constraintViolations":[]}');
+    const failed = await harness.run(workItem, 'FAKE_MODE=exit3', scratch, opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile } }));
+    expect(failed).toMatchObject({ outcome: 'failed' });
+    expect(existsSync(reviewFile)).toBe(false);
+
+    writeFileSync(reviewFile, '{"verdict":"approve","reasons":[],"constraintViolations":[]}');
+    const ac = new AbortController();
+    const stopped = await harness.run(workItem, 'FAKE_MODE=hang', scratch, opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile }, signal: ac.signal, onCheckpoint: async () => ac.abort() }));
+    expect(stopped).toMatchObject({ outcome: 'stopped' });
+    expect(existsSync(reviewFile)).toBe(false);
+  });
+
+  it('a final message without a verdict is still done; the file then holds the message for the parser to refuse', async () => {
+    const reviewFile = join(scratch, 'verdict-none.json');
+    expect((await run('no-json', opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile } }))).outcome).toBe('done');
+    expect(readFileSync(reviewFile, 'utf8')).toBe('I fixed it, trust me.');
+    // Output that is not Claude Code's JSON at all leaves no file.
+    expect((await run('not-claude-output', opts({ role: 'review', env: { SNAPWING_REVIEW_FILE: reviewFile } }))).outcome).toBe('done');
+    expect(existsSync(reviewFile)).toBe(false);
+  });
+
+  it('does not need stdout for a review: exit 0 is done even with no JSON result', async () => {
     expect((await run('no-json', opts({ role: 'review' }))).outcome).toBe('done');
   });
 

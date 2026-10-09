@@ -15,24 +15,31 @@
 //   1. Checks out the PR head in a fresh directory of its own under `workdirRoot` with
 //      `prepareWorkdir` (never the fixer's checkout, never its transcript or summary).
 //   2. Runs the configured review harness with `role: 'review'`. Its input is the request's
-//      constraints and the PR diff against the merge base, nothing else (prompts/review.xml). It
-//      writes its verdict to `SNAPWING_REVIEW_FILE` (under `.git/snapwing/`, outside the worktree),
-//      which `parseReviewVerdict` validates. Its environment carries no git credential: a reviewer
-//      never pushes. A harness that fails, stops, throws, or writes no valid verdict is `escalate`.
-//      With a runner that has an isolation boundary (`runner.runReview`: docker), the agent runs
-//      inside it and no host process runs the review harness (ADR 0017): the job builds a
-//      self-contained copy of the checkout at the head (no remote, no credential, no alternates),
-//      writes the review input into its `.git/snapwing/`, hands that tree to the runner as the only
-//      mount, and afterwards only reads the verdict file back, refusing a symlink or anything but a
-//      small regular file inside the tree; it never runs git in that tree again. The `local` runner
-//      has no boundary, and the harness runs on the host with its guards (development only).
+//      constraints and the PR diff against the merge base, nothing else (prompts/review.xml). The
+//      agent reads the checkout and never runs the PR's code (#263): the built-in adapters give it
+//      read-only tools, its tree holds none of the checkout's agent CLI configuration
+//      (`AGENT_CONFIG_PATHS`), and its verdict, the end of its final message, reaches `SNAPWING_REVIEW_FILE`
+//      only after it has exited, written by the adapter (or the image's wrapper), never by anything
+//      the agent ran. `parseReviewVerdict` validates the file. Its environment carries no git
+//      credential: a reviewer never pushes. A harness that fails, stops, throws, or writes no valid
+//      verdict is `escalate`. With a runner that has an isolation boundary (`runner.runReview`:
+//      docker), the agent runs inside it and no host process runs the review harness (ADR 0017): the
+//      job builds a self-contained copy of the checkout at the head (no remote, no credential, no
+//      alternates), writes the review input into its `.git/snapwing/`, hands that tree to the runner as
+//      the only mount, and afterwards only reads the verdict file back, refusing a symlink or anything
+//      but a small regular file inside the tree; it never runs git in that tree again. The `local`
+//      runner has no boundary, and the harness runs on the host with its guards (development only).
 //   3. Runs `checkConstraints` on the PR's changed files as GitHub lists them. The fixer's git hooks
 //      are advisory (a harness can push with `--no-verify`), so nothing the fixer reported is used.
-//   4. When the request requires tests, runs `proveRegression` on the PR's test files (plus the
-//      reviewer's `regressionTest`), from the merge base to the head, with the configured command.
-//      With a runner that has an isolation boundary (`runner.runTests`: docker), both test runs
-//      happen inside it and no host process runs the PR's test command (ADR 0017); the
-//      `local` runner has none, and the proof runs on the host with its guards (development only).
+//   4. When the request requires tests, runs `proveRegression`, from the merge base to the head, with
+//      the configured command, on the test files the reviewed head itself changes: the job's own diff
+//      of its checkout at that head, never a later push GitHub lists, the fixer's report, or the
+//      reviewer's word (#263). A proven regression test is recorded as one of those files: the
+//      reviewer's `regressionTest` when it is one of them. The verdict is read before the first test
+//      run starts, and the test runs get trees of their own. With a runner that has an isolation
+//      boundary (`runner.runTests`: docker), both test runs happen inside it and no host process runs
+//      the PR's test command (ADR 0017); the `local` runner has none, and the proof runs on the host
+//      with its guards (development only).
 //   5. Combines them: a scope or forbidden violation, or a regression test that is missing, passes
 //      without the fix, fails with it, or times out, turns an `approve` into `request-changes`. A
 //      proof that cannot run (no test command for the repo, a git error, no checkout) turns an
@@ -75,12 +82,12 @@ import { parseImplementationRequest, type ImplementationRequest } from '../promp
 import { repoFullName } from '../util/repo.ts';
 import { ulid } from '../util/ulid.ts';
 import { isolatedTree, proveRegression, selectTestFiles, type RegressionResult, type RegressionStatus } from './regression.ts';
-import { checkConstraints, parseReviewVerdict, type ConstraintViolation, type ReviewVerdict } from './verdict.ts';
+import { checkConstraints, parseReviewVerdict, REVIEW_FILE_ENV, type ConstraintViolation, type ReviewVerdict } from './verdict.ts';
 
 /** The check run branch protection requires (main 11.2). Same name as the app client's default. */
 export const REVIEW_CHECK_NAME = 'snapwing/review';
-/** The environment variable naming the file the review agent writes its verdict to (prompts/review.xml). */
-export const REVIEW_FILE_ENV = 'SNAPWING_REVIEW_FILE';
+/** The environment variable naming the file a review harness leaves its verdict in (review/verdict.ts). */
+export { REVIEW_FILE_ENV };
 export const DEFAULT_REVIEW_WALL_CLOCK = 'PT30M';
 export const DEFAULT_REVIEW_ATTEMPTS = 1;
 /** Per run of the test command (base, then head). */
@@ -94,6 +101,12 @@ export const REVIEW_VERDICT_PATH = `.git/${SNAPWING_GIT_DIR}/verdict.json`;
 export const DEFAULT_REVIEW_HARNESS: HarnessChoice = Object.freeze({ adapter: 'claude-code' });
 /** Largest verdict file read back from an isolated review run, in bytes. */
 export const MAX_VERDICT_BYTES = 1024 * 1024;
+/**
+ * Agent CLI configuration a checkout may carry (MCP servers, hooks, extensions, tool commands). The
+ * review agent's working tree never holds it, so no review CLI configures itself from the pull
+ * request (#263); the diff still shows any change to it.
+ */
+export const AGENT_CONFIG_PATHS: readonly string[] = Object.freeze(['.claude', '.codex', '.gemini', '.mcp.json']);
 /** `createdBy` of the stored review artifacts. */
 export const REVIEW_AGENT = 'review-agent';
 /** The fixer attempt whose failed review escalates instead of retrying (main 11.1: retry once). */
@@ -288,14 +301,13 @@ export async function runReviewJob(deps: ReviewDeps, data: ReviewRunData): Promi
   // GitHub's list of changed files, never the fixer's report.
   const files = await gh.listPullRequestFiles(prNumber);
   const changed = files.map((f) => f.filename);
-  const present = files.filter((f) => f.status !== 'removed').map((f) => f.filename);
   const attempt = latest(log, 'fixer-started')?.payload.attempt ?? 1;
 
   const workdir = join(deps.workdirRoot, `review-${ulid()}`);
   const agentTree = `${workdir}-agent`;
   let verdict: ReviewVerdict;
   try {
-    verdict = await reviewInCheckout(deps, { workItem: { id: incidentId, issueKey, repo }, pr, request, changed, present, attempt, workdir, agentTree });
+    verdict = await reviewInCheckout(deps, { workItem: { id: incidentId, issueKey, repo }, pr, request, changed, attempt, workdir, agentTree });
   } finally {
     if (deps.keepWorkdir !== true) {
       for (const dir of [workdir, agentTree]) await rm(dir, { recursive: true, force: true }).catch(() => undefined);
@@ -363,7 +375,6 @@ interface CheckoutInput {
   pr: ReviewPullRequest;
   request: ImplementationRequest;
   changed: readonly string[];
-  present: readonly string[];
   attempt: number;
   workdir: string;
   /** The self-contained tree a runner's review run gets; built only on that path. */
@@ -429,6 +440,8 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
 
   let outcome: string;
   try {
+    // The proof reads commits, never this worktree, so the configuration can go from it too.
+    await withoutAgentConfig(prepared.workdir);
     const result = await deps.harness.run(input.workItem, reviewInput, prepared.workdir, {
       role: 'review',
       budget: reviewBudget(deps),
@@ -452,6 +465,11 @@ async function runAgent(deps: ReviewDeps, input: CheckoutInput, prepared: Prepar
   return parsed.ok ? parsed.verdict : { failure: `the review agent's verdict is invalid: ${parsed.error.message}` };
 }
 
+/** Removes `AGENT_CONFIG_PATHS` from a review agent's working tree (a link is removed, never followed). */
+async function withoutAgentConfig(tree: string): Promise<void> {
+  for (const path of AGENT_CONFIG_PATHS) await rm(join(tree, path), { recursive: true, force: true });
+}
+
 /**
  * Runs the review harness inside the runner's boundary. The tree is a self-contained copy at the
  * head; afterwards nothing here runs in it, and only the verdict file is read back from it.
@@ -467,6 +485,7 @@ async function runAgentIsolated(
   try {
     const built = await isolatedTree(checkout, tree, input.pr.headSha);
     if (!built.ok) return { failure: `could not prepare the review agent's tree: ${firstLine(built.out)}` };
+    await withoutAgentConfig(tree);
     await mkdir(join(tree, '.git', SNAPWING_GIT_DIR), { recursive: true });
     await writeFile(join(tree, REVIEW_INPUT_PATH), reviewInput);
   } catch (e) {
@@ -543,8 +562,19 @@ async function regressionCheck(
   const repo = input.workItem.repo;
   const command = typeof deps.config.testCommand === 'function' ? deps.config.testCommand(repo) : deps.config.testCommand;
   if (command === undefined || command.trim() === '') return { kind: 'unprovable', note: `no test command is configured for ${repo}` };
+  // The reviewed head's own test files (#263): this checkout's diff at that head. Never GitHub's list
+  // (it may already show a later push) and never a path the reviewer or the fixer named, so nothing
+  // but a test file the head changes is applied at the base.
+  let headFiles: string;
+  try {
+    headFiles = await git(workdir, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: '0' }, [
+      'diff', '--name-only', '--no-renames', '--diff-filter=d', '-z', mergeBase, input.pr.headSha,
+    ]);
+  } catch (e) {
+    return { kind: 'unprovable', note: `the regression proof could not list the head's files: ${message(e)}` };
+  }
+  const testFiles = selectTestFiles(headFiles.split('\0').filter((f) => f !== ''));
   const named = 'verdict' in agent ? agent.regressionTest?.path : undefined;
-  const testFiles = [...new Set([...selectTestFiles(input.present), ...(named === undefined ? [] : [named])])];
   const result = await proveRegression({
     workdir,
     baseSha: mergeBase,
@@ -554,13 +584,14 @@ async function regressionCheck(
     timeout: deps.config.regressionTimeout ?? DEFAULT_REGRESSION_TIMEOUT,
     runner: testRunnerOf(deps.runner),
   });
-  return regressionOf(result, testFiles);
+  return regressionOf(result, testFiles, named);
 }
 
-function regressionOf(result: RegressionResult, testFiles: readonly string[]): RegressionCheck {
+/** `named` (the reviewer's `regressionTest`) is the proven test path only when the proof covered it. */
+function regressionOf(result: RegressionResult, testFiles: readonly string[], named: string | undefined): RegressionCheck {
   switch (result.status) {
     case 'proven':
-      return { kind: 'proven', testPath: testFiles[0] ?? '' };
+      return { kind: 'proven', testPath: named !== undefined && testFiles.includes(named) ? named : (testFiles[0] ?? '') };
     case 'no-test-files':
       return { kind: 'failed', status: result.status, note: 'the pull request adds or changes no test file, so no regression test proves the fix' };
     case 'missing-test-file':
@@ -624,7 +655,8 @@ export function combine(
   if (kind !== 'approve' && reasons.length === 0) reasons.push(`The review ended in ${kind}.`);
 
   const out: ReviewVerdict = { verdict: kind, reasons, constraintViolations: violations };
-  const testPath = base.regressionTest?.path ?? (regression.kind === 'proven' && regression.testPath !== '' ? regression.testPath : undefined);
+  // A proven regression test is recorded as the file the proof covered (#263), never only the reviewer's word.
+  const testPath = regression.kind === 'proven' && regression.testPath !== '' ? regression.testPath : base.regressionTest?.path;
   if (testPath !== undefined) out.regressionTest = { path: testPath };
   return out;
 }

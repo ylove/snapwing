@@ -67,16 +67,20 @@ describe('gemini harness: invocation', () => {
 describe('gemini harness: review role', () => {
   const reviewOpts = (over: Partial<HarnessRunOptions> = {}): HarnessRunOptions => opts({ role: 'review', ...over });
 
-  it('uses review.xml and read-and-run restrictions, with the verdict file env', async () => {
+  it('uses review.xml and read tools only; the verdict comes from the final message once gemini has exited (#263)', async () => {
     const record = join(scratch, 'record-review.json');
-    const r = await harness.run(workItem, `FAKE_MODE=no-json FAKE_RECORD=${record}`, scratch, reviewOpts({ env: { SNAPWING_REVIEW_FILE: '/tmp/verdict.json' } }));
+    const reviewFile = join(scratch, 'verdict.json');
+    const r = await harness.run(workItem, `FAKE_MODE=verdict FAKE_RECORD=${record} FAKE_TAMPER=${reviewFile}`, scratch, reviewOpts({ env: { SNAPWING_REVIEW_FILE: reviewFile } }));
     expect(r.outcome).toBe('done');
     const seen = JSON.parse(readFileSync(record, 'utf8')) as { argv: string[]; stdin: string; env: Record<string, string> };
     expect(seen.argv[seen.argv.indexOf('--prompt') + 1]).toContain('<review-system-prompt');
     expect(seen.argv).not.toContain('--yolo');
-    expect(seen.argv[seen.argv.indexOf('--allowed-tools') + 1]).toContain('run_shell_command');
-    expect(seen.argv[seen.argv.indexOf('--allowed-tools') + 1]).not.toContain('write_file');
-    expect(seen.env).toMatchObject({ SNAPWING_ROLE: 'review', SNAPWING_REVIEW_FILE: '/tmp/verdict.json' });
+    const tools = seen.argv[seen.argv.indexOf('--allowed-tools') + 1]?.split(',');
+    expect(tools).toEqual(['read_file', 'read_many_files', 'list_directory', 'glob', 'search_file_content']);
+    expect(seen.env['SNAPWING_ROLE']).toBe('review');
+    expect(seen.env).not.toHaveProperty('SNAPWING_REVIEW_FILE');
+    // What the stand-in for untrusted code wrote during the run is replaced by the agent's verdict.
+    expect(JSON.parse(readFileSync(reviewFile, 'utf8'))).toEqual({ verdict: 'request-changes', reasons: ['Handle the empty cart'], constraintViolations: [] });
   });
   it('is done on exit 0 even with no JSON result', async () => {
     expect((await run('no-json', reviewOpts())).outcome).toBe('done');

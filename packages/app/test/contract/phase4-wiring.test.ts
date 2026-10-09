@@ -55,7 +55,8 @@ import { JIRA_HOOK_SECRET,
 const HARNESS = fileURLToPath(new URL('../fixtures/e2e/fake-harness.mjs', import.meta.url));
 /** The repository's test command for the regression proof: every `test/*.test.sh` must pass. */
 const TEST_COMMAND = 'for t in test/*.test.sh; do sh "$t" || exit 1; done';
-const WAIT = { timeout: 20_000, interval: 25 };
+/** Each wait is bounded on its effect; the generous bound only matters when the machine is loaded (#292). */
+const WAIT = { timeout: 30_000, interval: 25 };
 const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
 
 const server = setupServer();
@@ -378,7 +379,7 @@ describe('phase 4 wiring on the composed app', () => {
     const assignRows = (await outboxRowsOf(w.booted.state.ctx, incidentId, 'update-fields')).filter((r) => r.batchKey === jiraFieldBatchKey(incidentId, 'assignee'));
     expect(assignRows.filter((r) => Date.parse(r.createdAt) >= stoppedAt).map((r) => r.payload)).toEqual([{ issueKey: 'WEB-1', fields: { assignee: { email: 'dana@example.com' } } }]);
     clean(w);
-  }, 60_000);
+  }, 120_000);
 
   it('A 2.4: a held claim with no activity for claims.expiry gets the nudge in the thread', async () => {
     const playbook = '<playbook xmlns="urn:snapwing:playbook:v1" version="1"><claims expiry="PT2S" holdExpiry="PT2H" midFlightGrace="PT10M" businessHoursOnly="false"/></playbook>';
@@ -403,7 +404,7 @@ describe('phase 4 wiring on the composed app', () => {
       expect(posted.map((e) => (e as IncidentEvent<'bot-message-posted'>).payload.role)).toEqual(['other']);
     }, WAIT);
     clean(w);
-  }, 60_000);
+  }, 120_000);
 
   it('A 6.4: an INSTRUCTIONS.md release window holds the autopilot merge at level 2 with the status sentence', async () => {
     const instructions = '# Workspace instructions\n\n- A release window is open until Friday. During a release window, hold all autopilot merges until the window closes.\n';
@@ -415,7 +416,13 @@ describe('phase 4 wiring on the composed app', () => {
     const statusTs = await statusMessageTs(w, incidentId);
     await deliverJira(w, 'APP-1');
 
-    // The fixer start was checked and went ahead; the merge was checked and held.
+    // The fixer start was checked and went ahead: wait for the fixer's PR (the clone, run and push take
+    // the longest under load), so the status wait below is bounded on the merge check alone (#292).
+    await vi.waitFor(async () => {
+      const log = await w.booted.state.read(incidentId);
+      if (!log.some((e) => e.type === 'fixer-checkpoint' && e.payload.phase === 'pr-opened')) throw new Error(`no PR yet (${await diagnose(w, incidentId)})`);
+    }, WAIT);
+    // The merge was checked and held.
     await statusShows(w, statusTs, 'Holding for the release window per workspace instructions', incidentId);
     expect(w.model.steps).toEqual(['fixer-start', 'merge']);
     const log = await w.booted.state.read(incidentId);
@@ -428,7 +435,7 @@ describe('phase 4 wiring on the composed app', () => {
     const prCard = await card(w, 'pr_actions');
     expect(messageText(prCard.body)).toContain('APP-1');
     clean(w);
-  }, 60_000);
+  }, 120_000);
 
   it('A 4.4, 4.6, 5.3: channel members in kv follow the membership events; a digest is a worker job; a ux-friction Task reaches Jira', async () => {
     const playbook = '<playbook xmlns="urn:snapwing:playbook:v1" version="1"><notifications><digest to="#web-bugs" cron="0 9 * * 1-5"/></notifications></playbook>';
@@ -463,5 +470,5 @@ describe('phase 4 wiring on the composed app', () => {
       expect(task?.labels).toEqual(['ux-friction', expect.stringMatching(/^snapwing-task-/)]);
     }, WAIT);
     clean(w);
-  }, 60_000);
+  }, 120_000);
 });
