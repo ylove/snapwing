@@ -37,9 +37,13 @@ function plan(autonomyLevel: 0 | 1 | 2 | 3): TriageResolutionPlan {
   };
 }
 
+/** The merge the autopilot status card's Revert undoes. */
+const MERGED_PIN = { prNumber: 418, sha: '9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d' };
+
 const prReady: PrReadyCard = {
   kind: 'pr-ready',
   prNumber: 418,
+  headSha: '7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3',
   prUrl: 'https://github.com/example/web/pull/418',
   issueKey: 'WEB-1042',
   reviewVerdict: 'approve',
@@ -137,7 +141,7 @@ export function renderExamples(): Record<string, AdaptiveCard> {
     ),
     'status-filed': buildStatusCard(id, makeStatusUpdate('filed', { issueKey: 'WEB-1042', ownerUserId: 'U0WEBDEV1' }), o),
     'status-fixing': buildStatusCard(id, makeStatusUpdate('fixing', { issueKey: 'WEB-1042' }), o),
-    'status-merged-autopilot': buildStatusCard(id, makeStatusUpdate('merged', { issueKey: 'WEB-1042', automatic: true }), o),
+    'status-merged-autopilot': buildStatusCard(id, makeStatusUpdate('merged', { issueKey: 'WEB-1042', automatic: true, pin: MERGED_PIN }), o),
     'status-staging': buildStatusCard(id, makeStatusUpdate('staging', { issueKey: 'WEB-1042', reporterUserId: 'U0PAT' }), o),
     'status-staging-reduced': buildStatusCard(
       id,

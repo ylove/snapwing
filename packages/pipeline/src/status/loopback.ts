@@ -15,7 +15,8 @@
 //   (`in-review-retry`) changes nothing: the message still says a fix is up.
 // - `review-passed`: "Review passed, waiting on merge."
 // - `merged`: "Merged by X. Rolling out to staging." by a human, or "Merged automatically" with
-//   Revert when autopilot merged (level 3 at merge time).
+//   Revert when autopilot merged (level 3 at merge time); the button carries the PR and its merge
+//   commit, and a tap is refused once they are not the incident's latest merge (#264).
 // - `held` at a gate: "Held for human review: <reason>. @owner requested." An environment hold changes
 //   nothing. A hold for the workspace instructions (A 6.4) reads "Holding for the release window per
 //   workspace instructions. @owner requested."
@@ -90,7 +91,9 @@ export function statusFor(event: IncidentEvent, incident: IncidentView, before?:
       return moved('ci', 'ci-retry') ? makeStatusUpdate('review-passed', ctx()) : undefined;
     case 'merged':
       if (!moved('merged')) return undefined;
-      return event.payload.levelAtMergeTime === 3 ? makeStatusUpdate('merged', ctx({ automatic: true })) : makeStatusUpdate('merged', ctx(actorOf(event)));
+      return event.payload.levelAtMergeTime === 3
+        ? makeStatusUpdate('merged', ctx({ automatic: true, pin: { prNumber: event.payload.prNumber, sha: event.payload.mergeCommitSha } }))
+        : makeStatusUpdate('merged', ctx(actorOf(event)));
     case 'held':
       if (event.payload.kind !== 'gate' || !moved('held')) return undefined;
       return makeStatusUpdate('held', ctx({ ...owner, reason: event.payload.reason }));

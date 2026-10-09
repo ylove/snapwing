@@ -56,6 +56,9 @@ const SAM = '6f1c2a3b-0000-4000-8000-00000000e001'; // engineer, primary owner o
 const MO = '6f1c2a3b-0000-4000-8000-00000000e002'; // another engineer
 const STRANGER = '6f1c2a3b-0000-4000-8000-00000000f001';
 const RUN = 'run-1';
+/** The head the PR card shows, and the merge commit the status card's Revert names (#264). */
+const HEAD = 'a'.repeat(40);
+const MERGE_COMMIT = 'c'.repeat(40);
 /** A relink URL as `IdentityLinks.linkUrl` makes it: its single-use state has characters TextBlock escaping would mangle. */
 const LINK_URL = 'https://snapwing.test/auth/github/start?state=k3_Fh-9xQ_v2';
 /** The tapper's personal chat with the bot, as the Connector opens it. */
@@ -325,6 +328,7 @@ const claimed: TeamsCardInput = { kind: 'claimed', issueKey: 'WEB-1042', claimer
 const prReady: TeamsCardInput = {
   kind: 'pr-ready',
   prNumber: 77,
+  headSha: HEAD,
   prUrl: 'https://github.com/acme/web/pull/77',
   issueKey: 'WEB-1042',
   reviewVerdict: 'approve',
@@ -650,22 +654,31 @@ describe('authorization (main 8.2, 11.2, 16)', () => {
     expect(answered.actions).toEqual(card.actions);
   });
 
-  it('a linked engineer merges, requests changes, and reverts as themselves', async () => {
+  it('a linked engineer merges, requests changes, and reverts as themselves, on the PR and commit each card showed (#264)', async () => {
     await seedPrOpen(2);
     linked.add(SAM);
     expect((await tapOn(SAM, prReady, 'merge')).outcome).toEqual({ kind: 'pr-action', action: 'merge', incidentId: INC });
     expect((await tapOn(SAM, prReady, 'request_changes')).outcome).toMatchObject({ kind: 'pr-action', action: 'request_changes' });
-    const status = buildStatusCard(INC, { ...makeStatusUpdate('merged', { issueKey: 'WEB-1042' }), actions: ['revert'] });
+    const status = buildStatusCard(INC, makeStatusUpdate('merged', { issueKey: 'WEB-1042', automatic: true, pin: { prNumber: 77, sha: MERGE_COMMIT } }));
     const statusId = await post(status);
     const reverted = await ix.handleInvoke(invoke(SAM, executeAction(status, 'revert'), statusId));
     expect(reverted.outcome).toMatchObject({ kind: 'pr-action', action: 'revert' });
-    const input = { incidentId: INC, actor: { id: SAM, role: 'engineer' }, prNumber: 77, repo: 'github.com/acme/web' };
+    const input = { incidentId: INC, actor: { id: SAM, role: 'engineer' }, prNumber: 77, sha: HEAD, repo: 'github.com/acme/web' };
     expect(prCalls).toEqual([
       { action: 'merge', input },
       { action: 'request_changes', input },
-      { action: 'revert', input },
+      { action: 'revert', input: { ...input, sha: MERGE_COMMIT } },
     ]);
     expect(lastLine(answeredCard(reverted.card))).toBe('<at>sam</at> reverted this.');
+  });
+
+  it('a PR button without the PR and commit its card showed reaches the PR actions without them, which refuse it as out of date (#264)', async () => {
+    await seedPrOpen(2);
+    linked.add(SAM);
+    const old = buildStatusCard(INC, { ...makeStatusUpdate('merged', { issueKey: 'WEB-1042' }), actions: ['revert'] });
+    const id = await post(old);
+    await ix.handleInvoke(invoke(SAM, executeAction(old, 'revert'), id));
+    expect(prCalls).toEqual([{ action: 'revert', input: { incidentId: INC, actor: { id: SAM, role: 'engineer' }, repo: 'github.com/acme/web' } }]);
   });
 
   const linkExpired = () =>

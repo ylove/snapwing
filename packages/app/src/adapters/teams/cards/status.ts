@@ -5,6 +5,7 @@
 
 import type { StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
 import { emojiFor, mentionToken } from '@snapwing/pipeline/status/copy.ts';
+import { pinData } from '../../shared/pr-pin.ts';
 import { actionSet, card, renderText, type AdaptiveCard, type MentionFor } from './elements.ts';
 
 export {
@@ -38,7 +39,8 @@ export function buildStatusCard(
       ? []
       : actionSet(
           incidentId,
-          wanted.map((a) => (a === 'stop' ? { title: 'Stop', verb: 'stop', style: 'destructive' as const } : { title: 'Revert', verb: 'revert' })),
+          // Revert carries the merge this message names, and acts on no later one (#264).
+          wanted.map((a) => (a === 'stop' ? { title: 'Stop', verb: 'stop', style: 'destructive' as const } : { title: 'Revert', verb: 'revert', data: pinData(status.pin) })),
         ),
     opts,
   );

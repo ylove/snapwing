@@ -11,6 +11,7 @@ const INC = '01K6PRREADY0000000000000001';
 const CARD: PrReadyCard = {
   kind: 'pr-ready',
   prNumber: 77,
+  headSha: 'e'.repeat(40),
   prUrl: 'https://github.com/acme/web/pull/77',
   issueKey: 'WEB-1042',
   reviewVerdict: 'approve',

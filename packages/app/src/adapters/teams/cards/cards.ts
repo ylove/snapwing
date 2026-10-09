@@ -1,11 +1,13 @@
 // Pure builders from an InteractiveCard to Adaptive Card 1.5 JSON (main 5.5, 6.2, 7.2, 8.2, 11.2, 15.2).
 // Every action is an `Action.Execute` whose `verb` is an ApprovalAction or the card's choice and whose
-// `data` is `{ incidentId }` plus the context a Slack block id carries. Mirrors `adapters/slack/cards`.
+// `data` is `{ incidentId }` plus the context a Slack block id carries, and on Merge and Request changes
+// the PR and head the card shows (`../../shared/pr-pin.ts`, #264). Mirrors `adapters/slack/cards`.
 
 import type { ClaimedCard, FileConfirmCard, InteractiveCard, PrReadyCard } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { TriageResolutionPlan } from '@snapwing/pipeline/contracts/incident.ts';
 import type { MidFlightCard } from '@snapwing/pipeline/fixer/claims.ts';
 import type { ResolutionPrompt, ScopeChangeCard } from '@snapwing/pipeline/signals/text.ts';
+import { pinData } from '../../shared/pr-pin.ts';
 import { actionSet, card, compose, free, lit, who, type ActionSpec, type AdaptiveCard, type MentionFor, type Part } from './elements.ts';
 import { buildMidFlightCard } from './mid-flight.ts';
 import { buildResolutionPrompt, buildScopeChangeCard } from './signals.ts';
@@ -181,9 +183,11 @@ export function buildPrReady(incidentId: string, c: PrReadyCard, opts: PrReadyOp
   }
   const specs: ActionSpec[] = [{ title: 'Open PR', verb: 'open_pr', url: c.prUrl }];
   if (opts.canMerge === true) {
+    // Merge and Request changes act on the PR and head this card shows, and nothing else (#264).
+    const pinned = pinData({ prNumber: c.prNumber, sha: c.headSha });
     specs.push(
-      { title: 'Merge', verb: 'merge', style: 'positive' },
-      { title: 'Request changes', verb: 'request_changes' },
+      { title: 'Merge', verb: 'merge', style: 'positive', data: pinned },
+      { title: 'Request changes', verb: 'request_changes', data: pinned },
       { title: 'Stop', verb: 'stop', style: 'destructive' },
     );
   }

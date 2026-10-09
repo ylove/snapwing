@@ -21,7 +21,9 @@
       "title": "Merge",
       "verb": "merge",
       "data": {
-        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "prNumber": "418",
+        "sha": "7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3"
       },
       "style": "positive"
     },
@@ -30,7 +32,9 @@
       "title": "Request changes",
       "verb": "request_changes",
       "data": {
-        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA"
+        "incidentId": "01J9Z3K8M2Q7R5T6V4W1X0Y9ZA",
+        "prNumber": "418",
+        "sha": "7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3"
       }
     },
     {

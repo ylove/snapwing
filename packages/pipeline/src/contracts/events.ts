@@ -163,6 +163,20 @@ void eventTypesComplete;
 
 const EVENT_TYPE_SET: ReadonlySet<string> = new Set<string>(EVENT_TYPES);
 
+/**
+ * The schema version writers stamp per event type, where it is past 1 (B 4). Readers see every stored
+ * event at this version: the steps up to it are registered in `state/upcast.ts`.
+ */
+export const CURRENT_EVENT_VERSIONS: Readonly<Partial<Record<EventType, number>>> = Object.freeze({
+  // #264: `headSha`, the commit the review approved.
+  'review-passed': 2,
+});
+
+/** The `v` a writer stamps on a new event of `type`. */
+export function currentEventVersion(type: EventType): number {
+  return CURRENT_EVENT_VERSIONS[type] ?? 1;
+}
+
 /** Runtime guard for values read back from `incident_events.type` or received over the wire. */
 export function isEventType(s: string): s is EventType {
   return EVENT_TYPE_SET.has(s);
@@ -398,9 +412,18 @@ export interface PrOpenedPayload {
   branch: string;
 }
 
-/** Spec silent. The review body lives in `artifacts` (kind `review`). */
+/**
+ * Spec silent. The review body lives in `artifacts` (kind `review`). Version 2 (#264) adds `headSha`;
+ * the v1 to v2 step (state/upcast.ts) leaves it absent.
+ */
 export interface ReviewPassedPayload {
   prNumber: number;
+  /**
+   * The head commit the review approved. Every merge is pinned to it (main 11.2, 11.3): neither the
+   * merge step nor a Merge tap merges another head, and a new head is reviewed first. Absent on a v1
+   * event, written before reviews were pinned: such a review approves no merge and asks for a fresh one.
+   */
+  headSha?: string;
   review?: ArtifactRef;
 }
 

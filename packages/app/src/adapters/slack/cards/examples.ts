@@ -32,6 +32,7 @@ function plan(autonomyLevel: 0 | 1 | 2 | 3): TriageResolutionPlan {
 const prReady: PrReadyCard = {
   kind: 'pr-ready',
   prNumber: 418,
+  headSha: '7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3',
   prUrl: 'https://github.com/example/web/pull/418',
   issueKey: 'WEB-1042',
   reviewVerdict: 'approve',
@@ -41,6 +42,9 @@ const prReady: PrReadyCard = {
   deletions: 6,
   reviewerUserIds: ['U0WEBDEV1'],
 };
+
+/** The merge the autopilot status message's Revert undoes. */
+const MERGED_PIN = { prNumber: 418, sha: '9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d' };
 
 const scopePreview: InteractiveCard = {
   kind: 'scope-preview',
@@ -86,7 +90,7 @@ export function renderExamples(): Record<string, SlackMessage> {
     'pr-ready-no-identity': buildCard(id, prReady),
     'status-filed': buildStatusMessage(id, makeStatusUpdate('filed', { issueKey: 'WEB-1042', ownerUserId: 'U0WEBDEV1' })),
     'status-fixing': buildStatusMessage(id, makeStatusUpdate('fixing', { issueKey: 'WEB-1042' })),
-    'status-merged-autopilot': buildStatusMessage(id, makeStatusUpdate('merged', { issueKey: 'WEB-1042', automatic: true })),
+    'status-merged-autopilot': buildStatusMessage(id, makeStatusUpdate('merged', { issueKey: 'WEB-1042', automatic: true, pin: MERGED_PIN })),
     'status-staging': buildStatusMessage(
       id,
       makeStatusUpdate('staging', { issueKey: 'WEB-1042', reporterUserId: 'U0PAT' }),

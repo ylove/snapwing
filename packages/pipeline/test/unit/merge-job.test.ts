@@ -12,6 +12,7 @@ import {
   riskLimits,
   startMergeEvaluate,
   type MergeCombinedStatus,
+  type MergeCompareFiles,
   type MergeDeps,
   type MergeGitHub,
   type MergePullRequest,
@@ -33,6 +34,8 @@ const HEAD = 'a'.repeat(40);
 const HEAD2 = 'b'.repeat(40);
 const MERGE_SHA = 'c'.repeat(40);
 const ENGINEER = { id: 'U-FAKE-DANA', role: 'engineer' } as const;
+/** Dana's Revert tap: her own token, and the merge the button named (#264). */
+const AS_DANA = { userToken: 'test-user-token-dana', pin: { prNumber: 418, sha: 'c'.repeat(40) } } as const;
 const HOUR = 60 * 60_000;
 
 let tdb: TestDatabase;
@@ -70,6 +73,10 @@ class FakeGitHub implements MergeGitHub {
   pr: MergePullRequest = { number: PR, state: 'open', merged: false, headSha: HEAD, headRef: 'fix/WEB-1042', baseRef: 'main' };
   required: MergeCombinedStatus['required'] = [{ name: 'ci', state: 'success', source: 'check-run' }];
   files: MergePullRequestFile[] = [{ filename: 'src/cart.ts', additions: 30, deletions: 6 }, { filename: 'test/cart.test.ts', additions: 11, deletions: 0 }];
+  /** False: GitHub cut the comparison's file list short. */
+  filesComplete = true;
+  /** Each comparison read: base and head. */
+  readonly compared: { base: string; head: string }[] = [];
   /** Answers for successive merges; an Error is thrown. Default: merged. */
   mergeAnswers: (MergeResult | Error)[] = [];
   /** Runs before each merge answer, e.g. to move the head. */
@@ -77,7 +84,9 @@ class FakeGitHub implements MergeGitHub {
   readonly calls: string[] = [];
   readonly merges: { number: number; expectedHeadSha: string }[] = [];
   readonly deleted: string[] = [];
-  readonly reverts: { number: number; title?: string; body?: string }[] = [];
+  readonly reverts: { number: number; title?: string; body?: string; userToken: string }[] = [];
+  /** An error the next revert is answered with. */
+  revertError: Error | undefined;
   statusFor: { sha: string; base: string }[] = [];
 
   getPullRequest(number: number): Promise<MergePullRequest> {
@@ -85,9 +94,10 @@ class FakeGitHub implements MergeGitHub {
     return Promise.resolve({ ...this.pr });
   }
 
-  listPullRequestFiles(number: number): Promise<readonly MergePullRequestFile[]> {
-    this.calls.push(`listPullRequestFiles ${String(number)}`);
-    return Promise.resolve(this.files.map((f) => ({ ...f })));
+  compareFiles(base: string, head: string): Promise<MergeCompareFiles> {
+    this.calls.push(`compareFiles ${base}...${head}`);
+    this.compared.push({ base, head });
+    return Promise.resolve({ files: this.files.map((f) => ({ ...f })), complete: this.filesComplete });
   }
 
   combinedStatus(sha: string, baseBranch: string): Promise<MergeCombinedStatus> {
@@ -111,8 +121,9 @@ class FakeGitHub implements MergeGitHub {
     return Promise.resolve();
   }
 
-  openRevertPullRequest(number: number, input: { title?: string; body?: string } = {}): Promise<{ number: number; url: string }> {
+  openRevertPullRequest(number: number, input: { title?: string; body?: string; userToken: string }): Promise<{ number: number; url: string }> {
     this.calls.push('openRevertPullRequest');
+    if (this.revertError !== undefined) return Promise.reject(this.revertError);
     this.reverts.push({ number, ...input });
     return Promise.resolve({ number: 420, url: 'https://github.com/fake-org/web/pull/420' });
   }
@@ -123,6 +134,8 @@ interface World {
   github: FakeGitHub;
   /** `fixer.run` jobs started (the ci-red retry). */
   fixerRuns: unknown[];
+  /** `review.run` jobs started (a head no review approved, #264). */
+  reviewRuns: unknown[];
   windowClosed: string[];
   map: { policies: WorkspaceMap['policies'] };
 }
@@ -155,12 +168,17 @@ async function setup(opts: { mapRepo?: string; level?: 0 | 1 | 2 | 3; mapDefault
     fixerRuns.push(job.data);
     return Promise.resolve();
   });
+  const reviewRuns: unknown[] = [];
+  wf.work('review.run', (job) => {
+    reviewRuns.push(job.data);
+    return Promise.resolve();
+  });
   await append(...toFiled(opts.level ?? 3, opts.mapRepo ?? REPO));
   if (opts.toCi !== false) {
     await append(...toPr());
-    await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }, 'agent'));
+    await append(await approved());
   }
-  return { deps, github, fixerRuns, windowClosed, map };
+  return { deps, github, fixerRuns, reviewRuns, windowClosed, map };
 }
 
 function ev<T extends EventType>(type: T, payload: EventPayloads[T], source: 'agent' | 'fixer' | 'github' | 'slack' | 'jira' = 'agent', actor?: { id: string; role: 'engineer' }): NewEvent<T> {
@@ -209,6 +227,11 @@ function toPr(): NewEvent[] {
     ev('fixer-done', { prNumber: PR, branch: 'fix/WEB-1042', summary: 'Guard the null cart', testsAdded: ['test/cart.test.ts'] }, 'fixer'),
     ev('pr-opened', { prNumber: PR, branch: 'fix/WEB-1042' }, 'fixer'),
   ];
+}
+
+/** The review job's approval of `headSha`, as it appends it: v2, the head recorded (#264). */
+async function approved(headSha: string = HEAD): Promise<NewEvent<'review-passed'>> {
+  return { ...ev('review-passed', { prNumber: PR, headSha, review: await reviewArtifact('approve') }), v: 2 };
 }
 
 async function reviewArtifact(verdict: 'approve' | 'request-changes' | 'escalate' | 'garbage'): Promise<{ artifactId: string; version: number }> {
@@ -353,7 +376,7 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
       const w = await setup({ toCi: false });
       // First review asks for changes, the retry's review approves.
       await append(...toPr(), ev('review-failed', { prNumber: PR, verdict: 'request-changes', reason: 'scope' }));
-      await append(...toPr(), ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
+      await append(...toPr(), await approved());
       expect((await evaluateMerge(w.deps, { incidentId: INC })).outcome).toBe('merged');
     });
 
@@ -427,7 +450,7 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     const before = (await log()).length;
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'waiting', on: 'review' });
 
-    await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
+    await append(await approved());
     w.github.required = [
       { name: 'ci', state: 'success', source: 'check-run' },
       { name: 'e2e', state: 'pending', source: null },
@@ -471,23 +494,26 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     await append(ev('level-changed', { from: 3, to: 2, reason: 'claimed by Dana' }));
     expect(await evaluateMerge(w.deps, { incidentId: INC })).toMatchObject({ outcome: 'skipped', reason: 'not-autopilot' });
     expect(w.github.merges).toEqual([]);
-    expect(w.github.calls).not.toContain('listPullRequestFiles 418');
+    expect(w.github.calls).not.toContain(`compareFiles main...${HEAD}`);
   });
 
-  it('head moved between evaluation and merge (409): re-evaluates once against the new head and merges', async () => {
+  it('head moved between evaluation and merge (409): the re-evaluation finds the new head unreviewed, merges nothing, and starts its review (#264)', async () => {
     const w = await setup();
     w.github.mergeAnswers = [new HttpError(409, 'Head branch was modified. Review and try the merge again.')];
     w.github.onMerge = () => {
       w.github.pr = { ...w.github.pr, headSha: HEAD2 };
+      w.github.required = [{ name: 'ci', state: 'failure', source: 'check-run' }];
       w.github.onMerge = undefined;
     };
-    const out = await evaluateMerge(w.deps, { incidentId: INC });
-    expect(out.outcome).toBe('merged');
-    expect(w.github.merges.map((m) => m.expectedHeadSha)).toEqual([HEAD, HEAD2]);
-    expect(w.github.statusFor.map((s) => s.sha)).toEqual([HEAD, HEAD, HEAD2]);
-    // CI was recorded for the head it finished on; the merge re-checked the new head's checks.
-    expect((await lastOf('ci-green'))?.payload.headSha).toBe(HEAD);
-    expect(await types()).toEqual(expect.arrayContaining(['ci-green', 'merged']));
+    const before = (await log()).length;
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'waiting', on: 'review' });
+    expect(w.github.merges.map((m) => m.expectedHeadSha)).toEqual([HEAD]);
+    // Nothing about the new head is read before its review: no checks, no files.
+    expect(w.github.statusFor.map((s) => s.sha)).toEqual([HEAD, HEAD]);
+    expect(w.github.compared).toEqual([{ base: 'main', head: HEAD }]);
+    expect(await typesAfter(before)).toEqual(['ci-green']);
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD2 }]);
   });
 
   it('head moved twice: gives up after one re-evaluation and appends nothing but the CI result', async () => {
@@ -499,17 +525,15 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
     expect(await typesAfter(before)).toEqual(['ci-green']);
   });
 
-  it('the re-evaluation after a 409 sees a gate that now fails', async () => {
+  it('once the new head is approved too, the merge is pinned to it (#264)', async () => {
     const w = await setup();
-    w.github.mergeAnswers = [new HttpError(409, 'Head branch was modified')];
-    w.github.onMerge = () => {
-      w.github.pr = { ...w.github.pr, headSha: HEAD2 };
-      w.github.required = [{ name: 'ci', state: 'failure', source: 'check-run' }];
-      w.github.onMerge = undefined;
-    };
-    const out = await evaluateMerge(w.deps, { incidentId: INC });
-    expect(out).toMatchObject({ outcome: 'held', reason: 'ci gate: ci (failure)' });
-    expect(w.github.merges).toHaveLength(1);
+    w.github.pr = { ...w.github.pr, headSha: HEAD2 };
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'waiting', on: 'review' });
+    await append(await approved(HEAD2));
+    expect((await evaluateMerge(w.deps, { incidentId: INC })).outcome).toBe('merged');
+    expect(w.github.merges).toEqual([{ number: PR, expectedHeadSha: HEAD2 }]);
+    expect(w.github.compared).toEqual([{ base: 'main', head: HEAD2 }]);
+    expect(w.github.statusFor.at(-1)).toEqual({ sha: HEAD2, base: 'main' });
   });
 
   it('GitHub refuses the merge (405): held, never retried as a pass', async () => {
@@ -527,6 +551,60 @@ describe(`merge.evaluate (${TEST_DIALECT})`, () => {
   });
 });
 
+describe(`merge.evaluate is pinned to the reviewed commit (${TEST_DIALECT}; #264)`, () => {
+  it('a push after the review: nothing merges, nothing about the new head is read, and its review starts', async () => {
+    const w = await setup();
+    w.github.pr = { ...w.github.pr, headSha: HEAD2 };
+    const before = (await log()).length;
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'waiting', on: 'review' });
+    expect(w.github.merges).toEqual([]);
+    expect(w.github.compared).toEqual([]);
+    // CI is recorded for the PR's head as before; it never stands in for that head's review.
+    expect(await typesAfter(before)).toEqual(['ci-green']);
+    expect((await lastOf('ci-green'))?.payload.headSha).toBe(HEAD2);
+    // Asked again while that review is queued: the same job, no second one.
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'waiting', on: 'review' });
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD2 }]);
+  });
+
+  it('a v1 review-passed (recorded before heads were pinned) reads back as v2 without a head, and never merges', async () => {
+    const w = await setup({ toCi: false });
+    await append(...toPr(), ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
+    const stored = await lastOf('review-passed');
+    expect(stored?.v).toBe(2);
+    expect(stored?.payload).not.toHaveProperty('headSha');
+    expect(await evaluateMerge(w.deps, { incidentId: INC })).toEqual({ outcome: 'waiting', on: 'review' });
+    expect(w.github.merges).toEqual([]);
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD }]);
+  });
+
+  it('reads the files, the checks, and merges for exactly the reviewed commit', async () => {
+    const w = await setup();
+    expect((await evaluateMerge(w.deps, { incidentId: INC })).outcome).toBe('merged');
+    expect(w.github.compared).toEqual([{ base: 'main', head: HEAD }]);
+    expect(w.github.statusFor.at(-1)).toEqual({ sha: HEAD, base: 'main' });
+    expect(w.github.merges).toEqual([{ number: PR, expectedHeadSha: HEAD }]);
+  });
+
+  it('a file renamed out of a forbidden path is a risk gate failure by its old path', async () => {
+    const w = await setup();
+    w.github.files = [{ filename: 'src/deploy.tf', previousFilename: 'infra/deploy.tf', additions: 0, deletions: 0 }];
+    const out = await evaluateMerge(w.deps, { incidentId: INC });
+    expect(out).toMatchObject({ outcome: 'held', reason: 'risk gate: forbidden paths touched: infra/deploy.tf', gate: { riskGate: { forbiddenHits: ['infra/deploy.tf'] } } });
+    expect(w.github.merges).toEqual([]);
+  });
+
+  it('a file list GitHub cut short fails the risk gate', async () => {
+    const w = await setup();
+    w.github.filesComplete = false;
+    const out = await evaluateMerge(w.deps, { incidentId: INC });
+    expect(out).toMatchObject({ outcome: 'held', reason: 'risk gate: the list of changed files is incomplete' });
+    expect(w.github.merges).toEqual([]);
+  });
+});
+
 describe(`revert (${TEST_DIALECT})`, () => {
   it('inside the window: opens a revert PR, appends reverted and level-changed to 2, and cancels the window timer', async () => {
     const w = await setup();
@@ -534,10 +612,16 @@ describe(`revert (${TEST_DIALECT})`, () => {
     await advance(10 * HOUR);
     const before = (await log()).length;
 
-    const out = await revert(w.deps, INC, ENGINEER, { source: 'slack' });
+    const out = await revert(w.deps, INC, ENGINEER, { ...AS_DANA, source: 'slack' });
     expect(out).toEqual({ reverted: true, prNumber: PR, revertPrNumber: 420, revertPrUrl: 'https://github.com/fake-org/web/pull/420' });
+    // Opened as Dana, with her own token, never as the App (#264).
     expect(w.github.reverts).toEqual([
-      { number: PR, title: 'Revert #418 for WEB-1042', body: 'Reverts #418, merged automatically by Snapwing. Revert requested by U-FAKE-DANA.' },
+      {
+        number: PR,
+        title: 'Revert #418 for WEB-1042',
+        body: 'Reverts #418, merged automatically by Snapwing. Revert requested by U-FAKE-DANA.',
+        userToken: 'test-user-token-dana',
+      },
     ]);
     expect(await typesAfter(before)).toEqual(['reverted', 'level-changed']);
     const reverted = await lastOf('reverted');
@@ -550,8 +634,29 @@ describe(`revert (${TEST_DIALECT})`, () => {
     await advance(72 * HOUR);
     expect(w.windowClosed).toEqual([]);
 
-    expect(await revert(w.deps, INC, ENGINEER)).toEqual({ reverted: false, reason: 'already-reverted' });
+    expect(await revert(w.deps, INC, ENGINEER, AS_DANA)).toEqual({ reverted: false, reason: 'already-reverted' });
     expect(w.github.reverts).toHaveLength(1);
+  });
+
+  it('a Revert whose button names another merge than the latest is refused as out of date, and nothing is opened (#264)', async () => {
+    const w = await setup();
+    await evaluateMerge(w.deps, { incidentId: INC });
+    const before = (await log()).length;
+    expect(await revert(w.deps, INC, ENGINEER, { ...AS_DANA, pin: { prNumber: PR, sha: HEAD } })).toEqual({ reverted: false, reason: 'stale-card' });
+    expect(await revert(w.deps, INC, ENGINEER, { ...AS_DANA, pin: { prNumber: 417, sha: MERGE_SHA } })).toEqual({ reverted: false, reason: 'stale-card' });
+    expect(w.github.reverts).toEqual([]);
+    expect(await typesAfter(before)).toEqual([]);
+  });
+
+  it('GitHub refusing the person (a dead link, no access) is a refusal, and nothing is recorded', async () => {
+    const w = await setup();
+    await evaluateMerge(w.deps, { incidentId: INC });
+    const before = (await log()).length;
+    w.github.revertError = new HttpError(401, 'Bad credentials');
+    expect(await revert(w.deps, INC, ENGINEER, AS_DANA)).toEqual({ reverted: false, reason: 'not-linked' });
+    w.github.revertError = new HttpError(403, 'Resource not accessible by integration');
+    expect(await revert(w.deps, INC, ENGINEER, AS_DANA)).toEqual({ reverted: false, reason: 'forbidden' });
+    expect(await typesAfter(before)).toEqual([]);
   });
 
   it('after the timer fires the action is refused and nothing is opened', async () => {
@@ -560,7 +665,7 @@ describe(`revert (${TEST_DIALECT})`, () => {
     await advance(72 * HOUR);
     expect(w.windowClosed).toEqual([INC]);
     const before = (await log()).length;
-    expect(await revert(w.deps, INC, ENGINEER)).toEqual({ reverted: false, reason: 'window-closed' });
+    expect(await revert(w.deps, INC, ENGINEER, AS_DANA)).toEqual({ reverted: false, reason: 'window-closed' });
     expect(w.github.reverts).toEqual([]);
     expect(await typesAfter(before)).toEqual([]);
   });
@@ -569,14 +674,14 @@ describe(`revert (${TEST_DIALECT})`, () => {
     const w = await setup();
     await evaluateMerge(w.deps, { incidentId: INC });
     now += 72 * HOUR - 1;
-    expect((await revert(w.deps, INC, ENGINEER)).reverted).toBe(true);
+    expect((await revert(w.deps, INC, ENGINEER, AS_DANA)).reverted).toBe(true);
   });
 
   it('refuses with no merge, and for a merge a human made (no window)', async () => {
     const w = await setup();
-    expect(await revert(w.deps, INC, ENGINEER)).toEqual({ reverted: false, reason: 'not-merged' });
+    expect(await revert(w.deps, INC, ENGINEER, AS_DANA)).toEqual({ reverted: false, reason: 'not-merged' });
     await append(ev('ci-green', { prNumber: PR, headSha: HEAD }, 'github'), ev('merged', { prNumber: PR, mergeCommitSha: MERGE_SHA, levelAtMergeTime: 2 }, 'github'));
-    expect(await revert(w.deps, INC, ENGINEER)).toEqual({ reverted: false, reason: 'not-autopilot' });
+    expect(await revert(w.deps, INC, ENGINEER, AS_DANA)).toEqual({ reverted: false, reason: 'not-autopilot' });
     expect(w.github.reverts).toEqual([]);
   });
 });

@@ -211,7 +211,7 @@ describe('statusFor: one row of main 12 per event', () => {
     expect(s.status(draft('ci-green', { prNumber: 418, headSha: 'abc' }))).toBeUndefined();
   });
 
-  it('merged by a human names them (a chat user is mentioned); autopilot offers Revert', () => {
+  it('merged by a human names them (a chat user is mentioned); autopilot offers Revert, naming the merge it undoes (#264)', () => {
     const merged = (levelAtMergeTime: Level) => ({ prNumber: 418, mergeCommitSha: 'def', levelAtMergeTime });
     expect(mergeable().status(draft('merged', merged(2), { id: 'dana-gh', role: 'human' }, 'github'))?.text).toBe('Merged by dana-gh. Rolling out to staging.');
     expect(mergeable().status(draft('merged', merged(2), DANA, 'slack'))?.text).toBe(`Merged by <@${DANA.id}>. Rolling out to staging.`);
@@ -221,6 +221,7 @@ describe('statusFor: one row of main 12 per event', () => {
       stage: 'merged',
       text: 'Merged automatically (review: approve, CI: green).',
       actions: ['revert'],
+      pin: { prNumber: 418, sha: 'def' },
     });
   });
 

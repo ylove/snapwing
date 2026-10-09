@@ -138,7 +138,7 @@ function fixerPr(attempt: 1 | 2 = 1): NewEvent[] {
   ];
 }
 
-const reviewPassed = (): NewEvent => ev('review-passed', { prNumber: PR });
+const reviewPassed = (): NewEvent => ({ ...ev('review-passed', { prNumber: PR, headSha: HEAD }), v: 2 }) as NewEvent;
 
 async function log(): Promise<IncidentEvent[]> {
   return state.read(INC);
@@ -259,7 +259,7 @@ describe(`recordCiResult (${TEST_DIALECT})`, () => {
         ...github,
         getPullRequest: (n: number) => github.getPullRequest(n).then((p) => ({ ...p, number: n, headRef: 'fix/WEB-1042' })),
         combinedStatus: (sha: string, base: string) => github.combinedStatus(sha, base),
-        listPullRequestFiles: () => Promise.resolve([]),
+        compareFiles: () => Promise.resolve({ files: [], complete: true }),
         mergePullRequest: () => Promise.reject(new Error('never merges below level 3')),
         deleteBranch: () => Promise.resolve(),
         openRevertPullRequest: () => Promise.reject(new Error('unused')),

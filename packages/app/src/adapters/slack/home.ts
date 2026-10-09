@@ -17,6 +17,7 @@ import type { ChatUserRef } from '@snapwing/pipeline/merge/human.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import { createQueue, HOME_SECTION_LIMIT, type Queue, type QueueButton, type QueueItem, type QueuePullRequest, type QueueSection, type QueueSectionId } from '../../status/queue.ts';
+import { pinnedValue } from '../shared/pr-pin.ts';
 import { actions, esc, section, type ButtonSpec, type SlackBlock } from './cards/blocks.ts';
 import type { SlackWeb } from './web.ts';
 
@@ -87,7 +88,8 @@ function buttonSpec(button: QueueButton, incidentId: string): ButtonSpec {
     case 'open_pr':
       return { label: 'Open PR', actionId: 'open_pr', value: incidentId, url: button.url };
     case 'merge':
-      return { label: 'Merge', actionId: 'merge', value: incidentId, style: 'primary' };
+      // The PR and head the Home showed (#264).
+      return { label: 'Merge', actionId: 'merge', value: pinnedValue(incidentId, button.pin), style: 'primary' };
     case 'stop':
       return { label: 'Stop', actionId: 'stop', value: incidentId, style: 'danger' };
   }

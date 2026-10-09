@@ -46,6 +46,7 @@ const INC = '01K6HUMANINC00000000000000';
 const REPO = 'fake-org/web';
 const PR = 418;
 const HEAD = 'a'.repeat(40);
+const HEAD2 = 'b'.repeat(40);
 const MERGE_SHA = 'c'.repeat(40);
 const THREAD_CHANNEL = 'C-FAKE-THREAD';
 const THREAD_TS = '1700000000.000100';
@@ -225,7 +226,11 @@ interface World {
   chat: FakeChat;
   stops: StopInput[];
   reverts: { incidentId: string; actor: EventActor; opts?: RevertOptions }[];
+  /** What the next revert answers. Default reverted. */
+  revertOutcome: { current: RevertOutcome };
   fixerRuns: FixerRunData[];
+  /** `review.run` jobs started (a head no review approved, #264). */
+  reviewRuns: unknown[];
 }
 
 async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean; source?: 'slack' | 'teams'; map?: HumanMap } = {}): Promise<World> {
@@ -235,7 +240,11 @@ async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean; source?: 'slack'
   const chat = new FakeChat();
   const stops: StopInput[] = [];
   const reverts: World['reverts'] = [];
+  const revertOutcome: World['revertOutcome'] = {
+    current: { reverted: true, prNumber: PR, revertPrNumber: 420, revertPrUrl: `https://github.com/${REPO}/pull/420` },
+  };
   const fixerRuns: FixerRunData[] = [];
+  const reviewRuns: unknown[] = [];
   const deps: World['deps'] = {
     workspaceId: WS,
     state,
@@ -260,20 +269,24 @@ async function setup(opts: { level?: 1 | 2 | 3; toCi?: boolean; source?: 'slack'
       return Promise.resolve({ stopped: true } satisfies StopOutcome);
     },
     revert: (incidentId, actor, revertOpts) => {
-      reverts.push({ incidentId, actor, ...(revertOpts === undefined ? {} : { opts: revertOpts }) });
-      return Promise.resolve({ reverted: true, prNumber: PR, revertPrNumber: 420, revertPrUrl: `https://github.com/${REPO}/pull/420` } satisfies RevertOutcome);
+      reverts.push({ incidentId, actor, opts: revertOpts });
+      return Promise.resolve(revertOutcome.current);
     },
   };
   wf.work('fixer.run', (job) => {
     fixerRuns.push(job.data as FixerRunData);
     return Promise.resolve();
   });
+  wf.work('review.run', (job) => {
+    reviewRuns.push(job.data);
+    return Promise.resolve();
+  });
   await append(...toFiled(opts.level ?? 2, opts.source));
   if (opts.toCi !== false) {
     await append(...toPr());
-    await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
+    await append(await approved());
   }
-  return { deps, github, codeowners, identity, chat, stops, reverts, fixerRuns };
+  return { deps, github, codeowners, identity, chat, stops, reverts, revertOutcome, fixerRuns, reviewRuns };
 }
 
 function ev<T extends EventType>(type: T, payload: EventPayloads[T], source: 'agent' | 'fixer' | 'github' = 'agent'): NewEvent<T> {
@@ -316,6 +329,11 @@ function toPr(): NewEvent[] {
   ];
 }
 
+/** The review job's approval of `headSha`, as it appends it: v2, the head recorded (#264). */
+async function approved(headSha: string = HEAD): Promise<NewEvent<'review-passed'>> {
+  return { ...ev('review-passed', { prNumber: PR, headSha, review: await reviewArtifact('approve') }), v: 2 };
+}
+
 async function reviewArtifact(verdict: 'approve' | 'request-changes'): Promise<{ artifactId: string; version: number }> {
   const body = JSON.stringify({ verdict, reasons: verdict === 'approve' ? [] : ['scope'], constraintViolations: [] });
   const a = await state.putArtifact({ workspaceId: WS, incidentId: INC, kind: 'review', contentType: 'application/json', body, createdBy: 'review-agent' });
@@ -339,11 +357,13 @@ async function status(): Promise<string | undefined> {
   return (await state.getIncident(INC))?.status;
 }
 
-const tap = (userId: string, extra: { prNumber?: number; comment?: string } = {}) => ({
+/** A tap on the PR card: the PR and the head the card showed (#264). */
+const tap = (userId: string, extra: { prNumber?: number; sha?: string; comment?: string } = {}) => ({
   incidentId: INC,
   // The role the caller claims is ignored; the map's is used.
   actor: { id: userId, role: 'engineer' as const },
   prNumber: PR,
+  sha: HEAD,
   repo: REPO,
   ...extra,
 });
@@ -413,6 +433,7 @@ describe(`requestHumanReview (${TEST_DIALECT})`, () => {
     const card: PrReadyCard = {
       kind: 'pr-ready',
       prNumber: PR,
+      headSha: HEAD,
       prUrl: `https://github.com/${REPO}/pull/${String(PR)}`,
       issueKey: 'WEB-1042',
       reviewVerdict: 'approve',
@@ -517,12 +538,35 @@ describe(`requestHumanReview (${TEST_DIALECT})`, () => {
     expect(await requestHumanReview(w.deps, INC)).toEqual({ requested: false, reason: 'no-pr' });
     await append(...toPr());
     expect(await requestHumanReview(w.deps, INC)).toEqual({ requested: false, reason: 'not-reviewed' });
-    await append(ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
+    await append(await approved());
     w.github.pr.state = 'closed';
     expect(await requestHumanReview(w.deps, INC)).toEqual({ requested: false, reason: 'not-open' });
     await append(ev('stopped', {}));
     expect(await requestHumanReview(w.deps, INC)).toEqual({ requested: false, reason: 'stopped' });
     expect(w.chat.cards).toEqual([]);
+  });
+
+  it('a head the approval does not cover gets no card: its review starts, and that approval brings the card (#264)', async () => {
+    const w = await setup({ level: 2 });
+    w.github.pr.headSha = HEAD2;
+    expect(await requestHumanReview(w.deps, INC)).toEqual({ requested: false, reason: 'head-moved' });
+    expect(w.chat.cards).toEqual([]);
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD2 }]);
+
+    await append(await approved(HEAD2));
+    expect(await requestHumanReview(w.deps, INC)).toMatchObject({ requested: true, card: { headSha: HEAD2 } });
+    expect(w.chat.cards.map((c) => c.card.headSha)).toEqual([HEAD2, HEAD2]);
+  });
+
+  it('after a gate hold, the approval of a new head brings a fresh card for it (#264)', async () => {
+    const w = await setup({ level: 3 });
+    await append(ev('held', { kind: 'gate', reason: 'risk gate: 12 files touched (limit 10)' }), ev('level-changed', { from: 3, to: 2, reason: 'merge-held: risk gate' }));
+    expect(await requestHumanReview(w.deps, INC)).toMatchObject({ requested: true, card: { headSha: HEAD } });
+    w.github.pr.headSha = HEAD2;
+    await append(await approved(HEAD2));
+    expect(await requestHumanReview(w.deps, INC)).toMatchObject({ requested: true, card: { headSha: HEAD2 } });
+    expect(w.chat.cards.map((c) => c.card.headSha)).toEqual([HEAD, HEAD, HEAD2, HEAD2]);
   });
 });
 
@@ -643,18 +687,111 @@ describe(`PR actions (${TEST_DIALECT})`, () => {
     expect(w.fixerRuns).toEqual([]);
   });
 
+  it('merge: a tap without the PR and head its card showed is refused as out of date, and nothing reaches GitHub (#264)', async () => {
+    const w = await setup({ level: 2 });
+    w.github.pr.requestedReviewers = ['dana-gh'];
+    const { sha: _sha, ...unpinned } = tap(DANA);
+    const out = await humanMerge(w.deps, unpinned);
+    expect(out).toMatchObject({ done: false, reason: 'stale-card', message: 'This card is out of date. Use the latest card for this incident.' });
+    expect(await humanMerge(w.deps, { ...unpinned, sha: '' })).toMatchObject({ done: false, reason: 'stale-card' });
+    expect(w.github.merges).toEqual([]);
+  });
+
+  it('merge: a card whose head is no longer the PR head is refused, and the new head goes to review (#264)', async () => {
+    const w = await setup({ level: 2 });
+    w.github.pr.requestedReviewers = ['dana-gh'];
+    w.github.pr.headSha = HEAD2;
+    const before = (await log()).length;
+    expect(await humanMerge(w.deps, tap(DANA))).toMatchObject({ done: false, reason: 'stale-card' });
+    expect(w.github.merges).toEqual([]);
+    expect(await typesAfter(before)).toEqual([]);
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD2 }]);
+  });
+
+  it('merge: the head the card showed, but not the head the review approved, is refused as not reviewed (#264)', async () => {
+    const w = await setup({ level: 2 });
+    w.github.pr.requestedReviewers = ['dana-gh'];
+    w.github.pr.headSha = HEAD2;
+    const out = await humanMerge(w.deps, tap(DANA, { sha: HEAD2 }));
+    expect(out).toMatchObject({ done: false, reason: 'not-reviewed' });
+    expect(w.github.merges).toEqual([]);
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD2 }]);
+
+    // Once that head is approved, the same tap merges it, pinned to it.
+    await append(await approved(HEAD2));
+    expect(await humanMerge(w.deps, tap(DANA, { sha: HEAD2 }))).toMatchObject({ done: true, action: 'merge' });
+    expect(w.github.merges).toEqual([{ number: PR, expectedHeadSha: HEAD2, userToken: 'test-user-token-dana-gh' }]);
+  });
+
+  it('merge: an approval recorded before heads were pinned (v1) approves no head (#264)', async () => {
+    const w = await setup({ level: 2, toCi: false });
+    await append(...toPr(), ev('review-passed', { prNumber: PR, review: await reviewArtifact('approve') }));
+    w.github.pr.requestedReviewers = ['dana-gh'];
+    expect(await humanMerge(w.deps, tap(DANA))).toMatchObject({ done: false, reason: 'not-reviewed' });
+    expect(w.github.merges).toEqual([]);
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([{ incidentId: INC, prNumber: PR, headSha: HEAD }]);
+  });
+
+  it('merge: a review that did not approve is not reviewed, and starts no new review', async () => {
+    const w = await setup({ level: 2, toCi: false });
+    await append(...toPr(), ev('review-failed', { prNumber: PR, verdict: 'escalate', reason: 'cannot prove the regression' }));
+    w.github.pr.requestedReviewers = ['dana-gh'];
+    expect(await humanMerge(w.deps, tap(DANA))).toMatchObject({ done: false, reason: 'not-reviewed' });
+    await wf.drain();
+    expect(w.reviewRuns).toEqual([]);
+    expect(w.github.merges).toEqual([]);
+  });
+
+  it('request changes: refused without the card\'s PR and head, or when the head moved, and the fixer is not restarted (#264)', async () => {
+    const w = await setup({ level: 2 });
+    const { sha: _sha, ...unpinned } = tap(DANA, { comment: 'Rename it.' });
+    expect(await humanRequestChanges(w.deps, unpinned)).toMatchObject({ done: false, reason: 'stale-card' });
+    w.github.pr.headSha = HEAD2;
+    const before = (await log()).length;
+    expect(await humanRequestChanges(w.deps, tap(DANA, { comment: 'Rename it.' }))).toMatchObject({ done: false, reason: 'stale-card' });
+    expect(await typesAfter(before)).toEqual([]);
+    await wf.drain();
+    expect(w.fixerRuns).toEqual([]);
+    // On the card for the new head it goes through.
+    expect(await humanRequestChanges(w.deps, tap(DANA, { sha: HEAD2, comment: 'Rename it.' }))).toMatchObject({ done: true, action: 'request_changes' });
+  });
+
+  it('revert: refused as out of date without the merge its button named; a link GitHub no longer accepts asks to relink (#264)', async () => {
+    const w = await setup({ level: 3 });
+    const { sha: _sha, ...unpinned } = tap(DANA);
+    expect(await humanRevert(w.deps, unpinned)).toMatchObject({ done: false, reason: 'stale-card' });
+    expect(w.reverts).toEqual([]);
+
+    w.revertOutcome.current = { reverted: false, reason: 'not-linked' };
+    const out = await humanRevert(w.deps, tap(DANA, { sha: MERGE_SHA }));
+    expect(out).toMatchObject({ done: false, reason: 'not-linked' });
+    expect(out.done === false ? out.linkUrl : '').toMatch(/\/auth\/github\/start\?state=test-state-U-FAKE-DANA$/);
+    w.revertOutcome.current = { reverted: false, reason: 'stale-card' };
+    expect(await humanRevert(w.deps, tap(DANA, { sha: MERGE_SHA }))).toMatchObject({ done: false, reason: 'stale-card' });
+  });
+
   it('stop calls stopIncident with the tapper', async () => {
     const w = await setup({ level: 2 });
     expect(await humanStop(w.deps, { ...tap(PAT), reason: 'wrong fix' })).toMatchObject({ done: true, action: 'stop' });
     expect(w.stops).toEqual([{ incidentId: INC, actor: { id: PAT, role: 'reporter' }, source: 'slack', reason: 'wrong fix' }]);
   });
 
-  it('revert authorizes first: an unlinked user never reaches revert; a linked one does', async () => {
+  it('revert authorizes first: an unlinked user never reaches revert; a linked one does, as themselves, on the merge the button named', async () => {
     const w = await setup({ level: 3 });
-    expect(await humanRevert(w.deps, tap(LEE))).toMatchObject({ done: false, reason: 'not-linked' });
+    expect(await humanRevert(w.deps, tap(LEE, { sha: MERGE_SHA }))).toMatchObject({ done: false, reason: 'not-linked' });
     expect(w.reverts).toEqual([]);
 
-    await createPrActions(w.deps).revert(tap(DANA));
-    expect(w.reverts).toEqual([{ incidentId: INC, actor: { id: DANA, role: 'engineer' }, opts: { source: 'slack' } }]);
+    await createPrActions(w.deps).revert(tap(DANA, { sha: MERGE_SHA }));
+    expect(w.reverts).toEqual([
+      {
+        incidentId: INC,
+        actor: { id: DANA, role: 'engineer' },
+        opts: { userToken: 'test-user-token-dana-gh', pin: { prNumber: PR, sha: MERGE_SHA }, source: 'slack' },
+      },
+    ]);
+    expect(w.identity.tokensIssued).toEqual([DANA]);
   });
 });

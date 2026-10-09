@@ -9,7 +9,7 @@
 // escapes the plain parts and turns each ref into its own mention (Slack `<@U..>`, a Teams `<at>`).
 // Moved here from the Slack cards.
 
-import type { StatusStage, StatusUpdate } from '../contracts/adapters.ts';
+import type { PrPin, StatusStage, StatusUpdate } from '../contracts/adapters.ts';
 import { isInstructionsHoldSentence } from '../merge/instructions.ts';
 
 /** The fixed visual vocabulary (20.1): filed, fixing, in review, live, stopped, reverted. */
@@ -104,6 +104,8 @@ export interface StatusCopyContext {
   reporterUserId?: string;
   /** `merged`: the merge was autopilot. */
   automatic?: boolean;
+  /** `merged` by autopilot: the PR and merge commit its Revert button acts on (#264). */
+  pin?: PrPin;
   /** `held`: a plain-language reason. Anything with a path or "PR" is replaced by a generic one. */
   reason?: string;
   /**
@@ -182,7 +184,10 @@ export function statusCopy(stage: StatusStage, ctx: StatusCopyContext): string {
 export function makeStatusUpdate(stage: StatusStage, ctx: StatusCopyContext): StatusUpdate {
   const update: StatusUpdate = { issueKey: ctx.issueKey, stage, text: statusCopy(stage, ctx) };
   if (stage === 'fixing') update.actions = ['stop'];
-  if (stage === 'merged' && ctx.automatic === true) update.actions = ['revert'];
+  if (stage === 'merged' && ctx.automatic === true) {
+    update.actions = ['revert'];
+    if (ctx.pin !== undefined) update.pin = { prNumber: ctx.pin.prNumber, sha: ctx.pin.sha };
+  }
   if (stage === 'staging' && ctx.reporterUserId !== undefined) update.mentionUserId = ctx.reporterUserId;
   return update;
 }

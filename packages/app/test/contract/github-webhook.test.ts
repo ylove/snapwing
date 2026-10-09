@@ -265,6 +265,8 @@ function github(c: Checks = {}): void {
             checks: (c.required ?? ['build', 'test']).map((context) => ({ context, app_id: null })),
           }),
     ),
+    // No repository ruleset adds required checks for the branch.
+    http.get(`${R}/rules/branches/main`, () => HttpResponse.json([])),
     http.get(`${R}/commits/:sha/check-runs`, () =>
       HttpResponse.json({
         total_count: runs.length,

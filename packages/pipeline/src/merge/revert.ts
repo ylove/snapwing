@@ -6,17 +6,24 @@
 // person who tapped it and `level-changed` to 2 ("reopens the ticket at level 2"), and cancels the
 // window timer. The caller authorizes the tap first (`authorize('revert', ...)`, policy/authorize.ts).
 //
+// As the person, never as the App (main 16, #264): the revert PR is opened with the tapper's own
+// user-to-server token (`userToken`), so GitHub checks their access and its audit log names them; a
+// token GitHub no longer accepts (401) or an account without access (403) is a refusal. The tap's
+// `pin` names the PR and merge commit its button showed; a revert is refused (`stale-card`) when the
+// incident's latest merge is another one.
+//
 // The window is the merge time plus the configured window, the same instant `timer.revert` was
 // scheduled for, so once the timer has fired a revert is refused (`window-closed`). The timer handler
 // appends nothing: it calls `onRevertWindowClosed` so the status message can drop the button.
 // Refused, with nothing opened: no merge, a merge a human made (no window), a merge already
 // reverted, or the window closed.
 
+import type { PrPin } from '../contracts/adapters.ts';
 import type { AutonomyLevel, EventActor, EventSource, IncidentEvent } from '../contracts/events.ts';
 import { appendDecided, currentLevel, latest, newEvent } from '../fixer/job.ts';
 import { parseDuration } from '../util/duration.ts';
 import { repoFullName } from '../util/repo.ts';
-import { isMergeEvaluateData, revertTimerKey, type MergeDeps } from './job.ts';
+import { httpStatus, isMergeEvaluateData, revertTimerKey, type MergeDeps, type RevertPullRequestResult } from './job.ts';
 
 /** Prefix of the `level-changed` reason that records a revert. */
 export const REVERTED_REASON_PREFIX = 'reverted:';
@@ -24,21 +31,25 @@ export const REVERTED_REASON_PREFIX = 'reverted:';
 export const REVERTED_LEVEL: AutonomyLevel = 2;
 
 export interface RevertOptions {
+  /** The tapper's user-to-server token: the revert PR is opened as them (main 16). */
+  userToken: string;
+  /** The merged PR and merge commit the tapped button showed; another latest merge is `stale-card`. */
+  pin: PrPin;
   /** Where the tap came from. Default `agent`. */
   source?: EventSource;
   reason?: string;
 }
 
-export type RevertRefusal = 'not-merged' | 'not-autopilot' | 'already-reverted' | 'window-closed' | 'no-repo';
+export type RevertRefusal = 'not-merged' | 'not-autopilot' | 'already-reverted' | 'window-closed' | 'no-repo' | 'stale-card' | 'not-linked' | 'forbidden';
 
 export type RevertOutcome =
   | { reverted: true; prNumber: number; revertPrNumber: number; revertPrUrl: string }
   | { reverted: false; reason: RevertRefusal; revertPrNumber?: number };
 
 /** The Revert button (main 11.3). */
-export async function revert(deps: MergeDeps, incidentId: string, actor: EventActor, opts: RevertOptions = {}): Promise<RevertOutcome> {
+export async function revert(deps: MergeDeps, incidentId: string, actor: EventActor, opts: RevertOptions): Promise<RevertOutcome> {
   const log = await deps.state.read(incidentId);
-  const refusal = refuseRevert(deps, log);
+  const refusal = refuseRevert(deps, log, opts.pin);
   if (refusal !== undefined) return { reverted: false, reason: refusal };
   const merged = latest(log, 'merged');
   if (merged === undefined) return { reverted: false, reason: 'not-merged' };
@@ -50,14 +61,23 @@ export async function revert(deps: MergeDeps, incidentId: string, actor: EventAc
   const prNumber = merged.payload.prNumber;
   const ticket = incident?.jiraKey === undefined ? '' : ` for ${incident.jiraKey}`;
   const why = opts.reason === undefined || opts.reason.trim() === '' ? '' : ` Reason: ${opts.reason.trim()}`;
-  const pr = await deps.github(repo).openRevertPullRequest(prNumber, {
-    title: `Revert #${String(prNumber)}${ticket}`,
-    body: `Reverts #${String(prNumber)}, merged automatically by Snapwing. Revert requested by ${actor.id}.${why}`,
-  });
+  let pr: RevertPullRequestResult;
+  try {
+    pr = await deps.github(repo).openRevertPullRequest(prNumber, {
+      title: `Revert #${String(prNumber)}${ticket}`,
+      body: `Reverts #${String(prNumber)}, merged automatically by Snapwing. Revert requested by ${actor.id}.${why}`,
+      userToken: opts.userToken,
+    });
+  } catch (e) {
+    const status = httpStatus(e);
+    if (status === 401) return { reverted: false, reason: 'not-linked' };
+    if (status === 403) return { reverted: false, reason: 'forbidden' };
+    throw e;
+  }
 
   let refused: RevertRefusal = 'already-reverted';
   const appended = await appendDecided(deps.state, incidentId, (events) => {
-    const again = refuseRevert(deps, events);
+    const again = refuseRevert(deps, events, opts.pin);
     if (again !== undefined) {
       refused = again;
       return undefined;
@@ -102,9 +122,10 @@ export function registerRevertTimer(deps: MergeDeps): void {
   });
 }
 
-function refuseRevert(deps: MergeDeps, events: readonly IncidentEvent[]): RevertRefusal | undefined {
+function refuseRevert(deps: MergeDeps, events: readonly IncidentEvent[], pin: PrPin): RevertRefusal | undefined {
   const merged = latest(events, 'merged');
   if (merged === undefined) return 'not-merged';
+  if (merged.payload.prNumber !== pin.prNumber || merged.payload.mergeCommitSha !== pin.sha) return 'stale-card';
   if (revertedSince(events, merged)) return 'already-reverted';
   const deadline = revertDeadline(deps, events);
   if (deadline === undefined) return 'not-autopilot';

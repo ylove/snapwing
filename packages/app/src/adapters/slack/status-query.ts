@@ -29,6 +29,7 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { applyStandingWatch, parseStandingWatch } from '@snapwing/pipeline/signals/standing.ts';
 import { createStatusAsk, looksLikeStatusQuestion, surfaceWords, type StatusReadState } from '@snapwing/pipeline/status/ask.ts';
+import { pinnedValue } from '../shared/pr-pin.ts';
 import { statusMrkdwn, type SlackUserFor } from './cards/status.ts';
 import { actions, section, type SlackBlock } from './cards/blocks.ts';
 import { isUnlinkGithub, unlinkGithubReply } from '../shared/unlink-github.ts';
@@ -170,13 +171,14 @@ export function createSlackStatusQuery(options: SlackStatusQueryOptions): SlackS
     const text = statusMrkdwn(answer.text, userForMap(map));
     const blocks: SlackBlock[] = [section(text)];
     // Stop and Revert are the buttons the interactivity handler owns; the rest live on the cards.
+    // Revert carries the merge this answer names, and acts on no later one (#264).
     if (answer.audience === 'engineer' && answer.incidentId !== undefined) {
       const id = answer.incidentId;
       const buttons = answer.actions.flatMap((a) =>
         a === 'stop'
           ? [{ label: 'Stop', actionId: 'stop', value: id, style: 'danger' as const }]
           : a === 'revert'
-            ? [{ label: 'Revert', actionId: 'revert', value: id }]
+            ? [{ label: 'Revert', actionId: 'revert', value: pinnedValue(id, answer.pin) }]
             : [],
       );
       if (buttons.length > 0) blocks.push(actions('status_actions', buttons));

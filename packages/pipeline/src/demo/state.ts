@@ -69,7 +69,7 @@ const PAYLOAD_SHAPES = {
   claimed: { claimerId: 'string', expiresAt: 'string', claimerEmail: 'string?' },
   'fixer-started': { runId: 'string', harness: 'string', attempt: 'number' },
   'pr-opened': { prNumber: 'number', branch: 'string' },
-  'review-passed': { prNumber: 'number', review: 'object?' },
+  'review-passed': { prNumber: 'number', headSha: 'string?', review: 'object?' },
   'review-failed': { prNumber: 'number', verdict: 'string', reason: 'string', review: 'object?' },
   'ci-green': { prNumber: 'number', headSha: 'string' },
   'ci-red': { prNumber: 'number', headSha: 'string', failingChecks: 'array' },

@@ -31,6 +31,8 @@ const STRANGER_AAD = '0d9e8f77-6c5b-4a39-8e21-1f0a3b5c7d9e';
 const PERSONAL = '19:4b1f6a52_personal@unq.gbl.spaces';
 const CHANNEL = '19:5f3c0a7e9d2b4c1a8e6f@thread.tacv2';
 const REPO = 'github.com/acme/web';
+/** The head sha the fake GitHub reports for PR `pr`. */
+const headOf = (pr: number): string => String(pr).padStart(40, 'a');
 const ENGINEER_SLACK = 'U0WEBDEV1';
 
 let map: WorkspaceMap;
@@ -188,7 +190,7 @@ async function mergeable(surface: string, summary: string, pr: number, reviewers
     ],
     inc.seq,
   );
-  prs.set(pr, { state: 'open', merged: false, htmlUrl: `https://github.com/acme/web/pull/${pr}`, requestedReviewers: reviewers });
+  prs.set(pr, { state: 'open', merged: false, htmlUrl: `https://github.com/acme/web/pull/${pr}`, headSha: headOf(pr), requestedReviewers: reviewers });
   return { ...inc, seq: inc.seq + 4 };
 }
 
@@ -283,7 +285,8 @@ describe('an engineer with items in every section', () => {
     expect(waiting).toContain(review.key);
     expect(waiting).not.toContain(other.key);
     expect(waiting).toContain('"type":"Action.OpenUrl","title":"Open PR","url":"https://github.com/acme/web/pull/31"');
-    expect(waiting).toContain(`"type":"Action.Execute","title":"Merge","verb":"merge","data":{"incidentId":"${review.id}"}`);
+    // Merge carries the PR and the head the queue read (#264).
+    expect(waiting).toContain(`"type":"Action.Execute","title":"Merge","verb":"merge","data":{"incidentId":"${review.id}","prNumber":"31","sha":"${headOf(31)}"}`);
 
     const recent = sectionOf(card, 'Recently merged or reverted');
     expect(recent).toContain(merged.key);

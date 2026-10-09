@@ -67,10 +67,22 @@ export interface ClaimedCard {
   claimerUserId: string;
 }
 
+/**
+ * The pull request and the commit a PR button acts on (#264): the head the card showed for Merge and
+ * Request changes, the merge commit for Revert. The button carries it back with the tap, and the action
+ * is refused when either no longer matches, so a tap never acts on a PR or a commit its card did not show.
+ */
+export interface PrPin {
+  prNumber: number;
+  sha: string;
+}
+
 /** main 11.2: the card posted when a pull request is ready for a human. */
 export interface PrReadyCard {
   kind: 'pr-ready';
   prNumber: number;
+  /** The head commit the card shows; its Merge and Request changes act on this commit only (#264). */
+  headSha: string;
   prUrl: string;
   issueKey: string;
   reviewVerdict: 'approve' | 'request-changes' | 'escalate';
@@ -104,4 +116,6 @@ export interface StatusUpdate {
   mentionUserId?: string;
   /** Buttons on the status message: `stop` while a fix runs, `revert` after an autopilot merge. */
   actions?: ('stop' | 'revert')[];
+  /** With `revert`: the merged PR and its merge commit, which the Revert button carries (#264). */
+  pin?: PrPin;
 }

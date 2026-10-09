@@ -753,8 +753,12 @@ export const compose: ComposeFn = async (deps) => {
     log: (line) => log.info(`jira: ${line}`),
   });
   const auth: GitHubAuth = createGitHubAuth({ secrets: deps.secrets });
+  // The App's own id: `snapwing/review` counts as a required check only from this App (#264).
+  const appIdValue = Number(secret('GITHUB_APP_ID').trim());
+  const githubOptions: { appId?: number } = Number.isSafeInteger(appIdValue) && appIdValue > 0 ? { appId: appIdValue } : {};
+  if (githubOptions.appId === undefined) log.error('GITHUB_APP_ID is not a number: snapwing/review never counts as a passing required check');
   // Incidents carry the map's `github.com/owner/name`; GitHub wants `owner/name` (github/repo.ts).
-  const github = (repo: string): GitHubClient => createGitHubClient(auth, { repo: repoFullName(repo) });
+  const github = (repo: string): GitHubClient => createGitHubClient(auth, { ...githubOptions, repo: repoFullName(repo) });
   const gitToken = (permissions: GitHubPermissions) => async (workItem: WorkItemRef) =>
     (await auth.installationToken({ repo: repoFullName(workItem.repo), permissions })).token;
   const remoteUrl = overrides.gitRemoteUrl ?? ((repo: string): string => `https://github.com/${repoFullName(repo)}.git`);
@@ -847,7 +851,7 @@ export const compose: ComposeFn = async (deps) => {
     state,
     workflow,
     runner,
-    github: createFixerGitHub(auth),
+    github: createFixerGitHub(auth, githubOptions),
     config: { harness: fixerChoice },
     clock,
     // A 6.4: the live INSTRUCTIONS.md may hold a fixer start the agent makes on its own.
@@ -1299,6 +1303,7 @@ export const compose: ComposeFn = async (deps) => {
   ladders.register();
   const reconcileSources = createReconcileSources({
     github: auth,
+    githubOptions,
     jira,
     jiraChangelog: { baseUrl: secret('JIRA_BASE_URL'), email: secret('JIRA_EMAIL'), apiToken: secret('JIRA_API_TOKEN') },
   });

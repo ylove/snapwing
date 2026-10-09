@@ -9,7 +9,8 @@
 // - merge: only for an actor with a linked identity who is a reviewer of the PR: in GitHub's live
 //   requested reviewers, or in the reviewers `resolveReviewers` (human.ts) resolves now (GitHub drops
 //   a user from the requested list once they review). Performed with the actor's user-to-server token,
-//   squash, pinned to the head it read, so GitHub's audit log names the human (main 16). Then `merged`
+//   squash, pinned to the head the card showed and the review approved (see below), so GitHub's audit
+//   log names the human (main 16). Then `merged`
 //   with the actor and the level in force (prefixed by `ci-green` while the log still waits for CI,
 //   as merge/job.ts does). GitHub's own refusals come back as refusals: 405 (branch protection, e.g.
 //   no approving review yet), 409 (the head moved), 403, and 401 (the link is dead).
@@ -18,7 +19,16 @@
 //   harness as `SNAPWING_PRIOR_REVIEW_FILE`), `review-failed { verdict: 'request-changes' }` is appended
 //   with the actor and a reason starting `changes-requested:`, and `startFixer` runs the next attempt.
 // - stop: `stopIncident` (fixer/stop.ts).
-// - revert: `revert` (merge/revert.ts), which does not authorize itself.
+// - revert: `revert` (merge/revert.ts), which does not authorize itself, with the actor's own
+//   user-to-server token: the revert PR is opened as them, never as the App (main 16).
+//
+// Pinned to what the card showed (#264). Merge, Request changes, and Revert taps carry the PR number
+// and a commit (`PrActionInput.prNumber`, `sha`): the head the card showed, or for Revert the merge
+// commit. A tap without them, or whose PR or commit is no longer the incident's, is refused as
+// `stale-card` (`stale-pr` for an older PR) and nothing reaches GitHub. Merge also needs the review's
+// approval of exactly that head (`reviewOf`, merge/job.ts): an approval of another commit is
+// `not-reviewed`, and the PR's head is sent to review (`startReviewOfHead`), whose approval brings a
+// fresh card.
 //
 // `humanMerge`, `humanRequestChanges`, `humanStop`, and `humanRevert` resolve to an outcome and never
 // throw for a refusal. `createPrActions` wraps them for `PrActions`, whose methods resolve to void: a
@@ -34,8 +44,9 @@ import type { MapActorRole } from '../map/types.ts';
 import { authorize, type DenyReason } from '../policy/authorize.ts';
 import type { ReviewVerdict } from '../review/verdict.ts';
 import { repoFullName } from '../util/repo.ts';
+import type { PrPin } from '../contracts/adapters.ts';
 import { loadMap, resolveReviewers, sameLogin, type ChatUserRef, type HumanDeps } from './human.ts';
-import { httpStatus, statusOf, type MergeResult } from './job.ts';
+import { httpStatus, reviewOf, startReviewOfHead, statusOf, type MergeResult } from './job.ts';
 import type { RevertOptions, RevertOutcome, RevertRefusal } from './revert.ts';
 
 /** Prefix of the `review-failed` reason that records a human's request for changes. */
@@ -49,8 +60,13 @@ export interface PrActionInput {
   incidentId: string;
   /** The tapper: their chat user id. The role is read from the map, not from here. */
   actor: EventActor;
-  /** The PR the card showed; a tap on an older PR's card is refused. */
+  /** The PR the card showed; a tap on an older PR's card is refused. Required with `sha` (#264). */
   prNumber?: number;
+  /**
+   * The commit the card showed (#264): the PR head for Merge and Request changes, the merge commit for
+   * Revert. A tap without it, or whose commit is no longer the incident's, is refused (`stale-card`).
+   */
+  sha?: string;
   repo?: string;
 }
 
@@ -67,7 +83,7 @@ export interface PrActionsDeps extends HumanDeps {
   /** `stopIncident` from fixer/stop.ts, bound to its FixerDeps. */
   stopIncident: (input: StopInput) => Promise<StopOutcome>;
   /** `revert` from merge/revert.ts, bound to its MergeDeps. */
-  revert: (incidentId: string, actor: EventActor, opts?: RevertOptions) => Promise<RevertOutcome>;
+  revert: (incidentId: string, actor: EventActor, opts: RevertOptions) => Promise<RevertOutcome>;
 }
 
 export type PrActionKind = 'merge' | 'request_changes' | 'stop' | 'revert';
@@ -79,6 +95,8 @@ export type PrActionRefusal =
   | 'not-reviewer'
   | 'no-pr'
   | 'stale-pr'
+  | 'stale-card'
+  | 'not-reviewed'
   | 'no-repo'
   | 'not-open'
   | 'stopped'
@@ -151,6 +169,8 @@ export async function humanMerge(deps: PrActionsDeps, input: HumanPrActionInput)
   const ctx = await authorized(deps, action, input);
   if (!ctx.ok) return ctx.refused;
   const { log, incident, user, actor } = ctx;
+  const pin = cardPin(action, input);
+  if ('done' in pin) return pin;
   const pr = currentPr(action, log, input);
   if (typeof pr !== 'number') return pr;
   const mapRepo = incident?.repo;
@@ -164,10 +184,19 @@ export async function humanMerge(deps: PrActionsDeps, input: HumanPrActionInput)
   const live = await gh.getPullRequest(pr);
   if (live.merged) return refuse(action, 'merged');
   if (live.state !== 'open') return refuse(action, 'not-open');
+  // #264: only the head the card showed, and only once the review approved exactly that head.
+  const review = await reviewOf(deps.state, log, pr);
+  const approved = review?.verdict === 'approve' ? review.headSha : undefined;
+  if (review?.verdict === 'approve' && approved !== live.headSha) {
+    await startReviewOfHead(deps, { incidentId: input.incidentId, prNumber: pr, headSha: live.headSha });
+  }
+  if (live.headSha !== pin.sha) return refuse(action, 'stale-card');
+  if (approved !== live.headSha) return refuse(action, 'not-reviewed');
   if (!(await isReviewer(deps, repo, live, token.githubLogin, incident))) return refuse(action, 'not-reviewer');
 
   let merge: MergeResult;
   try {
+    // Pinned to the reviewed head: GitHub refuses (409) when the head is another commit by now.
     merge = await gh.mergePullRequest(pr, { expectedHeadSha: live.headSha, userToken: token.token });
   } catch (e) {
     const status = httpStatus(e);
@@ -218,11 +247,18 @@ export async function humanRequestChanges(deps: PrActionsDeps, input: HumanPrAct
   const action = 'request_changes';
   const ctx = await authorized(deps, action, input);
   if (!ctx.ok) return ctx.refused;
-  const { log, actor } = ctx;
+  const { log, incident, actor } = ctx;
+  const pin = cardPin(action, input);
+  if ('done' in pin) return pin;
   const pr = currentPr(action, log, input);
   if (typeof pr !== 'number') return pr;
   const early = refuseChanges(log, pr);
   if (early !== undefined) return refuse(action, early);
+  // #264: the changes are asked of the head the card showed.
+  const mapRepo = incident?.repo;
+  if (mapRepo === undefined || mapRepo === '') return refuse(action, 'no-repo');
+  const live = await deps.github(repoFullName(mapRepo)).getPullRequest(pr);
+  if (live.headSha !== pin.sha) return refuse(action, 'stale-card');
 
   const comment = input.comment?.trim() ?? '';
   const verdict: ReviewVerdict = {
@@ -298,11 +334,21 @@ export async function humanRevert(deps: PrActionsDeps, input: HumanPrActionInput
   const action = 'revert';
   const ctx = await authorized(deps, action, input);
   if (!ctx.ok) return ctx.refused;
+  const pin = cardPin(action, input);
+  if ('done' in pin) return pin;
+  // As the person who tapped, never as the App (main 16).
+  const token = await deps.identity.userToken(ctx.user);
+  if (token === null) return refuse(action, 'not-linked', { linkUrl: await deps.identity.linkUrl(ctx.user) });
   const outcome = await deps.revert(input.incidentId, ctx.actor, {
+    userToken: token.token,
+    pin,
     source: input.source ?? deps.chat,
     ...(input.reason === undefined ? {} : { reason: input.reason }),
   });
-  if (!outcome.reverted) return refuse(action, outcome.reason);
+  if (!outcome.reverted) {
+    if (outcome.reason === 'not-linked') return refuse(action, 'not-linked', { linkUrl: await deps.identity.linkUrl(ctx.user) });
+    return refuse(action, outcome.reason);
+  }
   return { done: true, action, outcome };
 }
 
@@ -331,6 +377,13 @@ async function authorized(deps: PrActionsDeps, action: PrActionKind, input: Huma
   return { ok: false, refused: { ...refuse(action, 'denied', { deny: decision.reason }), message: DENY_MESSAGES[decision.reason] } };
 }
 
+/** The PR and commit the tapped card showed (#264), or `stale-card` when the tap carries neither. */
+function cardPin(action: PrActionKind, input: PrActionInput): PrPin | PrActionRefused {
+  const { prNumber, sha } = input;
+  if (prNumber === undefined || sha === undefined || sha === '') return refuse(action, 'stale-card');
+  return { prNumber, sha };
+}
+
 /** The incident's open PR, or the refusal: none, stopped, merged, or the tap names an older PR. */
 function currentPr(action: PrActionKind, log: readonly IncidentEvent[], input: PrActionInput): number | PrActionRefused {
   const opened = latest(log, 'pr-opened');
@@ -355,6 +408,8 @@ const MESSAGES: Readonly<Record<PrActionRefusal, string>> = {
   'not-reviewer': 'Only a requested reviewer of this pull request can merge it from here.',
   'no-pr': 'There is no pull request for this incident yet.',
   'stale-pr': 'This card is for an older pull request.',
+  'stale-card': 'This card is out of date. Use the latest card for this incident.',
+  'not-reviewed': 'The latest commit has not passed review yet, so it cannot be merged from here.',
   'no-repo': 'This incident has no repository.',
   'not-open': 'This pull request is closed.',
   stopped: 'This incident was stopped.',

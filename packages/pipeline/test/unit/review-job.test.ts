@@ -524,6 +524,9 @@ describe(`review job (${TEST_DIALECT})`, () => {
 
     const passed = await lastOf('review-passed');
     expect(passed?.payload.prNumber).toBe(PR);
+    // The approval names the head it reviewed, at the event's version 2 (#264).
+    expect(passed?.payload.headSha).toBe(head);
+    expect(passed?.v).toBe(2);
     expect(await storedVerdict(passed?.payload.review)).toEqual(APPROVE);
     expect(await lastOf('review-failed')).toBeUndefined();
     // The merge step reads it as an approval.
@@ -779,9 +782,33 @@ describe(`review job (${TEST_DIALECT})`, () => {
     expect(w.harness.calls.map((c) => c.head)).toEqual([head2]);
     expect((await log()).filter((e) => e.type === 'review-passed')).toHaveLength(1);
 
-    // Reviewed since the latest fixer run: a later job for the same PR appends nothing.
+    // That head was approved since the latest fixer run: a later job for it appends nothing.
     expect(await runReviewJob(w.deps, { incidentId: INC, prNumber: PR, headSha: head2 })).toEqual({ outcome: 'skipped', reason: 'already-reviewed' });
     expect(w.harness.calls).toHaveLength(1);
+  });
+
+  it('an approval covers only its head: a push after review-passed is reviewed again, at the new head (#264)', async () => {
+    const w = await setup();
+    const head1 = await fixerOpensPr(w, FIXED);
+    w.harness.script.push(APPROVE);
+    await review(w);
+    expect((await lastOf('review-passed'))?.payload.headSha).toBe(head1);
+
+    const head2 = await push(w, { 'src/cart/total.txt': 'fixed\n// a later push\n' });
+    w.harness.script.push(APPROVE);
+    expect(await runReviewJob(w.deps, { incidentId: INC, prNumber: PR, headSha: head2 })).toMatchObject({ outcome: 'reviewed' });
+    expect(w.harness.calls.map((c) => c.head)).toEqual([head1, head2]);
+    expect((await log()).filter((e) => e.type === 'review-passed').map((e) => (e.type === 'review-passed' ? e.payload.headSha : ''))).toEqual([head1, head2]);
+    expect(w.github.lastCheck()).toMatchObject({ headSha: head2, name: REVIEW_CHECK_NAME, conclusion: 'success' });
+  });
+
+  it('an approval recorded before heads were pinned (v1) does not count as a review of any head (#264)', async () => {
+    const w = await setup();
+    const head = await fixerOpensPr(w, FIXED);
+    await append(ev('review-passed', { prNumber: PR }));
+    w.harness.script.push(APPROVE);
+    expect(await runReviewJob(w.deps, { incidentId: INC, prNumber: PR, headSha: head })).toMatchObject({ outcome: 'reviewed' });
+    expect((await lastOf('review-passed'))?.payload.headSha).toBe(head);
   });
 
   it('a Stop that lands during the review discards it: no event, no GitHub review, a neutral check', async () => {

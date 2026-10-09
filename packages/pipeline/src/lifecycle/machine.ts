@@ -34,6 +34,10 @@
 //   `ci-retry`, `mergeable`, `held`, `escalated`): a person may merge before the review agent or CI
 //   finishes (main 11.2, levels 1 and 2). `escalated` is reached with the PR still open after a second
 //   review or CI failure; a `merged` event only exists when a PR merged, so a fixer-failed escalation never gets one.
+// - A later `review-passed` is the review of a new head (#264: an approval covers only the head it
+//   recorded). In `ci` and `ci-retry` the wait for CI goes on; in `mergeable` CI is awaited again for the
+//   new head, in `ci-retry`, since the fixer's own head already passed and a red CI on another commit is
+//   a human's; `held` stays held for the human it waits on.
 
 import type { EventType, IncidentEvent } from '../contracts/events.ts';
 
@@ -210,6 +214,7 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     merged: 'merged',
     'ci-green': 'mergeable',
     'ci-red': 'fixing-retry',
+    'review-passed': 'ci',
     'review-failed': 'fixing-retry',
     closed: 'closed',
   },
@@ -217,18 +222,21 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     merged: 'merged',
     'ci-green': 'mergeable',
     'ci-red': 'escalated',
+    'review-passed': 'ci-retry',
     'review-failed': 'escalated',
     closed: 'closed',
   },
   mergeable: {
     merged: 'merged',
     held: heldTarget,
+    'review-passed': 'ci-retry',
     'review-failed': 'fixing-retry',
     closed: 'closed',
   },
   held: {
     released: 'mergeable',
     merged: 'merged',
+    'review-passed': 'held',
     'review-failed': 'fixing-retry',
     closed: 'closed',
   },

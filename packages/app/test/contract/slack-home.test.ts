@@ -26,6 +26,8 @@ const MOBILE_ENGINEER = 'U0MOBDEV';
 const REPORTER = 'U0SALESLEAD';
 const STRANGER = 'U0NOBODY';
 const REPO = 'github.com/acme/web';
+/** The head sha the fake GitHub reports for PR `pr`. */
+const headOf = (pr: number): string => String(pr).padStart(40, 'a');
 
 let map: WorkspaceMap;
 beforeAll(async () => {
@@ -147,7 +149,7 @@ async function mergeable(surface: string, summary: string, pr: number, reviewers
     ],
     inc.seq,
   );
-  prs.set(pr, { state: 'open', merged: false, htmlUrl: `https://github.com/acme/web/pull/${pr}`, requestedReviewers: reviewers });
+  prs.set(pr, { state: 'open', merged: false, htmlUrl: `https://github.com/acme/web/pull/${pr}`, headSha: headOf(pr), requestedReviewers: reviewers });
   return { ...inc, seq: inc.seq + 4 };
 }
 
@@ -221,6 +223,8 @@ describe('an engineer with items in every section', () => {
     expect(waiting).toContain('"action_id":"open_pr"');
     expect(waiting).toContain('https://github.com/acme/web/pull/31');
     expect(waiting).toContain('"action_id":"merge"');
+    // Merge carries the PR and the head the Home read (#264).
+    expect(waiting).toContain(`"value":"${review.id}:31:${headOf(31)}"`);
     expect(waiting).toContain(`"block_id":"pr_actions:${review.id}"`);
 
     const recent = sectionOf(view, 'Recently merged or reverted');
@@ -241,7 +245,7 @@ describe('an engineer with items in every section', () => {
 
   it('skips a PR already merged on GitHub, and keeps going when one lookup fails', async () => {
     await mergeable('web', 'Closed on GitHub', 51, ['dana-gh']);
-    prs.set(51, { state: 'closed', merged: true, htmlUrl: 'https://github.com/acme/web/pull/51', requestedReviewers: ['dana-gh'] });
+    prs.set(51, { state: 'closed', merged: true, htmlUrl: 'https://github.com/acme/web/pull/51', headSha: headOf(51), requestedReviewers: ['dana-gh'] });
     const gone = await mergeable('web', 'Lookup fails', 52, ['dana-gh']);
     prs.delete(52);
     const ok = await mergeable('web', 'Still open', 53, ['dana-gh']);

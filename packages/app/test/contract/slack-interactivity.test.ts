@@ -175,6 +175,8 @@ interface Button {
   actionId: string;
   label: string;
   style?: 'primary' | 'danger';
+  /** Default the incident id alone. */
+  value?: string;
 }
 
 function actionsBlock(blockId: string, buttons: Button[]): Record<string, unknown> {
@@ -186,7 +188,7 @@ function actionsBlock(blockId: string, buttons: Button[]): Record<string, unknow
       ...(b.style === undefined ? {} : { style: b.style }),
       text: { type: 'plain_text', text: b.label },
       action_id: b.actionId,
-      value: INC,
+      value: b.value ?? INC,
     })),
   };
 }
@@ -200,9 +202,12 @@ const TRIAGE_L2: Button[] = [
   { actionId: 'stop', label: 'Stop', style: 'danger' },
   { actionId: 'dismiss', label: 'Not a bug' },
 ];
+/** The head the PR card shows, and the merge commit the status message's Revert names (#264). */
+const HEAD = 'a'.repeat(40);
+const MERGE_COMMIT = 'c'.repeat(40);
 const PR_READY: Button[] = [
-  { actionId: 'merge', label: 'Merge', style: 'primary' },
-  { actionId: 'request_changes', label: 'Request changes' },
+  { actionId: 'merge', label: 'Merge', style: 'primary', value: `${INC}:77:${HEAD}` },
+  { actionId: 'request_changes', label: 'Request changes', value: `${INC}:77:${HEAD}` },
   { actionId: 'stop', label: 'Stop', style: 'danger' },
 ];
 
@@ -387,19 +392,28 @@ describe('authorization (main 8.2, 16)', () => {
     expect(prCalls).toEqual([]);
   });
 
-  it('a linked human merges, reverts, and an engineer requests changes through PrActions', async () => {
+  it('a linked human merges, reverts, and an engineer requests changes through PrActions, on the PR and commit each button carried (#264)', async () => {
     await seedPrOpen(2);
     linked.add(ENGINEER);
     expect(await ix.handleAction(tap(ENGINEER, 'pr_actions', 'merge', PR_READY))).toEqual({ kind: 'pr-action', action: 'merge', incidentId: INC });
     expect(await ix.handleAction(tap(ENGINEER, 'pr_actions', 'request_changes', PR_READY))).toMatchObject({ kind: 'pr-action', action: 'request_changes' });
-    expect(await ix.handleAction(tap(ENGINEER, 'status_actions', 'revert', [{ actionId: 'revert', label: 'Revert' }]))).toMatchObject({ kind: 'pr-action', action: 'revert' });
-    const input = { incidentId: INC, actor: { id: ENGINEER, role: 'engineer' }, prNumber: 77, repo: 'github.com/acme/web' };
+    const revertButton = [{ actionId: 'revert', label: 'Revert', value: `${INC}:77:${MERGE_COMMIT}` }];
+    expect(await ix.handleAction(tap(ENGINEER, 'status_actions', 'revert', revertButton))).toMatchObject({ kind: 'pr-action', action: 'revert' });
+    const input = { incidentId: INC, actor: { id: ENGINEER, role: 'engineer' }, prNumber: 77, sha: HEAD, repo: 'github.com/acme/web' };
     expect(prCalls).toEqual([
       { action: 'merge', input },
       { action: 'request_changes', input },
-      { action: 'revert', input },
+      { action: 'revert', input: { ...input, sha: MERGE_COMMIT } },
     ]);
     expect(web.calls.update.map((u) => u.text)).toEqual([`<@${ENGINEER}> merged this.`, `<@${ENGINEER}> requested changes.`, `<@${ENGINEER}> reverted this.`]);
+  });
+
+  it("a button without the PR and commit its card showed never borrows the incident's current PR (#264)", async () => {
+    await seedPrOpen(2);
+    linked.add(ENGINEER);
+    await ix.handleAction(tap(ENGINEER, 'pr_actions', 'merge', [{ actionId: 'merge', label: 'Merge' }]));
+    // The PR actions get no PR and no commit, and refuse the tap as out of date.
+    expect(prCalls).toEqual([{ action: 'merge', input: { incidentId: INC, actor: { id: ENGINEER, role: 'engineer' }, repo: 'github.com/acme/web' } }]);
   });
 
   it('a reporter cannot request changes, even when linked', async () => {

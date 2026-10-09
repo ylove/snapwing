@@ -154,6 +154,9 @@ class FakeGitHub {
   listPullRequestFiles(): Promise<readonly { filename: string; additions: number; deletions: number }[]> {
     return Promise.resolve(this.files.map((f) => ({ ...f })));
   }
+  compareFiles(): Promise<{ files: readonly { filename: string; additions: number; deletions: number }[]; complete: boolean }> {
+    return Promise.resolve({ files: this.files.map((f) => ({ ...f })), complete: true });
+  }
   combinedStatus(): Promise<{ required: { name: string; state: 'success'; source: string }[] }> {
     return Promise.resolve({ required: [{ name: 'ci', state: 'success', source: 'check-run' }] });
   }
@@ -333,10 +336,10 @@ async function prReviewed(): Promise<void> {
   );
   const body = JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] });
   const review = await state.putArtifact({ workspaceId: WS, incidentId: INC, kind: 'review', contentType: 'application/json', body, createdBy: 'review-agent' });
-  await append(ev('review-passed', { prNumber: PR, review: { artifactId: review.id, version: review.version } }));
+  await append({ ...ev('review-passed', { prNumber: PR, headSha: HEAD, review: { artifactId: review.id, version: review.version } }), v: 2 });
 }
 
-const tap = { incidentId: INC, actor: { id: DANA, role: 'engineer' as const }, prNumber: PR, repo: REPO };
+const tap = { incidentId: INC, actor: { id: DANA, role: 'engineer' as const }, prNumber: PR, sha: HEAD, repo: REPO };
 
 // The A 6.4 case ----------------------------------------------------------------------------------
 

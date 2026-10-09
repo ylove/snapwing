@@ -14,9 +14,13 @@
 //   through the outbox in the same transaction.
 // - `merge`, `request_changes`, and `revert` go to the injected `PrActions`; merge and revert need a
 //   linked GitHub identity for the tapper's chat account (ADR 0007), request changes needs an engineer.
+//   They act on the PR and commit the tapped button carried (`ChatTap.pin`, pr-pin.ts, #264), never on
+//   whatever the incident's PR is now: a tap without a pin, or whose pin no longer matches, is refused
+//   by the PR actions as out of date and the card keeps its buttons.
 // - The mid-flight claim card's `Let it finish` and `Stop it, I'll take over` (A 2.2) go to the injected
 //   `midFlight` (`answerMidFlight`), which needs an engineer and the same run still going.
 
+import type { PrPin } from '@snapwing/pipeline/contracts/adapters.ts';
 import type { EventActor, EventSource } from '@snapwing/pipeline/contracts/events.ts';
 import type { ApprovalAction } from '@snapwing/pipeline/contracts/incident.ts';
 import type { IncidentStatus, IncidentView, OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
@@ -56,8 +60,10 @@ export interface PrActionInput {
   incidentId: string;
   /** The tapper: the chat user id and the map role. */
   actor: EventActor;
-  /** The incident's PR, when the incidents row knows it. */
+  /** The PR the tapped card showed (#264). */
   prNumber?: number;
+  /** The commit the tapped card showed: the PR head, or for Revert the merge commit (#264). */
+  sha?: string;
   repo?: string;
 }
 
@@ -128,6 +134,8 @@ export interface ChatTap {
    * choice even when it reads like a routed verb (`stop`, `merge`). Absent: those verbs route first.
    */
   cardDecides?: boolean;
+  /** The PR and commit a PR button carried (`pr-pin.ts`, #264); Merge, Request changes, and Revert act on these only. */
+  pin?: PrPin;
 }
 
 /** How a platform writes a mention and bold text in the lines below. */
@@ -328,10 +336,11 @@ export function createTapCore(options: TapCoreOptions): TapCore {
       fixerActive: FIXER_ACTIVE.has(incident.status),
     });
     if (!decision.allowed) return refuse({ kind: 'denied', action, reason: decision.reason }, DENY_TEXT[decision.reason]);
+    // What the card showed, never the incident's PR now (#264): without a pin the PR actions refuse the tap as out of date.
     const input: PrActionInput = {
       incidentId: tap.incidentId,
       actor,
-      ...(incident.prNumber === undefined ? {} : { prNumber: incident.prNumber }),
+      ...(tap.pin === undefined ? {} : { prNumber: tap.pin.prNumber, sha: tap.pin.sha }),
       ...(incident.repo === undefined ? {} : { repo: incident.repo }),
     };
     try {

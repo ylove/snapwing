@@ -26,6 +26,8 @@ const BASE = 'main';
 const secrets = createEnvFileSecrets({ path: findEnvFile() });
 const present = await Promise.all(['GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY', 'GITHUB_INSTALLATION_ID'].map((n) => secrets.get(n).then(() => true, () => false)));
 const hasSecrets = present.every(Boolean);
+/** This App's id: `snapwing/review` counts only from its own check runs (#264). */
+const APP_ID = hasSecrets ? Number((await secrets.get('GITHUB_APP_ID')).trim()) : 0;
 
 const recordDir = process.env.SNAPWING_RECORD_DIR;
 let recorded = 0;
@@ -43,7 +45,7 @@ const recordingFetch: typeof fetch = async (input, init) => {
 describe.skipIf(!hasSecrets)('GitHub App against snapwing-fixture-web', () => {
   const auth: GitHubAuth = createGitHubAuth({ secrets, fetch: recordingFetch });
   const options = { repo: REPO, fetch: recordingFetch };
-  const client = createGitHubClient(auth, options);
+  const client = createGitHubClient(auth, { ...options, appId: APP_ID });
   const call = createGitHubTransport(auth, options);
   const codeowners = createCodeownersResolver(auth, options);
 
@@ -129,7 +131,7 @@ describe.skipIf(!hasSecrets)('GitHub App against snapwing-fixture-web', () => {
   it('reports the required check as pending, then success after a check run completes', async () => {
     const before = await client.combinedStatus(headSha, BASE);
     expect(before.state).toBe('pending');
-    expect(before.required).toEqual([{ name: REVIEW_CHECK_NAME, state: 'pending', source: null }]);
+    expect(before.required).toEqual([{ name: REVIEW_CHECK_NAME, state: 'pending', source: null, appId: APP_ID }]);
 
     const started = await client.createCheckRun({ headSha, status: 'in_progress', output: { title: 'Snapwing review', summary: 'Live tier probe.' } });
     expect(started).toMatchObject({ name: REVIEW_CHECK_NAME, status: 'in_progress', conclusion: null });
@@ -140,8 +142,8 @@ describe.skipIf(!hasSecrets)('GitHub App against snapwing-fixture-web', () => {
     expect(done).toMatchObject({ id: started.id, status: 'completed', conclusion: 'success' });
     const after = await client.combinedStatus(headSha, BASE);
     expect(after.state).toBe('success');
-    expect(after.required).toEqual([{ name: REVIEW_CHECK_NAME, state: 'success', source: 'check-run' }]);
-    expect(after.all).toContainEqual({ name: REVIEW_CHECK_NAME, state: 'success', source: 'check-run' });
+    expect(after.required).toEqual([{ name: REVIEW_CHECK_NAME, state: 'success', source: 'check-run', appId: APP_ID }]);
+    expect(after.all).toContainEqual({ name: REVIEW_CHECK_NAME, state: 'success', source: 'check-run', appId: APP_ID });
   });
 
   it('closes the pull request with a comment and deletes the branch', async () => {

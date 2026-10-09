@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { StatusStage } from '@snapwing/pipeline/contracts/adapters.ts';
+import { pinFromData } from '../../src/adapters/shared/pr-pin.ts';
 import { buildCard, buildClarify } from '../../src/adapters/teams/cards/cards.ts';
 import {
   MAX_ACTIONS,
@@ -95,6 +96,19 @@ describe('teams cards', () => {
     expect(text).toContain('PR #418 is ready');
     expect(text).toContain('review agent: approve, CI: green, 2 files, +41 -6');
     expect(text).toContain('<at>Dana</at>');
+  });
+
+  it('pr-ready: Merge and Request changes carry the PR and the head the card shows in data; Stop does not (#264)', () => {
+    const data = (ex('pr-ready').actions ?? []).flatMap((a) => (a.type === 'Action.Execute' ? [[a.verb, a.data]] : []));
+    const pinned = { incidentId: ID, prNumber: '418', sha: '7d3f1c9a2b4e6f8091a3c5e7f9b1d3e5a7c9e1f3' };
+    expect(data).toEqual([
+      ['merge', pinned],
+      ['request_changes', pinned],
+      ['stop', { incidentId: ID }],
+    ]);
+    expect(pinFromData(pinned)).toEqual({ prNumber: 418, sha: pinned.sha });
+    expect(pinFromData({ incidentId: ID })).toBeUndefined();
+    expect(pinFromData({ ...pinned, sha: 'not a sha' })).toBeUndefined();
   });
 
   it('mid-flight (A 2.2): the run and claimer ride in data', () => {
@@ -247,6 +261,12 @@ describe('status card', () => {
     expect(verbs(buildStatusCard(ID, makeStatusUpdate('fixing', ctx), o))).toEqual(['stop']);
     expect(verbs(buildStatusCard(ID, makeStatusUpdate('merged', { ...ctx, automatic: true }), o))).toEqual(['revert']);
     expect(buildStatusCard(ID, makeStatusUpdate('production', ctx), o).actions).toBeUndefined();
+  });
+
+  it('Revert carries the merged PR and its merge commit in data (#264)', () => {
+    const sha = 'b'.repeat(40);
+    const c = buildStatusCard(ID, makeStatusUpdate('merged', { ...ctx, automatic: true, pin: { prNumber: 31, sha } }), o);
+    expect(c.actions).toEqual([{ type: 'Action.Execute', title: 'Revert', verb: 'revert', data: { incidentId: ID, prNumber: '31', sha } }]);
   });
 });
 

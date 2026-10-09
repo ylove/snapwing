@@ -6,6 +6,7 @@
 
 import type { StatusUpdate } from '@snapwing/pipeline/contracts/adapters.ts';
 import { emojiFor, mentionToken, statusTextParts } from '@snapwing/pipeline/status/copy.ts';
+import { pinnedValue } from '../../shared/pr-pin.ts';
 import { actions, esc, mention, section, type SlackBlock, type SlackMessage } from './blocks.ts';
 
 export {
@@ -46,13 +47,14 @@ export function buildStatusMessage(incidentId: string, status: StatusUpdate, use
   const blocks: SlackBlock[] = [section(`${emoji} ${text}`)];
   const wanted = status.actions ?? [];
   if (wanted.length > 0) {
+    // Revert carries the merge this message names, and acts on no later one (#264).
     blocks.push(
       actions(
         'status_actions',
         wanted.map((a) =>
           a === 'stop'
             ? { label: 'Stop', actionId: 'stop', value: incidentId, style: 'danger' as const }
-            : { label: 'Revert', actionId: 'revert', value: incidentId },
+            : { label: 'Revert', actionId: 'revert', value: pinnedValue(incidentId, status.pin) },
         ),
       ),
     );

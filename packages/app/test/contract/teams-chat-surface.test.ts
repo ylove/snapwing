@@ -124,6 +124,7 @@ function botRecords(events: { type: string; payload: unknown }[]): { channel: st
 const prCard: PrReadyCard = {
   kind: 'pr-ready',
   prNumber: 418,
+  headSha: 'e'.repeat(40),
   prUrl: 'https://github.com/acme/web/pull/418',
   issueKey: 'WEB-1042',
   reviewVerdict: 'approve',

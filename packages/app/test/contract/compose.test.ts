@@ -357,6 +357,7 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
         return HttpResponse.json({ id: 41, name: 'snapwing/review', status: 'completed' });
       }),
       http.get(`${repoPath}/branches/main/protection/required_status_checks`, () => HttpResponse.json({ message: 'Branch not protected' }, { status: 404 })),
+      http.get(`${repoPath}/rules/branches/main`, () => HttpResponse.json([])),
       http.get(`${repoPath}/commits/:sha/check-runs`, () => HttpResponse.json({ total_count: 0, check_runs: [] })),
       http.get(`${repoPath}/commits/:sha/status`, () => HttpResponse.json({ state: 'success', statuses: [] })),
     );
