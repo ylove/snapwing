@@ -10,7 +10,7 @@
 //   The work item is prepared in the mount: a checkout on the work branch at `SNAPWING_WORKDIR` and
 //   the implementation request at `.git/snapwing/implementation-request.xml` inside it
 //   (`FIXER_REQUEST_PATH`, beside the review input of the review role). The wrapper holds the fixer
-//   token (`SNAPWING_FIXER_TOKEN`) and is the only thing that talks to the fixer API
+//   token and is the only thing that talks to the fixer API
 //   (`SNAPWING_API_URL`, B 9): it checks Stop before starting, reports `cloned` once it has the
 //   checkout, runs the configured harness (`SNAPWING_HARNESS`) through the same adapters the `local`
 //   runner uses, posts each checkpoint, polls Stop after every checkpoint and every 5 seconds, and
@@ -18,6 +18,11 @@
 //   stop`) ends the harness with SIGTERM, then SIGKILL after the grace. The harness never sees the
 //   fixer token. A missing work item is reported as `failed`, so the run degrades instead of hanging
 //   until its budget timer.
+//
+//   Credentials (#273): the run's fixer token and model token arrive in no variable. The runner writes
+//   them to `SNAPWING_CREDENTIALS_FILE` (`/run/snapwing/credentials.json`, a mount of its own), which
+//   the wrapper reads and removes before any harness starts, so they live only in its memory. Both
+//   tokens name the run, and the server revokes them when the run ends or is stopped.
 //
 //   No GitHub credential of any kind is in the container (#262). The harness commits on the work
 //   branch and never pushes. Once it has ended with `done` (or `failed` with a partial branch), the
@@ -38,14 +43,17 @@
 //   fixer API and holds no credential; the server reads and validates the verdict after the container
 //   is gone.
 //
-// Model access (ADR 0017 amendment 1): no provider key ever enters a container. Each CLI's base URL
-// is the model proxy (`SNAPWING_MODEL_PROXY_URL`, which already names the work item) and its key is
-// the per-run model token. The wrapper rebuilds the CLI variables from the proxy URL and keeps a key
-// variable only when it holds a model token (`swm1.`); anything else, a real provider key passed by
-// mistake included, is removed before any harness starts. Without a proxy there is no model access.
+// Model access (ADR 0017 amendment 1, #273): no provider key and no model token ever reaches the agent.
+// With the model proxy (`SNAPWING_MODEL_PROXY_URL`, which already names the work item) and a model token,
+// the wrapper serves the agent's model calls on loopback (forward.ts) and sends each to the proxy with
+// the token; each CLI's base URL is that loopback address and its key variable a fixed placeholder
+// (`LOCAL_MODEL_KEY`). Every model variable the container was started with, a real provider key passed
+// by mistake included, is removed before any harness starts. Without both there is no model access.
+// `SNAPWING_HARNESS_MODEL`, when set, is the model the harness is started with; the proxy pins it anyway.
 
 import { constants } from 'node:fs';
 import { mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import type { OutgoingHttpHeaders } from 'node:http';
 import { devNull, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
 import { bundleWork } from '../../../packages/pipeline/src/fixer/workdir/handoff.ts';
@@ -55,6 +63,7 @@ import { createGeminiHarness } from '../../../packages/pipeline/src/harness/gemi
 import { createGenericHarness } from '../../../packages/pipeline/src/harness/generic/index.ts';
 import type { HarnessCheckpoint, HarnessPort, HarnessResult, WorkItemRef } from '../../../packages/pipeline/src/ports/harness.ts';
 import { REVIEW_FILE_ENV } from '../../../packages/pipeline/src/review/verdict.ts';
+import { startForwarder, type Forwarder } from './forward.ts';
 
 export type Env = Readonly<Record<string, string | undefined>>;
 
@@ -72,10 +81,20 @@ export const KILL_GRACE_MS = 8000;
 export const MAX_VERDICT_BYTES = 1024 * 1024;
 /** A model proxy token (`app/src/model-proxy/token.ts`); a provider key never has this prefix. */
 export const MODEL_TOKEN_PREFIX = 'swm1.';
+/** A fixer API token (`app/src/fixer-api/token.ts`). */
+export const FIXER_TOKEN_PREFIX = 'swf1.';
+/** Where the runner leaves the run's tokens, for the wrapper alone (#273). */
+export const CREDENTIALS_ENV = 'SNAPWING_CREDENTIALS_FILE';
+/** Largest credentials file read. */
+const MAX_CREDENTIALS_BYTES = 16 * 1024;
+/** The key each CLI sends to the loopback forwarder: not a secret, and worth nothing elsewhere. */
+export const LOCAL_MODEL_KEY = 'snapwing-local';
 
 export const MODEL_KEY_VARS = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'GEMINI_API_KEY'] as const;
-/** Variables a CLI reads for model access; every one is removed unless the proxy sets it. */
+/** Variables a CLI reads for model access; every one is removed, and set only for the loopback forwarder. */
 export const MODEL_VARS = [...MODEL_KEY_VARS, 'GOOGLE_API_KEY', 'ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'GOOGLE_GEMINI_BASE_URL'] as const;
+/** Variables no harness may see. */
+const SECRET_VARS = ['SNAPWING_FIXER_TOKEN', 'SNAPWING_GIT_TOKEN', CREDENTIALS_ENV] as const;
 
 export const EXIT_OK = 0;
 /** The fixer reported `failed`, or the review produced no verdict. */
@@ -109,41 +128,72 @@ export interface WrapperDeps {
   reviewDir?: string;
 }
 
-/**
- * The model variables a harness may see: the proxy base URLs and the model token, or nothing. `notes`
- * names every variable that was removed and why (never a value).
- */
-export function modelAccess(env: Env): { vars: Record<string, string>; notes: string[] } {
-  const notes: string[] = [];
-  const raw = env['SNAPWING_MODEL_PROXY_URL']?.trim() ?? '';
-  let proxy: string | undefined;
-  if (raw !== '') {
-    try {
-      const u = new URL(raw);
-      if (u.protocol === 'http:' || u.protocol === 'https:') proxy = raw.replace(/\/+$/, '');
-    } catch {
-      // not a URL
-    }
-    if (proxy === undefined) notes.push('SNAPWING_MODEL_PROXY_URL is not an http(s) URL; no model access');
-  } else {
-    notes.push('no model proxy (SNAPWING_MODEL_PROXY_URL); the harness has no model access');
-  }
+/** The run's tokens, from the credentials file; each only when it has its kind's prefix. */
+export interface Credentials {
+  fixerToken?: string;
+  modelToken?: string;
+}
 
-  const vars: Record<string, string> = {};
-  if (proxy !== undefined) {
-    vars['SNAPWING_MODEL_PROXY_URL'] = proxy;
-    vars['ANTHROPIC_BASE_URL'] = `${proxy}/anthropic`;
-    vars['OPENAI_BASE_URL'] = `${proxy}/openai/v1`;
-    vars['GOOGLE_GEMINI_BASE_URL'] = `${proxy}/google`;
+/**
+ * Reads the credentials file (absolute, outside the checkout, a small regular file, never through a
+ * link) and removes it, so no process that starts later can read it. Empty when there is none.
+ */
+export async function takeCredentials(env: Env, workdir: string): Promise<Credentials> {
+  const path = env[CREDENTIALS_ENV] ?? '';
+  if (!isAbsolute(path) || path === workdir || inside(workdir, path)) return {};
+  const raw = await readSmallFile(path, MAX_CREDENTIALS_BYTES);
+  await rm(path, { force: true }).catch(() => undefined);
+  let value: unknown;
+  try {
+    value = JSON.parse(raw?.toString('utf8') ?? '');
+  } catch {
+    return {};
   }
-  for (const name of MODEL_VARS) {
-    const v = env[name];
-    if (v === undefined || v === '' || name in vars) continue;
-    const isKey = (MODEL_KEY_VARS as readonly string[]).includes(name);
-    if (proxy !== undefined && isKey && v.startsWith(MODEL_TOKEN_PREFIX)) vars[name] = v;
-    else if (isKey || name === 'GOOGLE_API_KEY') notes.push(`removed ${name}: ${proxy === undefined ? 'no model proxy' : 'not a model proxy token'}`);
+  if (typeof value !== 'object' || value === null) return {};
+  const { fixerToken, modelToken } = value as Record<string, unknown>;
+  const out: Credentials = {};
+  if (typeof fixerToken === 'string' && fixerToken.startsWith(FIXER_TOKEN_PREFIX)) out.fixerToken = fixerToken;
+  if (typeof modelToken === 'string' && modelToken.startsWith(MODEL_TOKEN_PREFIX)) out.modelToken = modelToken;
+  return out;
+}
+
+/** The model proxy URL when it is http(s), else undefined. */
+export function modelProxyUrl(env: Env): string | undefined {
+  const raw = env['SNAPWING_MODEL_PROXY_URL']?.trim() ?? '';
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? raw.replace(/\/+$/, '') : undefined;
+  } catch {
+    return undefined;
   }
-  return { vars, notes };
+}
+
+/** What a harness sees for the loopback forwarder at `base`: each CLI's base URL and the placeholder key. */
+export function modelVars(base: string): Record<string, string> {
+  const vars: Record<string, string> = {
+    SNAPWING_MODEL_PROXY_URL: base,
+    ANTHROPIC_BASE_URL: `${base}/anthropic`,
+    OPENAI_BASE_URL: `${base}/openai/v1`,
+    GOOGLE_GEMINI_BASE_URL: `${base}/google`,
+  };
+  for (const name of MODEL_KEY_VARS) vars[name] = LOCAL_MODEL_KEY;
+  return vars;
+}
+
+/** Serves the agent's model calls on loopback, each sent to the proxy with the run's model token and no other credential. */
+export function startModelForwarder(proxy: string, modelToken: string): Promise<Forwarder> {
+  const drop = new Set(['authorization', 'x-api-key', 'x-goog-api-key', 'cookie']);
+  return startForwarder({
+    upstream: proxy,
+    host: '127.0.0.1',
+    allow: () => true,
+    headers: (incoming) => {
+      const out: OutgoingHttpHeaders = {};
+      for (const [name, value] of Object.entries(incoming)) if (!drop.has(name)) out[name] = value;
+      out['authorization'] = `Bearer ${modelToken}`;
+      return out;
+    },
+  });
 }
 
 /** Replaces every model variable in `env` (the process environment the adapters copy from) with `vars`. */
@@ -154,6 +204,13 @@ export function applyModelAccess(env: Record<string, string | undefined>, vars: 
 
 export async function runWrapper(deps: WrapperDeps): Promise<number> {
   const log = deps.log ?? ((line: string) => process.stderr.write(`snapwing-wrapper: ${line}\n`));
+  // Nothing the container was started with reaches a harness as a credential: no token variable (#262,
+  // #273), and no model variable but the loopback forwarder's.
+  if (deps.processEnv !== undefined) {
+    applyModelAccess(deps.processEnv, {});
+    for (const name of SECRET_VARS) delete deps.processEnv[name];
+  }
+  for (const name of [...MODEL_KEY_VARS, 'GOOGLE_API_KEY']) if ((deps.env[name] ?? '') !== '') log(`removed ${name}: a harness gets model access only through the wrapper`);
   const role = deps.env['SNAPWING_ROLE'];
   if (role !== 'fixer' && role !== 'review') {
     log(`SNAPWING_ROLE must be fixer or review, got ${JSON.stringify(role ?? null)}`);
@@ -164,15 +221,18 @@ export async function runWrapper(deps: WrapperDeps): Promise<number> {
     log(job);
     return EXIT_MISCONFIGURED;
   }
-  const model = modelAccess(deps.env);
-  for (const note of model.notes) log(note);
-  if (deps.processEnv !== undefined) {
-    applyModelAccess(deps.processEnv, model.vars);
-    delete deps.processEnv['SNAPWING_FIXER_TOKEN'];
-    // No runner sets a git token (#262); never passed on if something else does.
-    delete deps.processEnv['SNAPWING_GIT_TOKEN'];
+  const credentials = await takeCredentials(deps.env, job.workdir);
+  const proxy = modelProxyUrl(deps.env);
+  let forwarder: Forwarder | undefined;
+  if (proxy !== undefined && credentials.modelToken !== undefined) forwarder = await startModelForwarder(proxy, credentials.modelToken);
+  else log(proxy === undefined ? 'no model proxy (SNAPWING_MODEL_PROXY_URL); the harness has no model access' : 'no model token; the harness has no model access');
+  const vars = forwarder === undefined ? {} : modelVars(forwarder.url);
+  if (deps.processEnv !== undefined) applyModelAccess(deps.processEnv, vars);
+  try {
+    return role === 'fixer' ? await runFixer(deps, job, credentials, vars, log) : await runReview(deps, job, vars, log);
+  } finally {
+    await forwarder?.close();
   }
-  return role === 'fixer' ? runFixer(deps, job, model.vars, log) : runReview(deps, job, model.vars, log);
 }
 
 // Private ----------------------------------------------------------------------------------------
@@ -225,13 +285,15 @@ function readJob(env: Env): Job | string {
 const TEMPLATE_ID = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/;
 
 async function defaultResolve(env: Env, name: string, templateId: string | undefined, graceMs: number): Promise<HarnessPort | string> {
+  const model = env['SNAPWING_HARNESS_MODEL']?.trim() || undefined;
+  const cli = { killGraceMs: graceMs, ...(model === undefined ? {} : { model }) };
   switch (name) {
     case 'claude-code':
-      return createClaudeCodeHarness({ killGraceMs: graceMs });
+      return createClaudeCodeHarness(cli);
     case 'codex':
-      return createCodexHarness({ killGraceMs: graceMs });
+      return createCodexHarness(cli);
     case 'gemini':
-      return createGeminiHarness({ killGraceMs: graceMs });
+      return createGeminiHarness(cli);
     case 'generic': {
       if (templateId === undefined || !TEMPLATE_ID.test(templateId)) return `generic harness template id ${JSON.stringify(templateId ?? null)} is not a plain name`;
       const dir = env['SNAPWING_GENERIC_DIR'] ?? DEFAULT_GENERIC_DIR;
@@ -270,11 +332,11 @@ async function isDirectory(path: string): Promise<boolean> {
 /** A 409 is a stop, except `handoff-refused` on `done`, which carries the server's reason. */
 type Reply = { kind: 'ok' } | { kind: 'stop' } | { kind: 'refused'; reason: string } | { kind: 'error'; message: string };
 
-async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, string>, log: (l: string) => void): Promise<number> {
+async function runFixer(deps: WrapperDeps, job: Job, credentials: Credentials, modelVars: Record<string, string>, log: (l: string) => void): Promise<number> {
   const apiUrl = deps.env['SNAPWING_API_URL']?.trim().replace(/\/+$/, '') ?? '';
-  const token = deps.env['SNAPWING_FIXER_TOKEN'] ?? '';
+  const token = credentials.fixerToken ?? '';
   if (apiUrl === '' || token === '') {
-    log('the fixer role needs SNAPWING_API_URL and SNAPWING_FIXER_TOKEN');
+    log(`the fixer role needs SNAPWING_API_URL and a fixer token in ${CREDENTIALS_ENV}`);
     return EXIT_MISCONFIGURED;
   }
   const handoff = readHandoff(deps.env, job.workdir);

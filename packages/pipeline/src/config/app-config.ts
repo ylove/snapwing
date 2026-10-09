@@ -68,6 +68,16 @@ export interface HarnessConfig {
   fixer: HarnessAdapter;
   review: HarnessAdapter;
   generic: GenericHarnessTemplate[];
+  /**
+   * The model each role's agent is pinned to in a runner container (`fixer-model`, `review-model`): the
+   * model proxy sends every call of that run to it (#273). Absent: the server's default for the provider.
+   */
+  fixerModel?: string;
+  reviewModel?: string;
+  /** Largest `max_tokens` one model call through the proxy may ask for (`max-tokens`, #273). */
+  maxTokens?: number;
+  /** Tokens (input plus output, as the provider reports them) one run may spend through the proxy (`max-run-tokens`, #273). */
+  maxRunTokens?: number;
 }
 
 /** Merge risk gate limits (main 11.3). Durations are ISO 8601. */
@@ -214,6 +224,17 @@ export function loadAppConfig(xml: string): AppConfig {
     review: oneOf(HARNESS_ADAPTERS, harnessEl.getAttribute('review') ?? DEFAULT_HARNESS_ADAPTER, 'harness review'),
     generic,
   };
+  for (const [attr, key] of [['fixer-model', 'fixerModel'], ['review-model', 'reviewModel']] as const) {
+    const model = harnessEl.getAttribute(attr)?.trim();
+    if (model !== undefined && model !== '') harness[key] = model;
+  }
+  for (const [attr, key] of [['max-tokens', 'maxTokens'], ['max-run-tokens', 'maxRunTokens']] as const) {
+    const raw = harnessEl.getAttribute(attr);
+    if (raw === null) continue;
+    const n = Number(raw.trim());
+    if (!Number.isSafeInteger(n) || n < 1) throw new AppConfigError(`<harness ${attr}="${raw}"> must be a positive integer`);
+    harness[key] = n;
+  }
   if ((harness.fixer === 'generic' || harness.review === 'generic') && generic.length === 0) {
     throw new AppConfigError('harness uses "generic" but declares no <generic> command template');
   }

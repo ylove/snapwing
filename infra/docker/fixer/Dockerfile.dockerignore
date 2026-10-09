@@ -4,3 +4,5 @@
 !packages/pipeline/src/**
 !infra/docker/fixer/wrapper.ts
 !infra/docker/fixer/entrypoint.ts
+!infra/docker/fixer/forward.ts
+!infra/docker/fixer/relay.ts

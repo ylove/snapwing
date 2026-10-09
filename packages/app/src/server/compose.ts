@@ -37,10 +37,19 @@
 //   Containers   with the docker runner the review agent and the regression proof run in the fixer's
 //                runner too (`runReview`, `runTests`; `ReviewConfig.harness` is `<harness review>`),
 //                and `POST /model/:workItemId/{provider}/...` is the model proxy (ADR 0017 amendment
-//                1): fixer and review containers reach it at SNAPWING_CONTAINER_API_URL (else
-//                SNAPWING_FIXER_API_URL, else SNAPWING_PUBLIC_URL) with a per-run `issueModelToken`,
-//                and it calls the provider with the key from the secrets port. No provider key ever
-//                enters a container; a provider whose key is unset has no proxy routes.
+//                1), which calls the provider with the key from the secrets port. No provider key ever
+//                enters a container; a provider whose key is unset has no proxy routes. Fixer and
+//                review containers run on an internal network (SNAPWING_CONTAINER_NETWORK, default
+//                `snapwing-runs`) whose only way out is the relay (#273): it forwards the fixer API and
+//                the model proxy to SNAPWING_CONTAINER_API_URL (else SNAPWING_FIXER_API_URL, else
+//                SNAPWING_PUBLIC_URL), reached on SNAPWING_RELAY_NETWORK (default docker's `bridge`).
+//                Test containers have no network unless SNAPWING_TEST_NETWORK names one. A run's fixer
+//                and model tokens name the run and go in its credentials file, never its environment;
+//                the model token pins the role's provider, model (`<harness fixer-model review-model>`,
+//                else `DEFAULT_HARNESS_MODELS`), and `max_tokens` cap (`max-tokens`), and the proxy
+//                meters each run in the state store against `max-run-tokens`. The tokens are revoked
+//                in `run_credentials` when the fixer reports done or failed, when its container is
+//                gone or stopped, and when a review run returns.
 //   Reconciler   follow-ups after a reconciled event: `ci-green` starts `merge.evaluate`, `ci-red` the
 //                fixer retry (`retryFixerAfterCiRed`), a transition to In Progress the fixer.
 //   Phase 4      (the "Phase 4 wiring" section) claims mid-flight (A 2.2): after each claim
@@ -236,8 +245,8 @@ import { CUSTOM_FIELD_ENV, requireCustomFieldIds } from '../jira/projector/field
 import { createStatusResolver } from '../jira/projector/statuses.ts';
 import { fetchScreenshot, screenshotFilename, textToAdf, type LoadScreenshot } from '../jira/projector/ops.ts';
 import { createModelProxyRoutes, MODEL_PROXY_PREFIX, type ModelProviderUpstream, type ModelProxyProvider } from '../model-proxy/routes.ts';
-import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier } from '../model-proxy/token.ts';
-import { createDockerRunner, type DockerModelProxy } from '../providers/docker/runner.ts';
+import { issueModelToken, MAX_MODEL_TOKEN_TTL, modelTokenVerifier, type ModelGrant } from '../model-proxy/token.ts';
+import { createDockerRunner, RELAY_URL, type DockerModelProxy } from '../providers/docker/runner.ts';
 import { createReconcileSources } from '../reconcile/sources.ts';
 import { createGitHubWebhookRoute, GITHUB_WEBHOOK_PATH } from '../webhooks/github.ts';
 import { createJiraWebhookRoute, isInProgressStatus, JIRA_WEBHOOK_PATH } from '../webhooks/jira.ts';
@@ -340,8 +349,13 @@ export const OPTIONAL_SECRETS: readonly string[] = Object.freeze([
 /** How long a model token outlives its run's wall clock, so the run's last call is not refused. */
 export const MODEL_TOKEN_MARGIN_MS = 5 * 60_000;
 
-/** The model provider each CLI harness calls; its containers need that provider's proxy routes. */
+/** The model provider each CLI harness calls; its containers need that provider's proxy routes. A generic harness calls the models' default provider. */
 const HARNESS_PROVIDER: Partial<Record<HarnessAdapter, ModelProxyProvider>> = { 'claude-code': 'anthropic', codex: 'openai', gemini: 'google' };
+
+/** The model a harness role is pinned to when `<harness fixer-model review-model>` names none (#273). */
+export const DEFAULT_HARNESS_MODELS: Readonly<Record<ModelProxyProvider, string>> = { anthropic: 'claude-sonnet-5-5', openai: 'gpt-5', google: 'gemini-2.5-pro' };
+/** The largest `max_tokens` one proxied call may ask for when `<harness max-tokens>` is absent (#273). */
+export const DEFAULT_HARNESS_MAX_TOKENS = 32_000;
 
 /** Startup found secrets unset. The message names them; it never carries a value. */
 export class MissingSecretsError extends Error {
@@ -806,16 +820,25 @@ export const compose: ComposeFn = async (deps) => {
   // is it mounted. The containers' view of the API can differ from the fixer API URL they are given.
   const docker = config.runtime.provider === 'docker';
   const fixerApiUrl = env['SNAPWING_FIXER_API_URL']?.trim() || secret('SNAPWING_PUBLIC_URL');
+  // The server as the relay reaches it; containers reach only the relay (#273).
+  const containerApiUrl = (env['SNAPWING_CONTAINER_API_URL']?.trim() || fixerApiUrl).replace(/\/+$/, '');
   const proxyProviders = modelProxyProviders((name) => s.get(name));
-  const modelProxy: DockerModelProxy = {
-    url: `${(env['SNAPWING_CONTAINER_API_URL']?.trim() || fixerApiUrl).replace(/\/+$/, '')}${MODEL_PROXY_PREFIX}`,
-    token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: modelTokenTtl(run.wallClock) }, fixerTokenKeys),
+  const harnessGrant = (role: 'fixer' | 'review'): ModelGrant => {
+    const provider = HARNESS_PROVIDER[role === 'fixer' ? config.harness.fixer : config.harness.review] ?? config.models.defaultProvider;
+    const model = (role === 'fixer' ? config.harness.fixerModel : config.harness.reviewModel) ?? DEFAULT_HARNESS_MODELS[provider];
+    return { provider, model, maxTokens: config.harness.maxTokens ?? DEFAULT_HARNESS_MAX_TOKENS };
   };
+  const modelProxy: DockerModelProxy = {
+    url: `${RELAY_URL}${MODEL_PROXY_PREFIX}`,
+    token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: modelTokenTtl(run.wallClock), ...harnessGrant(run.role) }, fixerTokenKeys),
+    model: (role) => harnessGrant(role).model,
+  };
+  const revokeRun = (runId: string): Promise<void> => store.revokeRunCredentials(runId).catch((e: unknown) => log.error(`run ${runId}: tokens not revoked: ${message(e)}`));
   if (docker) {
-    for (const [role, adapter] of [['fixer', config.harness.fixer], ['review', config.harness.review]] as const) {
-      const provider = HARNESS_PROVIDER[adapter];
-      if (provider !== undefined && proxyProviders[provider] === undefined) {
-        log.error(`model proxy: the ${role} harness ${adapter} calls ${provider}, but ${PROVIDER_KEY_ENV[provider]} is not set, so its containers have no model access`);
+    for (const role of ['fixer', 'review'] as const) {
+      const { provider } = harnessGrant(role);
+      if (proxyProviders[provider] === undefined) {
+        log.error(`model proxy: the ${role} harness calls ${provider}, but ${PROVIDER_KEY_ENV[provider]} is not set, so its containers have no model access`);
       }
     }
   }
@@ -833,11 +856,14 @@ export const compose: ComposeFn = async (deps) => {
     clock,
     handoff,
     verifyPullRequest: createPullRequestVerifier({ state, github, botLogin: `${secret('GITHUB_APP_SLUG').trim()}[bot]` }),
-    onDone: async ({ incidentId }) => {
+    // The run's tokens end with its final report (#273).
+    onDone: async ({ incidentId, runId }) => {
+      await revokeRun(runId);
       await handleFixerDone(fixerDeps, incidentId);
       await startReview(reviewDeps, { incidentId });
     },
-    onFailed: async ({ incidentId }) => {
+    onFailed: async ({ incidentId, runId }) => {
+      await revokeRun(runId);
       await handleFixerFailed(fixerDeps, incidentId);
     },
   });
@@ -846,11 +872,15 @@ export const compose: ComposeFn = async (deps) => {
       ? createDockerRunner({
           image: fixerImage,
           env: {
-            apiUrl: fixerApiUrl,
-            // Valid for the whole run plus the final report, however long its wall clock.
-            token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, ttl: fixerTokenTtl(j.budget.wallClock) }, fixerTokenKeys),
+            apiUrl: RELAY_URL,
+            // Valid for the whole run plus the final report, however long its wall clock, until the run is revoked.
+            token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: j.workItem.id, runId: j.runId, ttl: fixerTokenTtl(j.budget.wallClock) }, fixerTokenKeys),
             modelProxy,
           },
+          ...(env['SNAPWING_CONTAINER_NETWORK']?.trim() ? { network: env['SNAPWING_CONTAINER_NETWORK'].trim() } : {}),
+          ...(env['SNAPWING_TEST_NETWORK']?.trim() ? { testNetwork: env['SNAPWING_TEST_NETWORK'].trim() } : {}),
+          relay: { upstream: containerApiUrl, ...(env['SNAPWING_RELAY_NETWORK']?.trim() ? { network: env['SNAPWING_RELAY_NETWORK'].trim() } : {}) },
+          revoke: revokeRun,
           // The work item is prepared on the host before the container starts.
           artifacts: store,
           git: { token: gitToken(FIXER_GIT_PERMISSIONS), remoteUrl },
@@ -1860,8 +1890,16 @@ export const compose: ComposeFn = async (deps) => {
       }),
     },
     // No route hands a container a GitHub token (#262): `done` brings the work back as a bundle.
-    ...createFixerRoutes(reporter, fixerTokenVerifier(fixerTokenKeys)),
-    ...(docker ? createModelProxyRoutes({ verify: modelTokenVerifier(fixerTokenKeys), providers: proxyProviders, clock }) : []),
+    ...createFixerRoutes(reporter, fixerTokenVerifier(fixerTokenKeys), { credentials: store }),
+    ...(docker
+      ? createModelProxyRoutes({
+          verify: modelTokenVerifier(fixerTokenKeys),
+          providers: proxyProviders,
+          credentials: store,
+          ...(config.harness.maxRunTokens === undefined ? {} : { maxTokensPerRun: config.harness.maxRunTokens }),
+          onError: (e) => log.error(`model proxy: usage not recorded: ${message(e)}`),
+        })
+      : []),
     ...oauth.routes,
     ...captureRoutes,
   ];
@@ -1986,7 +2024,7 @@ export const compose: ComposeFn = async (deps) => {
     }
   }
 
-  const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'} at ${modelProxy.url}` : '';
+  const proxied = docker ? `, model proxy for ${Object.keys(proxyProviders).join(', ') || 'no provider'}, containers reach ${containerApiUrl} through the relay` : '';
   const chats = [
     ...(slackInbound === undefined ? [] : [`slack ${slackInbound.socket ? 'socket mode' : 'http'}`]),
     ...(teamsInbound === undefined ? [] : ['teams http']),

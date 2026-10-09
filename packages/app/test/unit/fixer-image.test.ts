@@ -1,14 +1,15 @@
-// The fixer image's entrypoint wrapper (infra/docker/fixer/, ADR 0017 with amendment 1,
+// The fixer image's entrypoint wrapper (infra/docker/fixer/, ADR 0017 with amendment 1, #273,
 // docs/harness-generic.md). The real entrypoint runs as a child process with the exact environment
-// the docker runner builds (`fixerEnv`, `reviewEnv`), fake `claude`, `codex`, and `gemini` CLIs on
-// PATH, and a fake fixer API. No docker runs here and the image is never built: the Dockerfile is
-// checked statically.
+// and credentials file the docker runner builds (`fixerEnv`, `reviewEnv`, `fixerCredentials`,
+// `reviewCredentials`), fake `claude`, `codex`, and `gemini` CLIs on PATH, and a fake fixer API and
+// model proxy. No docker runs here and the image is never built: the Dockerfile is checked statically,
+// and the relay runs as a child process too.
 
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, chmodSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { devNull, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,18 +17,32 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FixerJob, ReviewRunJob } from '@snapwing/pipeline/ports/runner.ts';
 import { issueFixerToken } from '../../src/fixer-api/token.ts';
 import { issueModelToken } from '../../src/model-proxy/token.ts';
-import { DOCKER_OUTDIR, DOCKER_WORKDIR, fixerEnv, reviewEnv, type DockerModelProxy } from '../../src/providers/docker/runner.ts';
-import { applyModelAccess, EXIT_FAILED, EXIT_MISCONFIGURED, FIXER_REQUEST_PATH, modelAccess } from '../../../../infra/docker/fixer/wrapper.ts';
+import {
+  DOCKER_CREDENTIALS_DIR,
+  DOCKER_OUTDIR,
+  DOCKER_WORKDIR,
+  fixerCredentials,
+  fixerEnv,
+  reviewCredentials,
+  reviewEnv,
+  type DockerModelProxy,
+  type DockerRunnerEnv,
+} from '../../src/providers/docker/runner.ts';
+import { applyModelAccess, EXIT_FAILED, EXIT_MISCONFIGURED, FIXER_REQUEST_PATH, LOCAL_MODEL_KEY, modelVars, takeCredentials } from '../../../../infra/docker/fixer/wrapper.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const FIXER_DIR = join(ROOT, 'infra/docker/fixer');
 const ENTRYPOINT = join(FIXER_DIR, 'entrypoint.ts');
 
 const keys = { secret: 'fake-hmac-key-for-tests-0123456789abcdef', clock: () => new Date() };
+const grant = { provider: 'anthropic', model: 'claude-pinned', maxTokens: 1000 } as const;
 const proxy: DockerModelProxy = {
   url: 'http://snapwing-api:8080/model',
-  token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: 'PT45M' }, keys),
+  token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: 'PT45M', ...grant }, keys),
+  model: () => 'claude-pinned',
 };
+/** The loopback base URL the wrapper gives a harness, with the path a CLI's base URL adds. */
+const loopback = (suffix: string): RegExp => new RegExp(`^http://127\\.0\\.0\\.1:\\d+${suffix.replaceAll('/', '\\/')}$`);
 const REQUEST = '<implementation-request issue="WEB-1042">guard the cart</implementation-request>\n';
 
 interface ApiCall {
@@ -43,6 +58,8 @@ let bin: string;
 let out: string;
 /** The run's hand-off directory, mounted at `/out` in a container. */
 let handoffDir: string;
+/** The run's credentials directory, mounted at `/run/snapwing` in a container. */
+let credsDir: string;
 let server: Server;
 let apiUrl: string;
 let api: ApiCall[];
@@ -58,7 +75,8 @@ beforeEach(async () => {
   bin = join(dir, 'bin');
   out = join(dir, 'out');
   handoffDir = join(dir, 'handoff');
-  for (const d of [work, bin, out, handoffDir]) mkdirSync(d);
+  credsDir = join(dir, 'creds');
+  for (const d of [work, bin, out, handoffDir, credsDir]) mkdirSync(d);
   api = [];
   stopAfter = undefined;
   checkpointStatus = 200;
@@ -150,9 +168,21 @@ function checkout(request: string | null = REQUEST): void {
 /** A shell line for a fake CLI: commit a change on the work branch, as an agent does. */
 const COMMIT = `echo 'export const total = 2;' > cart.ts && git add -A && git commit -q -m 'WEB-1042: guard the cart total'`;
 
-/** The docker runner's fixer environment for `job`, with the hand-off of the prepared checkout. */
-function fixerContainer(env: Parameters<typeof fixerEnv>[1], job: FixerJob = fixerJob()): Record<string, string> {
+/** The credentials file as the runner writes it. */
+function writeCredentials(credentials: object | undefined): void {
+  if (credentials !== undefined) writeFileSync(join(credsDir, 'credentials.json'), JSON.stringify(credentials), { mode: 0o600 });
+}
+
+/** The docker runner's fixer environment and credentials file for `job`, with the hand-off of the prepared checkout. */
+function fixerContainer(env: DockerRunnerEnv, job: FixerJob = fixerJob()): Record<string, string> {
+  writeCredentials(fixerCredentials(job, env));
   return fixerEnv(job, env, { branch: WORK_BRANCH, expectedBase: baseSha });
+}
+
+/** The docker runner's review environment and credentials file for `job`. */
+function reviewContainer(job: ReviewRunJob, env: DockerRunnerEnv): Record<string, string> {
+  writeCredentials(reviewCredentials(job, env));
+  return reviewEnv(job, env);
 }
 
 function fixerJob(over: Partial<FixerJob> = {}): FixerJob {
@@ -179,7 +209,7 @@ function reviewJob(over: Partial<ReviewRunJob> = {}): ReviewRunJob {
   };
 }
 
-const FIXER_TOKEN = (): string => issueFixerToken({ workItemId: 'WI01', incidentId: 'INC01', ttl: 'PT45M' }, keys);
+const FIXER_TOKEN = (): string => issueFixerToken({ workItemId: 'WI01', incidentId: 'INC01', runId: '01J9ZRUNID0000000000000001', ttl: 'PT45M' }, keys);
 
 /** The runner's container environment with `/work` and `/out` moved to the test's directories. */
 function containerEnv(env: Record<string, string>, extra: Record<string, string> = {}): Record<string, string> {
@@ -187,6 +217,7 @@ function containerEnv(env: Record<string, string>, extra: Record<string, string>
   for (const [k, v] of Object.entries(env)) {
     if (v === DOCKER_WORKDIR || v.startsWith(`${DOCKER_WORKDIR}/`)) moved[k] = work + v.slice(DOCKER_WORKDIR.length);
     else if (v.startsWith(`${DOCKER_OUTDIR}/`)) moved[k] = handoffDir + v.slice(DOCKER_OUTDIR.length);
+    else if (v.startsWith(`${DOCKER_CREDENTIALS_DIR}/`)) moved[k] = credsDir + v.slice(DOCKER_CREDENTIALS_DIR.length);
     else moved[k] = v;
   }
   return { ...moved, PATH: `${bin}:${process.env['PATH'] ?? ''}`, ...extra };
@@ -220,9 +251,10 @@ describe('fixer role', () => {
   it('runs claude-code on the mounted work item, bundles the work branch into /out, and reports done through the fixer API with the run token', async () => {
     checkout();
     const done = { outcome: 'done', branch: 'fix/WEB-1042', prNumber: 87, summary: 'Guard against a null cart', testsAdded: ['test/cart.test.ts'] };
-    fakeCli('claude', [`echo '{"phase":"branched","detail":"fix/WEB-1042"}' >> "$SNAPWING_CHECKPOINT_FILE"`, COMMIT, claudeResult(done)].join('\n'));
+    fakeCli('claude', [`echo '{"phase":"branched","detail":"fix/WEB-1042"}' >> "$SNAPWING_CHECKPOINT_FILE"`, `ls '${credsDir}' > "$out/creds"`, COMMIT, claudeResult(done)].join('\n'));
     const token = FIXER_TOKEN();
     const env = fixerContainer({ apiUrl, token: () => token, modelProxy: proxy });
+    const modelToken = JSON.parse(readFileSync(join(credsDir, 'credentials.json'), 'utf8')).modelToken as string;
 
     const r = await runEntrypoint(containerEnv(env));
 
@@ -243,27 +275,52 @@ describe('fixer role', () => {
     expect(cli['SNAPWING_ROLE']).toBe('fixer');
     expect(cli['SNAPWING_WORKDIR']).toBe(work);
     expect(cli['GIT_CONFIG_NOSYSTEM']).toBe('1');
-    expect(Object.keys(cli)).not.toContain('SNAPWING_FIXER_TOKEN');
+    for (const name of ['SNAPWING_FIXER_TOKEN', 'SNAPWING_CREDENTIALS_FILE']) expect(Object.keys(cli)).not.toContain(name);
+    // Neither token is in its environment, and the credentials file was gone before it started (#273).
     expect(seen('claude', 'env')).not.toContain(token);
-    // Model access is the proxy with the per-run token, exactly as the runner set it.
-    expect(cli['ANTHROPIC_BASE_URL']).toBe(env['ANTHROPIC_BASE_URL']);
-    expect(cli['ANTHROPIC_BASE_URL']).toBe('http://snapwing-api:8080/model/WI01/anthropic');
-    expect(cli['ANTHROPIC_API_KEY']).toBe(env['ANTHROPIC_API_KEY']);
-    expect(cli['ANTHROPIC_API_KEY']?.startsWith('swm1.')).toBe(true);
+    expect(seen('claude', 'env')).not.toContain(modelToken);
+    expect(seen('claude', 'env')).not.toMatch(/swm1\.|swf1\./);
+    expect(readFileSync(join(out, 'claude', 'creds'), 'utf8')).toBe('');
+    // Model access is the wrapper's loopback forwarder with a placeholder key, and the pinned model.
+    expect(cli['ANTHROPIC_BASE_URL']).toMatch(loopback('/anthropic'));
+    expect(cli['ANTHROPIC_API_KEY']).toBe(LOCAL_MODEL_KEY);
+    expect(seen('claude', 'args')).toContain('--model\nclaude-pinned\n');
     expect(r.stderr).not.toContain(token);
   });
 
-  it('removes a provider key that is not a model proxy token, naming it but never its value', async () => {
+  it('sends the agent\'s model calls to the proxy with the run\'s model token, which the agent never holds (#273)', async () => {
+    checkout();
+    const call = [
+      `${JSON.stringify(process.execPath)} -e '`,
+      'fetch(process.env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true", { method: "POST", headers: { "x-api-key": process.env.ANTHROPIC_API_KEY, "content-type": "application/json" }, body: JSON.stringify({ model: "m", max_tokens: 9 }) })',
+      '.then((r) => r.text()).then((t) => require("fs").writeFileSync(process.argv[1], t))',
+      `' "$out/answer"`,
+    ].join('');
+    fakeCli('claude', [call, claudeResult({ outcome: 'done', branch: 'b', summary: '', testsAdded: [] })].join('\n'));
+    const env = fixerContainer({ apiUrl, token: FIXER_TOKEN, modelProxy: { ...proxy, url: `${apiUrl}/model` } });
+    const modelToken = JSON.parse(readFileSync(join(credsDir, 'credentials.json'), 'utf8')).modelToken as string;
+
+    const r = await runEntrypoint(containerEnv(env));
+
+    expect(r.code, r.stderr).toBe(0);
+    const model = api.filter((c) => c.path.startsWith('/model/'));
+    expect(model).toEqual([{ method: 'POST', path: '/model/WI01/anthropic/v1/messages?beta=true', auth: `Bearer ${modelToken}`, body: { model: 'm', max_tokens: 9 } }]);
+    expect(readFileSync(join(out, 'claude', 'answer'), 'utf8')).toBe('{"seq":1}');
+    expect(seen('claude', 'env')).not.toContain(modelToken);
+  });
+
+  it('removes a provider key and a token the container was started with, naming it but never its value', async () => {
     checkout();
     fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: '', testsAdded: [] }));
     const env = fixerContainer({ apiUrl, token: FIXER_TOKEN, modelProxy: proxy });
 
-    const r = await runEntrypoint(containerEnv(env, { ANTHROPIC_API_KEY: 'test-provider-key-not-real', ANTHROPIC_BASE_URL: 'https://api.example.test' }));
+    const r = await runEntrypoint(containerEnv(env, { ANTHROPIC_API_KEY: 'test-provider-key-not-real', ANTHROPIC_BASE_URL: 'https://api.example.test', SNAPWING_FIXER_TOKEN: FIXER_TOKEN() }));
 
     expect(r.code, r.stderr).toBe(0);
     const cli = seenEnv('claude');
-    expect(cli['ANTHROPIC_API_KEY']).toBeUndefined();
-    expect(cli['ANTHROPIC_BASE_URL']).toBe('http://snapwing-api:8080/model/WI01/anthropic');
+    expect(cli['ANTHROPIC_API_KEY']).toBe(LOCAL_MODEL_KEY);
+    expect(cli['ANTHROPIC_BASE_URL']).toMatch(loopback('/anthropic'));
+    expect(cli['SNAPWING_FIXER_TOKEN']).toBeUndefined();
     expect(r.stderr).toContain('removed ANTHROPIC_API_KEY');
     expect(r.stderr).not.toContain('test-provider-key-not-real');
   });
@@ -417,24 +474,26 @@ describe('fixer role', () => {
 
     expect(r.code, r.stderr).toBe(0);
     expect(seen('aider', 'args')).toBe('--yes\n');
-    expect(seenEnv('aider')['ANTHROPIC_BASE_URL']).toBe('http://snapwing-api:8080/model/WI01/anthropic');
+    expect(seenEnv('aider')['ANTHROPIC_BASE_URL']).toMatch(loopback('/anthropic'));
     expect(posts('checkpoint').map((c) => (c.body as { phase: string }).phase)).toEqual(['cloned', 'implemented']);
     expect(posts('done')).toHaveLength(1);
 
     api = [];
+    writeCredentials(fixerCredentials(fixerJob(), { apiUrl, token: FIXER_TOKEN }));
     const missing = await runEntrypoint({ ...env, SNAPWING_HARNESS_TEMPLATE: 'cursor' });
     expect(missing.code).toBe(EXIT_FAILED);
     expect((posts('failed')[0]?.body as { reason: string }).reason).toContain('generic harness template cursor is not in this image');
   });
 
-  it('refuses to start without its API URL or token', async () => {
+  it('refuses to start without its API URL or a fixer token in the credentials file, and never takes one from the environment', async () => {
     checkout();
-    const env = containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN }));
-    delete env['SNAPWING_FIXER_TOKEN'];
+    const env = containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN }), { SNAPWING_FIXER_TOKEN: FIXER_TOKEN() });
+    rmSync(join(credsDir, 'credentials.json'));
 
     const r = await runEntrypoint(env);
 
     expect(r.code).toBe(EXIT_MISCONFIGURED);
+    expect(r.stderr).toContain('SNAPWING_CREDENTIALS_FILE');
     expect(api).toEqual([]);
   });
 
@@ -449,6 +508,8 @@ describe('fixer role', () => {
       const broken = { ...env };
       if (value === undefined) delete broken[name];
       else broken[name] = value;
+      // Each run takes the credentials file.
+      writeCredentials(fixerCredentials(fixerJob(), { apiUrl, token: FIXER_TOKEN }));
       const r = await runEntrypoint(broken);
       expect(r.code, name).toBe(EXIT_MISCONFIGURED);
       expect(r.stderr).toContain(name);
@@ -481,7 +542,7 @@ describe('review role', () => {
     mkdirSync(generic);
     writeFileSync(join(generic, 'reviewer'), join(bin, 'reviewer'));
     fakeCli('reviewer', [body, print('{"outcome":"done","branch":"HEAD","summary":"reviewed","testsAdded":[]}')].join('\n'));
-    return containerEnv(reviewEnv(reviewJob({ harness: { adapter: 'generic', templateId: 'reviewer' } }), { apiUrl, token: FIXER_TOKEN }), { SNAPWING_GENERIC_DIR: generic });
+    return containerEnv(reviewContainer(reviewJob({ harness: { adapter: 'generic', templateId: 'reviewer' } }), { apiUrl, token: FIXER_TOKEN }), { SNAPWING_GENERIC_DIR: generic });
   }
 
   it.each([
@@ -491,7 +552,7 @@ describe('review role', () => {
   ] as const)('feeds the review input to %s on stdin and puts the verdict from its final message in the mount', async (adapter, cli, baseVar, keyVar, suffix) => {
     reviewTree();
     fakeCli(cli, finalMessage(cli, message));
-    const env = reviewEnv(reviewJob({ harness: { adapter } }), { apiUrl, token: FIXER_TOKEN, modelProxy: proxy });
+    const env = reviewContainer(reviewJob({ harness: { adapter } }), { apiUrl, token: FIXER_TOKEN, modelProxy: proxy });
 
     const r = await runEntrypoint(containerEnv(env));
 
@@ -503,9 +564,11 @@ describe('review role', () => {
     expect(seenBy['SNAPWING_ROLE']).toBe('review');
     // The agent is never told where a verdict file is (#263).
     expect(seenBy['SNAPWING_REVIEW_FILE']).toBeUndefined();
-    expect(seenBy[baseVar]).toBe(`http://snapwing-api:8080/model/WI01${suffix}`);
-    expect(seenBy[keyVar]?.startsWith('swm1.')).toBe(true);
-    for (const absent of ['SNAPWING_FIXER_TOKEN', 'SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_API_URL']) expect(seenBy[absent]).toBeUndefined();
+    expect(seenBy[baseVar]).toMatch(loopback(suffix));
+    expect(seenBy[keyVar]).toBe(LOCAL_MODEL_KEY);
+    expect(seen(cli, 'env')).not.toContain('swm1.');
+    expect(existsSync(join(credsDir, 'credentials.json'))).toBe(false);
+    for (const absent of ['SNAPWING_FIXER_TOKEN', 'SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_API_URL', 'SNAPWING_CREDENTIALS_FILE']) expect(seenBy[absent]).toBeUndefined();
     expect(api).toEqual([]);
   });
 
@@ -514,7 +577,7 @@ describe('review role', () => {
     const planted = join(out, 'planted');
     fakeCli('claude', [`printf '%s' '${approve}' > "$SNAPWING_WORKDIR/.git/snapwing/verdict.json"`, `cp "$SNAPWING_WORKDIR/.git/snapwing/verdict.json" '${planted}'`, finalMessage('claude', message)].join('\n'));
 
-    const r = await runEntrypoint(containerEnv(reviewEnv(reviewJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(reviewContainer(reviewJob(), { apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code, r.stderr).toBe(0);
     expect(readFileSync(planted, 'utf8')).toBe(approve);
@@ -552,7 +615,7 @@ describe('review role', () => {
     reviewTree();
     fakeCli('claude', 'exit 0');
 
-    const r = await runEntrypoint(containerEnv(reviewEnv(reviewJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(reviewContainer(reviewJob(), { apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code).toBe(EXIT_FAILED);
     expect(r.stderr).toContain('no verdict file');
@@ -562,7 +625,7 @@ describe('review role', () => {
     reviewTree();
     fakeCli('claude', [`printf '%s' '${approve}' > "$SNAPWING_WORKDIR/.git/snapwing/verdict.json"`, finalMessage('claude', message), 'exit 3'].join('\n'));
 
-    const r = await runEntrypoint(containerEnv(reviewEnv(reviewJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(reviewContainer(reviewJob(), { apiUrl, token: FIXER_TOKEN })));
 
     // The review job reads nothing back from a run that exits non-zero.
     expect(r.code).toBe(EXIT_FAILED);
@@ -570,7 +633,7 @@ describe('review role', () => {
 
   it('refuses a verdict path outside the mount', async () => {
     reviewTree();
-    const env = containerEnv(reviewEnv(reviewJob(), { apiUrl, token: FIXER_TOKEN }), { SNAPWING_REVIEW_FILE: join(dir, 'elsewhere.json') });
+    const env = containerEnv(reviewContainer(reviewJob(), { apiUrl, token: FIXER_TOKEN }), { SNAPWING_REVIEW_FILE: join(dir, 'elsewhere.json') });
 
     const r = await runEntrypoint(env);
 
@@ -578,34 +641,64 @@ describe('review role', () => {
   });
 });
 
-describe('modelAccess', () => {
-  it('derives every base URL from the proxy and keeps only model tokens', () => {
-    const r = modelAccess({
-      SNAPWING_MODEL_PROXY_URL: 'http://api:8080/model/WI01/',
-      ANTHROPIC_API_KEY: 'swm1.a.b',
-      OPENAI_API_KEY: 'test-openai-key-not-real',
-      GOOGLE_API_KEY: 'swm1.a.b',
-      OPENAI_BASE_URL: 'https://api.example.test/v1',
+describe('model access and credentials (#273)', () => {
+  it('derives every base URL from the loopback forwarder, with the placeholder key', () => {
+    expect(modelVars('http://127.0.0.1:4100')).toEqual({
+      SNAPWING_MODEL_PROXY_URL: 'http://127.0.0.1:4100',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:4100/anthropic',
+      OPENAI_BASE_URL: 'http://127.0.0.1:4100/openai/v1',
+      GOOGLE_GEMINI_BASE_URL: 'http://127.0.0.1:4100/google',
+      ANTHROPIC_API_KEY: LOCAL_MODEL_KEY,
+      OPENAI_API_KEY: LOCAL_MODEL_KEY,
+      CODEX_API_KEY: LOCAL_MODEL_KEY,
+      GEMINI_API_KEY: LOCAL_MODEL_KEY,
     });
-    expect(r.vars).toEqual({
-      SNAPWING_MODEL_PROXY_URL: 'http://api:8080/model/WI01',
-      ANTHROPIC_BASE_URL: 'http://api:8080/model/WI01/anthropic',
-      OPENAI_BASE_URL: 'http://api:8080/model/WI01/openai/v1',
-      GOOGLE_GEMINI_BASE_URL: 'http://api:8080/model/WI01/google',
-      ANTHROPIC_API_KEY: 'swm1.a.b',
-    });
-    expect(r.notes).toEqual(['removed OPENAI_API_KEY: not a model proxy token', 'removed GOOGLE_API_KEY: not a model proxy token']);
   });
 
-  it('gives nothing without a proxy or with one that is not http(s)', () => {
-    expect(modelAccess({ ANTHROPIC_API_KEY: 'swm1.a.b' }).vars).toEqual({});
-    expect(modelAccess({ SNAPWING_MODEL_PROXY_URL: 'file:///etc/passwd', ANTHROPIC_API_KEY: 'swm1.a.b' }).vars).toEqual({});
+  it('takes the credentials once: the file is removed, and only tokens of the right kind are kept', async () => {
+    const file = join(credsDir, 'credentials.json');
+    writeFileSync(file, JSON.stringify({ fixerToken: 'swm1.wrong.kind', modelToken: 'swm1.a.b' }));
+    expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({ modelToken: 'swm1.a.b' });
+    expect(existsSync(file)).toBe(false);
+    expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({});
+    // Never from inside the checkout, and never through a link.
+    writeFileSync(join(work, 'creds.json'), JSON.stringify({ fixerToken: 'swf1.a.b' }));
+    expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: join(work, 'creds.json') }, work)).toEqual({});
+    symlinkSync(join(work, 'creds.json'), file);
+    expect(await takeCredentials({ SNAPWING_CREDENTIALS_FILE: file }, work)).toEqual({});
   });
 
   it('replaces the model variables of the process environment', () => {
     const env: Record<string, string | undefined> = { PATH: '/bin', ANTHROPIC_API_KEY: 'test-key-not-real', GOOGLE_API_KEY: 'x' };
     applyModelAccess(env, { ANTHROPIC_BASE_URL: 'http://p/anthropic' });
     expect(env).toEqual({ PATH: '/bin', ANTHROPIC_BASE_URL: 'http://p/anthropic' });
+  });
+});
+
+describe('the relay (#273)', () => {
+  it('forwards only the fixer API and the model proxy to its upstream, headers as sent, and nothing else', async () => {
+    const probe = createNetServer();
+    await new Promise<void>((r) => probe.listen(0, '127.0.0.1', r));
+    const port = (probe.address() as AddressInfo).port;
+    await new Promise<void>((r) => probe.close(() => r()));
+    const child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(FIXER_DIR, 'relay.ts')], {
+      env: { PATH: process.env['PATH'] ?? '', SNAPWING_RELAY_UPSTREAM: apiUrl, SNAPWING_RELAY_PORT: String(port) },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    try {
+      await new Promise<void>((r) => child.stderr.on('data', (c: Buffer) => c.toString('utf8').includes('listening') && r()));
+      const relay = `http://127.0.0.1:${port}`;
+      const stop = await fetch(`${relay}/fixer/WI01/stop`, { headers: { authorization: 'Bearer swf1.a.b' } });
+      expect(stop.status).toBe(200);
+      const model = await fetch(`${relay}/model/WI01/anthropic/v1/messages?key=dropped`, { method: 'POST', headers: { 'x-api-key': 'k' }, body: '{"a":1}' });
+      expect(model.status).toBe(200);
+      for (const path of ['/', '/healthz', '/metrics', '/fixer', '/webhooks/github', '/model/../metrics', '/fixer/%2e%2e/metrics']) {
+        expect((await fetch(`${relay}${path}`)).status, path).toBe(404);
+      }
+      expect(api.map((c) => `${c.method} ${c.path} ${c.auth ?? ''}`)).toEqual(['GET /fixer/WI01/stop Bearer swf1.a.b', 'POST /model/WI01/anthropic/v1/messages ']);
+    } finally {
+      child.kill('SIGTERM');
+    }
   });
 });
 
@@ -631,22 +724,25 @@ describe('the image definition', () => {
     expect(instructions.at(-1)).toBe('ENTRYPOINT ["/usr/bin/tini", "--", "node", "--disable-warning=ExperimentalWarning", "/opt/snapwing/infra/docker/fixer/entrypoint.ts"]');
   });
 
-  it('bakes in no secret: no key or token variable, and only the wrapper and the pipeline source in the context', () => {
+  it('bakes in no secret: no key or token variable, and only the wrapper, the relay, and the pipeline source in the context', () => {
     for (const l of instructions.filter((x) => /^(ENV|ARG) /.test(x))) expect(l).not.toMatch(/KEY|TOKEN|SECRET|PASSWORD/i);
     const copies = instructions.filter((l) => l.startsWith('COPY ')).map((l) => l.split(/\s+/).slice(1, -1));
     // No credential helper either: nothing in the image fetches or holds a GitHub token (#262).
-    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
+    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/forward.ts', 'infra/docker/fixer/relay.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
     const ignore = readFileSync(join(FIXER_DIR, 'Dockerfile.dockerignore'), 'utf8').split('\n').filter((l) => l !== '' && !l.startsWith('#'));
     expect(ignore[0]).toBe('*');
     expect(ignore.slice(1).every((l) => l.startsWith('!packages/pipeline/src/') || l.startsWith('!infra/docker/fixer/'))).toBe(true);
   });
 
   it('imports nothing the image does not copy', () => {
-    const wrapper = readFileSync(join(FIXER_DIR, 'wrapper.ts'), 'utf8');
-    const specs = [...wrapper.matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1] ?? '');
-    for (const s of specs) {
-      if (s.startsWith('node:')) continue;
-      expect(resolve(FIXER_DIR, s).startsWith(join(ROOT, 'packages/pipeline/src/'))).toBe(true);
+    const copied = ['entrypoint.ts', 'wrapper.ts', 'forward.ts', 'relay.ts'].map((f) => join(FIXER_DIR, f));
+    for (const file of copied) {
+      const specs = [...readFileSync(file, 'utf8').matchAll(/^import .* from '([^']+)';$/gm)].map((m) => m[1] ?? '');
+      for (const s of specs) {
+        if (s.startsWith('node:')) continue;
+        const target = resolve(FIXER_DIR, s);
+        expect(target.startsWith(join(ROOT, 'packages/pipeline/src/')) || copied.includes(target), `${file}: ${s}`).toBe(true);
+      }
     }
   });
 

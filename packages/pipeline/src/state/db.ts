@@ -249,6 +249,18 @@ export interface CaptureTokensTable {
   revoked_at: TsOpt;
 }
 
+/** A runner container run's token use and revocation (#273). Not a projection. bigint reads back as a string on Postgres. */
+export interface RunCredentialsTable {
+  run_id: string;
+  model_requests: Generated<number>;
+  input_tokens: ColumnType<number | string, number | undefined, number>;
+  output_tokens: ColumnType<number | string, number | undefined, number>;
+  artifacts: Generated<number>;
+  artifact_bytes: ColumnType<number | string, number | undefined, number>;
+  revoked_at: TsOpt;
+  created_at: TsDefault;
+}
+
 export interface Database {
   workspaces: WorkspacesTable;
   config_versions: ConfigVersionsTable;
@@ -266,6 +278,7 @@ export interface Database {
   linked_identities: LinkedIdentitiesTable;
   bot_messages: BotMessagesTable;
   capture_tokens: CaptureTokensTable;
+  run_credentials: RunCredentialsTable;
 }
 
 /** Every table the migration set creates, in creation order. */
@@ -286,6 +299,7 @@ export const STATE_TABLES: readonly (keyof Database)[] = Object.freeze([
   'linked_identities',
   'bot_messages',
   'capture_tokens',
+  'run_credentials',
 ] as const);
 
 // Factory ------------------------------------------------------------------------------------------

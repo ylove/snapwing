@@ -1,6 +1,8 @@
-// Docker RunnerPort (main 14.3, main 10.2, ADR 0017). A fake `docker` script
-// records its argv and the SNAPWING_ and other environment it was given, and copies a fixer's mount
-// as it was at `docker run`; no real docker ever runs. Fixer checkouts clone a local bare repository.
+// Docker RunnerPort (main 14.3, main 10.2, ADR 0017, #273). A fake `docker` script
+// records its argv and the SNAPWING_ and other environment it was given, and copies a fixer's mounts
+// as they were at `docker run`; no real docker ever runs. Fixer checkouts clone a local bare repository.
+// `network inspect` answers from the `net` file (default: internal, bridge, no host address) and
+// `inspect snapwing-relay` from the `relay` file (default: no such container).
 
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,7 +16,7 @@ import { createBareRepo, git, type BareRepo } from '../../../pipeline/test/helpe
 import { FIXER_HOOKS_PATH, FIXER_REQUEST_PATH } from '../../../../infra/docker/fixer/wrapper.ts';
 import { issueFixerToken, verifyFixerToken } from '../../src/fixer-api/token.ts';
 import { issueModelToken, verifyModelToken } from '../../src/model-proxy/token.ts';
-import { containerName, createDockerRunner, FIXER_REQUEST_FILE, type DockerModelProxy, type DockerRunner } from '../../src/providers/docker/runner.ts';
+import { containerName, createDockerRunner, FIXER_REQUEST_FILE, RELAY_URL, type DockerModelProxy, type DockerRunner } from '../../src/providers/docker/runner.ts';
 
 const SECRET = 'fake-hmac-key-for-tests-0123456789abcdef';
 const clock = () => new Date('2026-10-02T12:00:00Z');
@@ -34,13 +36,23 @@ cat "$tmp" >> "$dir/calls.log"; rm -f "$tmp"
 [ "$1" = run ] && : > "$dir/run-logged"
 mode=$(cat "$dir/mode" 2>/dev/null)
 case "$1" in
+  network)
+    case "$2" in
+      inspect) net=$(cat "$dir/net" 2>/dev/null || echo 'true bridge true')
+               [ "$net" = missing ] && { echo "Error response from daemon: network $5 not found" >&2; echo 'true bridge true' > "$dir/net.next"; exit 1; }
+               echo "$net"; exit 0 ;;
+      create) [ -f "$dir/net.next" ] && mv "$dir/net.next" "$dir/net"; exit 0 ;;
+    esac ;;
+  inspect) relay=$(cat "$dir/relay" 2>/dev/null)
+           [ -z "$relay" ] && { echo "Error: No such object: $4" >&2; exit 1; }
+           echo "$relay"; exit 0 ;;
   wait) n=0
         while [ "$(cat "$dir/waitmode" 2>/dev/null)" = running ] && [ $n -lt 200 ]; do sleep 0.05; n=$((n+1)); done
         [ "$(cat "$dir/waitmode" 2>/dev/null)" = gone ] && { echo "Error response from daemon: No such container: $2" >&2; exit 1; }
         echo 0; exit 0 ;;
   run) [ "$mode" = run-fail ] && { echo "Unable to find image 'nope' locally" >&2; exit 125; }
-       case " $* " in *" --name snapwing-fixer-"*)
-         for a in "$@"; do case "$a" in *:/work) cp -R "\${a%:/work}" "$dir/snapshot" ;; esac; done ;;
+       case " $* " in *" --name snapwing-fixer-"*|*" --name snapwing-review-"*)
+         for a in "$@"; do case "$a" in *:/work) [ -d "$dir/snapshot" ] || cp -R "\${a%:/work}" "$dir/snapshot" ;; *:/run/snapwing) cp -R "\${a%:/run/snapwing}" "$dir/creds" ;; esac; done ;;
        esac
        case " $* " in *" --name snapwing-review-"*)
          [ "$mode" = hang ] && exec sleep 30
@@ -95,7 +107,21 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** The run network and relay calls, which most tests leave out. */
+function isEgress(c: Call): boolean {
+  return c.args[0] === 'network' || c.args[0] === 'inspect' || c.args.includes('snapwing-relay');
+}
+
 function calls(): Call[] {
+  return allCalls().filter((c) => !isEgress(c));
+}
+
+/** The credentials the last fixer or review container found in its credentials mount. */
+function credentials(): Record<string, string> {
+  return JSON.parse(readFileSync(join(dir, 'creds', 'credentials.json'), 'utf8')) as Record<string, string>;
+}
+
+function allCalls(): Call[] {
   const file = join(dir, 'calls.log');
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
@@ -180,7 +206,7 @@ function runner(over: Partial<Parameters<typeof createDockerRunner>[0]> = {}): D
     workdirRoot: join(dir, 'scratch'),
     env: {
       apiUrl: 'http://snapwing-api:8080',
-      token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: 'INC01', ttl: 'PT45M' }, keys),
+      token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: 'INC01', runId: j.runId, ttl: 'PT45M' }, keys),
     },
     artifacts: artifactStore,
     git: { token: async () => GIT_TOKEN, remoteUrl: () => origin.url },
@@ -196,7 +222,7 @@ function runner(over: Partial<Parameters<typeof createDockerRunner>[0]> = {}): D
 }
 
 describe('createDockerRunner runFixer', () => {
-  it('runs docker run --rm -d with a derived name, limits, the checkout and hand-off mounts, and no other mounts', async () => {
+  it('runs docker run --rm -d with a derived name, limits, the checkout, hand-off, and credentials mounts, and no other mounts', async () => {
     const r = await runner({ network: 'snapwing-net', memory: '2g', cpus: '1.5' }).runFixer(job());
     expect(r).toEqual({ runId: RUN_ID });
     const [c] = calls();
@@ -210,8 +236,8 @@ describe('createDockerRunner runFixer', () => {
     expect(a).toContain('--cap-drop');
     expect(a.at(-1)).toBe('snapwing-fixer:test');
     const mounts = a.flatMap((x, i) => (x === '-v' || x === '--volume' || x === '--mount' ? [a[i + 1]] : []));
-    // The checkout and the hand-off directory; never the run directory itself, which holds the record.
-    expect(mounts).toEqual([`${join(dir, 'scratch', RUN_ID, 'work')}:/work`, `${join(dir, 'scratch', RUN_ID, 'out')}:/out`]);
+    // The checkout, the hand-off directory, and the credentials; never the run directory itself, which holds the record.
+    expect(mounts).toEqual([`${join(dir, 'scratch', RUN_ID, 'work')}:/work`, `${join(dir, 'scratch', RUN_ID, 'out')}:/out`, `${join(dir, 'scratch', RUN_ID, 'creds')}:/run/snapwing`]);
     expect(a).not.toContain('--privileged');
     // As the server's uid:gid, so it can write the host-prepared checkout and the server can remove it.
     expect(a[a.indexOf('--user') + 1]).toBe(`${process.getuid?.()}:${process.getgid?.()}`);
@@ -319,17 +345,23 @@ describe('createDockerRunner runFixer', () => {
     expect(calls()).toEqual([]);
   });
 
-  it('omits --network when none is configured', async () => {
+  it('joins the internal run network by default', async () => {
     await runner().runFixer(job());
-    expect(calls()[0]!.args).not.toContain('--network');
+    const a = calls()[0]!.args;
+    expect(a[a.indexOf('--network') + 1]).toBe('snapwing-runs');
   });
 
-  it('passes the job, API URL, and only the scoped token as env, by name, never in argv', async () => {
+  it('passes the job and API URL as env by name, and the run-bound token only in the credentials file (#273)', async () => {
     await runner().runFixer(job({ harness: { adapter: 'generic', templateId: 'aider' }, implementationRequestVersion: 3 }));
     const c = calls()[0]!;
-    const token = c.env['SNAPWING_FIXER_TOKEN'];
-    expect(token).toBeDefined();
-    expect(verifyFixerToken(token!, 'WI01', keys)).toMatchObject({ ok: true, claims: { workItemId: 'WI01', incidentId: 'INC01' } });
+    expect(c.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
+    expect(c.env['SNAPWING_CREDENTIALS_FILE']).toBe('/run/snapwing/credentials.json');
+    const token = credentials()['fixerToken'] ?? '';
+    expect(verifyFixerToken(token, 'WI01', keys)).toMatchObject({ ok: true, claims: { workItemId: 'WI01', incidentId: 'INC01', runId: RUN_ID } });
+    expect(JSON.stringify(c.env)).not.toContain(token);
+    // The file is the run's own: a private directory, a private file.
+    expect(statSync(join(dir, 'scratch', RUN_ID, 'creds')).mode & 0o777).toBe(0o700);
+    expect(statSync(join(dir, 'scratch', RUN_ID, 'creds', 'credentials.json')).mode & 0o777).toBe(0o600);
     expect(c.env['SNAPWING_API_URL']).toBe('http://snapwing-api:8080');
     expect(c.env['SNAPWING_RUN_ID']).toBe(RUN_ID);
     expect(c.env['SNAPWING_ISSUE_KEY']).toBe('WEB-1042');
@@ -343,8 +375,6 @@ describe('createDockerRunner runFixer', () => {
     // Each SNAPWING_ variable the CLI got is forwarded by name only.
     const forwarded = c.args.flatMap((x, i) => (x === '-e' ? [c.args[i + 1]!] : [])).filter((n) => n !== 'HOME=/tmp' && n !== 'TMPDIR=/tmp');
     expect(forwarded.every((n) => /^[A-Z_]+$/.test(n))).toBe(true);
-    expect(forwarded).toContain('SNAPWING_FIXER_TOKEN');
-    expect(c.args.join(' ')).not.toContain(token!);
     expect(c.args.join(' ')).not.toContain('swf1.');
 
     // The server's own secret and the rest of its environment do not reach docker.
@@ -379,6 +409,72 @@ describe('createDockerRunner runFixer', () => {
   });
 });
 
+describe('createDockerRunner network and relay (#273)', () => {
+  const relay = { upstream: 'http://host.docker.internal:3000' };
+  const LABEL = `snapwing-fixer:test ${relay.upstream} bridge snapwing-runs`;
+  const egress = (): string[][] => allCalls().filter(isEgress).map((c) => c.args);
+
+  it('creates the run network internal, with no host address on its bridge, when it is missing', async () => {
+    writeFileSync(join(dir, 'net'), 'missing');
+    await runner().runFixer(job());
+    expect(egress()).toEqual([
+      ['network', 'inspect', '--format', '{{.Internal}} {{.Driver}} {{index .Options "com.docker.network.bridge.inhibit_ipv4"}}', 'snapwing-runs'],
+      ['network', 'create', '--internal', '-o', 'com.docker.network.bridge.inhibit_ipv4=true', '--label', 'snapwing.managed=true', 'snapwing-runs'],
+      ['network', 'inspect', '--format', '{{.Internal}} {{.Driver}} {{index .Options "com.docker.network.bridge.inhibit_ipv4"}}', 'snapwing-runs'],
+    ]);
+    expect(calls().map((c) => c.args[0])).toContain('run');
+  });
+
+  it('refuses to start a fixer or review run on a network that reaches the internet or the host, leaving nothing behind', async () => {
+    const revoked: string[] = [];
+    for (const net of ['false bridge true', 'true bridge <no value>']) {
+      writeFileSync(join(dir, 'net'), net);
+      await expect(runner({ revoke: async (id) => void revoked.push(id) }).runFixer(job())).rejects.toThrow(/lets run containers reach/);
+      expect(existsSync(join(dir, 'scratch', RUN_ID))).toBe(false);
+    }
+    await expect(runner().runReview({ ...job(), checkout: join(dir, 'tree'), inputFile: 'in.xml', verdictFile: 'v.json', budget: { wallClock: 'PT1M', attempts: 1 } })).rejects.toThrow(/lets run containers reach the host/);
+    expect(calls()).toEqual([]);
+    expect(revoked).toEqual([RUN_ID, RUN_ID]);
+  });
+
+  it('starts the relay hardened on the bridge, then joins it to the run network as snapwing-api', async () => {
+    await runner({ relay }).runFixer(job());
+    const steps = egress();
+    expect(steps.map((a) => a.slice(0, 2))).toEqual([
+      ['network', 'inspect'],
+      ['inspect', '--format'],
+      ['run', '-d'],
+      ['network', 'connect'],
+    ]);
+    const run = steps[2]!;
+    expect(run[run.indexOf('--name') + 1]).toBe('snapwing-relay');
+    expect(run[run.indexOf('--label') + 1]).toBe(`snapwing.relay=${LABEL}`);
+    expect(run[run.indexOf('--network') + 1]).toBe('bridge');
+    for (const flag of ['--read-only', '--cap-drop', '--restart']) expect(run).toContain(flag);
+    expect(run.slice(-3)).toEqual(['snapwing-fixer:test', '--disable-warning=ExperimentalWarning', '/opt/snapwing/infra/docker/fixer/relay.ts']);
+    expect(allCalls().find((c) => c.args.includes('snapwing-relay') && c.args[0] === 'run')?.env['SNAPWING_RELAY_UPSTREAM']).toBe(relay.upstream);
+    expect(steps[3]).toEqual(['network', 'connect', '--alias', 'snapwing-api', 'snapwing-runs', 'snapwing-relay']);
+    expect(RELAY_URL).toBe('http://snapwing-api:8080');
+  });
+
+  it('keeps a running relay started for this image, upstream, and networks, and replaces any other', async () => {
+    writeFileSync(join(dir, 'relay'), `true ${LABEL}`);
+    await runner({ relay }).runFixer(job());
+    expect(egress().map((a) => a[0])).toEqual(['network', 'inspect']);
+
+    writeFileSync(join(dir, 'calls.log'), '');
+    writeFileSync(join(dir, 'relay'), 'true snapwing-fixer:old http://elsewhere:3000 bridge snapwing-runs');
+    await runner({ relay }).runReview({ ...job({ runId: '01J9ZREVIEWRUN000000000009' }), checkout: join(dir, 'tree'), inputFile: 'in.xml', verdictFile: 'v.json', budget: { wallClock: 'PT1M', attempts: 1 } });
+    expect(egress().map((a) => a.slice(0, 2))).toEqual([
+      ['network', 'inspect'],
+      ['inspect', '--format'],
+      ['rm', '-f'],
+      ['run', '-d'],
+      ['network', 'connect'],
+    ]);
+  });
+});
+
 describe('createDockerRunner cancel', () => {
   it('stops the container by name with the grace period (SIGTERM, then kill)', async () => {
     await runner({ killGrace: 'PT7S' }).cancel(RUN_ID);
@@ -408,7 +504,26 @@ describe('createDockerRunner cancel', () => {
     await r.cancel(runId);
     const all = calls().filter((c) => c.args[0] !== 'wait');
     expect(all.map((c) => c.args[0])).toEqual(['run', 'stop']);
-    expect(all[1]!.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
+    expect(JSON.stringify(all[1]!.env)).not.toContain('swf1.');
+  });
+
+  it("revokes the run's tokens before docker stop, and once its container has ended (#273)", async () => {
+    const revoked: string[] = [];
+    const revoke = async (runId: string): Promise<void> => {
+      revoked.push(`${runId} ${calls().some((c) => c.args[0] === 'stop') ? 'after' : 'before'} the stop`);
+    };
+    writeFileSync(join(dir, 'waitmode'), 'running');
+    const r = runner({ revoke });
+    await r.runFixer(job());
+    expect(revoked).toEqual([]);
+    await r.cancel(RUN_ID);
+    expect(revoked).toEqual([`${RUN_ID} before the stop`]);
+    writeFileSync(join(dir, 'waitmode'), '');
+    await r.wait(RUN_ID);
+    expect(revoked).toEqual([`${RUN_ID} before the stop`, `${RUN_ID} after the stop`]);
+    // A run that never started is revoked too.
+    await expect(runner({ revoke }).runFixer(job({ runId: '01J9ZRUNID0000000000000009', implementationRequestArtifactId: 'NOPE' }))).rejects.toThrow();
+    expect(revoked.at(-1)).toMatch(/^01J9ZRUNID0000000000000009 /);
   });
 
   it('rejects an invalid run id without calling docker', async () => {
@@ -491,7 +606,7 @@ describe('createDockerRunner runTests (ADR 0017)', () => {
     ...over,
   });
 
-  it('runs the command attached in the fixer image, the tree as its only mount, no token, as the server uid', async () => {
+  it('runs the command attached in the fixer image, the tree as its only mount, no network, no token, as the server uid', async () => {
     const r = await runner({ network: 'snapwing-net' }).runTests(testJob({ env: { CI: '1' } }));
     expect(r).toMatchObject({ exitCode: 0, timedOut: false });
     expect(r.output).toContain('tests said hello');
@@ -503,7 +618,8 @@ describe('createDockerRunner runTests (ADR 0017)', () => {
     expect(a.slice(0, 2)).toEqual(['run', '--rm']);
     expect(a).not.toContain('-d');
     expect(a[a.indexOf('--name') + 1]).toBe(`snapwing-tests-${TEST_RUN}`);
-    expect(a[a.indexOf('--network') + 1]).toBe('snapwing-net');
+    // No network at all (#273), whatever network fixer and review containers join.
+    expect(a[a.indexOf('--network') + 1]).toBe('none');
     expect(a[a.indexOf('--cap-drop') + 1]).toBe('ALL');
     expect(a).not.toContain('--privileged');
     const mounts = a.flatMap((x, i) => (x === '-v' || x === '--volume' || x === '--mount' ? [a[i + 1]] : []));
@@ -543,10 +659,12 @@ describe('createDockerRunner runTests (ADR 0017)', () => {
     ]);
   });
 
-  it('honours a configured --user', async () => {
-    await runner({ testUser: '1000:1000' }).runTests(testJob());
+  it('honours a configured --user and test network, and never touches the run network or relay', async () => {
+    await runner({ testUser: '1000:1000', testNetwork: 'test-registry-net' }).runTests(testJob());
     const a = calls()[0]!.args;
     expect(a[a.indexOf('--user') + 1]).toBe('1000:1000');
+    expect(a[a.indexOf('--network') + 1]).toBe('test-registry-net');
+    expect(allCalls().filter(isEgress)).toEqual([]);
   });
 
   it('refuses env that would steer the docker CLI or the run, and bad ids, calling docker never', async () => {
@@ -573,10 +691,11 @@ describe('createDockerRunner runReview (ADR 0017)', () => {
   });
   const proxy: DockerModelProxy = {
     url: 'http://snapwing-api:8080/model/',
-    token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: 'PT45M' }, keys),
+    token: (run) => issueModelToken({ workItemId: run.workItem.id, runId: run.runId, ttl: 'PT45M', provider: 'anthropic', model: 'claude-pinned', maxTokens: 1000 }, keys),
+    model: (role) => (role === 'review' ? 'claude-review-model' : 'claude-fixer-model'),
   };
 
-  it('runs the image entrypoint attached as role review, the tree as its only mount, no git credential and no fixer token', async () => {
+  it('runs the image entrypoint attached as role review, the tree as its only mount, no git credential and no token', async () => {
     const r = await runner({ network: 'snapwing-net' }).runReview(reviewJob());
     expect(r).toMatchObject({ exitCode: 0, timedOut: false });
     expect(r.output).toContain('review agent ran');
@@ -628,35 +747,39 @@ describe('createDockerRunner runReview (ADR 0017)', () => {
     expect(calls()[0]!.env).toMatchObject({ SNAPWING_HARNESS: 'generic', SNAPWING_HARNESS_TEMPLATE: 'aider' });
   });
 
-  it('with a model proxy: the proxy as each CLI base URL and a per-run model token, never a provider key or a fixer token', async () => {
-    await runner({ env: { apiUrl: 'http://snapwing-api:8080', token: () => 'unused', modelProxy: proxy } }).runReview(reviewJob());
+  it('with a model proxy: the proxy URL and pinned model in env, the per-run model token only in its credentials file (#273)', async () => {
+    const revoked: string[] = [];
+    await runner({ env: { apiUrl: 'http://snapwing-api:8080', token: () => 'unused', modelProxy: proxy }, revoke: async (id) => void revoked.push(id) }).runReview(reviewJob());
     const c = calls()[0]!;
-    const base = 'http://snapwing-api:8080/model/WI01';
     expect(c.env).toMatchObject({
-      SNAPWING_MODEL_PROXY_URL: base,
-      ANTHROPIC_BASE_URL: `${base}/anthropic`,
-      OPENAI_BASE_URL: `${base}/openai/v1`,
-      GOOGLE_GEMINI_BASE_URL: `${base}/google`,
+      SNAPWING_MODEL_PROXY_URL: 'http://snapwing-api:8080/model/WI01',
+      SNAPWING_CREDENTIALS_FILE: '/run/snapwing/credentials.json',
+      SNAPWING_HARNESS_MODEL: 'claude-review-model',
     });
-    const token = c.env['ANTHROPIC_API_KEY'];
-    if (token === undefined) throw new Error('no model token');
-    for (const k of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'GEMINI_API_KEY']) expect(c.env[k]).toBe(token);
-    expect(verifyModelToken(token, 'WI01', keys)).toMatchObject({ ok: true, claims: { workItemId: 'WI01', runId: REVIEW_RUN } });
+    for (const k of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'GEMINI_API_KEY', 'ANTHROPIC_BASE_URL', 'SNAPWING_FIXER_TOKEN']) expect(c.env[k]).toBeUndefined();
+    const mounts = c.args.flatMap((x, i) => (x === '-v' ? [c.args[i + 1]] : []));
+    expect(mounts).toEqual([`${join(dir, 'review-tree')}:/work`, `${join(dir, 'scratch', REVIEW_RUN, 'creds')}:/run/snapwing`]);
+    const { modelToken, fixerToken } = credentials();
+    expect(fixerToken).toBeUndefined();
+    expect(verifyModelToken(modelToken ?? '', 'WI01', keys)).toMatchObject({ ok: true, claims: { workItemId: 'WI01', runId: REVIEW_RUN, model: 'claude-pinned' } });
     // Not usable on the fixer API.
-    expect(verifyFixerToken(token, 'WI01', keys)).toEqual({ ok: false, reason: 'malformed' });
-    expect(c.env['SNAPWING_FIXER_TOKEN']).toBeUndefined();
-    expect(c.args.join(' ')).not.toContain(token);
+    expect(verifyFixerToken(modelToken ?? '', 'WI01', keys)).toEqual({ ok: false, reason: 'malformed' });
+    expect(c.args.join(' ')).not.toContain('swm1.');
     expect(JSON.stringify(c.env)).not.toContain('server-provider-key');
+    // Revoked and removed once the review returned.
+    expect(revoked).toEqual([REVIEW_RUN]);
+    expect(existsSync(join(dir, 'scratch', REVIEW_RUN))).toBe(false);
   });
 
-  it('gives a fixer container the same model proxy env next to its fixer token', async () => {
-    await runner({ env: { apiUrl: 'http://snapwing-api:8080', token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: 'INC01', ttl: 'PT45M' }, keys), modelProxy: proxy } }).runFixer(job());
+  it('gives a fixer container its fixer token and model token in one credentials file, and the fixer model', async () => {
+    await runner({ env: { apiUrl: 'http://snapwing-api:8080', token: (j) => issueFixerToken({ workItemId: j.workItem.id, incidentId: 'INC01', runId: j.runId, ttl: 'PT45M' }, keys), modelProxy: proxy } }).runFixer(job());
     const c = calls()[0]!;
-    expect(c.env['ANTHROPIC_BASE_URL']).toBe('http://snapwing-api:8080/model/WI01/anthropic');
-    const token = c.env['ANTHROPIC_API_KEY'];
-    expect(verifyModelToken(token ?? '', 'WI01', keys)).toMatchObject({ ok: true, claims: { runId: RUN_ID } });
-    expect(token).not.toBe(c.env['SNAPWING_FIXER_TOKEN']);
-    expect(JSON.stringify(c.env)).not.toContain('server-provider-key');
+    expect(c.env['SNAPWING_MODEL_PROXY_URL']).toBe('http://snapwing-api:8080/model/WI01');
+    expect(c.env['SNAPWING_HARNESS_MODEL']).toBe('claude-fixer-model');
+    const { modelToken, fixerToken } = credentials();
+    expect(verifyModelToken(modelToken ?? '', 'WI01', keys)).toMatchObject({ ok: true, claims: { runId: RUN_ID } });
+    expect(verifyFixerToken(fixerToken ?? '', 'WI01', keys)).toMatchObject({ ok: true, claims: { runId: RUN_ID } });
+    expect(JSON.stringify(c.env)).not.toMatch(/swm1\.|swf1\.|server-provider-key/);
   });
 
   it('reports the exit code, and rejects when docker itself fails (exit 125)', async () => {

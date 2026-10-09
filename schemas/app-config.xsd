@@ -130,6 +130,12 @@
             </xs:sequence>
             <xs:attribute name="fixer" type="HarnessAdapter" use="required"/>
             <xs:attribute name="review" type="HarnessAdapter" use="required"/>
+            <!-- In a runner container the model proxy pins each role's model, caps one call's max_tokens,
+                 and caps the tokens one run spends (#273). Absent: the server's defaults. -->
+            <xs:attribute name="fixer-model" type="NonEmptyToken"/>
+            <xs:attribute name="review-model" type="NonEmptyToken"/>
+            <xs:attribute name="max-tokens" type="xs:positiveInteger"/>
+            <xs:attribute name="max-run-tokens" type="xs:positiveInteger"/>
           </xs:complexType>
           <xs:unique name="UniqueGenericId">
             <xs:selector xpath="c:generic"/>

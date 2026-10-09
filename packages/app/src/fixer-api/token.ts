@@ -1,11 +1,12 @@
 // src/fixer-api/token.ts: the short-lived token a fixer run reports with (B 0 rule 4, B 9, main 16).
 //
-// A token is scoped to one work item and names the incident whose log its reports append to. It is
-// `swf1.<claims>.<mac>`: `claims` is base64url JSON `{ w, i, iat, exp }` (work item, incident, issued
-// and expiry times in epoch milliseconds), and `mac` is base64url HMAC-SHA256 over `swf1.<claims>`
+// A token is scoped to one work item and one run (#273), and names the incident whose log its reports
+// append to. It is `swf1.<claims>.<mac>`: `claims` is base64url JSON `{ w, i, r, iat, exp }` (work item,
+// incident, run, issued and expiry times in epoch milliseconds), and `mac` is base64url HMAC-SHA256 over `swf1.<claims>`
 // keyed with `SNAPWING_FIXER_TOKEN_SECRET`. Verification checks the MAC with a constant-time compare
 // before it parses anything, then the expiry, then that the token's work item is the one in the path.
-// Nothing here logs or echoes a token or the secret.
+// The fixer API also refuses a token whose run is revoked or is not the incident's running run (routes.ts,
+// reporter.ts). Nothing here logs or echoes a token or the secret.
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { formatDuration, parseDuration } from '@snapwing/pipeline/util/duration.ts';
@@ -42,6 +43,7 @@ export interface FixerTokenKeys {
 export interface FixerTokenInput {
   workItemId: string;
   incidentId: string;
+  runId: string;
   /** ISO 8601 duration, at most `MAX_FIXER_TOKEN_TTL`. */
   ttl: string;
 }
@@ -49,6 +51,7 @@ export interface FixerTokenInput {
 export interface FixerTokenClaims {
   workItemId: string;
   incidentId: string;
+  runId: string;
   issuedAt: Date;
   expiresAt: Date;
 }
@@ -70,13 +73,13 @@ export function fixerTokenKeysFromEnv(env: Readonly<Record<string, string | unde
 
 export function issueFixerToken(input: FixerTokenInput, keys: FixerTokenKeys): string {
   assertSecret(keys.secret);
-  if (input.workItemId === '' || input.incidentId === '') throw new TypeError('issueFixerToken: workItemId and incidentId are required');
+  if (input.workItemId === '' || input.incidentId === '' || input.runId === '') throw new TypeError('issueFixerToken: workItemId, incidentId, and runId are required');
   const ttlMs = parseDuration(input.ttl);
   if (ttlMs <= 0 || ttlMs > parseDuration(MAX_FIXER_TOKEN_TTL)) {
     throw new RangeError(`issueFixerToken: ttl must be positive and at most ${MAX_FIXER_TOKEN_TTL}`);
   }
   const iat = keys.clock().getTime();
-  const claims = { w: input.workItemId, i: input.incidentId, iat, exp: iat + ttlMs };
+  const claims = { w: input.workItemId, i: input.incidentId, r: input.runId, iat, exp: iat + ttlMs };
   const body = `${PREFIX}.${Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url')}`;
   return `${body}.${mac(keys.secret, body).toString('base64url')}`;
 }
@@ -128,10 +131,10 @@ function parseClaims(part: string): FixerTokenClaims | undefined {
     return undefined;
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
-  const { w, i, iat, exp } = value as Record<string, unknown>;
-  if (typeof w !== 'string' || w === '' || typeof i !== 'string' || i === '') return undefined;
+  const { w, i, r, iat, exp } = value as Record<string, unknown>;
+  if (typeof w !== 'string' || w === '' || typeof i !== 'string' || i === '' || typeof r !== 'string' || r === '') return undefined;
   if (!Number.isSafeInteger(iat) || !Number.isSafeInteger(exp)) return undefined;
-  return { workItemId: w, incidentId: i, issuedAt: new Date(iat as number), expiresAt: new Date(exp as number) };
+  return { workItemId: w, incidentId: i, runId: r, issuedAt: new Date(iat as number), expiresAt: new Date(exp as number) };
 }
 
 function reject(reason: FixerTokenRejection): FixerTokenVerification {

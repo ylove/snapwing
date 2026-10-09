@@ -9,15 +9,18 @@
 //   GET  /fixer/{workItemId}/stop         204 when a stop is pending, else 200 { stop: false }
 //
 // Every call carries `Authorization: Bearer <token>` from `issueFixerToken` for that work item; the
-// token names the incident. Status codes: 200 (appended; JSON `{ seq }`, plus `artifact` for an
-// artifact), 400 (body is not JSON or fails validation, nothing appended), 401 (missing, malformed,
-// forged, or expired token), 403 (token for another work item), 404 (no such incident), 409 (the run
+// token names the incident and the run (#273). Status codes: 200 (appended; JSON `{ seq }`, plus
+// `artifact` for an artifact), 400 (body is not JSON or fails validation, nothing appended), 401
+// (missing, malformed, forged, expired, or revoked token: the run ended or was stopped), 403 (token for
+// another work item), 404 (no such incident), 413 (the run has written its share of artifacts, by count
+// or bytes, `DEFAULT_ARTIFACT_LIMITS`), 409 (the run
 // already finished or the incident is closed, nothing appended; the fixer should end; or, for `done`,
 // `{ error: 'handoff-refused', reason }`: the server refused the handed-back work, recorded nothing,
 // and the fixer should report `failed`). A fixer should treat any other 409 like a stop. Responses
 // never echo the fixer token or the request body, and none carries a credential: no route hands a
 // container any GitHub token (#262).
 
+import type { ArtifactLimits, RunCredentialsPort } from '@snapwing/pipeline/state/run-credentials.ts';
 import type { FixerReporter, FixerTarget, FixerRefusal } from './reporter.ts';
 import type { FixerTokenVerifier } from './token.ts';
 import type { FixerInputError } from './validate.ts';
@@ -37,18 +40,34 @@ export interface FixerRoute {
 
 export const FIXER_ROUTE_PREFIX = '/fixer';
 
-export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVerifier): FixerRoute[] {
+/** What one run may write through `artifact` (#273): every version counts, by number and by request bytes. */
+export const DEFAULT_ARTIFACT_LIMITS: ArtifactLimits = { maxArtifacts: 20, maxBytes: 4 * 1024 * 1024 };
+
+export interface FixerRouteOptions {
+  /** Revocation and the per-run artifact caps (#273); compose passes the state store. Absent: neither is checked. */
+  credentials?: Pick<RunCredentialsPort, 'runCredentialsRevoked' | 'reserveArtifact'>;
+  /** Default `DEFAULT_ARTIFACT_LIMITS`. */
+  artifactLimits?: ArtifactLimits;
+}
+
+export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVerifier, options: FixerRouteOptions = {}): FixerRoute[] {
+  const { credentials } = options;
   const post = (op: Exclude<FixerOperation, 'stop'>): FixerRoute => ({
     method: 'POST',
     path: `${FIXER_ROUTE_PREFIX}/:workItemId/${op}`,
     handler: (req, ctx) =>
-      withTarget(req, ctx, op, verify, async (target) => {
-        const body = await readJson(req);
+      withTarget(req, ctx, op, verify, credentials, async (target) => {
+        const text = await req.text();
+        const body = parseJson(text);
         if (!body.ok) return json(400, { error: 'invalid-json' });
         switch (op) {
           case 'checkpoint':
             return reply(await reporter.checkpoint(target, body.value));
           case 'artifact': {
+            if (credentials !== undefined && target.runId !== undefined) {
+              const reserved = await credentials.reserveArtifact(target.runId, Buffer.byteLength(text, 'utf8'), options.artifactLimits ?? DEFAULT_ARTIFACT_LIMITS);
+              if (!reserved.ok) return reserved.reason === 'revoked' ? unauthorized('revoked') : json(413, { error: 'artifact-cap' });
+            }
             const r = await reporter.artifact(target, body.value);
             return r.ok ? json(200, { seq: r.seq, artifact: r.artifact }) : reply(r);
           }
@@ -67,7 +86,7 @@ export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVer
     method: 'GET',
     path: `${FIXER_ROUTE_PREFIX}/:workItemId/stop`,
     handler: (req, ctx) =>
-      withTarget(req, ctx, 'stop', verify, async (target) => {
+      withTarget(req, ctx, 'stop', verify, credentials, async (target) => {
         const r = await reporter.stop(target);
         if (!r.ok) return refused(r.code);
         return r.stop ? new Response(null, { status: 204, headers: NO_STORE }) : json(200, { stop: false });
@@ -86,6 +105,7 @@ async function withTarget(
   ctx: FixerRouteContext | undefined,
   op: FixerOperation,
   verify: FixerTokenVerifier,
+  credentials: FixerRouteOptions['credentials'],
   fn: (target: FixerTarget) => Promise<Response>,
 ): Promise<Response> {
   const workItemId = ctx?.params['workItemId'] ?? workItemFromPath(req.url, op);
@@ -94,7 +114,8 @@ async function withTarget(
   if (token === undefined) return unauthorized('missing-token');
   const v = verify(token, workItemId);
   if (!v.ok) return v.reason === 'wrong-work-item' ? json(403, { error: 'forbidden' }) : unauthorized(v.reason);
-  return fn({ workItemId, incidentId: v.claims.incidentId });
+  if (credentials !== undefined && (await credentials.runCredentialsRevoked(v.claims.runId))) return unauthorized('revoked');
+  return fn({ workItemId, incidentId: v.claims.incidentId, runId: v.claims.runId });
 }
 
 /** `/fixer/{id}/{op}` at the end of the path, for a caller that passes no route params. */
@@ -114,9 +135,9 @@ function bearer(header: string | null): string | undefined {
   return m?.[1];
 }
 
-async function readJson(req: Request): Promise<{ ok: true; value: unknown } | { ok: false }> {
+function parseJson(text: string): { ok: true; value: unknown } | { ok: false } {
   try {
-    return { ok: true, value: JSON.parse(await req.text()) as unknown };
+    return { ok: true, value: JSON.parse(text) as unknown };
   } catch {
     return { ok: false };
   }

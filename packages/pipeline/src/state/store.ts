@@ -1,6 +1,6 @@
 // StateStore: the StatePort (B 1) over Kysely. Every method delegates one-to-one to a function in
 // events.ts, projections/index.ts, artifacts.ts, inbox.ts, outbox.ts, config.ts, identities.ts,
-// capture-tokens.ts, or kv.ts, passing the store's context, so each of those files is filled in
+// capture-tokens.ts, run-credentials.ts, or kv.ts, passing the store's context, so each of those files is filled in
 // without touching this one.
 // Construct through `openState` (db.ts); `transaction` hands `fn` a store bound to the transaction.
 
@@ -39,8 +39,10 @@ import * as inbox from './inbox.ts';
 import * as kv from './kv.ts';
 import * as outbox from './outbox.ts';
 import * as projections from './projections/index.ts';
+import * as runCredentials from './run-credentials.ts';
+import type { ArtifactLimits, ModelRequestLimits, RunCredentialsPort, RunCredentialUse, RunReservation } from './run-credentials.ts';
 
-export class StateStore implements StatePort {
+export class StateStore implements StatePort, RunCredentialsPort {
   /** The store's Kysely handle (root or transaction), codec, and clock. Internal to pipeline/src/state. */
   readonly ctx: StateContext;
 
@@ -180,6 +182,32 @@ export class StateStore implements StatePort {
 
   listCaptureTokens(workspaceId: string): Promise<CaptureTokenInfo[]> {
     return captureTokens.listCaptureTokens(this.ctx, workspaceId);
+  }
+
+  // Runner container run credentials (#273; not part of StatePort)
+
+  runCredentialUse(runId: string): Promise<RunCredentialUse | undefined> {
+    return runCredentials.runCredentialUse(this.ctx, runId);
+  }
+
+  runCredentialsRevoked(runId: string): Promise<boolean> {
+    return runCredentials.runCredentialsRevoked(this.ctx, runId);
+  }
+
+  revokeRunCredentials(runId: string): Promise<void> {
+    return runCredentials.revokeRunCredentials(this.ctx, runId);
+  }
+
+  reserveModelRequest(runId: string, limits: ModelRequestLimits): Promise<RunReservation> {
+    return runCredentials.reserveModelRequest(this.ctx, runId, limits);
+  }
+
+  recordModelTokens(runId: string, inputTokens: number, outputTokens: number): Promise<void> {
+    return runCredentials.recordModelTokens(this.ctx, runId, inputTokens, outputTokens);
+  }
+
+  reserveArtifact(runId: string, bytes: number, limits: ArtifactLimits): Promise<RunReservation> {
+    return runCredentials.reserveArtifact(this.ctx, runId, bytes, limits);
   }
 
   // kv (cache-port fallback; not part of StatePort)
