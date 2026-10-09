@@ -2,6 +2,11 @@
 // event log. It opens the state store the way `state rebuild` does (`SNAPWING_DB` / `DATABASE_URL`,
 // `SNAPWING_SQLITE_PATH` for the SQLite file) and reads; it never writes.
 //
+// Everything printed comes from the log, which holds text from chat, the model, and the fixer (#306), so
+// no control, invisible, or bidirectional formatting character reaches the terminal: the text trace
+// turns each into a space (`printableLine`, one line per line), and `--json` writes the ones JSON leaves
+// raw as `\u` escapes (`terminalSafeJson`).
+//
 // The text trace is one line per event that carries a fact an engineer asks about: the bundle
 // (what was included, and what was excluded with the reason), the confidence stack result (the
 // `resolved` event), dedupe, the ask-back, plan, gates, cards and taps with who, level changes,
@@ -33,6 +38,22 @@ export async function openStateFromEnv(env: CliIo['env']): Promise<OpenedState> 
     options.url = sqlitePath;
   }
   return openState(options);
+}
+
+// eslint-disable-next-line no-control-regex
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/** `line` with every control, invisible, or bidirectional formatting character (escape sequences, line breaks) as a space. */
+export function printableLine(line: string): string {
+  return line.replace(UNPRINTABLE, ' ');
+}
+
+/** What `JSON.stringify` leaves raw inside strings: it escapes C0 itself, and its own line breaks are layout. */
+const RAW_IN_JSON = /[\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/** `JSON.stringify` output with the characters it leaves raw (DEL, C1, invisible, bidirectional) as `\u` escapes. */
+export function terminalSafeJson(json: string): string {
+  return json.replace(RAW_IN_JSON, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** Every event in the log, in log order. */
@@ -92,11 +113,11 @@ export async function runTrace(args: readonly string[], io: CliIo): Promise<numb
     }
     const events = await state.read(incident.id);
     if (parsed.values.json) {
-      io.stdout(JSON.stringify(events, null, 2));
+      io.stdout(terminalSafeJson(JSON.stringify(events, null, 2)));
       return 0;
     }
     for (const line of await renderTrace(state, incident, events)) {
-      io.stdout(line);
+      io.stdout(printableLine(line));
     }
     return 0;
   } catch (e) {

@@ -233,6 +233,17 @@ describe(`claims arriving mid-flight (${TEST_DIALECT})`, () => {
     expect(await types()).not.toContain('stopped');
   });
 
+  it('shows the fixer-written branch as one short line with no backtick, control, or bidirectional character (#306)', async () => {
+    const w = await setup();
+    await running(w, `fix/a\u202e\`<@U0EVIL>\`\n\u0007${'x'.repeat(200)}`);
+    await handleMidFlightClaim(w.deps, INC, await claim(DANA));
+    const branch = (w.ports.cards[0] as MidFlightCard).branch ?? '';
+    expect(branch.startsWith('fix/a<@U0EVIL>')).toBe(true);
+    expect(branch).toHaveLength(120);
+    // eslint-disable-next-line no-control-regex
+    expect(branch).not.toMatch(/[`\u0000-\u001f\u202e]/);
+  });
+
   it('Let it finish: the run goes on, nothing is stopped or assigned, and the grace timer is gone', async () => {
     const w = await setup();
     const runId = await running(w);

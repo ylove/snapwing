@@ -20,13 +20,16 @@
 ARG NODE_VERSION=24
 FROM node:${NODE_VERSION}-bookworm-slim
 
-# Agent CLIs. claude-code is the default harness. The codex and gemini package names and the flags
-# their adapters use are from memory (#150, #232); check them against the CLIs' own help when enabling.
-ARG CLAUDE_CODE_VERSION=latest
+# Agent CLIs, each pinned to an exact release (#306) so a rebuild never picks up a CLI whose flags or
+# config the adapters were not written against; raise a pin deliberately, with the adapter's tests.
+# claude-code is the default harness (Claude Code's stable channel). codex 0.162.0 is the release the
+# codex adapter's model proxy override was written against (#296); gemini 0.63.0 the gemini adapter's
+# (#297).
+ARG CLAUDE_CODE_VERSION=2.1.286
 ARG INSTALL_CODEX=false
-ARG CODEX_VERSION=latest
+ARG CODEX_VERSION=0.162.0
 ARG INSTALL_GEMINI=false
-ARG GEMINI_VERSION=latest
+ARG GEMINI_VERSION=0.63.0
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl git tini \
@@ -46,10 +49,12 @@ COPY infra/docker/fixer/wrapper.ts infra/docker/fixer/entrypoint.ts infra/docker
 
 # The default non-root user. The docker runner starts every run (fixer, review, tests) as the server's
 # uid:gid with HOME and TMPDIR at /tmp, so a run can write the tree the server prepared and the server
-# can remove it afterwards.
+# can remove it afterwards. The root filesystem is read-only in every run and /tmp a tmpfs (#306), so a
+# CLI keeps its config and caches there; nothing may update itself in place.
 RUN useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin snapwing
 USER snapwing
 ENV SNAPWING_GENERIC_DIR=/etc/snapwing/generic
+ENV DISABLE_AUTOUPDATER=1
 WORKDIR /work
 
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "--disable-warning=ExperimentalWarning", "/opt/snapwing/infra/docker/fixer/entrypoint.ts"]

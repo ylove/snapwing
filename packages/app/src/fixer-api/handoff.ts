@@ -42,6 +42,7 @@ import { devNull } from 'node:os';
 import { join } from 'node:path';
 import { HANDOFF_BUNDLE_FILE, readRunRecord, runLayout, type RunRecord } from '@snapwing/pipeline/fixer/workdir/handoff.ts';
 import { askpassScript, isProtectedPath, messageNamesKey, TOKEN_ENV } from '@snapwing/pipeline/fixer/workdir/hooks.ts';
+import { githubCode, githubText } from '@snapwing/pipeline/util/github-text.ts';
 import type { GitHubPermissions } from '../github/auth.ts';
 import { GitHubValidationError, type GitHubClient } from '../github/client.ts';
 import type { FixerTarget } from './reporter.ts';
@@ -339,16 +340,21 @@ function cacheGit(cache: string, home: string) {
   };
 }
 
-/** Opens the pull request as the App; when GitHub says one already exists (a race), finds it. */
+/**
+ * Opens the pull request as the App; when GitHub says one already exists (a race), finds it. The title
+ * and body carry the fixer's summary and test paths (#306): the body as plain text (`githubText`), the
+ * paths in code spans (`githubCode`), and the title (no Markdown there) with no control characters and
+ * nothing mentioned or cross-referenced.
+ */
 async function createPr(
   github: Pick<GitHubClient, 'findOpenPullRequest' | 'createPullRequest'>,
   pr: { branch: string; base: string; issueKey: string; summary: string; testsAdded: readonly string[] },
 ): Promise<{ number: number }> {
-  const subject = pr.summary.trim().split('\n')[0]?.trim() ?? '';
+  const subject = githubCode(pr.summary.trim().split('\n')[0] ?? '').replace(/([@#])(?=[A-Za-z0-9])/g, '$1\u200b');
   const title = (subject === '' ? `${pr.issueKey}: fix from Snapwing` : subject.includes(pr.issueKey) ? subject : `${pr.issueKey}: ${subject}`).slice(0, 200);
-  const tests = pr.testsAdded.length === 0 ? 'None listed.' : pr.testsAdded.slice(0, 50).map((t) => `- \`${t.replaceAll('`', '')}\``).join('\n');
+  const tests = pr.testsAdded.length === 0 ? 'None listed.' : pr.testsAdded.slice(0, 50).map((t) => `- \`${githubCode(t)}\``).join('\n');
   const body = [
-    pr.summary.trim() === '' ? 'The fixer gave no summary.' : pr.summary.trim(),
+    pr.summary.trim() === '' ? 'The fixer gave no summary.' : githubText(pr.summary.trim(), { multiline: true }),
     '',
     '**Tests added**',
     tests,

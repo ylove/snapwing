@@ -4,9 +4,15 @@
 // The buttons' value is the incident id, as on every card. The run and the claimer the card offers the
 // choice for ride in the actions block's id (`midflight_actions:<runId>:<claimerId>`), so a tap
 // answers exactly that offer (`answerMidFlight` refuses one for a run that is no longer going).
+//
+// The branch is the fixer's own text (#306): the claimer's mention is a mention mark
+// (`adapters/shared/mention-marks.ts`) and everything else, the branch included, goes through Slack's
+// escape, so a `<@U...>` or `<!channel>` the fixer put in its branch shows as text and pings nobody,
+// in the blocks and in the notification text alike.
 
 import type { MidFlightCard, MidFlightChoice } from '@snapwing/pipeline/fixer/claims.ts';
 import { midFlightText } from '@snapwing/pipeline/fixer/claims.ts';
+import { createMentionMarks } from '../../shared/mention-marks.ts';
 import { actions, context, esc, mention, section, type SlackMessage } from './blocks.ts';
 
 /** The block id prefix the interactivity routes on. */
@@ -25,12 +31,13 @@ function graceText(ms: number): string {
 
 /** The card for `incidentId`. `graceMs` is `card.grace` parsed, for the "no answer" line. */
 export function buildMidFlightCard(incidentId: string, card: MidFlightCard, graceMs: number): SlackMessage {
-  const lead = midFlightText(card, mention(card.claimerUserId));
+  const marks = createMentionMarks();
+  const lead = midFlightText(card, marks.mark(card.claimerUserId));
   const blockId = `${MID_FLIGHT_BLOCK}:${card.runId}:${card.claimerUserId}`;
   return {
-    text: lead.replace(/`/g, ''),
+    text: marks.render(lead.replace(/`/g, ''), esc, mention),
     blocks: [
-      section(esc(lead).replace(/&lt;@([A-Z0-9]+)&gt;/g, '<@$1>')),
+      section(marks.render(lead, esc, mention)),
       actions(
         blockId,
         card.choices.map((choice) => ({

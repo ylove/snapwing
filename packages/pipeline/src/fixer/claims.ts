@@ -176,10 +176,18 @@ export async function midFlightGraceExpired(deps: MidFlightDeps, data: MidFlight
   return 'applied';
 }
 
-/** The branch the run's latest `branched` checkpoint named. */
+/** Longest branch name a card shows. */
+const MAX_CARD_BRANCH = 120;
+
+/**
+ * The branch the run's latest `branched` checkpoint named. The fixer writes it (#306), so it is cut to
+ * one short line with no control, invisible, or bidirectional formatting characters and no backtick,
+ * which would end the code span a card shows it in; each surface still escapes it for its own markup.
+ */
 function runBranch(log: readonly IncidentEvent[], run: IncidentEvent<'fixer-started'>): string | undefined {
   const after = log.filter((e): e is IncidentEvent<'fixer-checkpoint'> => e.seq > run.seq && e.type === 'fixer-checkpoint' && e.payload.phase === 'branched');
-  const detail = latest(after, 'fixer-checkpoint')?.payload.detail.trim();
+  // eslint-disable-next-line no-control-regex
+  const detail = latest(after, 'fixer-checkpoint')?.payload.detail.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069`]/g, '').trim().slice(0, MAX_CARD_BRANCH);
   return detail === undefined || detail === '' ? undefined : detail;
 }
 
