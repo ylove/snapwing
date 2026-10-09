@@ -4,13 +4,20 @@
 // HarnessResult per docs/harness-generic.md sections 5 and 6. Each adapter supplies its argument
 // vector, the exact stdin text, and how to pull the HarnessResult out of what the CLI printed.
 //
-// The agent runs untrusted code (the repository's tests, its own edits; ADR 0017): it gets a fresh
-// scratch HOME and TMPDIR per run, never the server user's, and refuses a workdir in or above the
+// The fixer agent runs untrusted code (the repository's tests, its own edits; ADR 0017): it gets a
+// fresh scratch HOME and TMPDIR per run, never the server user's, and refuses a workdir in or above the
 // server's own tree.
+//
+// The review role (main 11.1, #263) runs none of the pull request's code: each adapter gives the agent
+// read-only tools, and the agent states its verdict at the end of its final message, which the adapter
+// takes from the CLI's own output once the agent has exited. The adapter then writes the verdict to
+// SNAPWING_REVIEW_FILE itself, replacing whatever is there; the agent is never told that path.
 
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readFile, rm } from 'node:fs/promises';
 import type { HarnessResult, HarnessRunOptions, WorkItemRef } from '../ports/harness.ts';
+import { REVIEW_FILE_ENV, verdictText } from '../review/verdict.ts';
 import { parseDuration } from '../util/duration.ts';
 import { MAX_RESULT_LENGTH, parseHarnessResult } from './contract.ts';
 import { budgetExceededReason, superviseProcess } from './process.ts';
@@ -39,11 +46,12 @@ export interface CliRunInput {
   graceMs: number;
   checkpointFile: string;
   /**
-   * The review role (main 11.1): the agent reports through the file named by SNAPWING_REVIEW_FILE, not
-   * stdout, so exit code 0 is `done` and `extract` is not consulted. Stop, budget, and a non-zero exit
-   * map as for the fixer.
+   * The review role (main 11.1, #263): the agent's final message, from what the CLI printed and the
+   * text of `extraFile`, or undefined when there is none. Exit code 0 is `done` and `extract` is not
+   * consulted; the verdict in the message goes to SNAPWING_REVIEW_FILE (`opts.env`) once the agent has
+   * exited. Stop, budget, and a non-zero exit map as for the fixer, and leave no verdict file.
    */
-  doneOnExit?: boolean;
+  reviewMessage?: (stdout: string, extra: string | undefined) => string | undefined;
 }
 
 /** The review agent's system prompt, shared by every CLI adapter that supports the review role. */
@@ -109,6 +117,10 @@ async function runInScratch(input: CliRunInput, scratch: ScratchHome): Promise<H
   await pollCheckpointFile(true);
   await supervisor.finish();
   const { stopRequested, budgetExceeded, lastPhase } = supervisor;
+  // Only this adapter writes the verdict file, and only below: whatever is there now goes.
+  const verdictFile = input.reviewMessage === undefined ? undefined : opts.env?.[REVIEW_FILE_ENV];
+  // A path that cannot be removed (a directory) makes the write below fail: no verdict, never its contents.
+  if (verdictFile !== undefined) await rm(verdictFile, { force: true }).catch(() => undefined);
 
   if (spawnError !== undefined) {
     return { outcome: 'failed', reason: `harness could not start: ${spawnError.message}`, attempts: 0 };
@@ -126,7 +138,15 @@ async function runInScratch(input: CliRunInput, scratch: ScratchHome): Promise<H
     return { outcome: 'failed', reason: budgetExceededReason(opts.budget.wallClock), attempts: 1 };
   }
 
-  if (code === 0 && input.doneOnExit === true) {
+  if (code === 0 && input.reviewMessage !== undefined) {
+    const message = stdoutOverflow ? undefined : input.reviewMessage(stdout, extra);
+    if (message !== undefined && verdictFile !== undefined) {
+      try {
+        await writeNew(verdictFile, verdictText(message));
+      } catch (e) {
+        return { outcome: 'failed', reason: `review verdict not written: ${e instanceof Error ? e.message : String(e)}`, attempts: 1 };
+      }
+    }
     return { outcome: 'done', branch: 'HEAD', summary: 'review complete; the verdict is in SNAPWING_REVIEW_FILE', testsAdded: [] };
   }
   if (code === 0) {
@@ -157,12 +177,28 @@ function buildEnv(input: CliRunInput, scratch: ScratchHome): NodeJS.ProcessEnv {
     const v = process.env[key];
     if (v !== undefined) env[key] = v;
   }
+  // A review agent reports in its final message; the verdict file is this adapter's to write.
+  if (input.reviewMessage !== undefined) delete env[REVIEW_FILE_ENV];
   // Last, so neither the run's env nor the server's can point the agent at the server user's home.
   env['HOME'] = scratch.home;
   env['TMPDIR'] = scratch.tmp;
   return env;
 }
 
+/** A final message, or undefined for an extraction error. */
+export function messageOf(m: string | { kind: 'error'; message: string }): string | undefined {
+  return typeof m === 'string' ? m : undefined;
+}
+
+/** Creates `path` with `text`; refuses an existing file or a link at the path instead of following it. */
+async function writeNew(path: string, text: string): Promise<void> {
+  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    await handle.writeFile(text, 'utf8');
+  } finally {
+    await handle.close();
+  }
+}
 
 /** The HarnessResult at the end of an agent's final message: whole message, fenced block, or trailing object. */
 export function resultFromMessage(message: string): Extracted {

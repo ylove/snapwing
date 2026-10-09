@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { parseImplementationRequest } from '../../src/prompts/implementation-request.ts';
-import { checkConstraints, MAX_VERDICT_LENGTH, parseReviewVerdict, pathTokens } from '../../src/review/verdict.ts';
+import { checkConstraints, MAX_VERDICT_LENGTH, parseReviewVerdict, pathTokens, verdictText } from '../../src/review/verdict.ts';
 
 const exampleXml = (name: string) => readFileSync(fileURLToPath(new URL(`../../../../examples/${name}`, import.meta.url)), 'utf8');
 const singleXml = exampleXml('implementation-request.example.xml');
@@ -93,6 +93,34 @@ describe('parseReviewVerdict: errors', () => {
     expect(field('{"verdict":"approve","reasons":[],"constraintViolations":[{"constraint":"s","note":"n","file":3}]}')).toBe('constraintViolations[0].file');
     expect(field('{"verdict":"approve","reasons":[],"regressionTest":{}}')).toBe('regressionTest.path');
     expect(field('{"verdict":"approve","reasons":[],"regressionTest":"x"}')).toBe('regressionTest');
+  });
+});
+
+describe('verdictText: the verdict at the end of a review agent\'s final message (#263)', () => {
+  const approve = { verdict: 'approve', reasons: [], constraintViolations: [] };
+  const changes = { verdict: 'request-changes', reasons: ['Handle the empty cart'], constraintViolations: [] };
+
+  it('takes a message that is the verdict', () => {
+    expect(verdictText(` ${JSON.stringify(changes)}\n`)).toBe(JSON.stringify(changes));
+  });
+
+  it('takes the last fenced block that is a verdict', () => {
+    const message = `An example:\n\`\`\`json\n${JSON.stringify(approve)}\n\`\`\`\nMy verdict:\n\`\`\`json\n${JSON.stringify(changes)}\n\`\`\`\n`;
+    expect(parseReviewVerdict(verdictText(message))).toEqual({ ok: true, verdict: changes });
+  });
+
+  it('skips a later fenced block that is not a verdict', () => {
+    const message = `\`\`\`json\n${JSON.stringify(changes)}\n\`\`\`\n\`\`\`\nnpm test\n\`\`\``;
+    expect(parseReviewVerdict(verdictText(message))).toEqual({ ok: true, verdict: changes });
+  });
+
+  it('takes a trailing object after prose', () => {
+    expect(parseReviewVerdict(verdictText(`Request changes. ${JSON.stringify(changes)}`))).toEqual({ ok: true, verdict: changes });
+  });
+
+  it('hands back text the parser refuses when there is no verdict', () => {
+    expect(verdictText('Looks good to me.')).toBe('Looks good to me.');
+    expect(parseReviewVerdict(verdictText('```json\n{"verdict":"ship-it"}\n```'))).toMatchObject({ ok: false, error: { code: 'unknown-verdict' } });
   });
 });
 

@@ -1,5 +1,7 @@
 // src/review/verdict.ts: the review agent's verdict contract (main 11.1, 14.5).
-// The review agent writes JSON to SNAPWING_REVIEW_FILE. Nothing it wrote reaches a stage until
+// The verdict is JSON in the file named by SNAPWING_REVIEW_FILE. A built-in CLI agent states it at the
+// end of its final message, and its adapter writes the file once the agent has exited (verdictText,
+// #263); a generic review command writes the file itself. Nothing in the file reaches a stage until
 // parseReviewVerdict has built a fresh object holding only the known fields.
 // checkConstraints is the mechanical half: it flags scope and forbidden-path violations from the diff
 // file list so a model approval cannot override them (the review job turns a flag into request-changes).
@@ -7,6 +9,9 @@
 import type { ImplementationRequest } from '../prompts/implementation-request.ts';
 
 export type ReviewVerdictKind = 'approve' | 'request-changes' | 'escalate';
+
+/** Names the file a review harness leaves its verdict in (docs/harness-generic.md section 7). */
+export const REVIEW_FILE_ENV = 'SNAPWING_REVIEW_FILE';
 
 export const REVIEW_VERDICTS: readonly ReviewVerdictKind[] = Object.freeze(['approve', 'request-changes', 'escalate']);
 
@@ -103,6 +108,26 @@ export function parseReviewVerdict(text: string): ReviewVerdictParse {
     out.regressionTest = { path };
   }
   return { ok: true, verdict: out };
+}
+
+/**
+ * The verdict in a review agent's final message (prompts/review.xml, #263): the whole message when it
+ * is a verdict, else the last fenced block that is one, else the last trailing object that starts
+ * with `"verdict"` and is one. When none is, the last fenced block or else the whole message, so that
+ * `parseReviewVerdict` reports what is wrong with it.
+ */
+export function verdictText(message: string): string {
+  const trimmed = message.trim();
+  const fences = [...trimmed.matchAll(/```(?:json)?[ \t]*\n([\s\S]*?)\n[ \t]*```/g)].map((m) => m[1] ?? '').reverse();
+  const objects: string[] = [];
+  for (let i = trimmed.lastIndexOf('{'); i >= 0; i = i === 0 ? -1 : trimmed.lastIndexOf('{', i - 1)) {
+    const slice = trimmed.slice(i);
+    if (/^\{\s*"verdict"/.test(slice)) objects.push(slice);
+  }
+  for (const candidate of [trimmed, ...fences, ...objects]) {
+    if (parseReviewVerdict(candidate).ok) return candidate.trim();
+  }
+  return (fences[0] ?? trimmed).trim();
 }
 
 // ---------------------------------------------------------------------------------------------
