@@ -310,6 +310,38 @@ describe('compose', () => {
   });
 });
 
+describe('compose with the docker runtime: test containers (#273)', () => {
+  it('SNAPWING_TEST_EGRESS=off gives test runs no network; anything but on or off refuses to start', async () => {
+    const bin = join(dir, 'bin');
+    await mkdir(bin);
+    await writeFile(join(bin, 'docker'), fakeDocker(DEMO_GITHUB_TOKEN), { mode: 0o755 });
+    const state = await tdb.open();
+    const composed = await composeDirect({
+      secrets: fakeSecrets(),
+      env: { SNAPWING_FIXER_IMAGE: 'snapwing-fixer-test:1', SNAPWING_TEST_EGRESS: 'off' },
+      overrides: { slackBotUserId: BOT_USER },
+      state,
+      workflow: new InProcessWorkflow(state),
+      provider: 'docker',
+    });
+    const savedPath = process.env['PATH'];
+    process.env['PATH'] = `${bin}:${savedPath ?? ''}`;
+    try {
+      await composed.deps?.review.runner?.runTests?.({ runId: TESTS_RUN, checkout: bin, command: 'npm test', timeoutMs: 20_000 });
+    } finally {
+      process.env['PATH'] = savedPath;
+    }
+    const runs = (await readFile(join(bin, 'runs.jsonl'), 'utf8')).trim().split('\n').map((l) => JSON.parse(l) as ContainerRun);
+    expect(runs.map((r) => [r.name, r.network])).toEqual([[`snapwing-tests-${TESTS_RUN}`, 'none']]);
+    expect(Object.keys(runs[0]?.env ?? {}).filter((k) => /proxy/i.test(k))).toEqual([]);
+
+    const other = await tdb.open();
+    await expect(
+      composeDirect({ secrets: fakeSecrets(), env: { SNAPWING_FIXER_IMAGE: 'snapwing-fixer-test:1', SNAPWING_TEST_EGRESS: 'sometimes' }, overrides: { slackBotUserId: BOT_USER }, state: other, workflow: new InProcessWorkflow(other), provider: 'docker' }),
+    ).rejects.toThrow(/SNAPWING_TEST_EGRESS must be on or off/);
+  });
+});
+
 describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1)', () => {
   it('mounts the proxy only for docker, and only for providers whose key is set', async () => {
     const localState = await tdb.open();
@@ -440,6 +472,11 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
         harness: { adapter: 'claude-code' },
         budget: { wallClock: 'PT30M', attempts: 1 },
       });
+
+      // A regression-proof test run: a fresh clone, so it gets the registries through the proxy by default.
+      const tree = join(dir, 'tests-tree');
+      await mkdir(tree);
+      await review.runner?.runTests?.({ runId: TESTS_RUN, checkout: tree, command: 'npm ci && npm test', timeoutMs: 20_000 });
     } finally {
       if (savedPath === undefined) delete process.env['PATH'];
       else process.env['PATH'] = savedPath;
@@ -464,6 +501,10 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     expect(relayRun?.env['SNAPWING_RELAY_EGRESS_ALLOW']).toBe(DEFAULT_FIXER_EGRESS_ALLOW.join(','));
     expect(fixerRun.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
     expect(reviewRun.env['HTTPS_PROXY']).toBeUndefined();
+    const testsRun = runs.find((r) => r.name === `snapwing-tests-${TESTS_RUN}`);
+    expect(testsRun?.network).toBe('snapwing-runs');
+    expect(testsRun?.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
+    expect(Object.keys(testsRun?.env ?? {}).filter((k) => k.startsWith('SNAPWING_'))).toEqual([]);
 
     // The review container: the configured harness, the proxy URL through the relay, and a model token
     // only in its credentials file, pinned to the default provider's model.
@@ -526,6 +567,7 @@ const REPO = 'github.com/fake-org/web';
 const REPO_FULL = 'fake-org/web';
 const INC = '01K6COMPOSEREVIEW000000001';
 const FIXER_RUN = '01K6COMPOSEFIXERRUN0000001';
+const TESTS_RUN = '01K6COMPOSETESTSRUN0000001';
 const PR = 418;
 const BRANCH = 'fix/WEB-1042';
 const REQUEST_BODY = buildImplementationRequest({

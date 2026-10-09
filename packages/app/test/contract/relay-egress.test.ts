@@ -5,7 +5,7 @@
 import { connect as tcpConnect, createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { blockedAddress, hostAllowed, startEgressProxy, type EgressProxy, type EgressProxyOptions } from '../../../../infra/docker/fixer/egress.ts';
-import { DEFAULT_FIXER_EGRESS_ALLOW, parseEgressAllow } from '../../src/providers/docker/runner.ts';
+import { DEFAULT_FIXER_EGRESS_ALLOW, parseEgressAllow, parseTestEgress } from '../../src/providers/docker/runner.ts';
 
 /** A documentation address (TEST-NET-3): public as far as the proxy can tell, and routed nowhere here. */
 const PUBLIC = '203.0.113.7';
@@ -189,6 +189,13 @@ describe('the allowlist (#273)', () => {
     for (const bad of ['*', '*.com', 'not a host', 'http://registry.npmjs.org', 'registry.npmjs.org:443', 'localhost']) {
       expect(() => parseEgressAllow(bad), bad).toThrow(/SNAPWING_FIXER_EGRESS_ALLOW/);
     }
+  });
+
+  it('puts test runs behind the proxy unless SNAPWING_TEST_EGRESS=off', () => {
+    for (const on of [undefined, '', ' on ', 'ON']) expect(parseTestEgress(on)).toBe(true);
+    expect(parseTestEgress('off')).toBe(false);
+    expect(parseTestEgress(' Off ')).toBe(false);
+    for (const bad of ['yes', '0', 'none']) expect(() => parseTestEgress(bad), bad).toThrow(/must be on or off/);
   });
 
   it('matches exact names and names under a *. entry, never the bare suffix', () => {

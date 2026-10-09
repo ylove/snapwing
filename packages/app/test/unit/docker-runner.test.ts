@@ -481,19 +481,33 @@ describe('createDockerRunner network and relay (#273)', () => {
     expect(Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k))).toEqual([]);
   });
 
-  it('test runs keep --network none with egress on, unless testEgress puts them on the run network with the proxy', async () => {
+  it('test runs join the run network behind the egress proxy by default, and get --network none with testEgress false or no egress', async () => {
     const testRun = { runId: '01J9ZTESTRUN00000000000002', checkout: join(dir, 'tree'), command: 'npm ci && npm test', timeoutMs: 20_000 };
-    await runner({ relay, egress: ['registry.npmjs.org'] }).runTests(testRun);
-    let a = calls()[0]!.args;
-    expect(a[a.indexOf('--network') + 1]).toBe('none');
-    expect(Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k))).toEqual([]);
+    const network = (): string | undefined => {
+      const a = calls()[0]!.args;
+      return a[a.indexOf('--network') + 1];
+    };
+    const proxyVars = (): string[] => Object.keys(calls()[0]!.env).filter((k) => /proxy/i.test(k));
 
-    writeFileSync(join(dir, 'calls.log'), '');
-    await runner({ relay, egress: ['registry.npmjs.org'], testEgress: true }).runTests(testRun);
-    a = calls()[0]!.args;
-    expect(a[a.indexOf('--network') + 1]).toBe('snapwing-runs');
-    expect(calls()[0]!.env['HTTPS_PROXY']).toBe('http://snapwing-api:3128');
+    await runner({ relay, egress: ['registry.npmjs.org'] }).runTests(testRun);
+    expect(network()).toBe('snapwing-runs');
+    expect(calls()[0]!.env).toMatchObject({ HTTPS_PROXY: 'http://snapwing-api:3128', NO_PROXY: 'snapwing-api,localhost,127.0.0.1,::1' });
+    // Still no token of any kind, and the run network was checked first.
     expect(Object.keys(calls()[0]!.env).filter((k) => k.startsWith('SNAPWING_'))).toEqual([]);
+    expect(allCalls().filter(isEgress).map((c) => c.args[0])).toContain('network');
+
+    for (const [over, expected] of [
+      [{ relay, egress: ['registry.npmjs.org'], testEgress: false }, 'none'],
+      [{ relay, egress: [] }, 'none'],
+      [{ egress: ['registry.npmjs.org'] }, 'none'],
+      [{ relay, egress: ['registry.npmjs.org'], testNetwork: 'test-mirror-net' }, 'test-mirror-net'],
+    ] as const) {
+      writeFileSync(join(dir, 'calls.log'), '');
+      await runner(over).runTests(testRun);
+      expect(network(), JSON.stringify(over)).toBe(expected);
+      expect(proxyVars()).toEqual([]);
+      expect(allCalls().filter(isEgress)).toEqual([]);
+    }
   });
 
   it('gives no proxy variables without egress (none) or without a relay', async () => {

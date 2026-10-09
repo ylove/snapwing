@@ -25,8 +25,9 @@
 // containers get it in the standard proxy variables (`egressEnv`), with `snapwing-api` and loopback
 // left direct. Review containers never get it: the review agent only reads. The runner (re)starts the
 // relay when it is missing or was started for another image, upstream, network, or allowlist.
-// Containers of concurrent runs share the internal network. Test containers get `--network none`
-// unless `testNetwork` names one, or `testEgress` puts them on the run network with the proxy too.
+// Containers of concurrent runs share the internal network. Test containers join it with the same
+// proxy, since each tests a fresh clone that needs its dependencies installed; they get `--network none`
+// with `testEgress: false` or without egress, and `testNetwork` names a network of the operator's own.
 //
 // Env values go to the docker CLI through its own environment and `-e NAME` (no value), so no value ever
 // appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to find its
@@ -68,7 +69,8 @@
 // `runTests` runs one regression-proof test run (main 11.1, ADR 0017) in the same image, as an
 // attached `docker run --rm` named `snapwing-tests-<runId>`: the command is `sh -c <command>` in place
 // of the image's entrypoint, the caller's prepared tree is the only mount, and the container gets the
-// caller's env and nothing else, no token of any kind (the review job checked the tree out on the host).
+// caller's env and nothing else, no token of any kind (the review job checked the tree out on the host),
+// plus the egress proxy variables when it joins the run network (above).
 // It runs as the server's uid and gid, so every file it writes in the tree stays removable by the
 // server, with HOME and TMPDIR at the container's `/tmp`. The exit code is the one docker reports for
 // the container; docker's own failure (exit 125: no daemon, no image) rejects, so a test command that
@@ -155,7 +157,7 @@ export interface DockerRunnerOptions {
   docker?: string;
   /** The internal network fixer and review containers join. Default `DEFAULT_RUN_NETWORK`; one that is not `--internal` is refused. */
   network?: string;
-  /** `--network` for test runs. Default `none`. */
+  /** A network of the operator's own for test runs, with no proxy; replaces `testEgress`. */
   testNetwork?: string;
   /** Starts and keeps the relay on `network` (#273). Without it, something else must make the API reachable there. */
   relay?: DockerRelay;
@@ -164,7 +166,10 @@ export interface DockerRunnerOptions {
    * exact or `*.<suffix>` (`parseEgressAllow`). Default none: no proxy. Needs `relay`.
    */
   egress?: readonly string[];
-  /** Test runs join the run network with the egress proxy, as fixer runs do. Default false (`--network none`). */
+  /**
+   * Test runs join the run network with the egress proxy, as fixer runs do. Default true; false, or no
+   * egress, gives them `--network none`.
+   */
   testEgress?: boolean;
   /** Revokes a run's tokens (#273): after its fixer container is gone, before `cancel` stops it, and after a review run. */
   revoke?: (runId: string) => Promise<void>;
@@ -261,6 +266,14 @@ export const DEFAULT_FIXER_EGRESS_ALLOW: readonly string[] = Object.freeze([
   'api.nuget.org',
 ]);
 const EGRESS_HOST = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
+
+/** SNAPWING_TEST_EGRESS: unset, blank, or `on` for test runs behind the egress proxy; `off` for `--network none`. Throws on anything else. */
+export function parseTestEgress(raw: string | undefined): boolean {
+  const value = raw?.trim().toLowerCase() ?? '';
+  if (value === '' || value === 'on') return true;
+  if (value === 'off') return false;
+  throw new Error(`SNAPWING_TEST_EGRESS must be on or off, not ${JSON.stringify(raw)}`);
+}
 
 /**
  * SNAPWING_FIXER_EGRESS_ALLOW: unset or blank for `DEFAULT_FIXER_EGRESS_ALLOW`, `none` for no egress,
@@ -527,12 +540,14 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
     async runTests(job) {
       const name = testContainerName(job.runId);
       if (!Number.isFinite(job.timeoutMs) || job.timeoutMs <= 0) throw new Error(`invalid test timeout: ${String(job.timeoutMs)}`);
-      const env = { ...testEnv(job.env), ...(options.testEgress === true ? egressEnv() : {}) };
-      if (options.testEgress === true) await prepareEgress();
+      const proxy = options.testNetwork === undefined && options.testEgress !== false ? egressEnv() : {};
+      const proxied = Object.keys(proxy).length > 0;
+      const env = { ...testEnv(job.env), ...proxy };
+      if (proxied) await prepareEgress();
       const args = [
         'run',
         '--rm',
-        ...common(name, options.testEgress === true ? network : (options.testNetwork ?? 'none')),
+        ...common(name, proxied ? network : (options.testNetwork ?? 'none')),
         '-v', `${job.checkout}:${DOCKER_WORKDIR}`,
         '-w', DOCKER_WORKDIR,
         ...Object.keys(env).flatMap((k) => ['-e', k]),
