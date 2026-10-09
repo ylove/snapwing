@@ -19,20 +19,29 @@
 // path segment or is already known, when an artifact is missing or of the wrong kind, when the
 // request does not parse, or when the harness cannot be resolved.
 //
-// The run itself, in the background:
-//   1. `prepareWorkdir` (fixer/workdir) clones the repository into `<workdirRoot>/<runId>` with an
-//      installation token from `git.token`, on the work branch (handoff/@branch, else
-//      `fix/<issue key>`), with the commit-msg and pre-push guardrails installed. A failure here is a
-//      `failed` result with a `workdir:` reason; a Stop here is `stopped` at `cloned`, the floor phase.
+// The run itself, in the background, in `<workdirRoot>/<runId>` laid out as the docker runner's
+// (fixer/workdir/handoff.ts: `work/`, `out/`, `run.json`):
+//   1. `prepareWorkdir` (fixer/workdir) clones the repository into `work/` with an installation token
+//      from `git.token`, used for that clone only, on the work branch (handoff/@branch, else
+//      `fix/<issue key>`), with the commit-msg guardrail installed, and writes the run record. A
+//      failure here is a `failed` result with a `workdir:` reason; a Stop here is `stopped` at
+//      `cloned`, the floor phase.
 //   2. Reports the `cloned` checkpoint (detail `<base>@<sha>`): the runner records it, so the fixer
 //      prompt and the generic contract let the harness begin at `branched`.
-//   3. Runs the harness in the checkout with the checkout's git environment (prepareWorkdir `env`),
-//      plus, on a retry, the review artifact written to `.git/snapwing/review.json` (outside the
-//      worktree, so no commit can include it) and named by `SNAPWING_PRIOR_REVIEW_FILE`.
-//   4. Removes the run directory, unless the result is `failed` and `keepFailedWorkdir` is set.
+//   3. Runs the harness in the checkout with no credential (prepareWorkdir `env` only switches the
+//      host's git config off), plus, on a retry, the review artifact written to
+//      `.git/snapwing/review.json` (outside the worktree, so no commit can include it) and named by
+//      `SNAPWING_PRIOR_REVIEW_FILE`. The harness commits on the work branch and never pushes (#262).
+//   4. On `done`, or `failed` with a partial branch, writes the bundle of the work branch to
+//      `out/work.bundle` (`bundleWork`, what the image's wrapper does in a container). When it cannot
+//      (nothing committed), there is no bundle and the server refuses the hand-off.
+//   5. Calls `onFinished`, then removes the run directory, unless the result is `failed` and
+//      `keepFailedWorkdir` is set.
 //
 // Checkpoints and the result go to `onCheckpoint` and `onFinished`, which the app points at the
-// fixer API (B 9); errors they throw are swallowed so a reporting failure never kills a run.
+// fixer API (B 9), whose `done` imports the bundle and pushes it; errors they throw are swallowed so
+// a reporting failure never kills a run. The harness runs as the server's user on the host here, so
+// none of this is a boundary (development only, above).
 //
 // A server that stops mid-run (a restart, a crash) never reaches step 4, so `sweep` exists for
 // startup: it removes every directory under `workdirRoot` that belongs to no run this runner
@@ -40,9 +49,10 @@
 // shared with the docker runner). Age is the later of the run id's ULID time and the directory's
 // mtime, so nothing a live run could still be using is removed, even one another process started.
 
-import { readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { HarnessConfig } from '../../config/app-config.ts';
+import { bundleWork, runLayout, writeRunRecord } from '../../fixer/workdir/handoff.ts';
 import { prepareWorkdir, SNAPWING_GIT_DIR, type GitIdentity, type PreparedWorkdir } from '../../fixer/workdir/index.ts';
 import { createClaudeCodeHarness, type ClaudeCodeHarnessConfig } from '../../harness/claude-code/index.ts';
 import { createCodexHarness, type CodexHarnessConfig } from '../../harness/codex/index.ts';
@@ -63,7 +73,10 @@ export interface RunInfo {
 
 /** How the runner reaches the target repository. */
 export interface LocalRunnerGit {
-  /** A GitHub App installation token scoped to the work item's repository, fetched per run. */
+  /**
+   * A GitHub App installation token scoped to the work item's repository, fetched per run for the
+   * clone on the host only; no harness ever sees it.
+   */
   token: (workItem: WorkItemRef) => Promise<string>;
   /** The clone URL for `owner/name`; default `https://github.com/<repo>.git`. */
   remoteUrl?: (repo: string) => string;
@@ -185,6 +198,12 @@ interface Run {
 
 const message = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
+/** Where the runner's own git is found; nothing else of the server's environment. */
+function pathEnv(): Record<string, string> {
+  const path = process.env['PATH'];
+  return path === undefined ? {} : { PATH: path };
+}
+
 export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
   assertOutsideServerTree(options.workdirRoot);
   const runs = new Map<string, Run>();
@@ -218,7 +237,7 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
       if (runs.has(runId)) throw new Error(`run ${runId} already exists`);
 
       const info: RunInfo = { runId, job };
-      const workdir = join(options.workdirRoot, runId);
+      const layout = runLayout(join(options.workdirRoot, runId));
       const controller = new AbortController();
       const progress = { ended: false };
       const onCheckpoint = async (c: HarnessCheckpoint): Promise<void> => {
@@ -230,17 +249,19 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
         let prepared: PreparedWorkdir;
         try {
           const token = await options.git.token(job.workItem);
+          await mkdir(layout.out, { recursive: true });
           prepared = await prepareWorkdir({
             repo: job.workItem.repo,
             base: handoff.base,
             branch: handoff.branch ?? `fix/${job.workItem.issueKey}`,
             issueKey: job.workItem.issueKey,
             token,
-            workdir,
+            workdir: layout.checkout,
             ...(options.git.remoteUrl === undefined ? {} : { remoteUrl: options.git.remoteUrl(job.workItem.repo) }),
             ...(options.git.identity === undefined ? {} : { identity: options.git.identity }),
             signal: controller.signal,
           });
+          await writeRunRecord(layout.dir, { runId, repo: job.workItem.repo, issueKey: job.workItem.issueKey, branch: prepared.branch, base: prepared.base, expectedBase: prepared.expectedBase });
         } catch (e) {
           if (controller.signal.aborted) return { outcome: 'stopped', atPhase: 'cloned' };
           return { outcome: 'failed', reason: `workdir: ${message(e)}`, attempts: 0 };
@@ -254,8 +275,9 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
           await writeFile(reviewFile, review, { mode: 0o600 });
           env[PRIOR_REVIEW_ENV] = reviewFile;
         }
+        let result: HarnessResult;
         try {
-          return await harness.run(job.workItem, artifact.body, prepared.workdir, {
+          result = await harness.run(job.workItem, artifact.body, prepared.workdir, {
             role: 'fixer',
             budget: job.budget,
             signal: controller.signal,
@@ -265,6 +287,12 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
         } catch (e) {
           return { outcome: 'failed', reason: `harness error: ${message(e)}`, attempts: 1 };
         }
+        // The hand-off (#262): the work branch as a bundle for the server, which pushes it. Without
+        // one (nothing committed) the server refuses the hand-off.
+        if (result.outcome === 'done' || (result.outcome === 'failed' && result.partialBranch !== undefined)) {
+          await bundleWork({ checkout: prepared.workdir, branch: prepared.branch, expectedBase: prepared.expectedBase, file: layout.bundle, env: pathEnv() }).catch(() => undefined);
+        }
+        return result;
       };
 
       const done = (async (): Promise<HarnessResult> => {
@@ -274,11 +302,12 @@ export function createLocalRunner(options: LocalRunnerOptions): LocalRunner {
         } catch (e) {
           result = { outcome: 'failed', reason: `runner error: ${message(e)}`, attempts: 0 };
         }
-        if (result.outcome !== 'failed' || options.keepFailedWorkdir !== true) {
-          await rm(workdir, { recursive: true, force: true }).catch(() => undefined);
-        }
+        // Reported before the directory goes: the server reads the bundle and the record from it.
         const onFinished = options.onFinished;
         if (onFinished !== undefined) await report(() => onFinished(info, result));
+        if (result.outcome !== 'failed' || options.keepFailedWorkdir !== true) {
+          await rm(layout.dir, { recursive: true, force: true }).catch(() => undefined);
+        }
         progress.ended = true;
         return result;
       })();

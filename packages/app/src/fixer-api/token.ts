@@ -23,8 +23,8 @@ export const FIXER_TOKEN_MARGIN_MS = 15 * 60_000;
 
 /**
  * A run's fixer token TTL: its wall clock budget plus `FIXER_TOKEN_MARGIN_MS` (`DEFAULT_FIXER_TOKEN_TTL`
- * for the default PT30M), at most `MAX_FIXER_TOKEN_TTL`. A run longer than an hour keeps reporting and
- * keeps getting fresh git tokens (`GET /fixer/{id}/git-token`) to its end.
+ * for the default PT30M), at most `MAX_FIXER_TOKEN_TTL`. A run longer than an hour keeps reporting to
+ * its end; it needs no GitHub token for anything (#262).
  */
 export function fixerTokenTtl(wallClock: string): string {
   return formatDuration(Math.min(parseDuration(wallClock) + FIXER_TOKEN_MARGIN_MS, parseDuration(MAX_FIXER_TOKEN_TTL)));

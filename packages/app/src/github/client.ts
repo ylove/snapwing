@@ -249,10 +249,24 @@ export interface CommitComparison {
   contains: boolean;
 }
 
+/** A pull request to open as the App (the fixer hand-off, #262). */
+export interface CreatePullRequestInput {
+  title: string;
+  /** A branch of this repository. */
+  head: string;
+  base: string;
+  body: string;
+  draft?: boolean;
+}
+
 export interface GitHubClient {
   getPullRequest(number: number): Promise<PullRequest>;
   /** The repository's default branch. */
   getDefaultBranch(): Promise<string>;
+  /** The open pull request from `head` (a branch of this repository) into `base`, if there is one. */
+  findOpenPullRequest(head: string, base: string): Promise<PullRequest | undefined>;
+  /** Opens a pull request from `head` (a branch of this repository) into `base`, as the App. */
+  createPullRequest(input: CreatePullRequestInput): Promise<PullRequest>;
   listPullRequestFiles(number: number): Promise<PullRequestFile[]>;
   /** The files `head` changes against its merge base with `base` (`GET /compare/{base}...{head}`), for exactly that commit. */
   compareFiles(base: string, head: string): Promise<CompareFiles>;
@@ -564,6 +578,17 @@ export function createGitHubClient(auth: GitHubAuth, options: GitHubClientOption
       const branch = str(body?.default_branch);
       if (branch === '') throw new GitHubApiError(502, 'repository response had no default branch');
       return branch;
+    },
+
+    async findOpenPullRequest(head, base) {
+      const owner = options.repo.slice(0, options.repo.indexOf('/'));
+      const found = list(await json({ method: 'GET', path: `${repoPath}/pulls`, permissions: prRead, query: { state: 'open', head: `${owner}:${head}`, base, per_page: 1 } }));
+      return found.length === 0 ? undefined : toPullRequest(found[0]);
+    },
+
+    async createPullRequest(input) {
+      const body = { title: input.title, head: input.head, base: input.base, body: input.body, ...(input.draft === undefined ? {} : { draft: input.draft }) };
+      return toPullRequest(await json({ method: 'POST', path: `${repoPath}/pulls`, permissions: prWrite, body }));
     },
 
     async listPullRequestFiles(number) {

@@ -13,6 +13,8 @@ export interface InstallationTokenRequest {
   /** `owner/name`. The token is scoped to this one repository. */
   repo: string;
   permissions: GitHubPermissions;
+  /** Mint a new token for this one use, neither taken from nor kept in the cache (a push, #262). */
+  fresh?: boolean;
 }
 
 export interface InstallationToken {
@@ -22,7 +24,10 @@ export interface InstallationToken {
 }
 
 export interface GitHubAuth {
-  /** Returns a cached token while it has more than 5 minutes left, otherwise mints a new one. */
+  /**
+   * Returns a cached token while it has more than 5 minutes left, otherwise mints a new one; with
+   * `fresh`, always mints one and caches nothing.
+   */
   installationToken(request: InstallationTokenRequest): Promise<InstallationToken>;
 }
 
@@ -121,6 +126,7 @@ export function createGitHubAuth(options: GitHubAuthOptions): GitHubAuth {
 
   return {
     async installationToken(request) {
+      if (request.fresh === true) return mint(request);
       const key = cacheKey(request);
       const cached = cache.get(key);
       if (cached !== undefined && Date.parse(cached.expiresAt) - now().getTime() > TOKEN_REFRESH_MARGIN_MS) return cached;

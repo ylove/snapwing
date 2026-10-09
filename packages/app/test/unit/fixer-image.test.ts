@@ -9,14 +9,14 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FixerJob, ReviewRunJob } from '@snapwing/pipeline/ports/runner.ts';
 import { issueFixerToken } from '../../src/fixer-api/token.ts';
 import { issueModelToken } from '../../src/model-proxy/token.ts';
-import { DOCKER_WORKDIR, fixerEnv, reviewEnv, type DockerModelProxy } from '../../src/providers/docker/runner.ts';
+import { DOCKER_OUTDIR, DOCKER_WORKDIR, fixerEnv, reviewEnv, type DockerModelProxy } from '../../src/providers/docker/runner.ts';
 import { applyModelAccess, EXIT_FAILED, EXIT_MISCONFIGURED, FIXER_REQUEST_PATH, modelAccess } from '../../../../infra/docker/fixer/wrapper.ts';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -41,25 +41,28 @@ let dir: string;
 let work: string;
 let bin: string;
 let out: string;
+/** The run's hand-off directory, mounted at `/out` in a container. */
+let handoffDir: string;
 let server: Server;
 let apiUrl: string;
 let api: ApiCall[];
 /** Stop answers 204 once a checkpoint with this phase arrived ('start': from the first poll). */
 let stopAfter: string | undefined;
 let checkpointStatus: number;
-/** What `GET .../git-token` answers; 200 mints `test-fresh-git-token-<n>` for the n-th call. */
-let gitTokenStatus: number;
+/** What `POST .../done` answers. */
+let doneAnswer: { status: number; body: unknown };
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'fixer-image-'));
   work = join(dir, 'work');
   bin = join(dir, 'bin');
   out = join(dir, 'out');
-  for (const d of [work, bin, out]) mkdirSync(d);
+  handoffDir = join(dir, 'handoff');
+  for (const d of [work, bin, out, handoffDir]) mkdirSync(d);
   api = [];
   stopAfter = undefined;
   checkpointStatus = 200;
-  gitTokenStatus = 200;
+  doneAnswer = { status: 200, body: { seq: 1 } };
   server = createServer((req, res) => {
     let raw = '';
     req.on('data', (c: Buffer) => (raw += c.toString('utf8')));
@@ -71,10 +74,8 @@ beforeEach(async () => {
         res.writeHead(stopped ? 204 : 200).end(stopped ? undefined : '{"stop":false}');
       } else if (call.path.endsWith('/checkpoint')) {
         res.writeHead(checkpointStatus).end('{}');
-      } else if (call.path.endsWith('/git-token')) {
-        const n = api.filter((c) => c.path.endsWith('/git-token')).length;
-        if (gitTokenStatus !== 200) res.writeHead(gitTokenStatus).end('{"error":"nope"}');
-        else res.writeHead(200).end(JSON.stringify({ token: `test-fresh-git-token-${n}`, expiresAt: '2026-10-02T13:00:00.000Z' }));
+      } else if (call.path.endsWith('/done')) {
+        res.writeHead(doneAnswer.status).end(JSON.stringify(doneAnswer.body));
       } else {
         res.writeHead(200).end('{"seq":1}');
       }
@@ -127,10 +128,31 @@ function seenEnv(name: string): Record<string, string> {
   return env;
 }
 
+const WORK_BRANCH = 'fix/WEB-1042';
+const GIT_TEST_ENV = { PATH: process.env['PATH'] ?? '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull };
+/** The commit the prepared checkout's work branch starts at (`SNAPWING_BASE_SHA`). */
+let baseSha: string;
+
+/** A prepared checkout on the work branch, at one base commit, with the request inside it. */
 function checkout(request: string | null = REQUEST): void {
-  execFileSync('git', ['init', '-q', work]);
+  const git = (args: string[]): string => execFileSync('git', args, { cwd: work, env: GIT_TEST_ENV, encoding: 'utf8' }).trim();
+  git(['init', '-q', `--initial-branch=${WORK_BRANCH}`]);
+  git(['config', 'user.name', 'snapwing[bot]']);
+  git(['config', 'user.email', 'snapwing[bot]@users.noreply.github.com']);
+  writeFileSync(join(work, 'cart.ts'), 'export const total = 1;\n');
+  git(['add', '-A']);
+  git(['commit', '-q', '-m', 'base']);
+  baseSha = git(['rev-parse', 'HEAD']);
   mkdirSync(join(work, '.git', 'snapwing'), { recursive: true });
   if (request !== null) writeFileSync(join(work, FIXER_REQUEST_PATH), request);
+}
+
+/** A shell line for a fake CLI: commit a change on the work branch, as an agent does. */
+const COMMIT = `echo 'export const total = 2;' > cart.ts && git add -A && git commit -q -m 'WEB-1042: guard the cart total'`;
+
+/** The docker runner's fixer environment for `job`, with the hand-off of the prepared checkout. */
+function fixerContainer(env: Parameters<typeof fixerEnv>[1], job: FixerJob = fixerJob()): Record<string, string> {
+  return fixerEnv(job, env, { branch: WORK_BRANCH, expectedBase: baseSha });
 }
 
 function fixerJob(over: Partial<FixerJob> = {}): FixerJob {
@@ -159,11 +181,21 @@ function reviewJob(over: Partial<ReviewRunJob> = {}): ReviewRunJob {
 
 const FIXER_TOKEN = (): string => issueFixerToken({ workItemId: 'WI01', incidentId: 'INC01', ttl: 'PT45M' }, keys);
 
-/** The runner's container environment with `/work` moved to the test's directory. */
+/** The runner's container environment with `/work` and `/out` moved to the test's directories. */
 function containerEnv(env: Record<string, string>, extra: Record<string, string> = {}): Record<string, string> {
   const moved: Record<string, string> = {};
-  for (const [k, v] of Object.entries(env)) moved[k] = v === DOCKER_WORKDIR || v.startsWith(`${DOCKER_WORKDIR}/`) ? work + v.slice(DOCKER_WORKDIR.length) : v;
+  for (const [k, v] of Object.entries(env)) {
+    if (v === DOCKER_WORKDIR || v.startsWith(`${DOCKER_WORKDIR}/`)) moved[k] = work + v.slice(DOCKER_WORKDIR.length);
+    else if (v.startsWith(`${DOCKER_OUTDIR}/`)) moved[k] = handoffDir + v.slice(DOCKER_OUTDIR.length);
+    else moved[k] = v;
+  }
   return { ...moved, PATH: `${bin}:${process.env['PATH'] ?? ''}`, ...extra };
+}
+
+/** `git bundle list-heads` of the bundle the wrapper left, or null when it left none. */
+function handedBack(): string | null {
+  const file = join(handoffDir, 'work.bundle');
+  return existsSync(file) ? execFileSync('git', ['bundle', 'list-heads', file], { cwd: dir, env: GIT_TEST_ENV, encoding: 'utf8' }).trim() : null;
 }
 
 function runEntrypoint(env: Record<string, string>, timeoutMs = 20_000): Promise<{ code: number | null; stderr: string }> {
@@ -185,12 +217,12 @@ function runEntrypoint(env: Record<string, string>, timeoutMs = 20_000): Promise
 const posts = (op: string): ApiCall[] => api.filter((c) => c.method === 'POST' && c.path.endsWith(`/${op}`));
 
 describe('fixer role', () => {
-  it('runs claude-code on the mounted work item and reports through the fixer API with the run token', async () => {
+  it('runs claude-code on the mounted work item, bundles the work branch into /out, and reports done through the fixer API with the run token', async () => {
     checkout();
     const done = { outcome: 'done', branch: 'fix/WEB-1042', prNumber: 87, summary: 'Guard against a null cart', testsAdded: ['test/cart.test.ts'] };
-    fakeCli('claude', [`echo '{"phase":"branched","detail":"fix/WEB-1042"}' >> "$SNAPWING_CHECKPOINT_FILE"`, claudeResult(done)].join('\n'));
+    fakeCli('claude', [`echo '{"phase":"branched","detail":"fix/WEB-1042"}' >> "$SNAPWING_CHECKPOINT_FILE"`, COMMIT, claudeResult(done)].join('\n'));
     const token = FIXER_TOKEN();
-    const env = fixerEnv(fixerJob(), { apiUrl, token: () => token, modelProxy: proxy });
+    const env = fixerContainer({ apiUrl, token: () => token, modelProxy: proxy });
 
     const r = await runEntrypoint(containerEnv(env));
 
@@ -198,8 +230,11 @@ describe('fixer role', () => {
     expect(api.every((c) => c.auth === `Bearer ${token}`)).toBe(true);
     expect(api.every((c) => c.path.startsWith('/fixer/WI01/'))).toBe(true);
     expect(posts('checkpoint').map((c) => c.body)).toEqual([{ phase: 'cloned' }, { phase: 'branched', detail: 'fix/WEB-1042' }]);
-    expect(posts('done').map((c) => c.body)).toEqual([{ prNumber: 87, branch: 'fix/WEB-1042', summary: 'Guard against a null cart', testsAdded: ['test/cart.test.ts'] }]);
+    // No branch and no pull request number: the server pushes the run's branch and opens the PR (#262).
+    expect(posts('done').map((c) => c.body)).toEqual([{ summary: 'Guard against a null cart', testsAdded: ['test/cart.test.ts'] }]);
     expect(api[0]).toMatchObject({ method: 'GET', path: '/fixer/WI01/stop' });
+    const tip = execFileSync('git', ['rev-parse', `refs/heads/${WORK_BRANCH}`], { cwd: work, env: GIT_TEST_ENV, encoding: 'utf8' }).trim();
+    expect(handedBack()).toBe(`${tip} refs/heads/${WORK_BRANCH}`);
 
     // The harness got the request on stdin, ran in the checkout, and never saw the fixer token.
     expect(seen('claude', 'stdin')).toBe(REQUEST);
@@ -220,8 +255,8 @@ describe('fixer role', () => {
 
   it('removes a provider key that is not a model proxy token, naming it but never its value', async () => {
     checkout();
-    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', prNumber: 1, summary: '', testsAdded: [] }));
-    const env = fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN, modelProxy: proxy });
+    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: '', testsAdded: [] }));
+    const env = fixerContainer({ apiUrl, token: FIXER_TOKEN, modelProxy: proxy });
 
     const r = await runEntrypoint(containerEnv(env, { ANTHROPIC_API_KEY: 'test-provider-key-not-real', ANTHROPIC_BASE_URL: 'https://api.example.test' }));
 
@@ -235,8 +270,8 @@ describe('fixer role', () => {
 
   it('gives the harness no model access without a proxy', async () => {
     checkout();
-    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', prNumber: 1, summary: '', testsAdded: [] }));
-    const env = fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN });
+    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: '', testsAdded: [] }));
+    const env = fixerContainer({ apiUrl, token: FIXER_TOKEN });
 
     const r = await runEntrypoint(containerEnv(env, { ANTHROPIC_API_KEY: 'test-provider-key-not-real' }));
 
@@ -246,87 +281,84 @@ describe('fixer role', () => {
     expect(r.stderr).toContain('no model access');
   });
 
-  it('gives git a fresh token from the fixer API on every ask, through the credential helper, never in a file or the env', async () => {
+  it('gives the harness no GitHub credential: no token, askpass, socket, or helper, and git cannot get one (#262)', async () => {
     checkout();
     mkdirSync(join(work, '.git', 'snapwing', 'hooks'));
-    const ask = `printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill`;
     fakeCli(
       'claude',
       [
-        `${ask} > "$out/cred1"`,
-        `${ask} > "$out/cred2"`,
-        // The recipe prompts/fixer.xml gives the agent for the GitHub API: header from stdin, never argv.
-        `${ask} | sed -n 's/^password=/Authorization: Bearer /p' | curl -sS -H @- "${apiUrl}/github/pulls" > /dev/null`,
-        'printf %s "$SNAPWING_GIT_CREDENTIAL_SOCKET" > "$out/socket"',
-        claudeResult({ outcome: 'done', branch: 'b', prNumber: 1, summary: '', testsAdded: [] }),
+        `printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill > "$out/cred" 2> /dev/null; echo $? > "$out/code"`,
+        COMMIT,
+        claudeResult({ outcome: 'done', branch: 'b', summary: '', testsAdded: [] }),
       ].join('\n'),
     );
     const token = FIXER_TOKEN();
-    const env = fixerEnv(fixerJob(), { apiUrl, token: () => token });
-    // A git token passed by mistake (the runner no longer passes one) never reaches the harness.
-    const r = await runEntrypoint(containerEnv(env, { SNAPWING_GIT_TOKEN: 'test-stale-git-token' }));
-
-    expect(r.code, r.stderr).toBe(0);
-    expect(readFileSync(join(out, 'claude', 'cred1'), 'utf8')).toContain('username=x-access-token\npassword=test-fresh-git-token-1\n');
-    expect(readFileSync(join(out, 'claude', 'cred2'), 'utf8')).toContain('password=test-fresh-git-token-2\n');
-    expect(api.find((c) => c.path === '/github/pulls')?.auth).toBe('Bearer test-fresh-git-token-3');
-    const asks = api.filter((c) => c.path.endsWith('/git-token'));
-    expect(asks.map((c) => [c.method, c.path, c.auth])).toEqual(Array(3).fill(['GET', '/fixer/WI01/git-token', `Bearer ${token}`]));
-
-    const cli = seenEnv('claude');
-    expect([cli['GIT_CONFIG_KEY_0'], cli['GIT_CONFIG_VALUE_0']]).toEqual(['credential.helper', '']);
-    expect([cli['GIT_CONFIG_KEY_1'], cli['GIT_CONFIG_VALUE_1']]).toEqual(['credential.helper', join(FIXER_DIR, 'git-credential')]);
-    expect([cli['GIT_CONFIG_KEY_2'], cli['GIT_CONFIG_VALUE_2']]).toEqual(['core.hooksPath', join(work, '.git', 'snapwing', 'hooks')]);
-    expect(cli['GIT_CONFIG_COUNT']).toBe('3');
-    for (const absent of ['SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_FIXER_TOKEN']) expect(cli[absent]).toBeUndefined();
-    expect(seen('claude', 'env')).not.toContain('test-fresh-git-token');
-    expect(seen('claude', 'env')).not.toContain('test-stale-git-token');
-    expect(r.stderr).not.toContain('test-fresh-git-token');
-    // The socket and its private directory are gone with the run.
-    const socket = readFileSync(join(out, 'claude', 'socket'), 'utf8');
-    expect(socket).toMatch(/snapwing-git-[^/]+\/credential\.sock$/);
-    expect(existsSync(dirname(socket))).toBe(false);
-  });
-
-  it('answers git nothing when the fixer API will not mint, so git fails to authenticate', async () => {
-    checkout();
-    gitTokenStatus = 502;
-    fakeCli('claude', [`printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill > "$out/cred" 2> "$out/err"; echo $? > "$out/code"`, claudeResult({ outcome: 'done', branch: 'b', prNumber: 1, summary: '', testsAdded: [] })].join('\n'));
-
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN }), {}), 30_000);
+    // A git token passed by mistake (no runner passes one) never reaches the harness.
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: () => token }), { SNAPWING_GIT_TOKEN: 'test-stale-git-token' }));
 
     expect(r.code, r.stderr).toBe(0);
     expect(readFileSync(join(out, 'claude', 'code'), 'utf8').trim()).not.toBe('0');
     expect(readFileSync(join(out, 'claude', 'cred'), 'utf8')).not.toContain('password=');
-    expect(r.stderr).toContain('git token: HTTP 502');
+    const cli = seenEnv('claude');
+    for (const absent of ['SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_GIT_CREDENTIAL_SOCKET', 'SNAPWING_FIXER_TOKEN', 'SNAPWING_HANDOFF_FILE', 'SNAPWING_BASE_SHA']) expect(cli[absent]).toBeUndefined();
+    // Git's only extra config is the checkout's own hooks.
+    expect([cli['GIT_CONFIG_COUNT'], cli['GIT_CONFIG_KEY_0'], cli['GIT_CONFIG_VALUE_0']]).toEqual(['1', 'core.hooksPath', join(work, '.git', 'snapwing', 'hooks')]);
+    expect(seen('claude', 'env')).not.toContain('test-stale-git-token');
+    expect(api.filter((c) => c.path.endsWith('/git-token'))).toEqual([]);
   });
 
-  it('reports a failed harness result', async () => {
+  it('reports a failed harness result, keeping committed partial work as the run\'s branch and nothing else', async () => {
     checkout();
-    fakeCli('claude', claudeResult({ outcome: 'failed', reason: 'tests still failing', partialBranch: 'fix/WEB-1042', attempts: 2 }));
+    fakeCli('claude', [COMMIT, claudeResult({ outcome: 'failed', reason: 'tests still failing', partialBranch: 'some-other-branch', attempts: 2 })].join('\n'));
 
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code).toBe(EXIT_FAILED);
-    expect(posts('failed').map((c) => c.body)).toEqual([{ reason: 'tests still failing', partialBranch: 'fix/WEB-1042', attempts: 2 }]);
+    expect(posts('failed').map((c) => c.body)).toEqual([{ reason: 'tests still failing', partialBranch: WORK_BRANCH, attempts: 2 }]);
+    expect(handedBack()).toMatch(new RegExp(` refs/heads/${WORK_BRANCH}$`));
     expect(posts('done')).toEqual([]);
   });
 
-  it('reports done without a pull request as failed', async () => {
+  it('reports a failure with no committed work without a partial branch, and leaves no bundle', async () => {
     checkout();
-    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: 'pushed', testsAdded: [] }));
+    fakeCli('claude', claudeResult({ outcome: 'failed', reason: 'tests still failing', partialBranch: 'fix/WEB-1042', attempts: 2 }));
 
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code).toBe(EXIT_FAILED);
-    expect(posts('failed').map((c) => c.body)).toEqual([{ reason: 'the harness finished without opening a pull request', partialBranch: 'fix/WEB-1042', attempts: 1 }]);
+    expect(posts('failed').map((c) => c.body)).toEqual([{ reason: 'tests still failing', attempts: 2 }]);
+    expect(handedBack()).toBeNull();
+  });
+
+  it('reports failed with the server\'s reason when the server refuses the hand-off', async () => {
+    checkout();
+    doneAnswer = { status: 409, body: { error: 'handoff-refused', reason: 'the run left no bundle of its work branch; the fixer must commit its change on it' } };
+    fakeCli('claude', claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: 'pushed', testsAdded: [] }));
+
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
+
+    expect(r.code).toBe(EXIT_FAILED);
+    expect(r.stderr).toContain('nothing is committed on fix/WEB-1042 beyond its base');
+    expect(posts('done')).toHaveLength(1);
+    expect(posts('failed').map((c) => c.body)).toEqual([{ reason: 'handoff refused: the run left no bundle of its work branch; the fixer must commit its change on it', attempts: 1 }]);
+  });
+
+  it('treats any other 409 on done like a stop', async () => {
+    checkout();
+    doneAnswer = { status: 409, body: { error: 'run-finished' } };
+    fakeCli('claude', [COMMIT, claudeResult({ outcome: 'done', branch: 'fix/WEB-1042', summary: 'x', testsAdded: [] })].join('\n'));
+
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
+
+    expect(r.code).toBe(0);
+    expect(posts('failed')).toEqual([]);
   });
 
   it('reports failed, without running a harness, when the work item is not in the mount', async () => {
     checkout(null);
     fakeCli('claude', 'exit 0');
 
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code).toBe(EXIT_FAILED);
     expect(posts('failed')).toHaveLength(1);
@@ -339,24 +371,25 @@ describe('fixer role', () => {
     fakeCli('claude', 'exit 0');
     stopAfter = 'start';
 
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code).toBe(0);
     expect(api.filter((c) => c.method === 'POST')).toEqual([]);
     expect(existsSync(join(out, 'claude'))).toBe(false);
   });
 
-  it('stops the harness with SIGTERM when the stop poll after a checkpoint answers 204, and reports nothing more', async () => {
+  it('stops the harness with SIGTERM when the stop poll after a checkpoint answers 204, and reports and hands back nothing', async () => {
     checkout();
-    fakeCli('claude', [`echo '{"phase":"branched"}' >> "$SNAPWING_CHECKPOINT_FILE"`, `trap 'echo term > "$out/term"; exit 143' TERM`, 'sleep 30 &', 'wait'].join('\n'));
+    fakeCli('claude', [COMMIT, `echo '{"phase":"branched"}' >> "$SNAPWING_CHECKPOINT_FILE"`, `trap 'echo term > "$out/term"; exit 143' TERM`, 'sleep 30 &', 'wait'].join('\n'));
     stopAfter = 'branched';
 
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code, r.stderr).toBe(0);
     expect(readFileSync(join(out, 'claude', 'term'), 'utf8')).toBe('term\n');
     expect(posts('done')).toEqual([]);
     expect(posts('failed')).toEqual([]);
+    expect(handedBack()).toBeNull();
     expect(r.stderr).toContain('stopped at branched');
   });
 
@@ -365,7 +398,7 @@ describe('fixer role', () => {
     fakeCli('claude', 'exit 0');
     checkpointStatus = 409;
 
-    const r = await runEntrypoint(containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN })));
+    const r = await runEntrypoint(containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN })));
 
     expect(r.code).toBe(0);
     expect(existsSync(join(out, 'claude'))).toBe(false);
@@ -376,9 +409,9 @@ describe('fixer role', () => {
     checkout();
     const generic = join(dir, 'generic');
     mkdirSync(generic);
-    fakeCli('aider', [`echo '{"phase":"implemented"}' >&2`, print(JSON.stringify({ outcome: 'done', branch: 'fix/WEB-1042', prNumber: 9, summary: 'aider', testsAdded: [] }))].join('\n'));
+    fakeCli('aider', [`echo '{"phase":"implemented"}' >&2`, COMMIT, print(JSON.stringify({ outcome: 'done', branch: 'fix/WEB-1042', summary: 'aider', testsAdded: [] }))].join('\n'));
     writeFileSync(join(generic, 'aider'), `${join(bin, 'aider')} --yes\n`);
-    const env = containerEnv(fixerEnv(fixerJob({ harness: { adapter: 'generic', templateId: 'aider' } }), { apiUrl, token: FIXER_TOKEN, modelProxy: proxy }), { SNAPWING_GENERIC_DIR: generic });
+    const env = containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN, modelProxy: proxy }, fixerJob({ harness: { adapter: 'generic', templateId: 'aider' } })), { SNAPWING_GENERIC_DIR: generic });
 
     const r = await runEntrypoint(env);
 
@@ -396,12 +429,30 @@ describe('fixer role', () => {
 
   it('refuses to start without its API URL or token', async () => {
     checkout();
-    const env = containerEnv(fixerEnv(fixerJob(), { apiUrl, token: FIXER_TOKEN }));
+    const env = containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN }));
     delete env['SNAPWING_FIXER_TOKEN'];
 
     const r = await runEntrypoint(env);
 
     expect(r.code).toBe(EXIT_MISCONFIGURED);
+    expect(api).toEqual([]);
+  });
+
+  it('refuses to start without the hand-off: the work branch, its base, and a bundle path outside the checkout', async () => {
+    checkout();
+    const env = containerEnv(fixerContainer({ apiUrl, token: FIXER_TOKEN }));
+    for (const [name, value] of [
+      ['SNAPWING_WORK_BRANCH', undefined],
+      ['SNAPWING_BASE_SHA', 'HEAD'],
+      ['SNAPWING_HANDOFF_FILE', join(work, '.git', 'snapwing', 'work.bundle')],
+    ] as const) {
+      const broken = { ...env };
+      if (value === undefined) delete broken[name];
+      else broken[name] = value;
+      const r = await runEntrypoint(broken);
+      expect(r.code, name).toBe(EXIT_MISCONFIGURED);
+      expect(r.stderr).toContain(name);
+    }
     expect(api).toEqual([]);
   });
 });
@@ -583,7 +634,8 @@ describe('the image definition', () => {
   it('bakes in no secret: no key or token variable, and only the wrapper and the pipeline source in the context', () => {
     for (const l of instructions.filter((x) => /^(ENV|ARG) /.test(x))) expect(l).not.toMatch(/KEY|TOKEN|SECRET|PASSWORD/i);
     const copies = instructions.filter((l) => l.startsWith('COPY ')).map((l) => l.split(/\s+/).slice(1, -1));
-    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/git-credential', 'infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
+    // No credential helper either: nothing in the image fetches or holds a GitHub token (#262).
+    expect(copies.flat().sort()).toEqual(['infra/docker/fixer/entrypoint.ts', 'infra/docker/fixer/wrapper.ts', 'packages/pipeline/src'].sort());
     const ignore = readFileSync(join(FIXER_DIR, 'Dockerfile.dockerignore'), 'utf8').split('\n').filter((l) => l !== '' && !l.startsWith('#'));
     expect(ignore[0]).toBe('*');
     expect(ignore.slice(1).every((l) => l.startsWith('!packages/pipeline/src/') || l.startsWith('!infra/docker/fixer/'))).toBe(true);

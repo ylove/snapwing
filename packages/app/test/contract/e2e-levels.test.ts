@@ -10,6 +10,7 @@
 // No keys and no network: Slack, Jira, and GitHub are MSW; git remotes are local bare repositories
 // (fixtures/e2e/github.ts). Runs on the dialect `SNAPWING_DB` selects (pg-boss on Postgres).
 
+import { execFileSync } from 'node:child_process';
 import { generateKeyPairSync } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -26,7 +27,7 @@ import { withValidation } from '@snapwing/pipeline/models/router.ts';
 import { ensureInstallWorkspace } from '@snapwing/pipeline/state/workspace.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
 import { createGitHubOAuth } from '../../src/github/oauth.ts';
-import { FakeGitHub, type GitHubPerson } from '../fixtures/e2e/github.ts';
+import { FakeGitHub, INSTALLATION_TOKEN, type GitHubPerson } from '../fixtures/e2e/github.ts';
 import { JiraWebhooks } from '../fixtures/e2e/jira.ts';
 import { JIRA_HOOK_SECRET,
   blockIds,
@@ -88,12 +89,14 @@ interface Plan {
   summary: string;
   files: Record<string, string>;
   test: string;
-  hangAfterPr?: boolean;
+  hangAfterCommit?: boolean;
   reviewGate?: boolean;
+  /** Strings the fake agent looks for in its environment and files (fake-harness.mjs `seen/`). */
+  probes?: string[];
 }
 
 /** The fix and its regression test per recording: the test fails on the seeded bug and passes after. */
-const FIXES: Readonly<Record<string, Omit<Plan, 'hangAfterPr' | 'reviewGate'>>> = {
+const FIXES: Readonly<Record<string, Omit<Plan, 'hangAfterCommit' | 'reviewGate' | 'probes'>>> = {
   'acme/admin': {
     summary: 'append the usage rows to the CSV export',
     files: {
@@ -127,7 +130,7 @@ interface World {
   jiraHooks: JiraWebhooks;
   github: FakeGitHub;
   repo: string;
-  /** The world dir the fake harness reads plans from and writes pull requests to. */
+  /** The world dir the fake harness reads plans from and records what it was handed in. */
   harnessDir: string;
   /** Set once the scope card names it. */
   incidentId?: string;
@@ -150,7 +153,7 @@ async function world(file: string, issueKey: string, plan: Partial<Plan> = {}): 
   for (const [name, files] of Object.entries(recording.github)) await github.addRepo(name, files);
   await mkdir(join(harnessDir, 'plans'), { recursive: true });
   await mkdir(join(harnessDir, 'gates'), { recursive: true });
-  await writeFile(join(harnessDir, 'plans', `${issueKey}.json`), JSON.stringify({ ...fix, reviewGate: true, ...plan }));
+  await writeFile(join(harnessDir, 'plans', `${issueKey}.json`), JSON.stringify({ ...fix, reviewGate: true, probes: [INSTALLATION_TOKEN], ...plan }));
   // The first matching handler wins: the e2e Jira workflow over the demo one, the fake GitHub before the demo reads.
   server.use(...jiraHooks.handlers(), ...github.handlers(), ...jiraHandlers(jira), ...githubHandlers(demoGitHub));
 
@@ -324,6 +327,24 @@ async function openReviewGate(w: World, issueKey: string): Promise<void> {
   await writeFile(join(w.harnessDir, 'gates', `review-${issueKey}`), 'go');
 }
 
+/** The branches of the fake GitHub's repository for this world. */
+function remoteBranches(w: World): string[] {
+  return execFileSync('git', ['for-each-ref', '--format=%(refname)', 'refs/heads'], { cwd: w.github.remoteUrl(w.repo), encoding: 'utf8' })
+    .split('\n')
+    .filter((r) => r !== '');
+}
+
+/**
+ * The fixer was handed no GitHub credential (#262): the installation token is nowhere in the
+ * environment the fake agent got or in any file of the checkout it was given.
+ */
+async function noGitHubCredential(w: World, issueKey: string): Promise<void> {
+  const seen = JSON.parse(await readFile(join(w.harnessDir, 'seen', `${issueKey}-fixer.json`), 'utf8')) as { env: Record<string, string>; holding: Record<string, string[]> };
+  expect(seen.holding).toEqual({ [INSTALLATION_TOKEN]: [] });
+  expect(JSON.stringify(seen.env)).not.toContain(INSTALLATION_TOKEN);
+  for (const name of ['SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_GIT_CREDENTIAL_SOCKET', 'SNAPWING_FIXER_TOKEN']) expect(seen.env[name]).toBeUndefined();
+}
+
 /** Nothing went wrong anywhere along the way. */
 function clean(w: World): void {
   expect(w.slack.unknown).toEqual([]);
@@ -429,8 +450,10 @@ describe('levels 1 and 2 end to end through the composed app', () => {
 
     const log = await w.booted.state.read(incidentId);
     const phases = log.flatMap((e) => (e.type === 'fixer-checkpoint' ? [e.payload.phase] : []));
+    // The agent reached `tested`; the server pushed its bundle and opened the PR, and recorded those (#262).
     expect(phases).toEqual(['cloned', 'branched', 'implemented', 'tested', 'pushed', 'pr-opened']);
     expect(log.filter((e) => e.source === 'fixer').map((e) => e.type)).toEqual([...phases.map(() => 'fixer-checkpoint'), 'fixer-done', 'pr-opened']);
+    await noGitHubCredential(w, 'ADM-1');
     expect(rows(statusTexts(w, statusTs))).toEqual([
       expect.stringContaining('Filed as ADM-1, assigned to <@U0ADMDEV>.'),
       expect.stringContaining('Filed as ADM-1. Working on a fix now.'),
@@ -482,8 +505,8 @@ describe('levels 1 and 2 end to end through the composed app', () => {
     clean(w);
   }, 60_000);
 
-  it('level 2: Stop mid-fix closes the PR the fixer opened and puts the ticket back in Backlog', async () => {
-    const w = await world('03-level-2-fix-now.json', 'WEB-1', { hangAfterPr: true });
+  it('level 2: Stop mid-fix pushes nothing, opens no PR, and puts the ticket back in Backlog', async () => {
+    const w = await world('03-level-2-fix-now.json', 'WEB-1', { hangAfterCommit: true });
     await shortcut(w);
     const scope = await card(w, 'scope_actions');
     const incidentId = incidentOf(w, scope);
@@ -494,31 +517,31 @@ describe('levels 1 and 2 end to end through the composed app', () => {
     await statusShows(w, statusTs, 'Filed as WEB-1. Working on a fix now.');
     await deliverJira(w, 'WEB-1');
 
-    // The fixer pushed and opened its PR, then keeps working: Stop it from the informational card.
+    // The fixer committed its fix and keeps working: Stop it from the informational card.
     await vi.waitFor(async () => {
       const log = await w.booted.state.read(incidentId);
-      expect(log.some((e) => e.type === 'fixer-checkpoint' && e.payload.phase === 'pr-opened')).toBe(true);
+      expect(log.some((e) => e.type === 'fixer-checkpoint' && e.payload.phase === 'tested')).toBe(true);
     }, WAIT);
     const runId = (await w.booted.state.read(incidentId)).flatMap((e) => (e.type === 'fixer-started' ? [e.payload.runId] : []))[0] ?? '';
     expect(existsSync(join(dir, 'work', 'fixer', runId))).toBe(true);
     await tap(w, preview, 'triage_actions', 'stop', 'U0WEBDEV');
 
     await statusShows(w, statusTs, 'Stopped by <@U0WEBDEV>. Ticket back in Backlog.');
-    await vi.waitFor(async () => {
-      if (w.github.pull(w.repo, 1)?.state !== 'closed') throw new Error(`PR not closed (${await diagnose(w)}; github ${w.github.calls.join(', ')})`);
-    }, WAIT);
-    const pr = w.github.pull(w.repo, 1);
-    expect(pr?.merged).toBe(false);
-    expect(pr?.comments.join('\n')).toContain('Stopped by U0WEBDEV');
     await vi.waitFor(() => expect(w.jira.issues.get('WEB-1')?.status).toBe('Backlog'), WAIT);
+    await noGitHubCredential(w, 'WEB-1');
     expect(w.jiraHooks.transitions).toEqual([expect.stringMatching(/^WEB-1: .* -> In Progress$/), 'WEB-1: In Progress -> Backlog']);
     // The agent's own Backlog transition comes back as an echo and starts nothing.
     await deliverJira(w, 'WEB-1');
     // The run was cancelled: the harness answered SIGTERM and the runner removed its checkout.
     await vi.waitFor(() => expect(existsSync(join(dir, 'work', 'fixer', runId))).toBe(false), WAIT);
+    // A stopped run pushes nothing (#262): GitHub never saw the work branch or a pull request.
+    expect(w.github.pulls.size).toBe(0);
+    expect(w.github.calls.filter((c) => c.endsWith('/pulls'))).toEqual([]);
+    expect(remoteBranches(w)).toEqual(['refs/heads/main']);
     const log = await types(w, incidentId);
     expect(log).toContain('stopped');
     expect(log).not.toContain('fixer-done');
+    expect(log).not.toContain('pr-opened');
     expect(log.filter((t) => t === 'fixer-started')).toHaveLength(1);
     expect((await w.booted.state.getIncident(incidentId))?.status).toBe('stopped');
     expect(w.github.checkRuns).toEqual([]);

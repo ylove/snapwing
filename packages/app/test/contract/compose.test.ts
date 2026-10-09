@@ -324,10 +324,19 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     expect(proxied).toEqual(expect.arrayContaining(['/model/:workItemId/anthropic/v1/messages', '/model/:workItemId/google/v1beta/models/:call']));
     expect(proxied.some((p) => p.includes('/openai/'))).toBe(false);
 
-    // Fresh git tokens for containers: docker only.
+    // No route hands a container a GitHub token, on either runner (#262).
     const gitToken = (c: Composed): string[] => c.routes.filter((r) => r.path.endsWith('/git-token')).map((r) => `${r.method} ${r.path}`);
-    expect(gitToken(docker)).toEqual(['GET /fixer/:workItemId/git-token']);
+    expect(gitToken(docker)).toEqual([]);
     expect(gitToken(local)).toEqual([]);
+    const fixerRoutes = (c: Composed): string[] => c.routes.filter((r) => r.path.startsWith('/fixer/')).map((r) => `${r.method} ${r.path}`);
+    expect(fixerRoutes(docker)).toEqual(fixerRoutes(local));
+    expect(fixerRoutes(docker)).toEqual([
+      'POST /fixer/:workItemId/checkpoint',
+      'POST /fixer/:workItemId/artifact',
+      'POST /fixer/:workItemId/done',
+      'POST /fixer/:workItemId/failed',
+      'GET /fixer/:workItemId/stop',
+    ]);
     // The worker's first service sweeps stale scratch directories, on both runners.
     expect(docker.workerServices?.[0]?.name).toBe('fixer scratch sweep');
     expect(local.workerServices?.[0]?.name).toBe('fixer scratch sweep');
@@ -375,7 +384,7 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     // its verdict into the mounted tree.
     const bin = join(dir, 'bin');
     await mkdir(bin);
-    await writeFile(join(bin, 'docker'), fakeDocker(), { mode: 0o755 });
+    await writeFile(join(bin, 'docker'), fakeDocker(DEMO_GITHUB_TOKEN), { mode: 0o755 });
     const port = await freePort();
     const containerApi = `http://127.0.0.1:${port}`;
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
@@ -461,6 +470,16 @@ describe('compose with the docker runtime: the model proxy (ADR 0017 amendment 1
     expect(fixerRun.calls.fixerToken?.status).toBe(401);
     expect(upstream).toHaveLength(2);
 
+    // No GitHub credential entered the fixer container (#262): the runner cloned with the installation
+    // token on the host, and the container got its checkout, an empty hand-off directory, and nothing else.
+    const scratch = join(dir, 'work', 'fixer', FIXER_RUN);
+    expect(fixerRun.mounts).toEqual([`${join(scratch, 'work')}:/work`, `${join(scratch, 'out')}:/out`]);
+    expect(fixerRun.holding).toEqual([]);
+    expect(JSON.stringify(fixerRun.env)).not.toContain(DEMO_GITHUB_TOKEN);
+    for (const name of ['SNAPWING_GIT_TOKEN', 'GIT_ASKPASS', 'SNAPWING_GIT_CREDENTIAL_SOCKET']) expect(fixerRun.env[name]).toBeUndefined();
+    expect(fixerRun.env).toMatchObject({ SNAPWING_WORK_BRANCH: BRANCH, SNAPWING_HANDOFF_FILE: '/out/work.bundle' });
+    expect(fixerRun.env['SNAPWING_BASE_SHA']).toMatch(/^[0-9a-f]{40}$/);
+
     // No provider key entered a container, and no container token reached the provider.
     for (const run of [reviewRun, fixerRun]) {
       for (const key of ['test-anthropic-key', 'test-openai-key', 'test-google-key']) expect(JSON.stringify(run.env)).not.toContain(key);
@@ -493,6 +512,10 @@ interface ContainerRun {
   name: string;
   env: Record<string, string>;
   calls: { modelToken?: { status: number; body: string }; fixerToken?: { status: number; body: string } };
+  /** Every `-v` the container got. */
+  mounts: string[];
+  /** Files under the mounts, as the container saw them, that hold the probe string. */
+  holding: string[];
 }
 
 /**
@@ -501,17 +524,22 @@ interface ContainerRun {
  * container's `ANTHROPIC_API_KEY`, one with its fixer token when it has one, and a review writes an
  * approving verdict to `SNAPWING_REVIEW_FILE` in the mounted tree. Each run is appended to `runs.jsonl`.
  */
-function fakeDocker(): string {
+function fakeDocker(probe: string): string {
   const verdict = JSON.stringify({ verdict: 'approve', reasons: [], constraintViolations: [] });
   return `#!${process.execPath}
 const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
+const probe = ${JSON.stringify(probe)};
+function filesUnder(dir) {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? filesUnder(path.join(dir, e.name)) : e.isFile() ? [path.join(dir, e.name)] : []));
+}
 async function main() {
   if (args[0] !== 'run') return 0;
   const env = {};
   let mount = '';
   let name = '';
+  const mounts = [];
   for (let i = 1; i < args.length; i++) {
     const a = args[i];
     if (a === '-e') {
@@ -520,10 +548,12 @@ async function main() {
       if (eq >= 0) env[v.slice(0, eq)] = v.slice(eq + 1);
       else env[v] = process.env[v] || '';
     } else if (a === '-v') {
-      const [src, dst] = args[++i].split(':');
+      mounts.push(args[++i]);
+      const [src, dst] = args[i].split(':');
       if (dst === '/work') mount = src;
     } else if (a === '--name') name = args[++i];
   }
+  const holding = mounts.flatMap((m) => filesUnder(m.split(':')[0])).filter((f) => fs.readFileSync(f).includes(probe));
   const call = async (key) => {
     const res = await fetch(env.ANTHROPIC_BASE_URL + '/v1/messages', {
       method: 'POST',
@@ -538,7 +568,7 @@ async function main() {
     if (env.SNAPWING_FIXER_TOKEN) calls.fixerToken = await call(env.SNAPWING_FIXER_TOKEN);
   }
   if (env.SNAPWING_REVIEW_FILE && mount !== '') fs.writeFileSync(path.join(mount, env.SNAPWING_REVIEW_FILE.slice('/work/'.length)), ${JSON.stringify(verdict)});
-  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, env, calls }) + '\\n');
+  fs.appendFileSync(path.join(__dirname, 'runs.jsonl'), JSON.stringify({ name, env, calls, mounts, holding }) + '\\n');
   return 0;
 }
 main().then((code) => process.exit(code), (e) => { console.error(String(e)); process.exit(1); });

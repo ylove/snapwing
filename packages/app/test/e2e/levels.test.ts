@@ -12,7 +12,8 @@
 // the Jira webhook through a Cloudflare quick tunnel, live models, the GitHub App.
 //
 // The fixer: the claude-code harness when `claude` is on PATH, else the generic harness with a scripted
-// agent (helpers/fake-agent.mjs) that pushes the real fix to the fixture and opens a real pull request.
+// agent (helpers/fake-agent.mjs) that commits the real fix; the server pushes it to the fixture and
+// opens a real pull request (#262).
 // SNAPWING_E2E_FIXER=claude-code|scripted forces one. The review agent is always the scripted one,
 // held until teardown, to keep live model calls to the pipeline and the fixer.
 //

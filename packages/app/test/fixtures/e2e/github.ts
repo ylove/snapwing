@@ -1,13 +1,13 @@
 // A fake GitHub for the end to end contract test: MSW handlers over real local bare
 // repositories. The fixer and review checkouts clone from those repositories (compose's
-// `gitRemoteUrl`), the fake harness pushes its branch there, and every pull request answer (head sha,
-// changed files, line counts) is read from them with git, so what the review job checks out is what
-// GitHub reports.
+// `gitRemoteUrl`), the server's fixer hand-off pushes the work branch there (#262), and every pull
+// request answer (head sha, changed files, line counts) is read from them with git, so what the review
+// job checks out is what GitHub reports.
 //
-// The fake harness runs as a child process, which MSW cannot see, so "opening a pull request" is the
-// harness writing `<dir>/pulls/<owner>/<name>/<number>.json` (exclusive create, numbers from 1); the
-// handlers pick new files up on every request. Everything else the app does to a pull request
-// (reviews, check runs, requested reviewers, merge, comments, close) lands in memory here.
+// The fake harness only commits; the server opens the pull request through `POST /pulls` (numbers
+// from 1, authored by the App) and finds it again through `GET /pulls?head=`. Everything else the app
+// does to a pull request (reviews, check runs, requested reviewers, merge, comments, close) lands in
+// memory here too.
 //
 // Fake CI: the base branch requires `snapwing/review` (the review agent's check run) and `ci/test`,
 // which reports success for every head unless a test silences it (`silent`: a required check nothing
@@ -17,8 +17,6 @@
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { http, HttpResponse, type HttpHandler } from 'msw';
 import { DEMO_GITHUB_TOKEN } from '@snapwing/pipeline/demo/msw/github.ts';
 import { createBareRepo, GIT_ENV, type BareRepo } from '../../../../pipeline/test/helpers/git.ts';
@@ -95,13 +93,12 @@ export class FakeGitHub {
   /** Branches the app deleted, as `owner/name:branch`. */
   readonly deletedBranches: string[] = [];
 
-  /** `dir` is shared with the fake harness (`pulls/`). */
+  /** `dir` is the fake harness's world directory, which the tests share with it. */
   constructor(readonly dir: string) {}
 
   /** A bare repository `owner/name` with `files` committed on `main`. */
   async addRepo(fullName: string, files: Readonly<Record<string, string>>): Promise<void> {
     this.repos.set(fullName, await createBareRepo({ files: { ...files } }));
-    await mkdir(join(this.dir, 'pulls', fullName), { recursive: true });
   }
 
   /** The clone URL compose uses for `owner/name` (the map's `github.com/owner/name` too). */
@@ -120,34 +117,12 @@ export class FakeGitHub {
     for (const r of this.repos.values()) await r.remove();
   }
 
-  /** Picks up pull requests the harness opened since the last request. */
-  private async sync(): Promise<void> {
-    for (const repo of this.repos.keys()) {
-      let names: string[];
-      try {
-        names = await readdir(join(this.dir, 'pulls', repo));
-      } catch {
-        continue;
-      }
-      for (const name of names) {
-        const number = Number(name.replace(/\.json$/, ''));
-        if (!Number.isSafeInteger(number) || this.pulls.has(`${repo}#${number}`)) continue;
-        const raw = rec(JSON.parse(await readFile(join(this.dir, 'pulls', repo, name), 'utf8')));
-        this.pulls.set(`${repo}#${number}`, {
-          repo,
-          number,
-          head: String(raw['head']),
-          base: String(raw['base'] ?? 'main'),
-          title: String(raw['title'] ?? ''),
-          state: 'open',
-          merged: false,
-          requestedReviewers: [],
-          labels: [],
-          comments: [],
-          reviews: [],
-        });
-      }
-    }
+  /** Opens a pull request from `head`, as `POST /pulls` does; numbers count from 1 per repository. */
+  open(repo: string, input: { head: string; base: string; title: string }): FakePull {
+    const number = [...this.pulls.values()].filter((p) => p.repo === repo).length + 1;
+    const pr: FakePull = { repo, number, head: input.head, base: input.base, title: input.title, state: 'open', merged: false, requestedReviewers: [], labels: [], comments: [], reviews: [] };
+    this.pulls.set(`${repo}#${number}`, pr);
+    return pr;
   }
 
   private headSha(pr: FakePull): string {
@@ -216,7 +191,6 @@ export class FakeGitHub {
     };
     const withPull = async (request: Request, params: Record<string, unknown>, fn: (pr: FakePull) => Response | Promise<Response>): Promise<Response> => {
       note(request);
-      await this.sync();
       const pr = this.pull(repoOf(params), Number(params['number']));
       return pr === undefined ? notFound() : fn(pr);
     };
@@ -239,6 +213,38 @@ export class FakeGitHub {
         const person = this.people.find((p) => request.headers.get('authorization') === `Bearer ${p.token}`);
         return person === undefined ? denied() : HttpResponse.json([{ email: person.email, primary: true, verified: true }]);
       }),
+      // The fixer hand-off (#262): the server finds its open pull request, or opens one as the App.
+      http.get(`${GITHUB}/repos/:owner/:repo/pulls`, ({ request, params }) => {
+        if (!installation(request)) return denied();
+        note(request);
+        const url = new URL(request.url);
+        const repo = repoOf(params);
+        const head = url.searchParams.get('head');
+        const base = url.searchParams.get('base');
+        const state = url.searchParams.get('state') ?? 'open';
+        const found = [...this.pulls.values()].filter(
+          (p) => p.repo === repo && (state === 'all' || p.state === state) && (head === null || `${repo.split('/')[0] ?? ''}:${p.head}` === head) && (base === null || p.base === base),
+        );
+        return HttpResponse.json(found.map((p) => this.pullJson(p)));
+      }),
+      http.post(`${GITHUB}/repos/:owner/:repo/pulls`, async ({ request, params }) => {
+        if (!installation(request)) return denied();
+        note(request);
+        const repo = repoOf(params);
+        const body = rec(await request.json());
+        const head = String(body['head'] ?? '');
+        const base = String(body['base'] ?? '');
+        const bare = this.repos.get(repo);
+        if (bare === undefined) return notFound();
+        if (git(bare.url, ['for-each-ref', '--format=%(refname)', `refs/heads/${head}`]) === '') {
+          return HttpResponse.json({ message: 'Validation Failed', errors: [{ resource: 'PullRequest', field: 'head', code: 'invalid' }] }, { status: 422 });
+        }
+        if ([...this.pulls.values()].some((p) => p.repo === repo && p.head === head && p.base === base && p.state === 'open')) {
+          return HttpResponse.json({ message: 'Validation Failed', errors: [{ message: `A pull request already exists for ${head}.` }] }, { status: 422 });
+        }
+        const pr = this.open(repo, { head, base, title: String(body['title'] ?? '') });
+        return HttpResponse.json(this.pullJson(pr), { status: 201 });
+      }),
       http.get(`${GITHUB}/repos/:owner/:repo/pulls/:number`, async ({ request, params }) =>
         installation(request) ? withPull(request, params, (pr) => HttpResponse.json(this.pullJson(pr))) : denied(),
       ),
@@ -259,7 +265,6 @@ export class FakeGitHub {
       http.get(`${GITHUB}/repos/:owner/:repo/compare/:basehead`, async ({ request, params }) => {
         if (!installation(request)) return denied();
         note(request);
-        await this.sync();
         const [base = '', head = ''] = String(params['basehead']).split('...');
         const files = this.diffOf(repoOf(params), `refs/heads/${base}...${head}`).map((f) => ({ ...f, changes: f.additions + f.deletions }));
         return HttpResponse.json({ status: 'ahead', files });

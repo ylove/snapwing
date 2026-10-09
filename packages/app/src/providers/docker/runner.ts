@@ -1,34 +1,36 @@
 // The `docker` RunnerPort (main 14.3, main 10.2): runs one fixer job as a detached `docker run --rm`
 // container on this host (any VPS). The container is the image's own entrypoint; it reads its job
-// from `SNAPWING_*` environment variables, works in the one scratch directory mounted at `/work`,
-// and reports through the fixer API (B 9) with the per-work-item token. The runner never mounts
-// anything else, and passes nothing secret but that token and the per-run model token.
+// from `SNAPWING_*` environment variables, works in the checkout mounted at `/work`, leaves its work
+// as a bundle in `/out`, and reports through the fixer API (B 9) with the per-work-item token. The
+// runner never mounts anything else, and passes nothing secret but that token and the per-run model
+// token: no GitHub credential of any kind enters the container (#262).
 //
 // Env values go to the docker CLI through its own environment and `-e NAME` (no value), so no token
 // ever appears in the argv that `ps` shows. The CLI gets only PATH and the few variables it needs to
 // find its daemon, not the server's environment.
 //
 // The work item is prepared on the host before the container starts, because nothing in the
-// container can turn an artifact id into a request: `runFixer` loads the implementation request (and
-// on a retry the review) from `artifacts`, makes `<workdirRoot>/<runId>` a checkout on the work branch
-// with `prepareWorkdir` (bot identity, guardrail hooks under `.git/snapwing/hooks`, as the `local`
-// runner does), and writes the request to `.git/snapwing/implementation-request.xml` and the review to
+// container can turn an artifact id into a request, and because the clone needs a credential:
+// `runFixer` loads the implementation request (and on a retry the review) from `artifacts`, lays out
+// `<workdirRoot>/<runId>` as the `local` runner does (fixer/workdir/handoff.ts), makes `work/` a
+// checkout on the work branch with `prepareWorkdir` (bot identity, the commit-msg guardrail under
+// `.git/snapwing/hooks`, no credential in the remote URL), writes the run record `run.json` beside it,
+// and writes the request to `.git/snapwing/implementation-request.xml` and the review to
 // `.git/snapwing/review.json`, named in the container as `SNAPWING_PRIOR_REVIEW_FILE` under `/work`.
-// The installation token from `git.token` is used for that clone on the host only: no git token
-// enters the container. Installation tokens expire after an hour and a run may last longer, so
-// the image's wrapper fetches a fresh one whenever git asks, from `GET /fixer/{workItemId}/git-token`
-// with the run's fixer token, through a git credential helper that writes it nowhere
-// (docs/harness-generic.md section 8). The wrapper also points `core.hooksPath` at
-// `/work/.git/snapwing/hooks`, so the host paths in the prepared `.git/config` are never needed. The
-// agent opens its pull request with a token read the same way (`git credential fill`,
-// prompts/fixer.xml).
+// The installation token from `git.token` is used for that clone on the host only. The container
+// gets `work/` at `/work` and `out/` at `/out`, never the run directory itself, so it cannot touch
+// the record. The wrapper points `core.hooksPath` at `/work/.git/snapwing/hooks`, so the host paths in
+// the prepared `.git/config` are never needed, and once the harness has committed it writes the
+// bundle of the work branch (`SNAPWING_WORK_BRANCH` since `SNAPWING_BASE_SHA`) to
+// `SNAPWING_HANDOFF_FILE` in `/out`. The server imports that bundle, checks it, and pushes it
+// (app/src/fixer-api/handoff.ts); nothing in the container ever pushes or opens a pull request.
 //
 // The fixer container runs as the server's uid:gid (`--user`, as test and review runs do) with HOME
 // and TMPDIR at its `/tmp`, so it can write the host-prepared checkout and the server can remove it.
 // After `docker run -d` the runner waits for the container in the background (`docker wait`) and
 // removes the scratch directory once the container is gone (`wait(runId)` resolves then). A container
 // whose end the runner cannot observe (the daemon unreachable, the server restarted) leaves its
-// directory behind (it holds a checkout, no token); `sweep` at the next startup removes it once it
+// directory behind (it holds a checkout and maybe a bundle, no token); `sweep` at the next startup removes it once it
 // is older than the longest wall clock plus a margin and no `snapwing-fixer-<runId>` container of
 // any state exists (`sweepScratch`, shared with the `local` runner). When docker cannot list its
 // containers, the sweep removes nothing.
@@ -69,6 +71,7 @@ import { execFile, spawn } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { HANDOFF_BUNDLE_FILE, runLayout, writeRunRecord } from '@snapwing/pipeline/fixer/workdir/handoff.ts';
 import { prepareWorkdir, SNAPWING_GIT_DIR } from '@snapwing/pipeline/fixer/workdir/index.ts';
 import type { WorkItemRef } from '@snapwing/pipeline/ports/harness.ts';
 import type { FixerJob, HarnessChoice, ReviewRunJob, ReviewRunner, RunnerPort, TestRunner, TestRunResult } from '@snapwing/pipeline/ports/runner.ts';
@@ -122,9 +125,9 @@ export interface DockerRunnerOptions {
    */
   artifacts?: Pick<StatePort, 'getArtifact'>;
   /**
-   * How the work item's checkout is prepared and pushed, as for the `local` runner: an installation
-   * token per run (`contents: write`, `pull_requests: write`, never `workflows`), the clone URL, the
-   * commit identity. Required by `runFixer` (it rejects without it).
+   * How the work item's checkout is prepared on the host, as for the `local` runner: an installation
+   * token per run for the clone only (it never enters the container), the clone URL, the commit
+   * identity. Required by `runFixer` (it rejects without it).
    */
   git?: LocalRunnerGit;
   /** Parent of the per-run scratch directories. Default `<tmpdir>/snapwing-fixer`. */
@@ -167,6 +170,10 @@ export const FIXER_REQUEST_FILE = `.git/${SNAPWING_GIT_DIR}/implementation-reque
 export const FIXER_REVIEW_FILE = `.git/${SNAPWING_GIT_DIR}/review.json`;
 
 export const DOCKER_WORKDIR = '/work';
+/** Where the fixer container leaves its bundle (the run's `out/`). */
+export const DOCKER_OUTDIR = '/out';
+/** The bundle's path in the fixer container (`SNAPWING_HANDOFF_FILE`). */
+export const DOCKER_HANDOFF_FILE = `${DOCKER_OUTDIR}/${HANDOFF_BUNDLE_FILE}`;
 export const DOCKER_NAME_PREFIX = 'snapwing-fixer-';
 export const DOCKER_TESTS_PREFIX = 'snapwing-tests-';
 export const DOCKER_REVIEW_PREFIX = 'snapwing-review-';
@@ -211,32 +218,36 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
       let settle: () => void = () => undefined;
       runs.set(job.runId, new Promise<void>((resolve) => (settle = resolve)));
       const scratch = join(workdirRoot, job.runId);
+      const layout = runLayout(scratch);
       let created = false;
       try {
         const work = await loadWorkItem(job, artifacts);
-        const jobEnv = fixerEnv(job, options.env);
         await mkdir(workdirRoot, { recursive: true });
         // Not recursive: a directory left by an earlier run of this id is never reused or removed.
-        await mkdir(scratch);
+        await mkdir(scratch, { mode: 0o700 });
         created = true;
+        await mkdir(layout.out);
         const token = await git.token(job.workItem);
+        let prepared;
         try {
-          await prepareWorkdir({
+          prepared = await prepareWorkdir({
             repo: job.workItem.repo,
             base: work.base,
             branch: work.branch ?? `fix/${job.workItem.issueKey}`,
             issueKey: job.workItem.issueKey,
             token,
-            workdir: scratch,
+            workdir: layout.checkout,
             ...(git.remoteUrl === undefined ? {} : { remoteUrl: git.remoteUrl(job.workItem.repo) }),
             ...(git.identity === undefined ? {} : { identity: git.identity }),
           });
         } catch (e) {
           throw new Error(`workdir: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
         }
-        await writeFile(join(scratch, FIXER_REQUEST_FILE), work.request, { mode: 0o600 });
+        await writeRunRecord(scratch, { runId: job.runId, repo: job.workItem.repo, issueKey: job.workItem.issueKey, branch: prepared.branch, base: prepared.base, expectedBase: prepared.expectedBase });
+        const jobEnv = fixerEnv(job, options.env, { branch: prepared.branch, expectedBase: prepared.expectedBase });
+        await writeFile(join(layout.checkout, FIXER_REQUEST_FILE), work.request, { mode: 0o600 });
         if (work.review !== undefined) {
-          await writeFile(join(scratch, FIXER_REVIEW_FILE), work.review, { mode: 0o600 });
+          await writeFile(join(layout.checkout, FIXER_REVIEW_FILE), work.review, { mode: 0o600 });
           jobEnv[PRIOR_REVIEW_ENV] = `${DOCKER_WORKDIR}/${FIXER_REVIEW_FILE}`;
         }
 
@@ -252,7 +263,8 @@ export function createDockerRunner(options: DockerRunnerOptions): DockerRunner {
           '--security-opt', 'no-new-privileges',
           ...(options.network === undefined ? [] : ['--network', options.network]),
           ...user(options.testUser),
-          '-v', `${scratch}:${DOCKER_WORKDIR}`,
+          '-v', `${layout.checkout}:${DOCKER_WORKDIR}`,
+          '-v', `${layout.out}:${DOCKER_OUTDIR}`,
           '-w', DOCKER_WORKDIR,
           ...Object.keys(jobEnv).flatMap((k) => ['-e', k]),
           '-e', 'HOME=/tmp',
@@ -549,13 +561,19 @@ export function modelEnv(proxy: DockerModelProxy | undefined, run: ModelTokenReq
   };
 }
 
+/** What the hand-off needs from the prepared checkout: the work branch and the commit its bundle starts after. */
+export interface FixerHandoffEnv {
+  branch: string;
+  expectedBase: string;
+}
+
 /**
- * The container's environment from the job alone: the harness contract variables
- * (docs/harness-generic.md), API access, and the model proxy when configured. `runFixer` adds
- * `SNAPWING_PRIOR_REVIEW_FILE` on a retry once it has prepared the checkout. There is no git token:
- * the wrapper fetches a fresh one from the fixer API whenever git asks.
+ * The container's environment: the harness contract variables (docs/harness-generic.md), API access,
+ * the hand-off (the work branch, the commit its bundle starts after, and where the bundle goes) once
+ * the checkout is prepared, and the model proxy when configured. `runFixer` adds
+ * `SNAPWING_PRIOR_REVIEW_FILE` on a retry. There is no GitHub credential of any kind (#262).
  */
-export function fixerEnv(job: FixerJob, env: DockerRunnerEnv): Record<string, string> {
+export function fixerEnv(job: FixerJob, env: DockerRunnerEnv, handoff?: FixerHandoffEnv): Record<string, string> {
   const out: Record<string, string> = {
     SNAPWING_HARNESS_CONTRACT: '1',
     SNAPWING_ROLE: 'fixer',
@@ -572,6 +590,11 @@ export function fixerEnv(job: FixerJob, env: DockerRunnerEnv): Record<string, st
     SNAPWING_FIXER_TOKEN: env.token(job),
   };
   if (job.harness.adapter === 'generic') out['SNAPWING_HARNESS_TEMPLATE'] = job.harness.templateId;
+  if (handoff !== undefined) {
+    out['SNAPWING_WORK_BRANCH'] = handoff.branch;
+    out['SNAPWING_BASE_SHA'] = handoff.expectedBase;
+    out['SNAPWING_HANDOFF_FILE'] = DOCKER_HANDOFF_FILE;
+  }
   if (job.implementationRequestVersion !== undefined) out['SNAPWING_IMPLEMENTATION_REQUEST_VERSION'] = String(job.implementationRequestVersion);
   if (job.review !== undefined) out['SNAPWING_REVIEW_ARTIFACT'] = JSON.stringify(job.review);
   return { ...out, ...modelEnv(env.modelProxy, { runId: job.runId, workItem: job.workItem, role: 'fixer', wallClock: job.budget.wallClock }) };

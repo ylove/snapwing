@@ -775,7 +775,7 @@ describe('the mid-flight card through answerMidFlight (A 2.2)', () => {
     expect(outcome).toMatchObject({ kind: 'mid-flight', answer: { accepted: true, choice: 'stop-it', stop: { stopped: true } } });
     expect(cancelled).toEqual([RUN]);
     expect(assigned).toEqual([SAM]);
-    expect(lastLine(answeredCard(response))).toBe('<at>sam</at> stopped the fixer. The branch stays for <at>sam</at>, who has the ticket.');
+    expect(lastLine(answeredCard(response))).toBe('<at>sam</at> stopped the fixer before it pushed anything. <at>sam</at> has the ticket.');
   });
 
   it('a tap after the run ended is refused on the card', async () => {

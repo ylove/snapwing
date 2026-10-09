@@ -6,8 +6,9 @@
 // `claims.midFlightGrace` (default PT10M):
 //
 //   Let it finish             nothing changes; the pending timer is cancelled.
-//   Stop it, I'll take over   `stopIncident` (main 10.4: the branch stays, an open PR is closed with a
-//                             comment) and the claimer is assigned.
+//   Stop it, I'll take over   `stopIncident` (main 10.4: what was pushed stays, an open PR is closed
+//                             with a comment; a run pushes nothing before it hands its work back,
+//                             #262) and the claimer is assigned.
 //   no answer in the grace    `Let it finish` is applied and the claimer is told so.
 //
 // A claim before the first `fixer-started` is A 2.1 (engine/claims.ts) and a reporter's claim holds
@@ -157,7 +158,7 @@ export async function answerMidFlight(deps: MidFlightDeps, input: MidFlightAnswe
   await deps.workflow.cancel(midFlightKey(incidentId, runId, claimerId));
   if (choice === 'let-it-finish') return { accepted: true, choice };
 
-  // The branch is left as the run pushed it; stopIncident cancels the run and closes only an open PR.
+  // What earlier runs pushed is left as it is; stopIncident cancels the run and closes only an open PR.
   const stop = await stopIncident(deps, { incidentId, actor, source: 'agent', reason: `${claimerId} took over` });
   if (stop.stopped || stop.reason === 'already-stopped') await deps.ports.assign(incidentId, claimerId);
   return { accepted: true, choice, stop };

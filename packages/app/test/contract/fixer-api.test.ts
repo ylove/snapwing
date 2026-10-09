@@ -10,9 +10,9 @@ import { handleFixerDone, handleFixerFailed, type FixerDeps } from '@snapwing/pi
 import type { OpenedState, StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { InProcessWorkflow } from '@snapwing/pipeline/workflow/inprocess/index.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import type { FixerHandoff, HandoffRequest, HandoffResult } from '../../src/fixer-api/handoff.ts';
 import { createFixerReporter, type FixerHookContext, type FixerReporterDeps } from '../../src/fixer-api/reporter.ts';
 import { createFixerRoutes, type FixerRoute } from '../../src/fixer-api/routes.ts';
-import { createFixerGitToken, type GitTokenMinter } from '../../src/fixer-api/git-token.ts';
 import {
   fixerTokenKeysFromEnv,
   fixerTokenTtl,
@@ -86,17 +86,40 @@ async function serve(routes: FixerRoute[]): Promise<void> {
   base = `http://127.0.0.1:${(server?.address() as AddressInfo).port}`;
 }
 
-async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps>; mint?: GitTokenMinter; gitState?: Pick<StatePort, 'read' | 'getIncident'> } = {}): Promise<void> {
+const SHA = 'a1'.repeat(20);
+
+/**
+ * A stand-in for the server's hand-off (handoff.ts, tested on real repositories in
+ * fixer-handoff.test.ts): records each request and answers with `answer`, by default the run's work
+ * branch pushed at SHA with pull request 7 (none for a `failed`).
+ */
+function fakeHandoff(answer?: (r: HandoffRequest) => Promise<HandoffResult>): { handoff: FixerHandoff; asked: HandoffRequest[] } {
+  const asked: HandoffRequest[] = [];
+  return {
+    asked,
+    handoff: async (r) => {
+      asked.push(r);
+      if (answer !== undefined) return answer(r);
+      return r.outcome === 'done' ? { ok: true, branch: 'fix/WEB-1042', sha: SHA, prNumber: 7 } : { ok: true, branch: 'fix/WEB-1042', sha: SHA };
+    },
+  };
+}
+
+let handoffs: HandoffRequest[];
+
+async function start(opts: { state?: StatePort; deps?: Partial<FixerReporterDeps> } = {}): Promise<void> {
+  const fake = fakeHandoff();
+  handoffs = fake.asked;
   const reporter = createFixerReporter({
     state: opts.state ?? state,
     clock: () => new Date(now),
+    handoff: fake.handoff,
     verifyPullRequest: async () => ({ ok: true }),
     onDone: async (c) => void hooks.done.push(c),
     onFailed: async (c) => void hooks.failed.push(c),
     ...opts.deps,
   });
-  const gitToken = opts.mint === undefined ? undefined : createFixerGitToken({ state: opts.gitState ?? opts.state ?? state, mint: opts.mint });
-  await serve(createFixerRoutes(reporter, fixerTokenVerifier(keys), gitToken === undefined ? {} : { gitToken }));
+  await serve(createFixerRoutes(reporter, fixerTokenVerifier(keys)));
 }
 
 function token(workItemId = INC, incidentId = INC, ttl = 'PT45M'): string {
@@ -111,7 +134,7 @@ async function call(
   const t = opts.token === undefined ? token() : opts.token;
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (t !== null) headers['authorization'] = `Bearer ${t}`;
-  const get = op === 'stop' || op === 'git-token';
+  const get = op === 'stop';
   const res = await fetch(`${base}/fixer/${opts.workItem ?? INC}/${op}`, {
     method: get ? 'GET' : 'POST',
     headers,
@@ -253,12 +276,14 @@ describe('fixer API over HTTP', () => {
     const before = (await log()).length;
     expect(await call('checkpoint', { phase: 'deployed' })).toMatchObject({ status: 400, json: { error: 'invalid', field: 'phase' } });
     expect(await call('checkpoint', ['cloned'])).toMatchObject({ status: 400, json: { field: 'body' } });
-    expect(await call('done', { prNumber: 0, branch: 'fix/x' })).toMatchObject({ status: 400, json: { field: 'prNumber' } });
-    expect(await call('done', { prNumber: 7, branch: 'fix/../x' })).toMatchObject({ status: 400, json: { field: 'branch' } });
-    expect(await call('done', { prNumber: 7, branch: 'fix/x', testsAdded: ['a.test.ts', 3] })).toMatchObject({
+    // Only the server pushes and opens pull requests, and only it records those phases (#262).
+    expect(await call('checkpoint', { phase: 'pushed' })).toMatchObject({ status: 400, json: { error: 'invalid', field: 'phase' } });
+    expect(await call('checkpoint', { phase: 'pr-opened', detail: '#88' })).toMatchObject({ status: 400, json: { error: 'invalid', field: 'phase' } });
+    expect(await call('done', { summary: 'x', testsAdded: ['a.test.ts', 3] })).toMatchObject({
       status: 400,
       json: { field: 'testsAdded[1]' },
     });
+    expect(handoffs).toEqual([]);
     expect(await call('failed', { reason: 'tests red' })).toMatchObject({ status: 400, json: { field: 'attempts' } });
     expect(await call('artifact', { kind: 'review', body: '<x/>' })).toMatchObject({ status: 400, json: { field: 'kind' } });
     expect(await call('checkpoint', undefined, { rawBody: '{not json' })).toEqual({ status: 400, json: { error: 'invalid-json' } });
@@ -289,7 +314,7 @@ describe('fixer API over HTTP', () => {
     ]);
   });
 
-  it('done is refused with 409 pr-mismatch, recording nothing, when the reported pull request fails verification (#267)', async () => {
+  it('done is refused with 409 pr-mismatch, recording nothing, when the pull request the hand-off opened fails verification (#267)', async () => {
     await seedRunning();
     const asked: unknown[] = [];
     await start({
@@ -300,35 +325,101 @@ describe('fixer API over HTTP', () => {
         },
       },
     });
-    expect(await call('done', { prNumber: 9, branch: 'fix/WEB-1042' })).toEqual({ status: 409, json: { error: 'pr-mismatch' } });
-    expect(asked).toEqual([[{ workItemId: INC, incidentId: INC }, { prNumber: 9, branch: 'fix/WEB-1042', summary: '', testsAdded: [] }]]);
+    expect(await call('done', { prNumber: 9, branch: 'fix/other' })).toEqual({ status: 409, json: { error: 'pr-mismatch' } });
+    // What is verified is what the hand-off opened, never the number or branch the fixer named.
+    expect(asked).toEqual([[{ workItemId: INC, incidentId: INC }, { prNumber: 7, branch: 'fix/WEB-1042' }]]);
     expect(await types()).not.toContain('pr-opened');
     expect(await types()).not.toContain('fixer-done');
     expect(hooks.done).toEqual([]);
-    // The run is still going, so the fixer can report the right pull request.
-    expect(await call('checkpoint', { phase: 'pushed' })).toMatchObject({ status: 200 });
+    expect(await call('checkpoint', { phase: 'tested' })).toMatchObject({ status: 200 });
   });
 
-  it('done appends fixer-done and pr-opened together and calls onDone; a duplicate done is 409', async () => {
+  it('done runs the hand-off, then appends the pushed and pr-opened checkpoints, fixer-done, and pr-opened together and calls onDone; a duplicate done is 409 (#262)', async () => {
     await seedRunning();
     await start();
-    const body = { prNumber: 7, branch: 'fix/WEB-1042', summary: 'Guard the null cart', testsAdded: ['test/cart.test.ts'], token: 'x' };
-    expect(await call('done', body)).toEqual({ status: 200, json: { seq: 9 } });
-    const tail = (await log()).slice(-2);
+    // A branch and pull request number the fixer names are dropped: the hand-off decides both.
+    const body = { prNumber: 99, branch: 'main', summary: 'Guard the null cart', testsAdded: ['test/cart.test.ts'], token: 'x' };
+    expect(await call('done', body)).toEqual({ status: 200, json: { seq: 11 } });
+    expect(handoffs).toHaveLength(1);
+    expect(handoffs[0]).toMatchObject({ target: { workItemId: INC, incidentId: INC }, runId: RUN, outcome: 'done', summary: 'Guard the null cart', testsAdded: ['test/cart.test.ts'], pushedBefore: [] });
+    // The guard the hand-off checks before the import, the push, and the PR: now false, the run has ended.
+    expect(await handoffs[0]?.running()).toBe(false);
+    const tail = (await log()).slice(-4);
     expect(tail.map((e) => [e.seq, e.type, e.source])).toEqual([
-      [8, 'fixer-done', 'fixer'],
-      [9, 'pr-opened', 'fixer'],
+      [8, 'fixer-checkpoint', 'fixer'],
+      [9, 'fixer-checkpoint', 'fixer'],
+      [10, 'fixer-done', 'fixer'],
+      [11, 'pr-opened', 'fixer'],
     ]);
-    expect(tail[0]?.payload).toEqual({ prNumber: 7, branch: 'fix/WEB-1042', summary: 'Guard the null cart', testsAdded: ['test/cart.test.ts'] });
-    expect(tail[1]?.payload).toEqual({ prNumber: 7, branch: 'fix/WEB-1042' });
-    expect(hooks.done).toEqual([{ workItemId: INC, incidentId: INC, runId: RUN, seq: 8 }]);
+    expect(tail.map((e) => e.payload)).toEqual([
+      { phase: 'pushed', detail: `fix/WEB-1042@${SHA.slice(0, 12)}` },
+      { phase: 'pr-opened', detail: '#7' },
+      { prNumber: 7, branch: 'fix/WEB-1042', summary: 'Guard the null cart', testsAdded: ['test/cart.test.ts'] },
+      { prNumber: 7, branch: 'fix/WEB-1042' },
+    ]);
+    expect(hooks.done).toEqual([{ workItemId: INC, incidentId: INC, runId: RUN, seq: 10 }]);
 
     expect(await call('done', body)).toEqual({ status: 409, json: { error: 'run-finished' } });
-    expect((await log()).length).toBe(9);
+    expect(handoffs).toHaveLength(1);
+    expect((await log()).length).toBe(11);
     // The duplicate re-runs the idempotent hook, so a crash between append and hook heals.
     expect(hooks.done).toHaveLength(2);
-    expect(await call('checkpoint', { phase: 'pushed' })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect(await call('checkpoint', { phase: 'tested' })).toEqual({ status: 409, json: { error: 'run-finished' } });
     expect(hooks.failed).toEqual([]);
+  });
+
+  it('done is refused with 409 handoff-refused and the reason when the hand-off refuses the work, recording nothing (#262)', async () => {
+    await seedRunning();
+    const fake = fakeHandoff(async () => ({ ok: false, code: 'refused', reason: 'commit 0123456789ab does not name WEB-1042 in its message' }));
+    await start({ deps: { handoff: fake.handoff } });
+    const before = (await log()).length;
+    expect(await call('done', { summary: 'x' })).toEqual({ status: 409, json: { error: 'handoff-refused', reason: 'commit 0123456789ab does not name WEB-1042 in its message' } });
+    expect(lastHeaders?.get('cache-control')).toBe('no-store');
+    expect((await log()).length).toBe(before);
+    expect(hooks.done).toEqual([]);
+    // The run goes on, so the fixer can report its failure with the reason.
+    expect(await call('failed', { reason: 'handoff refused: commit 0123456789ab does not name WEB-1042', attempts: 1 })).toMatchObject({ status: 200 });
+  });
+
+  it('a stop seen during the hand-off ends the done as run-finished, recording nothing (#262)', async () => {
+    await seedRunning();
+    const fake = fakeHandoff(async (r) => {
+      await appendTo(INC, [ev('stopped', { reason: 'wrong approach' })]);
+      expect(await r.running()).toBe(false);
+      return { ok: false, code: 'stopped' };
+    });
+    await start({ deps: { handoff: fake.handoff } });
+    expect(await call('done', { summary: 'x' })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect((await types()).slice(-2)).toEqual(['fixer-started', 'stopped']);
+    expect(hooks.done).toEqual([]);
+  });
+
+  it('done after a stop never reaches the hand-off', async () => {
+    await seedRunning();
+    await appendTo(INC, [ev('stopped', {})]);
+    await start();
+    expect(await call('done', { summary: 'x' })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect(handoffs).toEqual([]);
+  });
+
+  it('failed with a partial branch keeps the partial work through the hand-off, without a pull request; a refused hand-off records the failure without it (#262)', async () => {
+    await seedRunning();
+    await start();
+    expect(await call('failed', { reason: 'tests still red', partialBranch: 'anything', attempts: 3 })).toEqual({ status: 200, json: { seq: 9 } });
+    expect(handoffs.map((h) => [h.outcome, h.summary])).toEqual([['failed', 'tests still red']]);
+    expect((await log()).slice(-2).map((e) => [e.type, e.payload])).toEqual([
+      ['fixer-checkpoint', { phase: 'pushed', detail: `fix/WEB-1042@${SHA.slice(0, 12)}` }],
+      ['fixer-failed', { reason: 'tests still red', partialBranch: 'fix/WEB-1042', attempts: 3 }],
+    ]);
+
+    await seedRunning(OTHER_INC);
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+    await start({ deps: { handoff: fakeHandoff(async () => ({ ok: false, code: 'refused', reason: 'the work changes CI, CODEOWNERS, or branch protection files: CODEOWNERS' })).handoff } });
+    expect(await call('failed', { reason: 'tests still red', partialBranch: 'fix/WEB-1042', attempts: 2 }, { token: token(OTHER_INC, OTHER_INC), workItem: OTHER_INC })).toMatchObject({ status: 200 });
+    expect((await state.read(OTHER_INC)).at(-1)?.payload).toEqual({
+      reason: 'tests still red (the partial work was not kept: the work changes CI, CODEOWNERS, or branch protection files: CODEOWNERS)',
+      attempts: 2,
+    });
   });
 
   it('failed appends fixer-failed and calls onFailed, which handleFixerFailed can be', async () => {
@@ -352,16 +443,18 @@ describe('fixer API over HTTP', () => {
     });
     try {
       const r = await call('failed', { reason: 'tests still red', partialBranch: 'fix/WEB-1042', attempts: 3, stack: '...' });
-      expect(r).toEqual({ status: 200, json: { seq: 8 } });
+      expect(r).toEqual({ status: 200, json: { seq: 9 } });
       const events = await log();
-      expect(events[7]).toMatchObject({ type: 'fixer-failed', source: 'fixer', payload: { reason: 'tests still red', partialBranch: 'fix/WEB-1042', attempts: 3 } });
-      expect(events[7]?.payload).not.toHaveProperty('stack');
-      expect(events[8]).toMatchObject({ type: 'level-changed', payload: { from: 3, to: 2 } });
+      expect(events[7]).toMatchObject({ type: 'fixer-checkpoint', payload: { phase: 'pushed' } });
+      expect(events[8]).toMatchObject({ type: 'fixer-failed', source: 'fixer', payload: { reason: 'tests still red', partialBranch: 'fix/WEB-1042', attempts: 3 } });
+      expect(events[8]?.payload).not.toHaveProperty('stack');
+      expect(events[9]).toMatchObject({ type: 'level-changed', payload: { from: 3, to: 2 } });
+      // The draft pull request is opened from the branch the server pushed.
       expect(marked).toEqual(['fix/WEB-1042']);
 
       // A duplicate is refused; the hook runs again and, being idempotent, does nothing more.
       expect(await call('failed', { reason: 'tests still red', attempts: 3 })).toEqual({ status: 409, json: { error: 'run-finished' } });
-      expect((await log()).length).toBe(9);
+      expect((await log()).length).toBe(10);
       expect(marked).toEqual(['fix/WEB-1042']);
     } finally {
       await wf.stop();
@@ -376,7 +469,7 @@ describe('fixer API over HTTP', () => {
     expect(await call('stop')).toEqual({ status: 204, json: undefined });
     // The stop ended the run: reports are refused and append nothing.
     const before = (await log()).length;
-    expect(await call('checkpoint', { phase: 'pushed' })).toEqual({ status: 409, json: { error: 'run-finished' } });
+    expect(await call('checkpoint', { phase: 'tested' })).toEqual({ status: 409, json: { error: 'run-finished' } });
     expect((await log()).length).toBe(before);
   });
 
@@ -386,9 +479,9 @@ describe('fixer API over HTTP', () => {
     await start();
     const before = (await log()).length;
     for (const [op, body] of [
-      ['checkpoint', { phase: 'pushed' }],
+      ['checkpoint', { phase: 'tested' }],
       ['artifact', { kind: 'diagnosis', body: '<d/>' }],
-      ['done', { prNumber: 7, branch: 'fix/WEB-1042' }],
+      ['done', { summary: 'x' }],
       ['failed', { reason: 'r', attempts: 1 }],
       ['stop', undefined],
     ] as const) {
@@ -449,94 +542,19 @@ describe('fixer API over HTTP', () => {
   });
 });
 
-describe('GET /fixer/{workItemId}/git-token', () => {
-  /** A fake installation token minter: a new value per call, recording the repos asked for. */
-  function minter(): { mint: GitTokenMinter; repos: string[] } {
-    const repos: string[] = [];
-    return {
-      repos,
-      mint: async (repo) => {
-        repos.push(repo);
-        return { token: `test-fresh-git-token-${repos.length}`, expiresAt: new Date(now + 60 * MINUTE).toISOString() };
-      },
-    };
-  }
-
-  it('mints a fresh token for the incident repository on every call while the run is going, and appends nothing', async () => {
-    await seedRunning();
-    const m = minter();
-    await start({ mint: m.mint });
-    const before = (await log()).length;
-    const expiresAt = new Date(T0 + 60 * MINUTE).toISOString();
-    expect(await call('git-token')).toEqual({ status: 200, json: { token: 'test-fresh-git-token-1', expiresAt } });
-    expect(lastHeaders?.get('cache-control')).toBe('no-store');
-    expect(await call('git-token')).toEqual({ status: 200, json: { token: 'test-fresh-git-token-2', expiresAt } });
-    expect(m.repos).toEqual(['fake-org/web', 'fake-org/web']);
-    expect((await log()).length).toBe(before);
-  });
-
-  it('still answers after the first installation token would have expired, while the fixer token lives (a long wall clock)', async () => {
-    await seedRunning();
-    const m = minter();
-    await start({ mint: m.mint });
-    const t = token(INC, INC, fixerTokenTtl('PT2H'));
-    now = T0 + 90 * MINUTE;
-    expect(await call('git-token', undefined, { token: t })).toMatchObject({ status: 200, json: { token: 'test-fresh-git-token-1', expiresAt: new Date(now + 60 * MINUTE).toISOString() } });
-  });
-
-  it('refuses, minting nothing, once the run ended, on a closed incident, and for an unknown one', async () => {
-    const m = minter();
-    await start({ mint: m.mint });
-    expect(await call('git-token')).toEqual({ status: 404, json: { error: 'unknown-incident' } });
-    await seedRunning();
-    await appendTo(INC, [ev('stopped', { reason: 'wrong approach' })]);
-    expect(await call('git-token')).toEqual({ status: 409, json: { error: 'run-finished' } });
-    await seedRunning(OTHER_INC);
-    await appendTo(OTHER_INC, [ev('fixer-done', { prNumber: 7, branch: 'fix/WEB-1042', summary: '', testsAdded: [] }, 'fixer', OTHER_INC)]);
-    expect(await call('git-token', undefined, { token: token(OTHER_INC, OTHER_INC), workItem: OTHER_INC })).toEqual({ status: 409, json: { error: 'run-finished' } });
-    expect(m.repos).toEqual([]);
-  });
-
-  it('refuses a closed incident and one with no resolved repository with 409', async () => {
-    await seedRunning();
-    await appendTo(INC, [ev('closed', { reason: 'duplicate of WEB-1001' })]);
-    const m = minter();
-    await start({ mint: m.mint });
-    expect(await call('git-token')).toEqual({ status: 409, json: { error: 'incident-closed' } });
-    await seedRunning(OTHER_INC);
-    await new Promise<void>((resolve) => server?.close(() => resolve()));
-    await start({ mint: m.mint, gitState: { read: (id) => state.read(id), getIncident: async () => null } });
-    expect(await call('git-token', undefined, { token: token(OTHER_INC, OTHER_INC), workItem: OTHER_INC })).toEqual({ status: 409, json: { error: 'no-repo' } });
-    expect(m.repos).toEqual([]);
-  });
-
-  it('rejects a missing, forged, or expired fixer token with 401 and another work item with 403', async () => {
-    await seedRunning();
-    await seedRunning(OTHER_INC);
-    const m = minter();
-    await start({ mint: m.mint });
-    expect(await call('git-token', undefined, { token: null })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'missing-token' } });
-    const forged = issueFixerToken({ workItemId: INC, incidentId: INC, ttl: 'PT45M' }, { ...keys, secret: `${FAKE_SECRET}-attacker` });
-    expect(await call('git-token', undefined, { token: forged })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'bad-signature' } });
-    const short = token(INC, INC, 'PT5M');
-    now = T0 + 5 * MINUTE;
-    expect(await call('git-token', undefined, { token: short })).toEqual({ status: 401, json: { error: 'unauthorized', reason: 'expired' } });
-    expect(await call('git-token', undefined, { token: token(OTHER_INC, OTHER_INC) })).toEqual({ status: 403, json: { error: 'forbidden' } });
-    expect(m.repos).toEqual([]);
-  });
-
-  it('answers 502 with no detail when no token can be minted', async () => {
-    await seedRunning();
-    await start({ mint: () => Promise.reject(new Error('GitHub said no to test-secret-detail')) });
-    const r = await call('git-token');
-    expect(r).toEqual({ status: 502, json: { error: 'git-token-unavailable' } });
-    expect(JSON.stringify(r)).not.toContain('test-secret-detail');
-  });
-
-  it('is not mounted without a minter (the local runner)', async () => {
+describe('no GitHub credential over the fixer API (#262)', () => {
+  it('has no git-token route: no call a container can make answers with a GitHub token', async () => {
     await seedRunning();
     await start();
     expect((await fetch(`${base}/fixer/${INC}/git-token`, { headers: { authorization: `Bearer ${token()}` } })).status).toBe(404);
+    const routes = createFixerRoutes(createFixerReporter({ state, clock: () => new Date(now), handoff: fakeHandoff().handoff, verifyPullRequest: async () => ({ ok: true }) }), fixerTokenVerifier(keys));
+    expect(routes.map((r) => `${r.method} ${r.path}`)).toEqual([
+      'POST /fixer/:workItemId/checkpoint',
+      'POST /fixer/:workItemId/artifact',
+      'POST /fixer/:workItemId/done',
+      'POST /fixer/:workItemId/failed',
+      'GET /fixer/:workItemId/stop',
+    ]);
   });
 });
 
