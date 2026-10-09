@@ -3,7 +3,8 @@
 // list from kv `channel-members:{channel}` (`channelMembersKey`, a JSON array of user ids) inside the
 // append; this module writes it, as `adapters/slack/channel-members.ts` does for Slack.
 //
-// - A member is the AAD object id Graph gives as `userId`, the map's `teamsId`.
+// - A member is the AAD object id Graph gives as `userId`, the map's `teamsId`. The list also carries the
+//   Slack id of every member the map lists on both platforms (`withPersonAliases`, #301).
 // - `refresh(channel)` reads the channel's members from Graph (`GET /teams/{team}/channels/{id}/members`)
 //   and writes the list with a TTL (`CHANNEL_MEMBERS_TTL_SEC`), so a list nobody refreshes expires and the
 //   policy falls back to mentioning everyone in the thread.
@@ -19,7 +20,7 @@ import { channelPlatform } from '@snapwing/pipeline/map/types.ts';
 import type { CachePort } from '@snapwing/pipeline/ports/cache.ts';
 import { channelMembersKey } from '@snapwing/pipeline/state/projections/notify-context.ts';
 import { briefMembers, type StatusAccess } from '@snapwing/pipeline/status/ask.ts';
-import { CHANNEL_MEMBERS_REFRESH_MS, CHANNEL_MEMBERS_TTL_SEC } from '../slack/channel-members.ts';
+import { CHANNEL_MEMBERS_REFRESH_MS, CHANNEL_MEMBERS_TTL_SEC, withPersonAliases } from '../slack/channel-members.ts';
 import { GraphApiError, GraphPermissionError, type GraphMember, type TeamsGraph } from './graph.ts';
 
 export { CHANNEL_MEMBERS_REFRESH_MS, CHANNEL_MEMBERS_TTL_SEC };
@@ -70,9 +71,9 @@ export function createTeamsChannelMembers(options: TeamsChannelMembersOptions): 
       if (e instanceof GraphApiError && e.status === 404) return skip(channel, 'not-found');
       throw e;
     }
-    const list = [...new Set(found.map((m) => m.userId).filter((u): u is string => typeof u === 'string' && u !== ''))].sort();
-    await cache.set(channelMembersKey(channel), JSON.stringify(list), CHANNEL_MEMBERS_TTL_SEC);
-    return { kind: 'refreshed', channel, members: list.length };
+    const own = [...new Set(found.map((m) => m.userId).filter((u): u is string => typeof u === 'string' && u !== ''))];
+    await cache.set(channelMembersKey(channel), JSON.stringify(withPersonAliases(map, own, 'teams')), CHANNEL_MEMBERS_TTL_SEC);
+    return { kind: 'refreshed', channel, members: own.length };
   }
 
   async function refreshAll(): Promise<TeamsChannelMembersOutcome[]> {

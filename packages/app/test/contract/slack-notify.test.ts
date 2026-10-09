@@ -2,7 +2,8 @@
 // in-memory Slack behind MSW, on the dialect `SNAPWING_DB` selects. Covers one milestone, a merged
 // burst (rows of one batch_key become one message), a DM, and the staging request's record as the
 // `staging-check` role, which the A 8 verification flow resolves a reaction through. Also a DM about a
-// Teams incident to someone who asked on Slack: it comes to Slack, with no Slack thread behind it.
+// Teams incident to someone who asked on Slack and whom the map ties to a member of its channel (#301): it
+// comes to Slack, with no Slack thread behind it.
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { http, HttpResponse } from 'msw';
@@ -13,12 +14,15 @@ import type { WorkspaceMap } from '@snapwing/pipeline/map/types.ts';
 import type { OpenedState } from '@snapwing/pipeline/ports/state.ts';
 import { createKvCache } from '@snapwing/pipeline/providers/local/cache.ts';
 import { resolveTarget } from '@snapwing/pipeline/signals/target.ts';
+import { channelMembersKey } from '@snapwing/pipeline/state/projections/notify-context.ts';
 import { StateStore } from '@snapwing/pipeline/state/store.ts';
 import { ulid } from '@snapwing/pipeline/util/ulid.ts';
 import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/helpers/db.ts';
+import { createSlackChannelMembers } from '../../src/adapters/slack/channel-members.ts';
 import { createSlackStatusProjector, mergeNotifyText } from '../../src/adapters/slack/status-projector.ts';
 import { createSlackStatusQuery } from '../../src/adapters/slack/status-query.ts';
 import { createSlackWeb } from '../../src/adapters/slack/web.ts';
+import { createTeamsChannelMembers } from '../../src/adapters/teams/channel-members.ts';
 
 const T0 = Date.parse('2026-10-02T12:00:00.000Z');
 const WS = '01K0000000000000000000WS01';
@@ -282,9 +286,28 @@ describe('a standing subscription asked for in a DM (A 4.4)', () => {
     expect((await state.getSubscriptions(incidentId)).filter((s) => s.userId === 'U0PAT')).toEqual([]);
   });
 
-  it('tells a standing watcher on Slack nothing about a Teams incident: that channel is never theirs (#272)', async () => {
-    const query = createSlackStatusQuery({ web, state, standing: state, workspaceId: WS, getMap: () => Promise.resolve(dmMap), botUserId: 'U0BOT', clock: () => new Date(time) });
-    await query.handleEvent(dm('U0PAT', 'keep me posted on the website', 'EvStanding4'));
+  // #301: the Teams channel's member list, written by the Teams channel members module, carries the
+  // Slack id of each member the map lists on both platforms.
+  const TEAMS_CHANNEL = '19:fake-web-bugs@thread.tacv2';
+  const PAT_AAD = '00000000-0000-4000-8000-0000000000aa';
+  const crossMap: WorkspaceMap = {
+    ...dmMap,
+    channels: [{ id: TEAMS_CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [], platform: 'teams', teamId: 'team-1' }],
+    people: [...dmMap.people.map((p) => (p.slackId === 'U0PAT' ? { ...p, teamsId: PAT_AAD } : p)), { slackId: 'U0SOLO', handle: 'solo', role: 'engineer', owns: [] }],
+  };
+
+  /** Writes the Teams channel's members (Pat), files a Teams incident on `web`, and drains Slack once the window closes. */
+  async function teamsIncidentFor(watcher: string, event: string): Promise<{ incidentId: string; sent: unknown[]; messages: FakeMessage[] }> {
+    if (!(state instanceof StateStore)) throw new Error('openState did not return a StateStore');
+    const members = createTeamsChannelMembers({
+      graph: { channelMembers: () => Promise.resolve([{ id: 'm1', userId: PAT_AAD, roles: [] }]) },
+      cache: createKvCache(state),
+      getMap: () => Promise.resolve(crossMap),
+    });
+    expect(await members.refresh(TEAMS_CHANNEL)).toEqual({ kind: 'refreshed', channel: TEAMS_CHANNEL, members: 1 });
+    expect(JSON.parse((await createKvCache(state).get(channelMembersKey(TEAMS_CHANNEL))) ?? 'null')).toEqual([PAT_AAD, 'U0PAT']);
+    const query = createSlackStatusQuery({ web, state, standing: state, workspaceId: WS, getMap: () => Promise.resolve(crossMap), botUserId: 'U0BOT', clock: () => new Date(time) });
+    await query.handleEvent(dm(watcher, 'keep me posted on the website', `${event}a`));
     slack.messages = [];
 
     const incidentId = ulid(time);
@@ -327,14 +350,44 @@ describe('a standing subscription asked for in a DM (A 4.4)', () => {
     time += 300_000; // the burst window closes
 
     const report = await projector().drainOnce();
-
     expect(report.parked).toEqual([]);
-    expect(report.sent).toEqual([]);
-    expect(slack.messages).toEqual([]);
+    const messages = [...slack.messages];
+    await query.handleEvent(dm(watcher, 'stop keeping me posted on the website', `${event}b`));
+    return { incidentId, sent: report.sent, messages };
+  }
+
+  it('DMs the person on Slack about a Teams incident when the map ties them to a member of its channel (#301)', async () => {
+    const { incidentId, sent, messages } = await teamsIncidentFor('U0PAT', 'EvStanding4');
+    expect(sent).toHaveLength(1);
+    expect(messages).toEqual([{ channel: 'U0PAT', ts: expect.any(String), text: 'WEB-7 is filed.' }]);
     expect(await state.drainOutbox('slack', 10, WS)).toEqual([]);
     // The Teams thread's own rows stay on the teams queue, with no notify row for the Slack watcher.
     expect((await state.drainOutbox('teams', 10, WS)).filter((r) => r.incidentId === incidentId).map((r) => r.op)).toEqual(['update-status']);
-    await query.handleEvent(dm('U0PAT', 'stop keeping me posted on the website', 'EvStanding5'));
+  });
+
+  it("writes a Slack channel's list with the Teams id of each member the map lists on both, through joins and leaves (#301)", async () => {
+    if (!(state instanceof StateStore)) throw new Error('openState did not return a StateStore');
+    const cache = createKvCache(state);
+    const members = createSlackChannelMembers({
+      web: { conversationsMembers: () => Promise.resolve({ members: ['U0PAT', 'U0SOLO'] }) },
+      cache,
+      getMap: () => Promise.resolve(crossMap),
+    });
+    const list = async (): Promise<unknown> => JSON.parse((await cache.get(channelMembersKey('C0XPLAT'))) ?? 'null');
+    expect(await members.refresh('C0XPLAT')).toEqual({ kind: 'refreshed', channel: 'C0XPLAT', members: 2 });
+    expect(await list()).toEqual([PAT_AAD, 'U0PAT', 'U0SOLO']);
+    const event = (type: string, user: string) => ({ type: 'event_callback', event: { type, user, channel: 'C0XPLAT' } });
+    expect(await members.handleEvent(event('member_left_channel', 'U0PAT'))).toEqual({ kind: 'updated', channel: 'C0XPLAT', members: 1 });
+    expect(await list()).toEqual(['U0SOLO']);
+    await members.handleEvent(event('member_joined_channel', 'U0PAT'));
+    expect(await list()).toEqual([PAT_AAD, 'U0PAT', 'U0SOLO']);
+  });
+
+  it('tells a person the map lists on Slack only nothing about a Teams incident (#301)', async () => {
+    const { incidentId, sent, messages } = await teamsIncidentFor('U0SOLO', 'EvStanding6');
+    expect(sent).toEqual([]);
+    expect(messages).toEqual([]);
+    expect((await state.drainOutbox('teams', 10, WS)).filter((r) => r.incidentId === incidentId).map((r) => r.op)).toEqual(['update-status']);
   });
 
   it('leaves an ordinary DM alone', () => {

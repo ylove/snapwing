@@ -10,6 +10,9 @@
 //   and every `CHANNEL_MEMBERS_REFRESH_MS`.
 // - `member_joined_channel` and `member_left_channel` (`handleEvent`, through `observeChannelMembers`)
 //   add or remove the one user when the list is known, and refresh the channel when it is not.
+// - The list also carries the Teams id of every member the map lists on both platforms
+//   (`withPersonAliases`, #301), so a standing watcher who subscribed on Teams counts as in the channel
+//   when the map ties them to a member here.
 //
 // A channel Slack will not list (the app lacks `channels:read` or `groups:read` until the owner
 // reinstalls it, a private channel the bot is not in, a channel that no longer exists) is skipped and
@@ -78,10 +81,12 @@ export function createSlackChannelMembers(options: SlackChannelMembersOptions): 
   const onError = options.onError ?? (() => undefined);
   const skippedOnce = new Set<string>();
 
+  /** Writes the Slack members and their Teams aliases; resolves to the number of Slack members. */
   async function write(channel: string, members: Iterable<string>): Promise<number> {
-    const list = [...new Set(members)].sort();
+    const own = [...new Set(members)];
+    const list = withPersonAliases(await options.getMap(), own, 'slack');
     await cache.set(channelMembersKey(channel), JSON.stringify(list), CHANNEL_MEMBERS_TTL_SEC);
-    return list.length;
+    return own.length;
   }
 
   async function refresh(channel: string): Promise<ChannelMembersOutcome> {
@@ -143,7 +148,9 @@ export function createSlackChannelMembers(options: SlackChannelMembersOptions): 
     }
     // Not known yet (or expired): read the whole list rather than write a list of one.
     if (known === undefined) return refresh(channel);
-    const members = new Set(known);
+    // The Teams aliases are rewritten from the map with the Slack members, so drop them first.
+    const aliases = new Set((await options.getMap()).people.flatMap((p) => (p.teamsId === undefined ? [] : [p.teamsId])));
+    const members = new Set(known.filter((m) => !aliases.has(m)));
     if (str(event['type']) === 'member_joined_channel') members.add(user);
     else members.delete(user);
     return { kind: 'updated', channel, members: await write(channel, members) };
@@ -167,6 +174,21 @@ export function observeChannelMembers(adapter: SlackAdapter, members: Pick<Slack
       return result;
     },
   };
+}
+
+/**
+ * A channel's member ids on `platform` plus, for each member the map lists on both platforms, their id on
+ * the other one (#301): a map person counts as a member when either of their ids is in the list. Sorted,
+ * without duplicates. People the map lists on one platform only add nothing.
+ */
+export function withPersonAliases(map: Pick<WorkspaceMap, 'people'>, members: Iterable<string>, platform: 'slack' | 'teams'): string[] {
+  const ids = new Set(members);
+  for (const person of map.people) {
+    const here = platform === 'slack' ? person.slackId : person.teamsId;
+    const there = platform === 'slack' ? person.teamsId : person.slackId;
+    if (here !== undefined && there !== undefined && there !== '' && ids.has(here)) ids.add(there);
+  }
+  return [...ids].sort();
 }
 
 /** Pages read for an access check; a member past them is not seen (fail closed). */

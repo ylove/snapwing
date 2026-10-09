@@ -13,6 +13,7 @@ import { createTestDatabase, type TestDatabase } from '../../../pipeline/test/he
 import type { SlackAdapter } from '../../src/adapters/slack/adapter.ts';
 import { createSlackAuthorOf } from '../../src/adapters/slack/authorship.ts';
 import { createSlackChannelAccess } from '../../src/adapters/slack/channel-members.ts';
+import type { StatusAccess } from '@snapwing/pipeline/status/ask.ts';
 import { createSlackStatusQuery, looksLikeStatusQuestion, type SlackStatusQuery } from '../../src/adapters/slack/status-query.ts';
 import { createSlackDispatcher } from '../../src/adapters/slack/transport.ts';
 import type { PostEphemeralArgs, PostMessageArgs, SlackWeb } from '../../src/adapters/slack/web.ts';
@@ -84,14 +85,14 @@ function ev<T extends EventType>(id: string, type: T, payload: EventPayloads[T])
 }
 
 /** Filed on web/`component` with the fixer running; `threadId` is the thread the anchor was a reply in. */
-async function seed(inc: Seed, summary: string, component: string, opts: { channel?: string; threadId?: string; triggeredBy?: string } = {}): Promise<void> {
+async function seed(inc: Seed, summary: string, component: string, opts: { channel?: string; threadId?: string; triggeredBy?: string; source?: 'slack' | 'teams' } = {}): Promise<void> {
   await state.append(
     inc.id,
     [
       ev(inc.id, 'captured', {
         kind: 'incident',
         idempotencyKey: `slack-${inc.anchor}-bug`,
-        source: 'slack',
+        source: opts.source ?? 'slack',
         // An engineer's trigger on the reporter's post brings it in; the post is the reporter's.
         ...(opts.triggeredBy === undefined
           ? { reporter: { id: REPORTER, name: 'salesLead', role: 'reporter' } }
@@ -418,7 +419,7 @@ describe('wiring and speed', () => {
 describe('who may hear about what (#272)', () => {
   const GUEST = 'U0GUEST';
   /** The status query with access: the asker is in `CHANNEL` only, and `GUEST` is a guest. */
-  function scoped(): { sq: SlackStatusQuery; listed: string[] } {
+  function scoped(cross?: { map: WorkspaceMap; other: StatusAccess['other'] }): { sq: SlackStatusQuery; listed: string[] } {
     const listed: string[] = [];
     const web: Pick<SlackWeb, 'postMessage' | 'postEphemeral' | 'conversationsMembers'> = {
       postMessage: (a) => (posts.push(a), Promise.resolve({ channel: a.channel, ts: '1759396000.000900' })),
@@ -430,10 +431,15 @@ describe('who may hear about what (#272)', () => {
       state,
       standing: state,
       workspaceId: WS,
-      getMap: () => Promise.resolve(map),
+      getMap: () => Promise.resolve(cross?.map ?? map),
       botUserId: BOT,
       clock: () => new Date(T0),
-      access: { platform: 'slack', membership: (u) => Promise.resolve(u === GUEST ? 'guest' : 'member'), inChannel: createSlackChannelAccess({ web, clock: () => new Date(T0) }) },
+      access: {
+        platform: 'slack',
+        membership: (u) => Promise.resolve(u === GUEST ? 'guest' : 'member'),
+        inChannel: createSlackChannelAccess({ web, clock: () => new Date(T0) }),
+        ...(cross?.other === undefined ? {} : { other: cross.other }),
+      },
       onError: (e) => errors.push(e),
     });
     return { sq, listed };
@@ -455,6 +461,25 @@ describe('who may hear about what (#272)', () => {
     await seed(CART_B, 'Coupon rejected', 'checkout', { channel: OTHER_CHANNEL });
     await scopedSq.handleEvent(dm(REPORTER, 'WEB-1060'));
     expect(posts[3]?.text).toContain('WEB-1060');
+  });
+
+  // #301: a person the map lists on both platforms is in a Teams channel by their Teams id.
+  it("answers about a Teams incident to a Slack asker the map ties to a member of its channel, and not to one listed on Slack only", async () => {
+    const TEAMS_CHANNEL = '19:fake-web-bugs@thread.tacv2';
+    const ENGINEER_AAD = '00000000-0000-4000-8000-0000000000e1';
+    const crossMap: WorkspaceMap = { ...map, people: map.people.map((p) => (p.slackId === ENGINEER ? { ...p, teamsId: ENGINEER_AAD } : p)) };
+    await seed(CART_B, 'Coupon rejected', 'checkout', { channel: TEAMS_CHANNEL, source: 'teams' });
+    const asked: string[] = [];
+    const other = { platform: 'teams' as const, inChannel: (c: string, u: string) => (asked.push(`${c} ${u}`), Promise.resolve(c === TEAMS_CHANNEL && u === ENGINEER_AAD)) };
+    const { sq: scopedSq } = scoped({ map: crossMap, other });
+    await scopedSq.handleEvent(dm(ENGINEER, 'WEB-1060'));
+    expect(posts[0]?.text).toContain('WEB-1060');
+    expect(asked).toEqual([`${TEAMS_CHANNEL} ${ENGINEER_AAD}`]);
+    // Someone the map lists on Slack only never sees it, and their Teams membership is not even asked.
+    await scopedSq.handleEvent(dm('U0MOBDEV', 'WEB-1060'));
+    expect(posts[1]?.text).not.toContain('WEB-1060');
+    expect(posts).toHaveLength(2);
+    expect(asked).toHaveLength(1);
   });
 
   it('gives a guest no status answer and no standing watch, however asked', async () => {
