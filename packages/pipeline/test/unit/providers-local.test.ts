@@ -471,16 +471,18 @@ describe('local runner (child process over the generic harness)', () => {
     if (result.outcome !== 'done') throw new Error(`expected done, got ${JSON.stringify(result)}`);
     const seen = JSON.parse(result.summary) as { request: string; env: Record<string, string>; cwd: string };
     expect(seen.request).toBe(REQUEST_BODY);
-    expect(seen.cwd).toBe(join(await realpath(workdirRoot), runId));
+    expect(seen.cwd).toBe(join(await realpath(workdirRoot), runId, 'work'));
     expect(seen.env).toMatchObject({
       SNAPWING_ROLE: 'fixer',
       SNAPWING_ISSUE_KEY: 'WEB-1042',
       SNAPWING_REPO: 'acme/web',
       SNAPWING_BUDGET_WALL_CLOCK: 'PT1M',
       SNAPWING_BUDGET_ATTEMPTS: '2',
-      SNAPWING_GIT_TOKEN: 'test-git-token-not-real',
     });
     expect(seen.env).not.toHaveProperty('SNAPWING_PRIOR_REVIEW_FILE');
+    // The clone token never reaches the harness (#262).
+    expect(seen.env).not.toHaveProperty('SNAPWING_GIT_TOKEN');
+    expect(JSON.stringify(seen)).not.toContain('test-git-token-not-real');
   });
 
   it('runs the fixer with a scratch HOME, never the server user\'s (ADR 0017)', async () => {

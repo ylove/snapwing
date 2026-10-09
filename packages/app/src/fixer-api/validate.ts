@@ -3,9 +3,10 @@
 // known field's type and size, and builds a fresh object from the known fields only, so unknown keys
 // are dropped and never reach an event. Error messages name the field and never echo its value.
 
-import type { FixerCheckpointPayload, FixerDonePayload, FixerFailedPayload } from '@snapwing/pipeline/contracts/events.ts';
+import type { FixerCheckpointPayload, FixerFailedPayload } from '@snapwing/pipeline/contracts/events.ts';
 import type { ArtifactContentType } from '@snapwing/pipeline/contracts/state.ts';
 import { HARNESS_PHASES, isHarnessPhase } from '@snapwing/pipeline/harness/contract.ts';
+import type { HarnessPhase } from '@snapwing/pipeline/ports/harness.ts';
 
 export const MAX_DETAIL_LENGTH = 4096;
 export const MAX_REASON_LENGTH = 4096;
@@ -28,6 +29,19 @@ export interface FixerArtifactInput {
   contentType: ArtifactContentType;
 }
 
+/**
+ * `POST /fixer/{id}/done`, validated. The fixer names no branch and no pull request: the server pushes
+ * the run's work branch from its bundle and opens the pull request itself (#262), so a `branch` or
+ * `prNumber` a fixer sends is dropped like any unknown key.
+ */
+export interface FixerDoneInput {
+  summary: string;
+  testsAdded: string[];
+}
+
+/** Phases only the server records, once it has pushed the work and opened the pull request (#262). */
+export const SERVER_PHASES: readonly HarnessPhase[] = ['pushed', 'pr-opened'];
+
 export interface FixerInputError {
   /** The offending field, or `body` for the request as a whole. */
   field: string;
@@ -39,7 +53,9 @@ export type Parsed<T> = { ok: true; value: T } | { ok: false; error: FixerInputE
 export function parseCheckpointInput(input: unknown): Parsed<FixerCheckpointPayload> {
   return run(input, (v) => {
     const phase = v['phase'];
-    if (!isHarnessPhase(phase)) throw new FieldError('phase', `must be one of ${HARNESS_PHASES.join(', ')}`);
+    const fixerPhases = HARNESS_PHASES.filter((p) => !SERVER_PHASES.includes(p));
+    if (!isHarnessPhase(phase)) throw new FieldError('phase', `must be one of ${fixerPhases.join(', ')}`);
+    if (SERVER_PHASES.includes(phase)) throw new FieldError('phase', `${phase} is recorded by the server once it has pushed the work; a fixer reports one of ${fixerPhases.join(', ')}`);
     return { phase, detail: optionalString(v, 'detail', MAX_DETAIL_LENGTH) ?? '' };
   });
 }
@@ -59,16 +75,10 @@ export function parseArtifactInput(input: unknown): Parsed<FixerArtifactInput> {
   });
 }
 
-export function parseDoneInput(input: unknown): Parsed<FixerDonePayload> {
+export function parseDoneInput(input: unknown): Parsed<FixerDoneInput> {
   return run(input, (v) => {
-    const prNumber = v['prNumber'];
-    if (typeof prNumber !== 'number' || !Number.isSafeInteger(prNumber) || prNumber < 1) {
-      throw new FieldError('prNumber', 'must be a positive integer');
-    }
-    const branch = branchName(v, 'branch');
-    if (branch === undefined) throw new FieldError('branch', 'is required');
     const summary = optionalString(v, 'summary', MAX_SUMMARY_LENGTH) ?? '';
-    return { prNumber, branch, summary, testsAdded: testsAdded(v) };
+    return { summary, testsAdded: testsAdded(v) };
   });
 }
 

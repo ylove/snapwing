@@ -1,7 +1,7 @@
-// src/fixer-api/verify-pr.ts: checks the pull request a fixer reports as its own (hardening, #267).
+// src/fixer-api/verify-pr.ts: checks the pull request a fixer's `done` records (hardening, #267).
 //
-// A fixer's `done` names a pull request number and a branch. Both come from the harness, which is
-// untrusted, so before `pr-opened` is recorded the pull request is read from GitHub and must be:
+// Since #262 that pull request is the one the server's hand-off opened (or found) for the run, never a
+// number the harness names. Before `pr-opened` is recorded it is still read back from GitHub and must be:
 //   - on the run's work branch (the plan's `handoff/@branch`, else `fix/<issue key>`), the same
 //     branch the fixer reported;
 //   - against the requested base (`handoff/@base`, else the repository's default branch);

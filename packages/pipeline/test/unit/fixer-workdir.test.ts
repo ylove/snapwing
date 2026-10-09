@@ -1,15 +1,16 @@
-// Fixer workdir preparation and its guardrails (main 10.2, 16), against a local bare repository
-// standing in for GitHub, and the local runner's use of it.
+// Fixer workdir preparation and its guardrails (main 10.2, 16), the hand-off bundle and run record
+// (#262), against a local bare repository standing in for GitHub, and the local runner's use of them.
 
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readdir, readFile, rm, stat, writeFile, mkdir } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { devNull, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ulid } from '../../src/util/ulid.ts';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { StateNotFoundError, type Artifact } from '../../src/contracts/state.ts';
-import { askpassScript, isProtectedPath } from '../../src/fixer/workdir/hooks.ts';
-import { prepareWorkdir, WorkdirError, type PreparedWorkdir } from '../../src/fixer/workdir/index.ts';
+import { bundleWork, readRunRecord, runLayout, writeRunRecord, type RunRecord } from '../../src/fixer/workdir/handoff.ts';
+import { askpassScript, isProtectedPath, messageNamesKey } from '../../src/fixer/workdir/hooks.ts';
+import { prepareWorkdir, withoutCredentials, WorkdirError, type PreparedWorkdir } from '../../src/fixer/workdir/index.ts';
 import type { HarnessCheckpoint, HarnessPort, HarnessResult, HarnessRunOptions } from '../../src/ports/harness.ts';
 import type { FixerJob } from '../../src/ports/runner.ts';
 import { buildImplementationRequest } from '../../src/prompts/implementation-request.ts';
@@ -85,6 +86,7 @@ describe('prepareWorkdir', () => {
     const p = await prepare();
     expect(p).toMatchObject({ branch: BRANCH, base: 'dev', resumed: false });
     expect(p.baseSha).toBe(git(origin.url, ['rev-parse', 'refs/heads/dev']));
+    expect(p.expectedBase).toBe(p.baseSha);
     expect(harnessGit(p, ['branch', '--show-current'])).toBe(BRANCH);
     expect(harnessGit(p, ['rev-parse', 'HEAD'])).toBe(p.baseSha);
     expect(harnessGit(p, ['config', 'user.name'])).toBe('snapwing[bot]');
@@ -101,23 +103,32 @@ describe('prepareWorkdir', () => {
     await expect(prepare({ repo: 'github.com/acme/web/extra' })).rejects.toThrow('is not owner/name');
   });
 
-  it('never writes the token to any file under the work directory', async () => {
+  it('gives the harness no credential: the token is in no file, no config, no remote URL, and not in its environment (#262)', async () => {
     const p = await prepare();
     expect(await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} guard the null price`)).toEqual({ ok: true, stderr: '' });
-    expect(tryHarnessGit(p, ['push', '--quiet', 'origin', BRANCH]).ok).toBe(true);
     const files = await filesUnder(p.workdir);
     expect(files.length).toBeGreaterThan(5);
     for (const file of files) expect((await readFile(file)).includes(TOKEN), file).toBe(false);
     expect(harnessGit(p, ['config', '--local', '--list'])).not.toContain(TOKEN);
-    // The token lives only in the environment the harness gets.
-    expect(p.env['SNAPWING_GIT_TOKEN']).toBe(TOKEN);
-    expect(p.env['GIT_ASKPASS']).toBe(join(p.workdir, '.git', 'snapwing', 'askpass'));
+    expect(harnessGit(p, ['config', '--local', '--list'])).not.toMatch(/askpass|credential\.helper=./);
+    expect(p.env).toEqual({ GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: '0' });
+    expect(JSON.stringify(p.env)).not.toContain(TOKEN);
+    // Only the commit-msg guardrail: nothing in the checkout pushes or answers for a credential.
+    expect(await readdir(join(p.workdir, '.git', 'snapwing', 'hooks'))).toEqual(['commit-msg']);
+    expect(files.some((f) => f.endsWith('askpass'))).toBe(false);
   });
 
-  it('answers git credential prompts from the environment through the askpass script', async () => {
-    const p = await prepare();
-    const ask = (prompt: string): string =>
-      execFileSync(p.env['GIT_ASKPASS'] as string, [prompt], { env: { PATH: process.env['PATH'], SNAPWING_GIT_TOKEN: TOKEN }, encoding: 'utf8' }).trim();
+  it('strips any credential from a clone URL before it can reach the config', () => {
+    expect(withoutCredentials('https://x-access-token:test-token-not-real@github.com/acme/web.git')).toBe('https://github.com/acme/web.git');
+    expect(withoutCredentials('https://someone@github.com/acme/web.git')).toBe('https://github.com/acme/web.git');
+    expect(withoutCredentials('https://github.com/acme/web.git')).toBe('https://github.com/acme/web.git');
+    expect(withoutCredentials('/srv/git/acme/web.git')).toBe('/srv/git/acme/web.git');
+  });
+
+  it('answers the clone on the host from the environment through the askpass script, which holds no token', async () => {
+    const script = join(scratch, 'askpass');
+    await writeFile(script, askpassScript(), { mode: 0o700 });
+    const ask = (prompt: string): string => execFileSync(script, [prompt], { env: { PATH: process.env['PATH'], SNAPWING_GIT_TOKEN: TOKEN }, encoding: 'utf8' }).trim();
     expect(ask("Username for 'https://github.com': ")).toBe('x-access-token');
     expect(ask("Password for 'https://x-access-token@github.com': ")).toBe(TOKEN);
     expect(askpassScript()).not.toContain(TOKEN);
@@ -133,68 +144,21 @@ describe('prepareWorkdir', () => {
     expect(harnessGit(p, ['log', '-1', '--format=%an <%ae>'])).toBe('snapwing[bot] <snapwing[bot]@users.noreply.github.com>');
   });
 
-  it('pushes the work branch and rejects a push to the base or any other ref', async () => {
-    const p = await prepare();
-    expect((await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} fix`)).ok).toBe(true);
-    const head = harnessGit(p, ['rev-parse', 'HEAD']);
-
-    const toBase = tryHarnessGit(p, ['push', 'origin', 'HEAD:dev']);
-    expect(toBase.ok).toBe(false);
-    expect(toBase.stderr).toContain('pushing to the base branch dev is not allowed');
-    expect(git(origin.url, ['rev-parse', 'refs/heads/dev'])).toBe(p.baseSha);
-
-    const toMain = tryHarnessGit(p, ['push', 'origin', 'HEAD:main']);
-    expect(toMain.ok).toBe(false);
-    expect(toMain.stderr).toContain('only the work branch');
-    expect(tryHarnessGit(p, ['push', 'origin', 'HEAD:refs/tags/v1']).ok).toBe(false);
-    expect(remoteHas('refs/tags/v1')).toBe(false);
-
-    // Plain `git push` goes to the work branch (push.default upstream).
-    expect(tryHarnessGit(p, ['push', '--quiet']).ok).toBe(true);
-    expect(git(origin.url, ['rev-parse', `refs/heads/${BRANCH}`])).toBe(head);
-    expect(tryHarnessGit(p, ['push', 'origin', `:${BRANCH}`]).ok).toBe(false);
-    expect(remoteHas(`refs/heads/${BRANCH}`)).toBe(true);
-  });
-
-  it.each([['.github/workflows/ci.yml'], ['CODEOWNERS'], ['.github/CODEOWNERS'], ['.github/settings.yml']])(
-    'rejects a push whose diff touches %s',
-    async (path) => {
-      const p = await prepare();
-      expect((await commitFile(p, path, 'x: 1\n', `${KEY} sneak`)).ok).toBe(true);
-      expect((await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} fix`)).ok).toBe(true);
-      const push = tryHarnessGit(p, ['push', 'origin', BRANCH]);
-      expect(push.ok).toBe(false);
-      expect(push.stderr).toContain('may not change CI config');
-      expect(push.stderr).toContain(path);
-      expect(remoteHas(`refs/heads/${BRANCH}`)).toBe(false);
-    },
-  );
-
-  it('counts a workflow file moved or deleted in an earlier push of the branch', async () => {
-    await origin.remove();
-    origin = await createBareRepo({ defaultBranch: 'main', files: { '.github/workflows/ci.yml': 'on: push\n' } });
-    const p = await prepare({ base: 'main' });
-    harnessGit(p, ['mv', '.github/workflows/ci.yml', 'ci.yml']);
-    expect(tryHarnessGit(p, ['commit', '--quiet', '-m', `${KEY} move`]).ok).toBe(true);
-    expect(tryHarnessGit(p, ['push', 'origin', BRANCH]).ok).toBe(false);
-  });
-
   it('uses the remote default branch when no base is given', async () => {
     const p = await prepare({ base: undefined, workdir: join(scratch, 'default') });
     expect(p.base).toBe('main');
     expect(harnessGit(p, ['rev-parse', 'HEAD'])).toBe(git(origin.url, ['rev-parse', 'refs/heads/main']));
-    expect((await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} fix`)).ok).toBe(true);
-    expect(tryHarnessGit(p, ['push', 'origin', 'HEAD:main']).stderr).toContain('pushing to the base branch main is not allowed');
   });
 
-  it('checks out the work branch when it already exists on the remote (a retry run)', async () => {
+  it('checks out the work branch when it already exists on the remote (a retry run), from where it left the base', async () => {
     await origin.remove();
     origin = await createBareRepo({ defaultBranch: 'main', branches: ['dev', BRANCH] });
     const p = await prepare();
     expect(p.resumed).toBe(true);
     expect(harnessGit(p, ['rev-parse', 'HEAD'])).toBe(git(origin.url, ['rev-parse', `refs/heads/${BRANCH}`]));
-    expect((await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} address review`)).ok).toBe(true);
-    expect(tryHarnessGit(p, ['push', '--quiet']).ok).toBe(true);
+    // Both branches were cut from main: the retry's work must build on that commit, not on dev's tip.
+    expect(p.expectedBase).toBe(git(origin.url, ['rev-parse', 'refs/heads/main']));
+    expect(p.baseSha).toBe(git(origin.url, ['rev-parse', 'refs/heads/dev']));
   });
 
   it('refuses unsafe names, a missing base, the base as the work branch, and a non-empty directory', async () => {
@@ -210,13 +174,63 @@ describe('prepareWorkdir', () => {
     await expect(prepare({ workdir: join(scratch, 'w3') })).rejects.toThrow(/not empty/);
   });
 
-  it('classifies protected paths', () => {
-    for (const p of ['.github/workflows/ci.yml', '.github/workflows/sub/x.yaml', 'CODEOWNERS', 'docs/CODEOWNERS', '.github/settings.yaml']) {
+  it('classifies protected paths: CI, a CODEOWNERS file anywhere, branch protection settings', () => {
+    for (const p of ['.github/workflows/ci.yml', '.github/workflows/sub/x.yaml', 'CODEOWNERS', 'docs/CODEOWNERS', '.github/CODEOWNERS', 'src/CODEOWNERS', '.github/settings.yaml']) {
       expect(isProtectedPath(p), p).toBe(true);
     }
-    for (const p of ['src/CODEOWNERS.ts', 'workflows/ci.yml', '.github/ISSUE_TEMPLATE.md', 'a/.github/workflows/x.yml']) {
+    for (const p of ['src/CODEOWNERS.ts', 'NOTCODEOWNERS', 'workflows/ci.yml', '.github/ISSUE_TEMPLATE.md', 'a/.github/workflows/x.yml']) {
       expect(isProtectedPath(p), p).toBe(false);
     }
+  });
+
+  it('checks a commit message names the issue key as a whole token, on any line', () => {
+    expect(messageNamesKey(`${KEY}: guard the null price`, KEY)).toBe(true);
+    expect(messageNamesKey(`Guard the null price\n\nRefs ${KEY}.`, KEY)).toBe(true);
+    expect(messageNamesKey('Fix promo (WEB-1042)', KEY)).toBe(true);
+    expect(messageNamesKey('WEB-10420: another issue', KEY)).toBe(false);
+    expect(messageNamesKey('XWEB-1042 is not it', KEY)).toBe(false);
+    expect(messageNamesKey('guard the null price', KEY)).toBe(false);
+  });
+});
+
+describe('the hand-off bundle and run record (#262)', () => {
+  it('bundles the work branch since the expected base, and no other branch', async () => {
+    const p = await prepare();
+    expect((await commitFile(p, 'src/fix.ts', 'export {};\n', `${KEY} guard the null price`)).ok).toBe(true);
+    harnessGit(p, ['branch', 'side']);
+    const file = join(scratch, 'out', 'work.bundle');
+    await mkdir(dirname(file));
+    await bundleWork({ checkout: p.workdir, branch: BRANCH, expectedBase: p.expectedBase, file, env: { PATH: process.env['PATH'] ?? '' } });
+    expect(git(scratch, ['bundle', 'list-heads', file])).toBe(`${harnessGit(p, ['rev-parse', 'HEAD'])} refs/heads/${BRANCH}`);
+    // A repository that has the base can take it: the base is its one prerequisite.
+    const other = join(scratch, 'other.git');
+    git(scratch, ['init', '--quiet', '--bare', other]);
+    git(other, ['fetch', '--quiet', origin.url, 'refs/heads/dev:refs/heads/dev']);
+    git(other, ['bundle', 'verify', '--quiet', file]);
+  });
+
+  it('refuses to bundle a branch with nothing committed beyond its base, or one that is gone', async () => {
+    const p = await prepare();
+    const file = join(scratch, 'empty.bundle');
+    await expect(bundleWork({ checkout: p.workdir, branch: BRANCH, expectedBase: p.expectedBase, file })).rejects.toThrow(/nothing is committed on/);
+    await expect(bundleWork({ checkout: p.workdir, branch: 'fix/other', expectedBase: p.expectedBase, file })).rejects.toThrow(/is gone/);
+  });
+
+  it('writes the run record once and reads it back checked', async () => {
+    const dir = join(scratch, 'run-dir');
+    await mkdir(dir);
+    const record = { runId: ulid(), repo: 'acme/web', issueKey: KEY, branch: BRANCH, base: 'dev', expectedBase: 'a'.repeat(40) };
+    await writeRunRecord(dir, record);
+    expect(await readRunRecord(dir)).toEqual(record);
+    await expect(writeRunRecord(dir, record)).rejects.toThrow();
+    expect(runLayout(dir)).toEqual({ dir, checkout: join(dir, 'work'), out: join(dir, 'out'), bundle: join(dir, 'out', 'work.bundle'), record: join(dir, 'run.json') });
+
+    await writeFile(join(dir, 'run.json'), JSON.stringify({ v: 1, ...record, branch: 'fix/a b' }));
+    await expect(readRunRecord(dir)).rejects.toThrow(/not an allowed branch name/);
+    await writeFile(join(dir, 'run.json'), JSON.stringify({ v: 1, ...record, expectedBase: 'HEAD' }));
+    await expect(readRunRecord(dir)).rejects.toThrow(/malformed/);
+    await rm(join(dir, 'run.json'));
+    await expect(readRunRecord(dir)).rejects.toThrow(/no record/);
   });
 });
 
@@ -282,9 +296,17 @@ describe('local runner workdir', () => {
     phasesBefore: string[];
   }
 
+  interface Finished {
+    result: HarnessResult;
+    record: RunRecord | null;
+    /** `git bundle list-heads` of the bundle, or null when there was none. */
+    bundle: string | null;
+  }
+
   function setup(behave: (workdir: string, opts: HarnessRunOptions) => Promise<HarnessResult>, over: { keepFailedWorkdir?: boolean; token?: () => Promise<string> } = {}) {
     const workdirRoot = join(scratch, 'runs');
     const phases: HarnessCheckpoint[] = [];
+    const finished: Finished[] = [];
     const seen: Seen[] = [];
     const harness: HarnessPort = {
       async run(_workItem, _request, workdir, opts) {
@@ -316,35 +338,64 @@ describe('local runner workdir', () => {
       onCheckpoint: async (_run, c) => {
         phases.push(c);
       },
+      onFinished: async (run, result) => {
+        // What the server reads at the hand-off, while the run directory still exists.
+        const layout = runLayout(join(workdirRoot, run.runId));
+        const bundle = await stat(layout.bundle).then(() => git(scratch, ['bundle', 'list-heads', layout.bundle]), () => null);
+        finished.push({ result, record: await readRunRecord(layout.dir).catch(() => null), bundle });
+      },
     });
-    return { runner, workdirRoot, phases, seen, tokens };
+    return { runner, workdirRoot, phases, seen, tokens, finished };
   }
 
   const done: HarnessResult = { outcome: 'done', branch: BRANCH, summary: 'ok', testsAdded: [] };
 
-  it('prepares the checkout before the harness, records cloned, and removes the checkout afterwards', async () => {
-    const { runner, workdirRoot, phases, seen, tokens } = setup(async (workdir, opts) => {
+  it('prepares the checkout before the harness, records cloned, hands back a bundle, and removes the run afterwards', async () => {
+    const { runner, workdirRoot, phases, seen, tokens, finished } = setup(async (workdir, opts) => {
       await writeFile(join(workdir, 'fix.ts'), 'export {};\n');
       const env = { PATH: process.env['PATH'], ...opts.env };
       git(workdir, ['add', '-A'], env);
       git(workdir, ['commit', '--quiet', '-m', `${KEY} fix`], env);
-      git(workdir, ['push', '--quiet'], env);
-      await opts.onCheckpoint({ phase: 'pushed' });
+      await opts.onCheckpoint({ phase: 'tested' });
       return done;
     });
     const { runId } = await runner.runFixer(job());
     expect(await runner.wait(runId)).toEqual(done);
     expect(tokens).toEqual(['acme/web']);
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.workdir).toBe(join(workdirRoot, runId));
+    expect(seen[0]?.workdir).toBe(join(workdirRoot, runId, 'work'));
     expect(seen[0]?.branch).toBe(BRANCH);
     expect(seen[0]?.phasesBefore).toEqual(['cloned']);
-    expect(seen[0]?.env['SNAPWING_GIT_TOKEN']).toBe(TOKEN);
+    // No credential reaches the harness (#262): the clone token stayed with the runner.
+    expect(seen[0]?.env).toEqual({ GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: '0' });
     expect(seen[0]?.review).toBeNull();
     const devSha = git(origin.url, ['rev-parse', 'refs/heads/dev']);
-    expect(phases).toEqual([{ phase: 'cloned', detail: `dev@${devSha.slice(0, 12)}` }, { phase: 'pushed' }]);
-    expect(remoteHas(`refs/heads/${BRANCH}`)).toBe(true);
+    expect(phases).toEqual([{ phase: 'cloned', detail: `dev@${devSha.slice(0, 12)}` }, { phase: 'tested' }]);
+    // The run pushed nothing; it left the work branch as a bundle and the runner's record beside it.
+    expect(remoteHas(`refs/heads/${BRANCH}`)).toBe(false);
+    expect(finished).toHaveLength(1);
+    expect(finished[0]?.record).toEqual({ runId, repo: 'acme/web', issueKey: KEY, branch: BRANCH, base: 'dev', expectedBase: devSha });
+    expect(finished[0]?.bundle).toMatch(new RegExp(` refs/heads/${BRANCH}$`));
     await expect(stat(join(workdirRoot, runId))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('leaves no bundle when the harness committed nothing, and none for a stopped run', async () => {
+    const quiet = setup(async () => done);
+    const a = await quiet.runner.runFixer(job());
+    await quiet.runner.wait(a.runId);
+    expect(quiet.finished[0]?.bundle).toBeNull();
+    expect(quiet.finished[0]?.record?.branch).toBe(BRANCH);
+
+    const stopped = setup(async (workdir, opts) => {
+      await writeFile(join(workdir, 'fix.ts'), 'export {};\n');
+      const env = { PATH: process.env['PATH'], ...opts.env };
+      git(workdir, ['add', '-A'], env);
+      git(workdir, ['commit', '--quiet', '-m', `${KEY} fix`], env);
+      return { outcome: 'stopped', atPhase: 'implemented' };
+    });
+    const b = await stopped.runner.runFixer(job());
+    await stopped.runner.wait(b.runId);
+    expect(stopped.finished[0]?.bundle).toBeNull();
   });
 
   it('branches fix/<key> from the default branch when the handoff names neither', async () => {
@@ -360,7 +411,7 @@ describe('local runner workdir', () => {
     const { runId } = await runner.runFixer(job({ review: { artifactId: REVIEW_ID, version: 1 } }));
     await runner.wait(runId);
     expect(seen[0]?.review).toBe(REVIEW_BODY);
-    expect(seen[0]?.env[PRIOR_REVIEW_ENV]).toBe(join(workdirRoot, runId, '.git', 'snapwing', 'review.json'));
+    expect(seen[0]?.env[PRIOR_REVIEW_ENV]).toBe(join(workdirRoot, runId, 'work', '.git', 'snapwing', 'review.json'));
     await expect(runner.runFixer(job({ review: { artifactId: REQUEST_ID, version: 1 } }))).rejects.toThrow(/not a review/);
   });
 
@@ -370,7 +421,7 @@ describe('local runner workdir', () => {
     const kept = setup(async () => next, { keepFailedWorkdir: true });
     const a = await kept.runner.runFixer(job());
     expect(await kept.runner.wait(a.runId)).toEqual(failed);
-    expect((await stat(join(kept.workdirRoot, a.runId, '.git'))).isDirectory()).toBe(true);
+    expect((await stat(join(kept.workdirRoot, a.runId, 'work', '.git'))).isDirectory()).toBe(true);
     next = { outcome: 'stopped', atPhase: 'implemented' };
     const ok = await kept.runner.runFixer(job());
     await kept.runner.wait(ok.runId);

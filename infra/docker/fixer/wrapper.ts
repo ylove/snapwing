@@ -3,7 +3,8 @@
 //
 // The fixer image's entrypoint (`entrypoint.ts`) calls `runWrapper` with the container's environment,
 // which is exactly what `packages/app/src/providers/docker/runner.ts` passes (`fixerEnv`,
-// `reviewEnv`, `modelEnv`) and nothing else. The one mount is `SNAPWING_WORKDIR` (`/work`).
+// `reviewEnv`, `modelEnv`) and nothing else. The mounts are `SNAPWING_WORKDIR` (`/work`) and, for a
+// fixer, the hand-off directory (`/out`).
 //
 // `SNAPWING_ROLE=fixer` (`snapwing-fixer-<runId>`, detached):
 //   The work item is prepared in the mount: a checkout on the work branch at `SNAPWING_WORKDIR` and
@@ -18,15 +19,13 @@
 //   fixer token. A missing work item is reported as `failed`, so the run degrades instead of hanging
 //   until its budget timer.
 //
-//   Git credential (#266): no git token is in the container's environment. Installation tokens
-//   expire after an hour and a run may last longer, so while the harness runs the wrapper serves
-//   `GET /git-credential` on a unix socket in a private temp directory
-//   (`SNAPWING_GIT_CREDENTIAL_SOCKET`), and git's only credential helper is the image's
-//   `git-credential` script, which asks that socket. Each ask makes the wrapper fetch
-//   `GET /fixer/{workItemId}/git-token` with the fixer token and answer in git's credential format;
-//   the token is held in memory only, never written to a file or put in an argv. The harness can ask
-//   the socket too (that is how the agent reads a token for the GitHub API, `git credential fill`),
-//   but it gets git tokens from it and nothing else: never the fixer token.
+//   No GitHub credential of any kind is in the container (#262). The harness commits on the work
+//   branch and never pushes. Once it has ended with `done` (or `failed` with a partial branch), the
+//   wrapper writes `git bundle create <SNAPWING_HANDOFF_FILE> <SNAPWING_BASE_SHA>..refs/heads/
+//   <SNAPWING_WORK_BRANCH>` into `/out` (pipeline/src/fixer/workdir/handoff.ts) and posts the report.
+//   The server imports the bundle, checks it, pushes the work branch, and opens the pull request
+//   (app/src/fixer-api/handoff.ts). When it refuses the hand-off (409 `handoff-refused`), the wrapper
+//   posts `failed` with the server's reason.
 //
 // `SNAPWING_ROLE=review` (`snapwing-review-<runId>`, attached):
 //   Feeds `SNAPWING_REVIEW_INPUT_FILE` to the configured review harness on stdin. Nothing in this
@@ -47,10 +46,9 @@
 
 import { constants } from 'node:fs';
 import { mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
 import { devNull, tmpdir } from 'node:os';
 import { isAbsolute, join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { bundleWork } from '../../../packages/pipeline/src/fixer/workdir/handoff.ts';
 import { createClaudeCodeHarness } from '../../../packages/pipeline/src/harness/claude-code/index.ts';
 import { createCodexHarness } from '../../../packages/pipeline/src/harness/codex/index.ts';
 import { createGeminiHarness } from '../../../packages/pipeline/src/harness/gemini/index.ts';
@@ -66,14 +64,6 @@ export const FIXER_REQUEST_PATH = '.git/snapwing/implementation-request.xml';
 export const FIXER_HOOKS_PATH = '.git/snapwing/hooks';
 /** Where an image keeps generic harness command templates, one file per template id. */
 export const DEFAULT_GENERIC_DIR = '/etc/snapwing/generic';
-/** The image's git credential helper: asks the wrapper's socket for a fresh token, never a file. */
-export const GIT_CREDENTIAL_HELPER = fileURLToPath(new URL('./git-credential', import.meta.url));
-/** Names the wrapper's credential socket in the harness environment. */
-export const GIT_CREDENTIAL_SOCKET_ENV = 'SNAPWING_GIT_CREDENTIAL_SOCKET';
-/** The username GitHub expects with an installation token over HTTPS. */
-const GIT_TOKEN_USERNAME = 'x-access-token';
-/** A token the wrapper hands to git: printable ASCII without spaces, so it cannot break the protocol. */
-const GIT_TOKEN_SHAPE = /^[\x21-\x7e]{1,4096}$/;
 /** Stop poll interval while the harness runs (docs/harness-generic.md section 6). */
 export const STOP_POLL_MS = 5000;
 /** SIGTERM to SIGKILL grace for the harness; under docker stop's default PT10S so the wrapper exits first. */
@@ -115,8 +105,6 @@ export interface WrapperDeps {
   killGraceMs?: number;
   /** Delays between report retries. Default 1 s, then 3 s. */
   retryDelaysMs?: readonly number[];
-  /** Parent of the credential socket's private directory. Default the OS temp directory. */
-  gitSocketDir?: string;
   /** Parent of the review harness's private verdict directory. Default the OS temp directory. */
   reviewDir?: string;
 }
@@ -181,7 +169,7 @@ export async function runWrapper(deps: WrapperDeps): Promise<number> {
   if (deps.processEnv !== undefined) {
     applyModelAccess(deps.processEnv, model.vars);
     delete deps.processEnv['SNAPWING_FIXER_TOKEN'];
-    // Not set by the runner since #266; never passed on if something else sets it.
+    // No runner sets a git token (#262); never passed on if something else does.
     delete deps.processEnv['SNAPWING_GIT_TOKEN'];
   }
   return role === 'fixer' ? runFixer(deps, job, model.vars, log) : runReview(deps, job, model.vars, log);
@@ -195,6 +183,26 @@ interface Job {
   budget: { wallClock: string; attempts: number };
   harness: string;
   templateId: string | undefined;
+}
+
+/** Where and what the fixer hands back (#262): the work branch since its base, as a bundle file in `/out`. */
+interface Handoff {
+  branch: string;
+  expectedBase: string;
+  file: string;
+}
+
+const HANDOFF_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/;
+const HANDOFF_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function readHandoff(env: Env, workdir: string): Handoff | string {
+  const branch = env['SNAPWING_WORK_BRANCH'] ?? '';
+  const expectedBase = env['SNAPWING_BASE_SHA'] ?? '';
+  const file = env['SNAPWING_HANDOFF_FILE'] ?? '';
+  if (!HANDOFF_BRANCH.test(branch) || branch.includes('..')) return 'the fixer role needs SNAPWING_WORK_BRANCH, a plain branch name';
+  if (!HANDOFF_SHA.test(expectedBase)) return 'the fixer role needs SNAPWING_BASE_SHA, a commit id';
+  if (!isAbsolute(file) || file === workdir || inside(workdir, file)) return 'the fixer role needs SNAPWING_HANDOFF_FILE, an absolute path outside the checkout';
+  return { branch, expectedBase, file };
 }
 
 function readJob(env: Env): Job | string {
@@ -259,13 +267,19 @@ async function isDirectory(path: string): Promise<boolean> {
 
 // Fixer ------------------------------------------------------------------------------------------
 
-type Reply = { kind: 'ok' } | { kind: 'stop' } | { kind: 'error'; message: string };
+/** A 409 is a stop, except `handoff-refused` on `done`, which carries the server's reason. */
+type Reply = { kind: 'ok' } | { kind: 'stop' } | { kind: 'refused'; reason: string } | { kind: 'error'; message: string };
 
 async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, string>, log: (l: string) => void): Promise<number> {
   const apiUrl = deps.env['SNAPWING_API_URL']?.trim().replace(/\/+$/, '') ?? '';
   const token = deps.env['SNAPWING_FIXER_TOKEN'] ?? '';
   if (apiUrl === '' || token === '') {
     log('the fixer role needs SNAPWING_API_URL and SNAPWING_FIXER_TOKEN');
+    return EXIT_MISCONFIGURED;
+  }
+  const handoff = readHandoff(deps.env, job.workdir);
+  if (typeof handoff === 'string') {
+    log(handoff);
     return EXIT_MISCONFIGURED;
   }
   const doFetch = deps.fetch ?? fetch;
@@ -281,9 +295,15 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
         const init: RequestInit = { method, headers };
         if (body !== undefined) init.body = JSON.stringify(body);
         const res = await doFetch(`${base}/${op}`, init);
+        if (res.status === 409) {
+          const answer = (await res.json().catch(() => undefined)) as { error?: unknown; reason?: unknown } | undefined;
+          if (op === 'done' && answer?.error === 'handoff-refused') {
+            return { kind: 'refused', reason: typeof answer.reason === 'string' ? answer.reason.slice(0, 2000) : 'no reason given' };
+          }
+          return { kind: 'stop' };
+        }
         await res.body?.cancel();
         if (op === 'stop' && res.status === 204) return { kind: 'stop' };
-        if (res.status === 409) return { kind: 'stop' };
         if (res.ok) return { kind: 'ok' };
         last = `${method} ${op}: HTTP ${res.status}`;
         if (res.status < 500) break;
@@ -299,7 +319,22 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
       log(`could not report ${op}: ${r.message}`);
       return EXIT_UNREPORTED;
     }
+    if (r.kind === 'refused') {
+      // The server recorded nothing; the run ends as a failure with its reason.
+      log(`hand-off refused: ${r.reason}`);
+      return report('failed', { reason: `handoff refused: ${r.reason}`, attempts: 1 });
+    }
     return op === 'done' ? EXIT_OK : EXIT_FAILED;
+  };
+  /** The bundle of the work branch for the server (#262); without one the server refuses the hand-off. */
+  const bundle = async (): Promise<boolean> => {
+    try {
+      await bundleWork({ checkout: job.workdir, branch: handoff.branch, expectedBase: handoff.expectedBase, file: handoff.file, env: pathEnv() });
+      return true;
+    } catch (e) {
+      log(`no bundle of ${handoff.branch}: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
   };
   const fail = (reason: string, attempts = 0): Promise<number> => {
     log(reason);
@@ -322,15 +357,13 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
   const harness = await resolver(deps)(job.harness, job.templateId);
   if (typeof harness === 'string') return fail(`fixer container: ${harness}`);
 
-  // Git's one credential helper is the image's script (the empty value first drops any other), and
-  // the checkout's own hooks replace the host path its config names.
-  const gitConfig: [string, string][] = [
-    ['credential.helper', ''],
-    ['credential.helper', GIT_CREDENTIAL_HELPER],
-  ];
+  // The checkout's own hooks replace the host path its config names. No credential helper, no token:
+  // nothing in here can push (#262).
+  const gitConfig: [string, string][] = [];
   const hooks = join(job.workdir, FIXER_HOOKS_PATH);
   if (await isDirectory(hooks)) gitConfig.push(['core.hooksPath', hooks]);
-  const runEnv: Record<string, string> = { ...GIT_ENV, ...modelVars, GIT_CONFIG_COUNT: String(gitConfig.length) };
+  const runEnv: Record<string, string> = { ...GIT_ENV, ...modelVars };
+  if (gitConfig.length > 0) runEnv['GIT_CONFIG_COUNT'] = String(gitConfig.length);
   gitConfig.forEach(([key, value], i) => Object.assign(runEnv, { [`GIT_CONFIG_KEY_${i}`]: key, [`GIT_CONFIG_VALUE_${i}`]: value }));
   const prior = deps.env['SNAPWING_PRIOR_REVIEW_FILE'];
   if (prior !== undefined && isAbsolute(prior) && inside(job.workdir, prior)) runEnv['SNAPWING_PRIOR_REVIEW_FILE'] = prior;
@@ -354,47 +387,11 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
     await pollStop();
   };
 
-  /** A fresh installation token from the fixer API, or undefined (logged without any token). */
-  const gitToken = async (): Promise<string | undefined> => {
-    let last = '';
-    for (let attempt = 0; attempt <= delays.length; attempt++) {
-      if (attempt > 0) await sleep(delays[attempt - 1] ?? 0);
-      try {
-        const res = await doFetch(`${base}/git-token`, { method: 'GET', headers });
-        if (res.ok) {
-          const body = (await res.json().catch(() => undefined)) as { token?: unknown } | undefined;
-          const token = body?.token;
-          if (typeof token === 'string' && GIT_TOKEN_SHAPE.test(token)) return token;
-          log('git token: the fixer API answered without a usable token');
-          return undefined;
-        }
-        await res.body?.cancel();
-        last = `HTTP ${res.status}`;
-        if (res.status === 409) {
-          log('git token refused (409): the run has ended');
-          stop.abort();
-          return undefined;
-        }
-        if (res.status < 500) break;
-      } catch (e) {
-        last = e instanceof Error ? e.message : String(e);
-      }
-    }
-    log(`git token: ${last}`);
-    return undefined;
-  };
-
   await checkpoint({ phase: 'cloned' });
-  if (stop.signal.aborted) return EXIT_OK;
-
-  let relay: CredentialRelay;
-  try {
-    relay = await startCredentialRelay(gitToken, deps.gitSocketDir);
-  } catch (e) {
+  if (stop.signal.aborted) {
     deps.signal.removeEventListener('abort', onSignal);
-    return fail(`fixer container: git credential relay: ${e instanceof Error ? e.message : String(e)}`);
+    return EXIT_OK;
   }
-  runEnv[GIT_CREDENTIAL_SOCKET_ENV] = relay.socket;
 
   const poller = setInterval(() => void pollStop(), deps.stopPollMs ?? STOP_POLL_MS);
   let result: HarnessResult;
@@ -405,18 +402,20 @@ async function runFixer(deps: WrapperDeps, job: Job, modelVars: Record<string, s
   } finally {
     clearInterval(poller);
     deps.signal.removeEventListener('abort', onSignal);
-    await relay.close();
   }
 
   switch (result.outcome) {
     case 'done':
-      if (result.prNumber === undefined) {
-        return report('failed', { reason: 'the harness finished without opening a pull request', partialBranch: result.branch, attempts: 1 });
-      }
-      return report('done', { prNumber: result.prNumber, branch: result.branch, summary: result.summary, testsAdded: result.testsAdded });
+      // The branch and any pull request number the harness names are not reported: the server pushes
+      // the run's own branch from the bundle and opens the pull request itself.
+      await bundle();
+      return report('done', { summary: result.summary, testsAdded: result.testsAdded });
     case 'failed':
       log(`harness failed: ${result.reason}`);
-      return report('failed', result.partialBranch === undefined ? { reason: result.reason, attempts: result.attempts } : { reason: result.reason, partialBranch: result.partialBranch, attempts: result.attempts });
+      if (result.partialBranch !== undefined && (await bundle())) {
+        return report('failed', { reason: result.reason, partialBranch: handoff.branch, attempts: result.attempts });
+      }
+      return report('failed', { reason: result.reason, attempts: result.attempts });
     case 'stopped':
       // The stop is already in the log; the run only acknowledges it.
       log(`stopped at ${result.atPhase}`);
@@ -505,53 +504,10 @@ async function readSmallFile(path: string, maxBytes: number): Promise<Buffer | u
   }
 }
 
-// Git credential relay ---------------------------------------------------------------------------
-
-interface CredentialRelay {
-  /** The unix socket the `git-credential` helper asks. */
-  socket: string;
-  close(): Promise<void>;
-}
-
-/**
- * Serves `GET /git-credential` on a unix socket in a fresh `0700` directory: each request fetches a
- * token with `fetchToken` and answers in git's credential format (`username=`, `password=`), or 503.
- * The token stays in memory; nothing is cached or written.
- */
-async function startCredentialRelay(fetchToken: () => Promise<string | undefined>, parent: string | undefined): Promise<CredentialRelay> {
-  const dir = await mkdtemp(join(parent ?? tmpdir(), 'snapwing-git-'));
-  const socket = join(dir, 'credential.sock');
-  const server = createServer((req, res) => {
-    req.resume();
-    if (req.method !== 'GET' || req.url !== '/git-credential') {
-      res.writeHead(404).end();
-      return;
-    }
-    fetchToken().then(
-      (token) => {
-        if (token === undefined) res.writeHead(503).end();
-        else res.writeHead(200, { 'content-type': 'text/plain', 'cache-control': 'no-store' }).end(`username=${GIT_TOKEN_USERNAME}\npassword=${token}\n`);
-      },
-      () => res.writeHead(503).end(),
-    );
-  });
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(socket, () => resolve());
-    });
-  } catch (e) {
-    await rm(dir, { recursive: true, force: true });
-    throw e;
-  }
-  return {
-    socket,
-    async close() {
-      server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
+/** Where the wrapper's own git is found, for the bundle; nothing else of its environment. */
+function pathEnv(): Record<string, string> {
+  const path = process.env['PATH'];
+  return path === undefined ? {} : { PATH: path };
 }
 
 function sleep(ms: number): Promise<void> {

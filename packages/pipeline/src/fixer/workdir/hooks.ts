@@ -1,24 +1,26 @@
-// src/fixer/workdir/hooks.ts: the shell scripts a prepared fixer checkout carries (main 10.2, 16).
+// src/fixer/workdir/hooks.ts: the scripts of a fixer checkout, and the rules the server checks a
+// fixer's work against before it pushes it (main 10.2, 16, #262).
 //
-// Every script is POSIX sh and holds no secret: the askpass script reads the token from the
-// environment of the git process that runs it, and the hooks hold only the issue key, the branch,
-// and the base, which validateWorkdirNames has restricted to characters that need no shell quoting
-// beyond single quotes.
+// Every script is POSIX sh and holds no secret. The askpass script is for the runner's own git
+// processes on the host (the clone, never the harness) and reads the token from their environment.
+// The commit-msg hook holds only the issue key, which validateWorkdirNames has restricted to
+// characters that need no shell quoting beyond single quotes.
 //
-// The hooks are mechanical guardrails against an honest mistake, not a security boundary: a harness
-// can pass `--no-verify` or edit the config. The boundary is the installation token's scope and the
-// base's branch protection (main 10.2). They exist so the common mistakes (a commit without the key,
-// a push to the base, an edit to CI) fail loudly inside the run instead of on GitHub.
+// The commit-msg hook is a guardrail against an honest mistake, not a security boundary: a harness can
+// pass `--no-verify` or edit the config. The boundary is that a fixer holds no GitHub credential at all
+// and never pushes: the server checks every commit and path it hands back (`messageNamesKey`,
+// `isProtectedPath`) and pushes the work itself (app/src/fixer-api/handoff.ts). The hook only makes
+// the common mistake fail inside the run instead of at the hand-off.
 
 /**
- * Paths a fixer push must not touch (main 10.2: "Modify CI config or branch protection: No"), as
- * POSIX extended regular expressions over repository-relative paths. CI config is
- * `.github/workflows/**`; CODEOWNERS (in any of the three places GitHub reads it) drives required
- * reviews; `.github/settings.yml` is the Probot Settings file, which manages branch protection.
+ * Paths a fixer's work must not touch (main 10.2: "Modify CI config or branch protection: No"), as
+ * regular expressions over repository-relative paths. CI config is `.github/workflows/**`; a
+ * CODEOWNERS file drives required reviews (GitHub reads three places; one anywhere is refused);
+ * `.github/settings.yml` is the Probot Settings file, which manages branch protection.
  */
 export const PROTECTED_PATH_PATTERNS: readonly string[] = Object.freeze([
   '^\\.github/workflows/',
-  '^(\\.github/|docs/)?CODEOWNERS$',
+  '(^|/)CODEOWNERS$',
   '^\\.github/settings\\.ya?ml$',
 ]);
 
@@ -53,9 +55,22 @@ function q(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** Escapes a literal for a POSIX extended regular expression. */
+/** Escapes a literal for a regular expression (POSIX extended and JavaScript alike). */
 function ere(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** The issue key as a whole token: WEB-10 does not satisfy WEB-1042. */
+function keyPattern(issueKey: string): string {
+  return `(^|[^A-Za-z0-9_-])${ere(issueKey)}([^0-9]|$)`;
+}
+
+/**
+ * True when `message` names `issueKey` as a whole token, on any line: the rule the commit-msg hook
+ * applies inside the run and the server applies to every commit a fixer hands back.
+ */
+export function messageNamesKey(message: string, issueKey: string): boolean {
+  return new RegExp(keyPattern(issueKey), 'm').test(message);
 }
 
 /**
@@ -63,71 +78,13 @@ function ere(value: string): string {
  * does not satisfy WEB-1042). Comment lines are ignored.
  */
 export function commitMsgHook(issueKey: string): string {
-  const pattern = `(^|[^A-Za-z0-9_-])${ere(issueKey)}([^0-9]|$)`;
   return [
     '#!/bin/sh',
     '# Snapwing commit-msg hook (main 10.2): every commit message names the issue key.',
     `key=${q(issueKey)}`,
-    `if grep -v '^#' "$1" | grep -Eq ${q(pattern)}; then exit 0; fi`,
+    `if grep -v '^#' "$1" | grep -Eq ${q(keyPattern(issueKey))}; then exit 0; fi`,
     'echo "snapwing: commit message must contain the issue key $key" >&2',
     'exit 1',
-    '',
-  ].join('\n');
-}
-
-export interface PrePushHookInput {
-  branch: string;
-  base: string;
-  /** The base commit the branch was cut from; the diff floor when the base's remote ref is gone. */
-  baseSha: string;
-}
-
-/**
- * pre-push hook: git feeds it `<local ref> <local sha> <remote ref> <remote sha>` lines. It rejects
- * a push to any ref but the work branch (so the base, other branches, and tags), a deletion, and a
- * push whose branch differs from the base in a protected path. The diff is the branch against its
- * merge base with the base (what the pull request would show), with renames split so moving a
- * workflow out counts too.
- */
-export function prePushHook(input: PrePushHookInput): string {
-  return [
-    '#!/bin/sh',
-    '# Snapwing pre-push hook (main 10.2): one branch, no pushes to the base, no CI or protection edits.',
-    `branch=${q(input.branch)}`,
-    `base=${q(input.base)}`,
-    `base_sha=${q(input.baseSha)}`,
-    `protected=${q(PROTECTED_PATH_PATTERNS.join('|'))}`,
-    'status=0',
-    'while read -r local_ref local_sha remote_ref remote_sha; do',
-    '  [ -z "$local_ref" ] && continue',
-    '  if [ "$remote_ref" != "refs/heads/$branch" ]; then',
-    '    if [ "$remote_ref" = "refs/heads/$base" ]; then',
-    '      echo "snapwing: pushing to the base branch $base is not allowed" >&2',
-    '    else',
-    '      echo "snapwing: only the work branch $branch may be pushed, not $remote_ref" >&2',
-    '    fi',
-    '    status=1',
-    '    continue',
-    '  fi',
-    '  case "$local_sha" in',
-    '    *[!0]*) ;;',
-    '    *) echo "snapwing: deleting the work branch is not allowed" >&2; status=1; continue ;;',
-    '  esac',
-    '  floor=$(git rev-parse -q --verify "refs/remotes/origin/$base^{commit}" 2>/dev/null || echo "$base_sha")',
-    '  from=$(git merge-base "$floor" "$local_sha" 2>/dev/null || echo "$base_sha")',
-    '  if ! files=$(git diff --name-only --no-renames "$from" "$local_sha"); then',
-    '    echo "snapwing: could not diff $local_sha against the base; refusing the push" >&2',
-    '    status=1',
-    '    continue',
-    '  fi',
-    `  hits=$(printf '%s\\n' "$files" | grep -E "$protected")`,
-    '  if [ -n "$hits" ]; then',
-    '    echo "snapwing: the fixer may not change CI config, CODEOWNERS, or branch protection files:" >&2',
-    '    echo "$hits" | sed "s/^/  /" >&2',
-    '    status=1',
-    '  fi',
-    'done',
-    'exit $status',
     '',
   ].join('\n');
 }

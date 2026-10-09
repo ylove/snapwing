@@ -3,10 +3,10 @@
 // is found by the Graph diff (a change notification, the message read from MSW Graph), the scope and Fix it
 // taps are `Action.Execute` invokes on the cards the app posted, the Jira projector files with custom
 // fields, Jira's In Progress webhook starts the real local runner and generic harness adapter on the fake
-// agent (fixtures/e2e/fake-harness.mjs), the review job approves the PR the fixer opened, and the one
-// status message is posted in the thread and edited in place through every row. The same flow runs in
-// reduced mode, where Graph refuses the subscription: the action command still files, a 🐛 starts nothing,
-// and every card says so.
+// agent (fixtures/e2e/fake-harness.mjs), the review job approves the PR the server opened from the
+// fixer's commits, and the one status message is posted in the thread and edited in place through
+// every row. The same flow runs in reduced mode, where Graph refuses the subscription: the action
+// command still files, a 🐛 starts nothing, and every card says so.
 //
 // No keys and no network: Bot Framework (OpenID with a local key, the token endpoint, the Connector),
 // Graph, Jira, and GitHub are MSW; git remotes are local bare repositories (fixtures/e2e/github.ts). Teams
@@ -94,12 +94,12 @@ interface Plan {
   summary: string;
   files: Record<string, string>;
   test: string;
-  hangAfterPr?: boolean;
+  hangAfterCommit?: boolean;
   reviewGate?: boolean;
 }
 
 /** The fix and its regression test per recording: the test fails on the seeded bug and passes after. */
-const FIXES: Readonly<Record<string, Omit<Plan, 'hangAfterPr' | 'reviewGate'>>> = {
+const FIXES: Readonly<Record<string, Omit<Plan, 'hangAfterCommit' | 'reviewGate'>>> = {
   'acme/admin': {
     summary: 'append the usage rows to the CSV export',
     files: {

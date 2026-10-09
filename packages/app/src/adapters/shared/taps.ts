@@ -394,7 +394,7 @@ export function createTapCore(options: TapCoreOptions): TapCore {
       outcome,
       answer.choice === 'let-it-finish'
         ? `${who} chose ${format.bold('Let it finish')}. The fixer keeps going.`
-        : `${who} stopped the fixer. The branch stays for ${format.who(offer.claimerId)}, who has the ticket.`,
+        : `${who} stopped the fixer before it pushed anything. ${format.who(offer.claimerId)} has the ticket.`,
     );
   }
 

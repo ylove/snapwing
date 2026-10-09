@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import type { Artifact } from '@snapwing/pipeline/contracts/state.ts';
 import type { FixerJob, ReviewRunJob, TestRunJob } from '@snapwing/pipeline/ports/runner.ts';
 import { buildImplementationRequest } from '@snapwing/pipeline/prompts/implementation-request.ts';
+import { readRunRecord } from '@snapwing/pipeline/fixer/workdir/handoff.ts';
 import { createBareRepo, git, type BareRepo } from '../../../pipeline/test/helpers/git.ts';
 import { FIXER_HOOKS_PATH, FIXER_REQUEST_PATH } from '../../../../infra/docker/fixer/wrapper.ts';
 import { issueFixerToken, verifyFixerToken } from '../../src/fixer-api/token.ts';
@@ -195,7 +196,7 @@ function runner(over: Partial<Parameters<typeof createDockerRunner>[0]> = {}): D
 }
 
 describe('createDockerRunner runFixer', () => {
-  it('runs docker run --rm -d with a derived name, limits, one scratch mount, and no other mounts', async () => {
+  it('runs docker run --rm -d with a derived name, limits, the checkout and hand-off mounts, and no other mounts', async () => {
     const r = await runner({ network: 'snapwing-net', memory: '2g', cpus: '1.5' }).runFixer(job());
     expect(r).toEqual({ runId: RUN_ID });
     const [c] = calls();
@@ -209,7 +210,8 @@ describe('createDockerRunner runFixer', () => {
     expect(a).toContain('--cap-drop');
     expect(a.at(-1)).toBe('snapwing-fixer:test');
     const mounts = a.flatMap((x, i) => (x === '-v' || x === '--volume' || x === '--mount' ? [a[i + 1]] : []));
-    expect(mounts).toEqual([`${join(dir, 'scratch', RUN_ID)}:/work`]);
+    // The checkout and the hand-off directory; never the run directory itself, which holds the record.
+    expect(mounts).toEqual([`${join(dir, 'scratch', RUN_ID, 'work')}:/work`, `${join(dir, 'scratch', RUN_ID, 'out')}:/out`]);
     expect(a).not.toContain('--privileged');
     // As the server's uid:gid, so it can write the host-prepared checkout and the server can remove it.
     expect(a[a.indexOf('--user') + 1]).toBe(`${process.getuid?.()}:${process.getgid?.()}`);
@@ -226,10 +228,24 @@ describe('createDockerRunner runFixer', () => {
     // Where the image's wrapper looks for them.
     expect(FIXER_REQUEST_FILE).toBe(FIXER_REQUEST_PATH);
     expect(readFileSync(join(snap, FIXER_REQUEST_PATH), 'utf8')).toBe(REQUEST_BODY);
-    for (const hook of ['commit-msg', 'pre-push']) expect(statSync(join(snap, FIXER_HOOKS_PATH, hook)).mode & 0o111).not.toBe(0);
+    expect(statSync(join(snap, FIXER_HOOKS_PATH, 'commit-msg')).mode & 0o111).not.toBe(0);
+    expect(readdirSync(join(snap, FIXER_HOOKS_PATH))).toEqual(['commit-msg']);
     expect(git(snap, ['config', 'user.name'])).toBe('snapwing[bot]');
     expect(existsSync(join(snap, '.git/snapwing/review.json'))).toBe(false);
     expect(calls()[0]!.env['SNAPWING_PRIOR_REVIEW_FILE']).toBeUndefined();
+  });
+
+  it('records the run beside the mounts and tells the container what to hand back (#262)', async () => {
+    writeFileSync(join(dir, 'waitmode'), 'running');
+    const r = runner();
+    await r.runFixer(job());
+    const scratch = join(dir, 'scratch', RUN_ID);
+    const base = git(origin.url, ['rev-parse', 'refs/heads/main']);
+    expect(await readRunRecord(scratch)).toEqual({ runId: RUN_ID, repo: 'acme/web', issueKey: 'WEB-1042', branch: 'fix/WEB-1042-cart', base: 'main', expectedBase: base });
+    expect(readdirSync(join(scratch, 'out'))).toEqual([]);
+    expect(calls()[0]!.env).toMatchObject({ SNAPWING_WORK_BRANCH: 'fix/WEB-1042-cart', SNAPWING_BASE_SHA: base, SNAPWING_HANDOFF_FILE: '/out/work.bundle' });
+    writeFileSync(join(dir, 'waitmode'), '');
+    await r.wait(RUN_ID);
   });
 
   it('uses the git token for the host clone only: none enters the container, its argv, a file, or the remote URL', async () => {
@@ -237,7 +253,7 @@ describe('createDockerRunner runFixer', () => {
     await runner({ git: { token: async () => (minted++, GIT_TOKEN), remoteUrl: () => origin.url } }).runFixer(job());
     expect(minted).toBe(1);
     const c = calls()[0]!;
-    // The container fetches fresh tokens through the fixer API instead (the image's credential helper).
+    // The container needs none: it commits, and the server pushes its bundle (#262).
     expect(c.env['SNAPWING_GIT_TOKEN']).toBeUndefined();
     expect(JSON.stringify(c.env)).not.toContain(GIT_TOKEN);
     const forwarded = c.args.flatMap((x, i) => (x === '-e' ? [c.args[i + 1]!] : []));

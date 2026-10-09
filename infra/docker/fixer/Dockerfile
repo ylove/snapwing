@@ -12,9 +12,10 @@
 #
 # No secret is baked in, and none may be: no provider key, no token, no .env. Model calls go to the
 # server's model proxy with a per-run token the runner passes at `docker run` time, and the fixer API
-# token arrives the same way. Git tokens are fetched fresh from the fixer API by the wrapper whenever
-# git asks (`git-credential`, #266). Only `packages/pipeline/src` (the harness adapters and prompts)
-# and this directory are copied in (Dockerfile.dockerignore).
+# token arrives the same way. No GitHub credential ever enters a fixer container: the fixer commits,
+# the wrapper leaves a bundle of the work branch in `/out`, and the server pushes it (#262). Only
+# `packages/pipeline/src` (the harness adapters and prompts) and the wrapper's files are copied in
+# (Dockerfile.dockerignore).
 
 ARG NODE_VERSION=24
 FROM node:${NODE_VERSION}-bookworm-slim
@@ -41,8 +42,7 @@ WORKDIR /opt/snapwing
 RUN printf '{ "private": true, "type": "module" }\n' > package.json \
  && mkdir -p /etc/snapwing/generic
 COPY packages/pipeline/src packages/pipeline/src
-COPY infra/docker/fixer/wrapper.ts infra/docker/fixer/entrypoint.ts infra/docker/fixer/git-credential infra/docker/fixer/
-RUN chmod 0755 infra/docker/fixer/git-credential
+COPY infra/docker/fixer/wrapper.ts infra/docker/fixer/entrypoint.ts infra/docker/fixer/
 
 # The default non-root user. The docker runner starts every run (fixer, review, tests) as the server's
 # uid:gid with HOME and TMPDIR at /tmp, so a run can write the tree the server prepared and the server

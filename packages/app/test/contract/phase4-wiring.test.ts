@@ -148,7 +148,7 @@ interface World {
 
 interface WorldOptions {
   /** The fake agent's plan beyond the repository's fix. */
-  plan?: { hangAfterPr?: boolean; reviewGate?: boolean };
+  plan?: { hangAfterCommit?: boolean; reviewGate?: boolean };
   /** A `playbook.xml` to load (`SNAPWING_PLAYBOOK`). */
   playbook?: string;
   /** An `INSTRUCTIONS.md` to load (`SNAPWING_INSTRUCTIONS`). */
@@ -328,8 +328,8 @@ function clean(w: World): void {
 // Tests -------------------------------------------------------------------------------------------
 
 describe('phase 4 wiring on the composed app', () => {
-  it('A 2.2: an engineer claims while the fixer runs, taps Stop, keeps the branch, and gets the ticket', async () => {
-    const w = await world('03-level-2-fix-now.json', 'WEB-1', { plan: { hangAfterPr: true } });
+  it('A 2.2: an engineer claims while the fixer runs, taps Stop, nothing is pushed, and gets the ticket', async () => {
+    const w = await world('03-level-2-fix-now.json', 'WEB-1', { plan: { hangAfterCommit: true } });
     await shortcut(w);
     const incidentId = await incidentOf(w);
     await tap(w, await card(w, 'scope_actions'), 'scope_actions', 'looks-right', w.recording.reporter.id);
@@ -338,10 +338,10 @@ describe('phase 4 wiring on the composed app', () => {
     await statusShows(w, statusTs, 'Filed as WEB-1. Working on a fix now.', incidentId);
     await deliverJira(w, 'WEB-1');
 
-    // The fixer pushed its branch and opened its PR, and keeps working.
+    // The fixer committed its fix on the branch and keeps working.
     await vi.waitFor(async () => {
       const log = await w.booted.state.read(incidentId);
-      expect(log.some((e) => e.type === 'fixer-checkpoint' && e.payload.phase === 'pr-opened')).toBe(true);
+      expect(log.some((e) => e.type === 'fixer-checkpoint' && e.payload.phase === 'tested')).toBe(true);
     }, WAIT);
     const runId = (await w.booted.state.read(incidentId)).flatMap((e) => (e.type === 'fixer-started' ? [e.payload.runId] : []))[0] ?? '';
 
@@ -357,21 +357,19 @@ describe('phase 4 wiring on the composed app', () => {
 
     await tap(w, offer, 'midflight_actions', 'stop_it', 'U0WEBDEV');
     await vi.waitFor(async () => expect((await w.booted.state.getIncident(incidentId))?.status).toBe('stopped'), WAIT);
-    // The card says who stopped it; the run was cancelled; the PR the run opened is closed.
+    // The card says who stopped it; the run was cancelled before it handed anything back.
     await vi.waitFor(() => {
       const edit = w.slack.calls.find((c) => c.method === 'chat.update' && c.ts === offer.ts);
-      expect(edit === undefined ? '' : messageText(edit.body)).toContain('<@U0WEBDEV> stopped the fixer. The branch stays for <@U0WEBDEV>, who has the ticket.');
+      expect(edit === undefined ? '' : messageText(edit.body)).toContain('<@U0WEBDEV> stopped the fixer before it pushed anything. <@U0WEBDEV> has the ticket.');
     }, WAIT);
-    await vi.waitFor(() => expect(w.github.pull(w.repo, 1)?.state).toBe('closed'), WAIT);
     const log = await w.booted.state.read(incidentId);
     expect(log.filter((e) => e.type === 'fixer-started')).toHaveLength(1);
     expect(log.find((e): e is IncidentEvent<'stopped'> => e.type === 'stopped')?.payload.reason).toBe('U0WEBDEV took over');
 
-    // Stopping leaves the branch for the human (A 2.2, main 10.4).
-    const branch = w.github.pull(w.repo, 1)?.head ?? '';
-    expect(branch).toBe('fix/WEB-1');
+    // A stopped run pushes nothing (#262): no work branch on GitHub, no pull request.
     const bare = w.github.repos.get(w.repo);
-    expect(execFileSync('git', ['ls-remote', '--heads', bare?.url ?? '', branch], { env: GIT_ENV, encoding: 'utf8' })).toContain(`refs/heads/${branch}`);
+    expect(execFileSync('git', ['ls-remote', '--heads', bare?.url ?? '', 'fix/WEB-1'], { env: GIT_ENV, encoding: 'utf8' })).toBe('');
+    expect(w.github.pulls.size).toBe(0);
 
     // The claimer is the assignee: the `update-fields` row, by the map's email, queued with the Stop.
     // (The projector sends it after the claim's attribution comment, whose 60 s batch window holds the lane, B 7.1.)

@@ -3,32 +3,26 @@
 //
 //   POST /fixer/{workItemId}/checkpoint   { phase, detail }
 //   POST /fixer/{workItemId}/artifact     { kind, body, contentType? }
-//   POST /fixer/{workItemId}/done         { prNumber, branch, summary, testsAdded }
+//   POST /fixer/{workItemId}/done         { summary, testsAdded }: the work is committed and bundled;
+//                                         the server pushes it and opens the pull request (#262)
 //   POST /fixer/{workItemId}/failed       { reason, partialBranch?, attempts }
 //   GET  /fixer/{workItemId}/stop         204 when a stop is pending, else 200 { stop: false }
-//   GET  /fixer/{workItemId}/git-token    200 { token, expiresAt }: a fresh installation token for the
-//                                         incident's repository (git-token.ts); mounted only
-//                                         with `options.gitToken` (the docker runner)
 //
 // Every call carries `Authorization: Bearer <token>` from `issueFixerToken` for that work item; the
 // token names the incident. Status codes: 200 (appended; JSON `{ seq }`, plus `artifact` for an
 // artifact), 400 (body is not JSON or fails validation, nothing appended), 401 (missing, malformed,
 // forged, or expired token), 403 (token for another work item), 404 (no such incident), 409 (the run
-// already finished or the incident is closed, nothing appended; the fixer should end), 502 (git-token
-// only: no token could be minted). A fixer should treat 409 like a stop. Responses never echo the
-// fixer token or the request body; only the git-token answer carries a credential, marked `no-store`.
+// already finished or the incident is closed, nothing appended; the fixer should end; or, for `done`,
+// `{ error: 'handoff-refused', reason }`: the server refused the handed-back work, recorded nothing,
+// and the fixer should report `failed`). A fixer should treat any other 409 like a stop. Responses
+// never echo the fixer token or the request body, and none carries a credential: no route hands a
+// container any GitHub token (#262).
 
-import type { FixerGitTokenSource } from './git-token.ts';
 import type { FixerReporter, FixerTarget, FixerRefusal } from './reporter.ts';
 import type { FixerTokenVerifier } from './token.ts';
 import type { FixerInputError } from './validate.ts';
 
-export type FixerOperation = 'checkpoint' | 'artifact' | 'done' | 'failed' | 'stop' | 'git-token';
-
-export interface FixerRouteOptions {
-  /** Serves `GET /fixer/{workItemId}/git-token`. Absent: the route is not mounted. */
-  gitToken?: FixerGitTokenSource;
-}
+export type FixerOperation = 'checkpoint' | 'artifact' | 'done' | 'failed' | 'stop';
 
 export interface FixerRouteContext {
   readonly params: Readonly<Record<string, string>>;
@@ -43,8 +37,8 @@ export interface FixerRoute {
 
 export const FIXER_ROUTE_PREFIX = '/fixer';
 
-export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVerifier, options: FixerRouteOptions = {}): FixerRoute[] {
-  const post = (op: Exclude<FixerOperation, 'stop' | 'git-token'>): FixerRoute => ({
+export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVerifier): FixerRoute[] {
+  const post = (op: Exclude<FixerOperation, 'stop'>): FixerRoute => ({
     method: 'POST',
     path: `${FIXER_ROUTE_PREFIX}/:workItemId/${op}`,
     handler: (req, ctx) =>
@@ -58,8 +52,11 @@ export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVer
             const r = await reporter.artifact(target, body.value);
             return r.ok ? json(200, { seq: r.seq, artifact: r.artifact }) : reply(r);
           }
-          case 'done':
-            return reply(await reporter.done(target, body.value));
+          case 'done': {
+            const r = await reporter.done(target, body.value);
+            if (r.ok) return reply(r);
+            return r.code === 'handoff-refused' ? json(409, { error: r.code, reason: r.reason }) : reply(r);
+          }
           case 'failed':
             return reply(await reporter.failed(target, body.value));
         }
@@ -77,23 +74,7 @@ export function createFixerRoutes(reporter: FixerReporter, verify: FixerTokenVer
       }),
   };
 
-  const routes = [post('checkpoint'), post('artifact'), post('done'), post('failed'), stop];
-  const source = options.gitToken;
-  if (source !== undefined) {
-    routes.push({
-      method: 'GET',
-      path: `${FIXER_ROUTE_PREFIX}/:workItemId/git-token`,
-      handler: (req, ctx) =>
-        withTarget(req, ctx, 'git-token', verify, async (target) => {
-          const r = await source(target);
-          if (r.ok) return json(200, { token: r.token, expiresAt: r.expiresAt });
-          if (r.code === 'mint-failed') return json(502, { error: 'git-token-unavailable' });
-          if (r.code === 'no-repo') return json(409, { error: 'no-repo' });
-          return refused(r.code);
-        }),
-    });
-  }
-  return routes;
+  return [post('checkpoint'), post('artifact'), post('done'), post('failed'), stop];
 }
 
 // Private ----------------------------------------------------------------------------------------

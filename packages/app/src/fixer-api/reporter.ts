@@ -11,15 +11,26 @@
 //   - the incident is in a terminal status, folded from the log (`incident-closed`),
 //   - no run is going: the latest `fixer-started` is followed by `fixer-done`, `fixer-failed`, or
 //     `stopped`, or there is none (`run-finished`).
-// A `done` is also refused, appending nothing, when its pull request fails verification against
-// GitHub (`pr-mismatch`, verify-pr.ts).
+// A `done` is also refused, appending nothing, when the pull request the hand-off opened fails
+// verification against GitHub (`pr-mismatch`, verify-pr.ts).
 //
-//   checkpoint   appends `fixer-checkpoint { phase, detail }`.
+//   checkpoint   appends `fixer-checkpoint { phase, detail }`. `pushed` and `pr-opened` are refused
+//                (400): only the server pushes and opens pull requests, and it records them (#262).
 //   artifact     stores the body as a new version of the incident's artifact of that kind (version 1
 //                when there is none yet), then appends `fixer-artifact { kind, artifact }`. When the
 //                append is refused after the store, the version stays unreferenced.
-//   done         appends `fixer-done` and `pr-opened` together, then calls `onDone`.
-//   failed       appends `fixer-failed`, then calls `onFailed`.
+//   done         the fixer committed its work and left a bundle of the work branch; it names no
+//                branch and no pull request (#262). The hand-off (`handoff`, handoff.ts) imports the
+//                bundle, checks it, pushes the run's work branch, and opens (or finds) the pull
+//                request as the App. A hand-off it refuses is `handoff-refused` with the reason, and
+//                nothing is recorded; a stop during it is `run-finished`, and nothing is pushed after
+//                the stop is seen. Then, still for that run, it appends the `pushed` and `pr-opened`
+//                checkpoints, `fixer-done`, and `pr-opened` together, and calls `onDone`.
+//   failed       appends `fixer-failed`, then calls `onFailed`. With a `partialBranch` the hand-off
+//                pushes the partial work first, without a pull request, and the recorded
+//                `partialBranch` is the run's work branch the server pushed (main 10.4's draft pull
+//                request is opened from it); when the hand-off refuses, the failure is recorded
+//                without one and its reason says why.
 //   stop         reads only: `stop: true` when a `stopped` follows the latest `fixer-started`;
 //                refused for an unknown or closed incident; otherwise `stop: false`. A finished run
 //                is not refused here: polling is cheap and harmless, and a fixer whose run already
@@ -37,6 +48,7 @@ import type { ArtifactRef, EventPayloads, EventType, IncidentEvent, NewEvent } f
 import { activeRun, appendDecided, latest, newEvent } from '@snapwing/pipeline/fixer/job.ts';
 import { INITIAL_STATUS, isTerminalStatus, nextStatus, type LifecycleStatus } from '@snapwing/pipeline/lifecycle/machine.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
+import type { FixerHandoff } from './handoff.ts';
 import type { PullRequestVerifier } from './verify-pr.ts';
 import {
   parseArtifactInput,
@@ -60,6 +72,9 @@ export type FixerReportResult =
   | { ok: false; code: 'invalid'; error: FixerInputError }
   | { ok: false; code: FixerRefusal };
 
+/** A `done`'s result: also refused when the hand-off refuses the fixer's work (409, with the reason). */
+export type FixerDoneResult = FixerReportResult | { ok: false; code: 'handoff-refused'; reason: string };
+
 export type FixerArtifactResult =
   | { ok: true; seq: number; runId: string; artifact: ArtifactRef }
   | { ok: false; code: 'invalid'; error: FixerInputError }
@@ -79,7 +94,9 @@ export interface FixerHookContext {
 export interface FixerReporterDeps {
   state: StatePort;
   clock: () => Date;
-  /** Checks the pull request a `done` reports before `pr-opened` is recorded (#267). */
+  /** Imports, checks, and pushes a run's handed-back work, and opens its pull request (handoff.ts). */
+  handoff: FixerHandoff;
+  /** Checks the pull request the hand-off opened before `pr-opened` is recorded (#267). */
   verifyPullRequest: PullRequestVerifier;
   onDone?: (ctx: FixerHookContext) => Promise<void>;
   onFailed?: (ctx: FixerHookContext) => Promise<void>;
@@ -88,7 +105,7 @@ export interface FixerReporterDeps {
 export interface FixerReporter {
   checkpoint(target: FixerTarget, input: unknown): Promise<FixerReportResult>;
   artifact(target: FixerTarget, input: unknown): Promise<FixerArtifactResult>;
-  done(target: FixerTarget, input: unknown): Promise<FixerReportResult>;
+  done(target: FixerTarget, input: unknown): Promise<FixerDoneResult>;
   failed(target: FixerTarget, input: unknown): Promise<FixerReportResult>;
   stop(target: FixerTarget): Promise<FixerStopResult>;
 }
@@ -111,14 +128,34 @@ export function stopPending(events: readonly IncidentEvent[]): boolean {
   return run !== undefined && events.some((e) => e.seq > run.seq && e.type === 'stopped');
 }
 
+/**
+ * The work branches the server pushed for earlier runs of this incident (their `pr-opened`, or a
+ * `fixer-failed` with the partial branch it kept): a retry may rewrite its own branch, nothing else.
+ */
+export function pushedBranches(events: readonly IncidentEvent[]): string[] {
+  const out = new Set<string>();
+  for (const e of events) {
+    if (e.source !== 'fixer') continue;
+    if (e.type === 'pr-opened') out.add(e.payload.branch);
+    if (e.type === 'fixer-failed' && e.payload.partialBranch !== undefined) out.add(e.payload.partialBranch);
+  }
+  return [...out];
+}
+
+/** Longest refusal reason carried into a recorded failure. */
+const MAX_NOTE = 500;
+
 export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
   const { state, clock } = deps;
 
-  /** Validates, then appends what `build` returns for the running run, re-deciding on a conflict. */
+  /**
+   * Validates, then appends what `build` returns for the running run, re-deciding on a conflict.
+   * `build` may return undefined to append nothing (`run-finished`).
+   */
   async function report<T>(
     target: FixerTarget,
     parsed: Parsed<T>,
-    build: (value: T, d: Extract<Decision, { ok: true }>) => NewEvent[],
+    build: (value: T, d: Extract<Decision, { ok: true }>) => NewEvent[] | undefined,
   ): Promise<{ ok: true; seq: number; runId: string; before: IncidentEvent[] } | Exclude<FixerReportResult, { ok: true }>> {
     if (!parsed.ok) return { ok: false, code: 'invalid', error: parsed.error };
     let refusal: FixerRefusal = 'run-finished';
@@ -129,6 +166,7 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
         refusal = d.code;
         return undefined;
       }
+      refusal = 'run-finished';
       runId = d.run.payload.runId;
       return build(parsed.value, d);
     });
@@ -138,6 +176,12 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
 
   function event<T extends EventType>(d: { workspaceId: string }, target: FixerTarget, type: T, payload: EventPayloads[T]): NewEvent {
     return newEvent({ workspaceId: d.workspaceId, clock }, target.incidentId, type, payload, { source: 'fixer' });
+  }
+
+  /** True while `runId` is still the incident's running run, with no stop and no end after it. */
+  async function running(target: FixerTarget, runId: string): Promise<boolean> {
+    const d = decideReport(await state.read(target.incidentId));
+    return d.ok && d.run.payload.runId === runId;
   }
 
   /**
@@ -155,6 +199,19 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
     if (run === undefined) return;
     const end = events.find((e) => e.seq > run.seq && (e.type === 'fixer-done' || e.type === 'fixer-failed' || e.type === 'stopped'));
     if (end?.type === type) await hook({ workItemId: target.workItemId, incidentId: target.incidentId, runId: run.payload.runId, seq: end.seq });
+  }
+
+  /** The running run a `done` or `failed` is about, or the refusal (healing a duplicate report first). */
+  async function runOf(
+    target: FixerTarget,
+    type: 'fixer-done' | 'fixer-failed',
+    hook: ((ctx: FixerHookContext) => Promise<void>) | undefined,
+  ): Promise<{ ok: true; runId: string; events: IncidentEvent[] } | { ok: false; code: FixerRefusal }> {
+    const events = await state.read(target.incidentId);
+    const d = decideReport(events);
+    if (d.ok) return { ok: true, runId: d.run.payload.runId, events };
+    if (d.code === 'run-finished') await healDuplicate(target, type, hook);
+    return d;
   }
 
   return {
@@ -188,17 +245,28 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
 
     async done(target, input) {
       const parsed = parseDoneInput(input);
-      if (parsed.ok && decideReport(await state.read(target.incidentId)).ok) {
-        if (!(await deps.verifyPullRequest(target, parsed.value)).ok) return { ok: false, code: 'pr-mismatch' };
-      }
-      const r = await report(target, parsed, (value, d) => [
-        event(d, target, 'fixer-done', value),
-        event(d, target, 'pr-opened', { prNumber: value.prNumber, branch: value.branch }),
-      ]);
-      if (!r.ok) {
-        if (r.code === 'run-finished') await healDuplicate(target, 'fixer-done', deps.onDone);
-        return r;
-      }
+      if (!parsed.ok) return { ok: false, code: 'invalid', error: parsed.error };
+      const run = await runOf(target, 'fixer-done', deps.onDone);
+      if (!run.ok) return run;
+      const { runId } = run;
+      const { summary, testsAdded } = parsed.value;
+      const h = await deps.handoff({ target, runId, outcome: 'done', summary, testsAdded, pushedBefore: pushedBranches(run.events), running: () => running(target, runId) });
+      if (!h.ok) return h.code === 'stopped' ? { ok: false, code: 'run-finished' } : { ok: false, code: 'handoff-refused', reason: h.reason };
+      const prNumber = h.prNumber;
+      if (prNumber === undefined) throw new Error('fixer done: the hand-off opened no pull request');
+      // The App opened it from the run's work branch into the base, so this holds unless GitHub disagrees.
+      if (!(await deps.verifyPullRequest(target, { prNumber, branch: h.branch })).ok) return { ok: false, code: 'pr-mismatch' };
+      const r = await report(target, parsed, (value, d) =>
+        d.run.payload.runId !== runId
+          ? undefined
+          : [
+              event(d, target, 'fixer-checkpoint', { phase: 'pushed', detail: `${h.branch}@${h.sha.slice(0, 12)}` }),
+              event(d, target, 'fixer-checkpoint', { phase: 'pr-opened', detail: `#${prNumber}` }),
+              event(d, target, 'fixer-done', { prNumber, branch: h.branch, summary: value.summary, testsAdded: value.testsAdded }),
+              event(d, target, 'pr-opened', { prNumber, branch: h.branch }),
+            ],
+      );
+      if (!r.ok) return r;
       // `seq` is the last event appended (`pr-opened`); `fixer-done` is the one before it.
       const ctx: FixerHookContext = { workItemId: target.workItemId, incidentId: target.incidentId, runId: r.runId, seq: r.seq - 1 };
       await deps.onDone?.(ctx);
@@ -206,11 +274,28 @@ export function createFixerReporter(deps: FixerReporterDeps): FixerReporter {
     },
 
     async failed(target, input) {
-      const r = await report(target, parseFailedInput(input), (value, d) => [event(d, target, 'fixer-failed', value)]);
-      if (!r.ok) {
-        if (r.code === 'run-finished') await healDuplicate(target, 'fixer-failed', deps.onFailed);
-        return r;
+      const parsed = parseFailedInput(input);
+      if (!parsed.ok) return { ok: false, code: 'invalid', error: parsed.error };
+      const run = await runOf(target, 'fixer-failed', deps.onFailed);
+      if (!run.ok) return run;
+      const { runId } = run;
+      const { partialBranch, ...failure } = parsed.value;
+      let kept: { branch: string; sha: string } | undefined;
+      if (partialBranch !== undefined) {
+        const h = await deps.handoff({ target, runId, outcome: 'failed', summary: failure.reason, testsAdded: [], pushedBefore: pushedBranches(run.events), running: () => running(target, runId) });
+        if (h.ok) kept = h;
+        else if (h.code === 'stopped') return { ok: false, code: 'run-finished' };
+        else failure.reason = `${failure.reason} (the partial work was not kept: ${h.reason.slice(0, MAX_NOTE)})`;
       }
+      const r = await report(target, parsed, (_value, d) =>
+        d.run.payload.runId !== runId
+          ? undefined
+          : [
+              ...(kept === undefined ? [] : [event(d, target, 'fixer-checkpoint', { phase: 'pushed', detail: `${kept.branch}@${kept.sha.slice(0, 12)}` })]),
+              event(d, target, 'fixer-failed', { ...failure, ...(kept === undefined ? {} : { partialBranch: kept.branch }) }),
+            ],
+      );
+      if (!r.ok) return r;
       await deps.onFailed?.({ workItemId: target.workItemId, incidentId: target.incidentId, runId: r.runId, seq: r.seq });
       return { ok: true, seq: r.seq, runId: r.runId };
     },

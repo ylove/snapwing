@@ -30,8 +30,10 @@
 //                (scheduled on the B 8 cron by the worker).
 //   Fixer path   the runner's checkpoint and finish callbacks go to the fixer reporter (local runner)
 //                or the container reports over HTTP with an `issueFixerToken` (docker runner). The
-//                reporter's `onDone` cancels the budget timer and starts the review; `onFailed` runs
-//                the failure degrade. The review starts `merge.evaluate` (or the fixer retry).
+//                reporter's `done` runs the hand-off (`createFixerHandoff`: import the run's bundle,
+//                check it, push it, open the PR); a refused hand-off is reported as `failed`. Its
+//                `onDone` cancels the budget timer and starts the review; `onFailed` runs the failure
+//                degrade. The review starts `merge.evaluate` (or the fixer retry).
 //   Containers   with the docker runner the review agent and the regression proof run in the fixer's
 //                runner too (`runReview`, `runTests`; `ReviewConfig.harness` is `<harness review>`),
 //                and `POST /model/:workItemId/{provider}/...` is the model proxy (ADR 0017 amendment
@@ -96,15 +98,18 @@
 //                Connector hosts (`TEAMS_SERVICE_HOSTS`) and TEAMS_SERVICE_URL's host, as Connector calls and
 //                as attachment downloads; an activity from a tenant other than TEAMS_TENANT_ID is ignored (#269).
 //
-// GitHub tokens are scoped per use: the fixer's checkout gets `contents: write` and
-// `pull_requests: write` on its one repo and never `workflows` (GitHub then rejects any push that
-// touches `.github/workflows`, the real guard; the workdir hooks can be skipped). With docker the
-// container holds no git token: `GET /fixer/:workItemId/git-token` mints one with those scopes
-// whenever its git asks, so a run may outlive a token's hour, and the fixer token's TTL is the
-// run's wall clock plus a margin (`fixerTokenTtl`). The worker's first service sweeps the runner's
-// stale scratch directories (`sweep`, older than the fixer wall clock plus a margin). The review's
-// checkout gets `contents: read` and `metadata: read` only; the review posts through the server's own
-// client, never from inside the harness.
+// GitHub tokens are scoped per use, and none ever reaches a fixer (#262). The runner clones the
+// fixer's checkout on the host with a `contents: read` token; the fixer commits there and leaves a
+// bundle of its work branch, and the fixer API's `done` hands it to `createFixerHandoff`, which
+// imports it into a server-owned cache under `SNAPWING_WORKDIR_ROOT/handoff`, checks it, pushes the
+// work branch with a token minted for that push (`contents: write`, never `workflows`), and opens the
+// pull request through the server's client. The credentials the server merges and reverts with
+// stay in this process. The fixer token's TTL is the run's wall clock plus a margin
+// (`fixerTokenTtl`). The worker's first service sweeps the runner's stale scratch directories
+// (`sweep`, older than the fixer wall clock plus a margin). The review's checkout gets
+// `contents: read` and `metadata: read` only; the review posts through the server's own client,
+// never from inside the harness. With docker, the API reads a run's bundle from the runner's scratch
+// directory, so the API and the worker share `SNAPWING_WORKDIR_ROOT` on one host.
 //
 // Startup fails, listing every missing secret by name (never a value), before anything is built.
 
@@ -212,9 +217,9 @@ import {
 } from '../adapters/teams/transport.ts';
 import { createQueue } from '../status/queue.ts';
 import { createPullRequestVerifier } from '../fixer-api/verify-pr.ts';
-import { createFixerReporter,type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
+import { createFixerHandoff } from '../fixer-api/handoff.ts';
+import { createFixerReporter, type FixerReporter, type FixerTarget } from '../fixer-api/reporter.ts';
 import { createFixerRoutes } from '../fixer-api/routes.ts';
-import { createFixerGitToken } from '../fixer-api/git-token.ts';
 import { fixerTokenTtl, fixerTokenVerifier, issueFixerToken, type FixerTokenKeys } from '../fixer-api/token.ts';
 import { createGitHubAuth, type GitHubAuth, type GitHubPermissions } from '../github/auth.ts';
 import { createGitHubClient, type GitHubClient } from '../github/client.ts';
@@ -241,8 +246,11 @@ import { createConfigWatch, DEFAULT_INSTRUCTIONS_FILE, DEFAULT_PLAYBOOK_FILE } f
 import { SMALL_BODY_BYTES, type Route } from './http.ts';
 import type { JobModule } from './worker.ts';
 
-/** The fixer's checkout token: its one repo, write to contents and pull requests, never `workflows`. */
-export const FIXER_GIT_PERMISSIONS: GitHubPermissions = Object.freeze({ contents: 'write', pull_requests: 'write' });
+/**
+ * The fixer's clone token, used on the host only: read its one repo. The fixer never pushes; the
+ * server pushes its work with a token minted per push (`PUSH_PERMISSIONS`, fixer-api/handoff.ts).
+ */
+export const FIXER_GIT_PERMISSIONS: GitHubPermissions = Object.freeze({ contents: 'read' });
 /** The review's checkout token: read only. The review posts through the server's client, not the harness. */
 export const REVIEW_GIT_PERMISSIONS: GitHubPermissions = Object.freeze({ contents: 'read', metadata: 'read' });
 /** Where the workspace map is read from at startup, unless `SNAPWING_MAP` names another file. */
@@ -811,9 +819,19 @@ export const compose: ComposeFn = async (deps) => {
       }
     }
   }
+  // Both runners lay a run out under `<workRoot>/fixer/<runId>`; the hand-off reads the record and the
+  // bundle from there and pushes from a cache of its own (#262).
+  const handoff = createFixerHandoff({
+    runDir: (runId) => join(workRoot, 'fixer', runId),
+    cacheRoot: join(workRoot, 'handoff'),
+    remoteUrl,
+    token: async (repo, permissions, fresh) => (await auth.installationToken({ repo: repoFullName(repo), permissions, fresh })).token,
+    github,
+  });
   const reporter: FixerReporter = createFixerReporter({
     state,
     clock,
+    handoff,
     verifyPullRequest: createPullRequestVerifier({ state, github, botLogin: `${secret('GITHUB_APP_SLUG').trim()}[bot]` }),
     onDone: async ({ incidentId }) => {
       await handleFixerDone(fixerDeps, incidentId);
@@ -848,10 +866,10 @@ export const compose: ComposeFn = async (deps) => {
           },
           onFinished: async (run, result) => {
             const target = targetOf(run.job.workItem);
-            if (result.outcome === 'done' && result.prNumber !== undefined) {
-              await reporter.done(target, { prNumber: result.prNumber, branch: result.branch, summary: result.summary, testsAdded: result.testsAdded });
-            } else if (result.outcome === 'done') {
-              await reporter.failed(target, { reason: 'the harness finished without opening a pull request', partialBranch: result.branch, attempts: 1 });
+            if (result.outcome === 'done') {
+              // The runner left the bundle in the run directory; `done` pushes it and opens the PR.
+              const r = await reporter.done(target, { summary: result.summary, testsAdded: result.testsAdded });
+              if (!r.ok && r.code === 'handoff-refused') await reporter.failed(target, { reason: `handoff refused: ${r.reason}`, attempts: 1 });
             } else if (result.outcome === 'failed') {
               await reporter.failed(target, result);
             }
@@ -1834,15 +1852,8 @@ export const compose: ComposeFn = async (deps) => {
         debug: (line) => log.info(line),
       }),
     },
-    // With docker the container holds no git token: its wrapper asks for a fresh one per git
-    // operation (`GET /fixer/:workItemId/git-token`), with the fixer's scopes on its one repo.
-    ...createFixerRoutes(
-      reporter,
-      fixerTokenVerifier(fixerTokenKeys),
-      docker
-        ? { gitToken: createFixerGitToken({ state, mint: (repo) => auth.installationToken({ repo: repoFullName(repo), permissions: FIXER_GIT_PERMISSIONS }) }) }
-        : {},
-    ),
+    // No route hands a container a GitHub token (#262): `done` brings the work back as a bundle.
+    ...createFixerRoutes(reporter, fixerTokenVerifier(fixerTokenKeys)),
     ...(docker ? createModelProxyRoutes({ verify: modelTokenVerifier(fixerTokenKeys), providers: proxyProviders, clock }) : []),
     ...oauth.routes,
     ...captureRoutes,
