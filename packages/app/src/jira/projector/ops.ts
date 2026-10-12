@@ -5,7 +5,9 @@
 // Payloads, as the engine (`pipeline/src/engine/steps.ts`) and the lifecycle rows
 // (`pipeline/src/state/projections/outbox/jira.ts`) write them:
 //
-//   create-issue   { fields, customFields, suggestedAssigneeEmail?, promptErrors?, screenshots? }
+//   create-issue   { fields, customFields, suggestedAssigneeEmail?, promptErrors?, screenshots?, parentKey? }
+//                                                           a `parentKey` makes the issue a work item of that
+//                                                           issue (B 6.4, #317): linked to it, or a sub-task
 //   transition     { issueKey, to, resolution? }            to is a logical target (backlog, in-progress,
 //                                                           in-review, done) the projector maps to the
 //                                                           project's status (statuses.ts); resolution is a
@@ -30,6 +32,7 @@
 // that resolves to no user (or one the credentials may not search for) leaves the assignee as it was
 // and adds a comment naming the suggested owner; it never fails the row.
 
+import { DEFAULT_JIRA_WORK_ITEMS, type JiraWorkItemsConfig } from '@snapwing/pipeline/config/app-config.ts';
 import type { OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
 import { CUSTOM_FIELD_IMPLEMENTATION_PROMPT } from '@snapwing/pipeline/jira/synthesis.ts';
 import { JIRA_LOGICAL_STATUSES, toJiraLogicalStatus, type JiraLogicalStatus } from '@snapwing/pipeline/jira/statuses.ts';
@@ -76,6 +79,8 @@ export interface CreateIssueOp {
   screenshots: ScreenshotRef[];
   /** The suggested owner's email; resolved to an account id at send time. */
   assigneeEmail?: string;
+  /** The issue this one is a work item of: joined by a link or filed as a sub-task (`WorkItemsConfig`). */
+  parentKey?: string;
 }
 
 export interface TransitionOp {
@@ -261,9 +266,15 @@ function parseCreateIssue(row: OutboxItem, bad: (problem: string) => never): Cre
     fields,
     customFields: parseCustomFields(p['customFields'], bad),
     screenshots: parseScreenshots(p['screenshots'], bad),
+    ...(p['parentKey'] === undefined ? {} : { parentKey: parseParentKey(p['parentKey'], bad) }),
     // A suggestion is a hint: one that is not an email is left out rather than parking the issue.
     ...(typeof suggested === 'string' && EMAIL.test(suggested.trim()) ? { assigneeEmail: suggested.trim() } : {}),
   };
+}
+
+function parseParentKey(v: unknown, bad: (problem: string) => never): string {
+  if (typeof v !== 'string' || !ISSUE_KEY.test(v)) return bad(`parentKey must be an issue key like WEB-12, got ${JSON.stringify(v)}`);
+  return v;
 }
 
 /** The standard create fields both create ops carry: project, type, summary, ADF description, labels, priority, components. */
@@ -395,6 +406,10 @@ export function unassignedText(email: string): string {
 
 export interface FoundIssue {
   key: string;
+  /** True when this call created the issue as the parent's sub-task, so nothing needs linking. */
+  subtask?: boolean;
+  /** Sub-task mode wanted a sub-task but the project has none: the issue is created plain and linked. */
+  noSubtaskType?: boolean;
   /** False when the label search found an issue an earlier attempt created. */
   created: boolean;
   /** File names already attached (only read when the issue was found). */
@@ -410,6 +425,7 @@ export async function findOrCreateIssue(
   op: CreateIssueOp,
   customFieldIds: Readonly<Record<string, string>>,
   assignees: AssigneeResolver,
+  workItems: JiraWorkItemsConfig = DEFAULT_JIRA_WORK_ITEMS,
 ): Promise<FoundIssue> {
   const label = incidentLabel(op.incidentId);
   const page = await client.searchJql(`labels = "${label}" ORDER BY created ASC`, { maxResults: 1, fields: ['attachment'] });
@@ -423,14 +439,76 @@ export async function findOrCreateIssue(
   }
   const labels = [...new Set([...(op.fields['labels'] as string[]), label])];
   const accountId = op.assigneeEmail === undefined ? undefined : await assignees.resolve(op.assigneeEmail);
+  const asSubtask = op.parentKey !== undefined && workItems.mode === 'subtask' ? await subtaskType(client, op.fields) : undefined;
+  const wantedSubtask = op.parentKey !== undefined && workItems.mode === 'subtask';
   const ref = await client.createIssue({
     ...op.fields,
+    ...(asSubtask === undefined || op.parentKey === undefined ? {} : { issuetype: { name: asSubtask }, parent: { key: op.parentKey } }),
     labels,
     ...(accountId === undefined ? {} : { assignee: { accountId } }),
     ...mapCustomFields(op.customFields, customFieldIds),
   });
   if (op.assigneeEmail !== undefined && accountId === undefined) await client.addComment(ref.key, textToAdf(unassignedText(op.assigneeEmail)));
-  return { key: ref.key, created: true, attached: [] };
+  return { key: ref.key, created: true, attached: [], ...(asSubtask === undefined ? {} : { subtask: true }), ...(wantedSubtask && asSubtask === undefined ? { noSubtaskType: true } : {}) };
+}
+
+/** The name of the project's sub-task issue type, or undefined when it has none (or the credentials cannot read the project). */
+async function subtaskType(client: JiraClient, fields: Record<string, unknown>): Promise<string | undefined> {
+  const projectKey = (fields['project'] as { key: string }).key;
+  try {
+    return (await client.getProject(projectKey)).issueTypes?.find((t) => t.subtask)?.name;
+  } catch (err) {
+    if (err instanceof JiraAuthError || err instanceof JiraNotFoundError) return undefined;
+    throw err;
+  }
+}
+
+/** The comment left on the parent when sub-task mode finds no sub-task type in the project. */
+export function noSubtaskTypeText(issueKey: string, projectKey: string): string {
+  return `Snapwing linked ${issueKey} to this issue instead of filing it as a sub-task: project ${projectKey} has no sub-task issue type.`;
+}
+
+/** The comment left on a work item the site's link types could not join to its parent. */
+export function unlinkedText(parentKey: string, linkType: string): string {
+  return `Snapwing could not link this issue to ${parentKey}: this Jira site has no "${linkType}" issue link type. Parent: ${parentKey}.`;
+}
+
+/**
+ * Joins a work item to its parent (B 6.4, #317). Nothing to do for a sub-task. Otherwise one issue link of
+ * the configured type with the work item on the inward side; an issue an earlier attempt created is read
+ * first, so a retry finds its link (or its parent) instead of adding a second. A link type the site lacks,
+ * or a link Jira refuses, leaves the issue unlinked with one comment naming the parent, and never throws
+ * for that. Resolves true when the issue is now joined.
+ */
+export async function joinParent(client: JiraClient, found: FoundIssue, parentKey: string, projectKey: string, workItems: JiraWorkItemsConfig): Promise<boolean> {
+  if (found.subtask === true) return true;
+  if (found.noSubtaskType === true) await client.addComment(parentKey, textToAdf(noSubtaskTypeText(found.key, projectKey)));
+  if (!found.created) {
+    const issue = await client.getIssue(found.key, { fields: ['issuelinks', 'parent'] });
+    const parent = issue.fields['parent'];
+    if (isRecord(parent) && parent['key'] === parentKey) return true;
+    const links = issue.fields['issuelinks'];
+    const want = workItems.linkType.trim().toLowerCase();
+    for (const link of Array.isArray(links) ? links : []) {
+      if (!isRecord(link) || !isRecord(link['type']) || typeof link['type']['name'] !== 'string') continue;
+      if (link['type']['name'].trim().toLowerCase() !== want) continue;
+      const other = isRecord(link['outwardIssue']) ? link['outwardIssue'] : isRecord(link['inwardIssue']) ? link['inwardIssue'] : undefined;
+      if (other?.['key'] === parentKey) return true;
+    }
+  }
+  const type = (await client.listIssueLinkTypes()).find((t) => t.name.trim().toLowerCase() === workItems.linkType.trim().toLowerCase());
+  if (type === undefined) {
+    await client.addComment(found.key, textToAdf(unlinkedText(parentKey, workItems.linkType)));
+    return false;
+  }
+  try {
+    await client.createIssueLink({ typeName: type.name, inwardKey: found.key, outwardKey: parentKey });
+  } catch (err) {
+    if (!(err instanceof JiraNotFoundError || err instanceof JiraValidationError)) throw err;
+    await client.addComment(found.key, textToAdf(unlinkedText(parentKey, workItems.linkType)));
+    return false;
+  }
+  return true;
 }
 
 export function screenshotFilename(ref: ScreenshotRef): string {

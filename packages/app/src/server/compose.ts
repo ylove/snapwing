@@ -1786,6 +1786,7 @@ export const compose: ComposeFn = async (deps) => {
     continueIncident: (incidentId) => engine.continueIncident(incidentId),
     customFieldIds,
     statusOverrides: config.jira.statuses,
+    workItems: config.jira.workItems,
     // Slack-hosted screenshots need the bot token, Teams-hosted ones Graph; capture screenshots come
     // from kv; anything else is a plain GET.
     loadScreenshot: captureScreenshotLoader(cache, chatScreenshots),

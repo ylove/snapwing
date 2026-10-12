@@ -80,4 +80,30 @@ export interface JiraProject {
   /** `classic` (company-managed) or `next-gen` (team-managed). */
   style?: string;
   simplified?: boolean;
+  /** The project's issue types; `subtask` marks a sub-task type. Absent when Jira does not list them. */
+  issueTypes?: JiraIssueType[];
+}
+
+export interface JiraIssueType {
+  id: string;
+  name: string;
+  subtask: boolean;
+}
+
+/** An issue link type from `GET /issueLinkType`. */
+export interface JiraIssueLinkType {
+  id: string;
+  name: string;
+  /** What the inward issue reads, for example "is blocked by". */
+  inward: string;
+  /** What the outward issue reads, for example "blocks". */
+  outward: string;
+}
+
+/** `POST /issueLink`: the issue on the inward side reads `type.inward` about the outward one. */
+export interface CreateIssueLinkInput {
+  /** The link type's name, as `listIssueLinkTypes` returns it. */
+  typeName: string;
+  inwardKey: string;
+  outwardKey: string;
 }

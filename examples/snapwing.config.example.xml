@@ -25,5 +25,10 @@
   <!-- Jira statuses resolve by category (backlog to To Do or Backlog, in-progress to In Progress,
        in-review to In Review when present, done to Done); name one only when the guess is wrong,
        for example <status logical="backlog" name="Selected for Development"/>. -->
+  <!-- A work item's issue joins its parent by an issue link (mode="link", the default) or as a
+       sub-task (mode="subtask"; a project with no sub-task type falls back to a link). linkType
+       names the link type and defaults to Relates, which every Jira Cloud site has; use another
+       only if your site has it, for example <workItems mode="link" linkType="Implements"/>.
+       A link type the site lacks leaves the issue unlinked with a comment naming the parent. -->
   <jira/>
 </snapwing>

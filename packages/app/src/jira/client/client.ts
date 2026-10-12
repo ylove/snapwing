@@ -14,9 +14,12 @@ import {
 import type {
   Adf,
   CreateFieldInput,
+  CreateIssueLinkInput,
   JiraAttachment,
   JiraField,
   JiraIssue,
+  JiraIssueLinkType,
+  JiraIssueType,
   JiraIssueRef,
   JiraMyself,
   JiraProject,
@@ -74,6 +77,13 @@ export interface JiraClient {
    * its issue types, each name once, in Jira's order. Logical targets resolve against these.
    */
   projectStatuses(key: string): Promise<JiraProjectStatus[]>;
+  /** The site's issue link types (`GET /issueLinkType`); onboarding lists them, and the projector checks one exists (#317). */
+  listIssueLinkTypes(): Promise<JiraIssueLinkType[]>;
+  /**
+   * Links two issues (`POST /issueLink`). A link type the site does not have answers 404 and throws
+   * `JiraNotFoundError`; an issue the credentials cannot link, 400 or 403.
+   */
+  createIssueLink(input: CreateIssueLinkInput): Promise<void>;
 }
 
 const CATEGORIES: readonly JiraStatusCategory[] = ['new', 'indeterminate', 'done', 'undefined'];
@@ -236,7 +246,15 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
 
     myself: () => json<JiraMyself>('GET', '/rest/api/3/myself'),
 
-    getProject: (key) => json<JiraProject>('GET', `/rest/api/3/project/${encodeURIComponent(key)}`),
+    async getProject(key) {
+      const raw = asRecord(await json<unknown>('GET', `/rest/api/3/project/${encodeURIComponent(key)}`));
+      const project = raw as unknown as JiraProject;
+      if (!Array.isArray(raw['issueTypes'])) return project;
+      const issueTypes = raw['issueTypes'].map(asRecord).flatMap((t): JiraIssueType[] =>
+        typeof t['name'] === 'string' && t['name'] !== '' ? [{ id: String(t['id'] ?? ''), name: t['name'], subtask: t['subtask'] === true }] : [],
+      );
+      return { ...project, issueTypes };
+    },
 
     async findUserByEmail(email) {
       const wanted = email.trim().toLowerCase();
@@ -259,6 +277,21 @@ export function createJiraClient(options: JiraClientOptions): JiraClient {
       if (exact !== undefined) return exact;
       const hidden = people.filter((u) => u.emailAddress === undefined);
       return people.length === 1 && hidden.length === 1 ? hidden[0] : undefined;
+    },
+
+    async listIssueLinkTypes() {
+      const body = asRecord(await json<unknown>('GET', '/rest/api/3/issueLinkType'));
+      return (Array.isArray(body['issueLinkTypes']) ? body['issueLinkTypes'].map(asRecord) : []).flatMap((t): JiraIssueLinkType[] =>
+        typeof t['name'] === 'string' && t['name'] !== ''
+          ? [{ id: String(t['id'] ?? ''), name: t['name'], inward: typeof t['inward'] === 'string' ? t['inward'] : '', outward: typeof t['outward'] === 'string' ? t['outward'] : '' }]
+          : [],
+      );
+    },
+
+    async createIssueLink(input) {
+      await request('POST', '/rest/api/3/issueLink', {
+        json: { type: { name: input.typeName }, inwardIssue: { key: input.inwardKey }, outwardIssue: { key: input.outwardKey } },
+      });
     },
 
     async projectStatuses(key) {

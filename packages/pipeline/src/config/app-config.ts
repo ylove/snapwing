@@ -128,11 +128,27 @@ export const DEFAULT_MERGE_CONFIG: MergeConfig = {
 /**
  * Jira (main 9.1). `statuses` names the project status for a logical lifecycle target
  * (`<status logical="backlog" name="Selected for Development"/>`); a target without one resolves by
- * status category (`jira/statuses.ts`).
+ * status category (`jira/statuses.ts`). `workItems` says how a work item's issue joins its parent
+ * (B 6.4, #317): `link` adds an issue link of `linkType`, `subtask` files it as a sub-task.
  */
 export interface JiraConfig {
   statuses: JiraStatusOverrides;
+  workItems: JiraWorkItemsConfig;
 }
+
+export const JIRA_WORK_ITEM_MODES = ['link', 'subtask'] as const;
+export type JiraWorkItemMode = (typeof JIRA_WORK_ITEM_MODES)[number];
+
+/** The link type vanilla Jira Cloud has on every site; the spec's "is implemented by" is not one. */
+export const DEFAULT_JIRA_LINK_TYPE = 'Relates';
+
+export interface JiraWorkItemsConfig {
+  mode: JiraWorkItemMode;
+  /** The issue link type's name, used in `link` mode (and when a project has no sub-task type). */
+  linkType: string;
+}
+
+export const DEFAULT_JIRA_WORK_ITEMS: JiraWorkItemsConfig = { mode: 'link', linkType: DEFAULT_JIRA_LINK_TYPE };
 
 export interface AppConfig {
   version: 1;
@@ -298,5 +314,13 @@ function loadJira(el: Element | undefined): JiraConfig {
     if (statuses[logical] !== undefined) throw new AppConfigError(`<jira> names a status for "${logical}" more than once`);
     statuses[logical] = requiredAttr(status, 'name').trim();
   }
-  return { statuses };
+  const workItems = el === undefined ? undefined : children(el, 'workItems')[0];
+  if (el !== undefined && children(el, 'workItems').length > 1) throw new AppConfigError('<jira> has more than one <workItems>');
+  return {
+    statuses,
+    workItems: {
+      mode: workItems?.hasAttribute('mode') ? oneOf(JIRA_WORK_ITEM_MODES, requiredAttr(workItems, 'mode').trim(), '<jira> workItems mode') : DEFAULT_JIRA_WORK_ITEMS.mode,
+      linkType: workItems?.hasAttribute('linkType') ? requiredAttr(workItems, 'linkType').trim() : DEFAULT_JIRA_WORK_ITEMS.linkType,
+    },
+  };
 }
