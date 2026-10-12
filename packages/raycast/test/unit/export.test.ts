@@ -105,8 +105,10 @@ describe('raycast export', () => {
     }, 120_000);
 
     const ray = join(PKG, 'node_modules', '.bin', 'ray');
-    const lint = existsSync(ray) ? it : it.skip;
-    // Skipped (not failed) when the Raycast CLI is not installed: `ray lint` ships with `@raycast/api`.
+    const enabled = existsSync(ray) && process.env.SNAPWING_RAYCAST_LINT === '1';
+    const lint = enabled ? it : it.skip;
+    // `ray lint` checks the author against Raycast's API, so it needs the network. It runs only when the
+    // CLI is installed and SNAPWING_RAYCAST_LINT=1 is set; the unit tier stays offline otherwise.
     lint('passes ray lint apart from the author, which is set at submission', () => {
       // Without workspace tools on PATH, `ray lint` skips its ESLint and Prettier formatting checks.
       const path = (process.env.PATH ?? '').split(delimiter).filter((p) => !p.includes('node_modules'));
@@ -115,6 +117,6 @@ describe('raycast export', () => {
       const errors = text.split('\n').filter((l) => /^\s*\d+:\d+\s+error\s/.test(l) && !/Invalid author/.test(l));
       expect(errors, text).toEqual([]);
     }, 120_000);
-    if (!existsSync(ray)) console.warn('ray lint skipped: the Raycast CLI is not installed');
+    if (!enabled) console.warn('ray lint skipped: set SNAPWING_RAYCAST_LINT=1 (needs the network and the Raycast CLI)');
   });
 });
