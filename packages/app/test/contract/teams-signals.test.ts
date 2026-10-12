@@ -58,7 +58,7 @@ const T_TRIGGER = Date.parse('2026-10-03T10:00:30.000Z');
 const MAP: WorkspaceMap = {
   org: 'Example',
   updated: '2026-10-03T00:00:00Z',
-  surfaces: [{ id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [] }],
+  surfaces: [{ id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [], uses: [] }],
   channels: [{ id: CHANNEL, name: 'web-bugs', surface: 'web', platform: 'teams', teamId: TEAM, triggerEmoji: [] }],
   triggers: {
     messageActions: [{ label: 'Fix it from here' }],

@@ -289,7 +289,7 @@ describe('the proposal', () => {
       { kind: 'team', org: 'acme', slug: 'web-team' },
       { kind: 'email', email: 'dana@acme.test' },
     ]);
-    const surface: MapSurface = { id: 'web', label: 'Website', repo: 'github.com/acme/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [{ id: 'navigation', label: 'Navigation' }] };
+    const surface: MapSurface = { id: 'web', label: 'Website', repo: 'github.com/acme/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [{ id: 'navigation', label: 'Navigation' }], uses: [] };
     const proposal = proposeOwners({
       surface,
       repo: 'acme/web',
@@ -330,8 +330,9 @@ describe('onboarding step: surfaces', () => {
           { id: 'checkout', label: 'Checkout' },
           { id: 'navigation', label: 'Navigation' },
         ],
+        uses: [],
       },
-      { id: 'mobile', label: 'Mobile App', repo: 'github.com/acme/mobile', jira: { project: 'APP', defaultIssueType: 'Bug' }, components: [] },
+      { id: 'mobile', label: 'Mobile App', repo: 'github.com/acme/mobile', jira: { project: 'APP', defaultIssueType: 'Bug' }, components: [], uses: [] },
       {
         id: 'admin',
         label: 'Admin',
@@ -341,6 +342,7 @@ describe('onboarding step: surfaces', () => {
           { id: 'checkout', label: 'Checkout' },
           { id: 'navigation', label: 'Navigation' },
         ],
+        uses: [],
       },
     ]);
     expect(channelsOf(run)).toEqual([

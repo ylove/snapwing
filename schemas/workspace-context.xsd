@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Workspace context map, structure only (main 4.2). Cross-references (channel to surface,
-  owns to component, override refs) are checked by workspace-context.sch.
+  owns to component, override refs, uses to surface, admin on an engineer) are checked by
+  workspace-context.sch; a cycle of uses is refused by parseWorkspaceMap.
   XSD 1.0: libxml2 has no 1.1, so no xs:assert (build/decisions/0010).
 -->
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
@@ -104,6 +105,11 @@
     <xs:attribute name="defaultIssueType" type="NonEmptyString" use="required"/>
   </xs:complexType>
 
+  <!-- A surface whose code this surface builds on (a shared package or service). The Schematron checks the id (#312). -->
+  <xs:complexType name="UsesType">
+    <xs:attribute name="surface" type="IdType" use="required"/>
+  </xs:complexType>
+
   <xs:complexType name="SurfaceType">
     <xs:sequence>
       <xs:element name="repo">
@@ -127,6 +133,7 @@
           <xs:field xpath="@id"/>
         </xs:unique>
       </xs:element>
+      <xs:element name="uses" type="UsesType" minOccurs="0" maxOccurs="unbounded"/>
     </xs:sequence>
     <xs:attribute name="id" type="IdType" use="required"/>
     <xs:attribute name="label" type="NonEmptyString" use="required"/>
@@ -203,6 +210,8 @@
     <xs:attribute name="handle" type="NonEmptyString" use="required"/>
     <xs:attribute name="email" type="NonEmptyString" use="optional"/>
     <xs:attribute name="role" type="ActorRoleType" use="required"/>
+    <!-- Gates the console's corrections review (main 20.3); the Schematron allows it only on an engineer (#312). -->
+    <xs:attribute name="admin" type="xs:boolean" use="optional"/>
   </xs:complexType>
 
   <!-- Policies -->
@@ -280,7 +289,12 @@
         <xs:element name="surfaces">
           <xs:complexType>
             <xs:sequence>
-              <xs:element name="surface" type="SurfaceType" maxOccurs="unbounded"/>
+              <xs:element name="surface" type="SurfaceType" maxOccurs="unbounded">
+                <xs:unique name="usesSurfaceUnique">
+                  <xs:selector xpath="w:uses"/>
+                  <xs:field xpath="@surface"/>
+                </xs:unique>
+              </xs:element>
             </xs:sequence>
             <xs:attribute name="fallbackSurface" type="xs:string" use="optional"/>
           </xs:complexType>

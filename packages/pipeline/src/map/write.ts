@@ -2,12 +2,13 @@
 //
 // `writeWorkspaceMap` serializes a typed map. `editWorkspaceMap` applies typed edits to an existing
 // document in place with slimdom, so comments, whitespace, and attribute order survive. Both run the
-// XSD and then the Schematron before returning, and an invalid result carries the typed errors and
-// no XML: nothing invalid is ever handed back for a caller to deploy.
+// XSD, then the Schematron, then the uses cycle check (every rule `parseWorkspaceMap` applies) before
+// returning, and an invalid result carries the typed errors and no XML: nothing invalid is ever handed
+// back for a caller to deploy.
 
 import { parseXmlDocument, serializeToWellFormedString, type Document, type Element, type Node } from 'slimdom';
-import { validate, type ValidationError } from '../schemas/validate.ts';
-import { WORKSPACE_SCHEMAS } from './parse.ts';
+import type { ValidationError } from '../schemas/validate.ts';
+import { validateWorkspaceMap } from './parse.ts';
 import type { AutonomyLevelId, MapChannel, MapOwnership, MapPerson, MapSurface, MapTerm, WorkspaceMap } from './types.ts';
 
 export const WORKSPACE_NAMESPACE = 'urn:snapwing:workspace:v1';
@@ -31,7 +32,11 @@ export type MapEdit =
   /** Replace a person's `owns` rows. */
   | { kind: 'setPersonOwnership'; handle: string; owns: MapOwnership[] }
   /** Set a person's chat ids; a string sets, `null` removes, absent leaves alone. */
-  | { kind: 'setPersonChatIds'; handle: string; slackId?: string | null; teamsId?: string | null };
+  | { kind: 'setPersonChatIds'; handle: string; slackId?: string | null; teamsId?: string | null }
+  /** Replace a surface's `<uses surface>` rows (#312): the surfaces whose code it builds on, in order. An empty list removes them all. */
+  | { kind: 'setSurfaceUses'; surface: string; uses: readonly string[] }
+  /** Mark a person admin (`admin="true"`) or not (the attribute removed) (main 20.3, #312). */
+  | { kind: 'setPersonAdmin'; handle: string; admin: boolean };
 
 export interface EditOptions {
   /** When set, becomes the root's `updated` attribute (ISO 8601). */
@@ -39,7 +44,7 @@ export interface EditOptions {
 }
 
 async function checked(xml: string): Promise<MapWriteResult> {
-  const result = await validate(xml, WORKSPACE_SCHEMAS);
+  const result = await validateWorkspaceMap(xml);
   return result.valid ? { ok: true, xml } : { ok: false, errors: result.errors };
 }
 
@@ -81,6 +86,7 @@ function serialize(map: WorkspaceMap): string {
       for (const c of s.components) leaf(4, 'component', [['id', c.id], ['label', c.label]]);
       line(3, '</components>');
     }
+    for (const u of s.uses) leaf(3, 'uses', [['surface', u]]);
     line(2, '</surface>');
   }
   line(1, '</surfaces>');
@@ -110,7 +116,7 @@ function serialize(map: WorkspaceMap): string {
 
   line(1, '<people>');
   for (const p of map.people) {
-    const attrs: Attrs = [['slackId', p.slackId], ['teamsId', p.teamsId], ['handle', p.handle], ['email', p.email], ['role', p.role]];
+    const attrs: Attrs = [['slackId', p.slackId], ['teamsId', p.teamsId], ['handle', p.handle], ['email', p.email], ['role', p.role], ['admin', p.admin]];
     if (p.owns.length === 0) leaf(2, 'person', attrs);
     else {
       line(2, `<${open('person', attrs)}>`);
@@ -242,6 +248,7 @@ function apply(doc: Document, root: Element, edit: MapEdit): void {
         const components = appendChild(el, make(doc, 'components', []));
         for (const c of s.components) appendChild(components, make(doc, 'component', [['id', c.id], ['label', c.label]]));
       }
+      for (const u of s.uses) appendChild(el, usesElement(doc, u));
       appendChild(need(child(root, 'surfaces'), 'surfaces'), el);
       return;
     }
@@ -261,7 +268,14 @@ function apply(doc: Document, root: Element, edit: MapEdit): void {
     }
     case 'addPerson': {
       const p = edit.person;
-      const el = make(doc, 'person', [['slackId', p.slackId], ['teamsId', p.teamsId], ['handle', p.handle], ['email', p.email], ['role', p.role]]);
+      const el = make(doc, 'person', [
+        ['slackId', p.slackId],
+        ['teamsId', p.teamsId],
+        ['handle', p.handle],
+        ['email', p.email],
+        ['role', p.role],
+        ['admin', p.admin === undefined ? undefined : String(p.admin)],
+      ]);
       for (const o of p.owns) appendChild(el, ownsElement(doc, o));
       appendChild(need(child(root, 'people'), 'people'), el);
       return;
@@ -281,7 +295,31 @@ function apply(doc: Document, root: Element, edit: MapEdit): void {
       }
       return;
     }
+    case 'setSurfaceUses': {
+      // `uses` rows close the surface's sequence (after components), so appending keeps the XSD order.
+      const surface = findSurface(root, edit.surface);
+      for (const u of children(surface, 'uses')) removeWithIndent(u);
+      for (const u of edit.uses) appendChild(surface, usesElement(doc, u));
+      return;
+    }
+    case 'setPersonAdmin': {
+      const person = findPerson(root, edit.handle);
+      if (edit.admin) person.setAttribute('admin', 'true');
+      else person.removeAttribute('admin');
+      return;
+    }
   }
+}
+
+function usesElement(doc: Document, surface: string): Element {
+  return make(doc, 'uses', [['surface', surface]]);
+}
+
+function findSurface(root: Element, id: string): Element {
+  return need(
+    children(need(child(root, 'surfaces'), 'surfaces'), 'surface').find((s) => s.getAttribute('id') === id),
+    `surface ${id}`,
+  );
 }
 
 function ownsElement(doc: Document, o: MapOwnership): Element {

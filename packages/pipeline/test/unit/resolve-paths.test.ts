@@ -244,7 +244,7 @@ describe('resolve: the file-path step (main 15.3)', () => {
     expect(quiet.calls).toEqual([]);
     const busy = trees();
     await run(RAYCAST, PY_TRACE, busy);
-    expect([...busy.calls].sort()).toEqual(['github.com/acme/admin', 'github.com/acme/mobile', 'github.com/acme/web']);
+    expect([...busy.calls].sort()).toEqual(['github.com/acme/admin', 'github.com/acme/mobile', 'github.com/acme/shared-ui', 'github.com/acme/web']);
   });
 
   it('without repo trees the step is skipped and no other step carries evidence', async () => {

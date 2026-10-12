@@ -93,7 +93,9 @@ function gather(ctx: StepContext): Gathered {
   const t = rows<MapTerm>('words', ctx.data('words')?.['vocabulary'], termOk);
   const p = rows<MapPerson>('people', ctx.data('people')?.['people'], personOk);
   for (const r of [s, c, t, p]) if ('bad' in r) return { problem: { step: r.bad, why: 'what it saved could not be read' } };
-  const [surfaceRows, channelRows, termRows, personRows] = [s, c, t, p].map((r) => ('rows' in r ? r.rows : [])) as [MapSurface[], MapChannel[], MapTerm[], MapPerson[]];
+  const [savedSurfaces, channelRows, termRows, personRows] = [s, c, t, p].map((r) => ('rows' in r ? r.rows : [])) as [MapSurface[], MapChannel[], MapTerm[], MapPerson[]];
+  // A surface saved before surfaces could name the surfaces they use (#312) has no `uses`.
+  const surfaceRows = savedSurfaces.map((r): MapSurface => (Array.isArray(r.uses) ? r : { ...r, uses: [] }));
   if (surfaceRows.length === 0) return { problem: { step: 'surfaces', why: 'no products were confirmed' } };
 
   // Channel reactions from the trigger step replace the workspace ones in that channel.

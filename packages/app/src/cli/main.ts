@@ -85,7 +85,7 @@ export const COMMANDS: Readonly<Record<string, CliCommand>> = {
     run: (args, io, deps) => runStop(args, io, deps.capture()),
   },
   map: {
-    label: 'map show|set-level|set-trigger',
+    label: 'map show|set-...',
     summary: 'read and edit the workspace map (validated, written atomically)',
     run: async (args, io) => {
       const { runMap } = await import('./map.ts');

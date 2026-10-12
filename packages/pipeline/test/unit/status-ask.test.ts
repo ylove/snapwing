@@ -18,8 +18,8 @@ const MAP: WorkspaceMap = {
   org: 'fake-org',
   updated: '2026-10-01T00:00:00Z',
   surfaces: [
-    { id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [{ id: 'checkout', label: 'Checkout' }] },
-    { id: 'app', label: 'Mobile app', repo: 'github.com/fake-org/app', jira: { project: 'APP', defaultIssueType: 'Bug' }, components: [] },
+    { id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [{ id: 'checkout', label: 'Checkout' }], uses: [] },
+    { id: 'app', label: 'Mobile app', repo: 'github.com/fake-org/app', jira: { project: 'APP', defaultIssueType: 'Bug' }, components: [], uses: [] },
   ],
   channels: [{ id: CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [] }],
   triggers: { messageActions: [], emoji: [] },

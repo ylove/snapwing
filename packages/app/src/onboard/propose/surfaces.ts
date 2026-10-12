@@ -435,6 +435,7 @@ export function finalizeSurfaces(draft: SurfaceDraft): SavedSurfaces {
     repo: mapRepo(s.repo),
     jira: { project: s.project, defaultIssueType: DEFAULT_ISSUE_TYPE },
     components: s.components.map((c) => ({ ...c })),
+    uses: [],
   }));
   const channels: MapChannel[] = [];
   for (const c of draft.channels) {
@@ -473,6 +474,7 @@ export function savedSurfacesJson(saved: SavedSurfaces): JsonObject {
       repo: s.repo,
       jira: { project: s.jira.project, defaultIssueType: s.jira.defaultIssueType },
       components: s.components.map((c) => ({ id: c.id, label: c.label })),
+      uses: [...s.uses],
     })),
     channels: saved.channels.map((c) => ({
       id: c.id,
@@ -512,7 +514,9 @@ export function parseSavedSurfaces(data: JsonObject | undefined): SavedSurfaces 
       if (typeof cid === 'string' && MAP_ID.test(cid) && clabel !== '' && !components.some((k) => k.id === cid)) components.push({ id: cid, label: clabel });
     }
     const issueType = typeof jira['defaultIssueType'] === 'string' && jira['defaultIssueType'] !== '' ? jira['defaultIssueType'] : DEFAULT_ISSUE_TYPE;
-    surfaces.push({ id, label, repo: mapRepo(repo), jira: { project, defaultIssueType: issueType }, components });
+    // Data saved before surfaces could name the surfaces they use (#312) has none.
+    const uses = [...new Set((Array.isArray(s['uses']) ? s['uses'] : []).filter((u): u is string => typeof u === 'string' && MAP_ID.test(u)))];
+    surfaces.push({ id, label, repo: mapRepo(repo), jira: { project, defaultIssueType: issueType }, components, uses });
   }
   if (surfaces.length === 0) return undefined;
   const channels: MapChannel[] = [];

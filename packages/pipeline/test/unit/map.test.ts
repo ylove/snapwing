@@ -25,7 +25,7 @@ describe('workspace-context example', () => {
     const map = await parseWorkspaceMap(example);
     expect(map.org).toBe('acme');
     expect(map.updated).toBe('2026-09-28T00:00:00Z');
-    expect(map.surfaces.map((s) => s.id)).toEqual(['web', 'mobile', 'admin']);
+    expect(map.surfaces.map((s) => s.id)).toEqual(['web', 'mobile', 'admin', 'shared-ui']);
     expect(map.fallbackSurface).toBe('web');
     expect(map.surfaces[0]).toEqual({
       id: 'web',
@@ -38,8 +38,10 @@ describe('workspace-context example', () => {
         { id: 'checkout', label: 'Checkout' },
         { id: 'auth-web', label: 'Login (web)' },
       ],
+      uses: ['shared-ui'],
     });
     expect(map.surfaces[1]?.components).toEqual([]);
+    expect(map.surfaces[1]?.uses).toEqual([]);
 
     expect(map.channels).toHaveLength(6);
     expect(map.channels[2]).toEqual({ id: 'C0APPBUGS', name: 'app-bugs', surface: 'mobile', confidence: 'explicit', triggerEmoji: ['ladybug'] });
@@ -64,12 +66,14 @@ describe('workspace-context example', () => {
       handle: 'webDev1',
       email: 'dana@example.com',
       role: 'engineer',
+      admin: true,
       owns: [
         { surface: 'web', primary: false },
         { surface: 'web', component: 'nav', primary: true },
       ],
     });
     expect(map.people[2]?.owns).toEqual([]);
+    expect(map.people.slice(1).some((p) => 'admin' in p)).toBe(false);
   });
 
   it('parses the autonomy dial and the risk gate', async () => {

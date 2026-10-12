@@ -45,7 +45,7 @@ beforeAll(async () => {
   map = {
     ...parsed,
     people: parsed.people.map((p) => (p.slackId !== undefined && aad[p.slackId] !== undefined ? { ...p, teamsId: aad[p.slackId] as string } : p)),
-    surfaces: [{ id: 'web', label: 'Website', repo: 'acme/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: parsed.surfaces[0]?.components ?? [] }],
+    surfaces: [{ id: 'web', label: 'Website', repo: 'acme/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: parsed.surfaces[0]?.components ?? [], uses: [] }],
   };
 });
 

@@ -12,6 +12,9 @@
         <component id="checkout" label="Checkout" />
         <component id="auth-web" label="Login (web)" />
       </components>
+      <!-- Optional uses, after components: the surfaces whose code this one builds on (a shared
+           package or service), so triage can look across them. -->
+      <uses surface="shared-ui" />
     </surface>
     <surface id="mobile" label="Mobile App">
       <repo>github.com/acme/mobile</repo>
@@ -20,6 +23,10 @@
     <surface id="admin" label="B2B Admin Portal">
       <repo>github.com/acme/admin</repo>
       <jira project="ADM" defaultIssueType="Bug" />
+    </surface>
+    <surface id="shared-ui" label="Shared UI">
+      <repo>github.com/acme/shared-ui</repo>
+      <jira project="UI" defaultIssueType="Bug" />
     </surface>
   </surfaces>
 
@@ -53,7 +60,8 @@
   </vocabulary>
 
   <people>
-    <person slackId="U0WEBDEV1" handle="webDev1" email="dana@example.com" role="engineer">
+    <!-- Optional admin flag, on an engineer only: may review corrections in the console. -->
+    <person slackId="U0WEBDEV1" handle="webDev1" email="dana@example.com" role="engineer" admin="true">
       <owns surface="web" />
       <owns surface="web" component="nav" primary="true" />
     </person>

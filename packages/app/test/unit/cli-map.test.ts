@@ -1,5 +1,5 @@
-// `snapwing map show | set-level | set-trigger`: each command on a temp copy of the example map,
-// and the invalid edit that changes nothing.
+// `snapwing map show | set-level | set-trigger | set-uses | set-admin`: each command on a temp copy of
+// the example map, and the invalid edit that changes nothing.
 
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -64,6 +64,21 @@ describe('map show', () => {
     out = [];
     expect(await run(['show', 'triggers'])).toBe(0);
     expect(text(out)).toMatch(/emoji\s+slack fire, teams fire\s+2 reactors/);
+  });
+
+  it('prints a uses column for surfaces and an admin column for people (#312)', async () => {
+    expect(await run(['show', 'surfaces'])).toBe(0);
+    const surfaces = out.join('\n').split('\n');
+    expect(surfaces[1]).toMatch(/components\s+uses$/);
+    expect(surfaces.find((l) => l.trimStart().startsWith('web '))).toMatch(/nav, checkout, auth-web\s+shared-ui$/);
+    expect(surfaces.find((l) => l.trimStart().startsWith('shared-ui '))).toMatch(/shared-ui\s+Shared UI\s+github\.com\/acme\/shared-ui\s+UI\s+1$/);
+
+    out = [];
+    expect(await run(['show', 'people'])).toBe(0);
+    const people = out.join('\n').split('\n');
+    expect(people[1]).toMatch(/owns\s+admin$/);
+    expect(people.find((l) => l.includes('webDev1'))).toMatch(/web\/nav\*\s+yes$/);
+    expect(people.find((l) => l.includes('mobDev'))).not.toContain('yes');
   });
 
   it('prints the XML only with --xml', async () => {
@@ -178,11 +193,84 @@ describe('map set-trigger', () => {
   });
 });
 
+describe('map set-uses', () => {
+  it('sets the surfaces a surface uses through the editor, and prints who and when', async () => {
+    expect(await run(['set-uses', 'mobile', 'shared-ui,web', '--by', 'dana'])).toBe(0);
+    expect(text(out)).toBe('mobile now uses shared-ui, web (changed by dana at 2026-10-03T12:00:00.000Z)');
+    const map = await parseWorkspaceMap(await onDisk());
+    expect(map.surfaces.find((s) => s.id === 'mobile')?.uses).toEqual(['shared-ui', 'web']);
+    expect(map.updated).toBe(NOW.toISOString());
+    expect(await onDisk()).toContain('<!-- Optional uses, after components');
+  });
+
+  it('replaces the list, drops repeats, and clears it with an empty list', async () => {
+    expect(await run(['set-uses', 'web', 'admin, shared-ui,admin'])).toBe(0);
+    expect((await parseWorkspaceMap(await onDisk())).surfaces.find((s) => s.id === 'web')?.uses).toEqual(['admin', 'shared-ui']);
+    out = [];
+    expect(await run(['set-uses', 'web', ''])).toBe(0);
+    expect(text(out)).toBe('web now uses no other surface (changed by git@example.test at 2026-10-03T12:00:00.000Z)');
+    expect((await parseWorkspaceMap(await onDisk())).surfaces.every((s) => s.uses.length === 0)).toBe(true);
+  });
+
+  it('changes nothing and exits 1 for an unknown surface, itself, a cycle, or a missing argument', async () => {
+    for (const [args, says] of [
+      [['set-uses', 'mobile', 'ghost'], '[uses-surface-exists]'],
+      [['set-uses', 'mobile', 'mobile'], '[uses-not-self]'],
+      [['set-uses', 'shared-ui', 'web'], 'Surfaces web and shared-ui form a uses cycle: web uses shared-ui, which uses web. [uses-cycle]'],
+      [['set-uses', 'nowhere', 'web'], 'The map has no surface nowhere to edit. [edit-target-missing]'],
+      [['set-uses', 'web'], 'give a surface and the surfaces it uses'],
+    ] as const) {
+      err = [];
+      out = [];
+      expect(await run([...args])).toBe(1);
+      expect(text(err)).toContain(says);
+      expect(out).toEqual([]);
+      expect(await onDisk()).toBe(exampleXml);
+    }
+    expect(await readdir(dir)).toEqual(['workspace-context.xml']);
+  });
+});
+
+describe('map set-admin', () => {
+  it('marks an engineer admin and takes it away, printing who and when', async () => {
+    expect(await run(['set-admin', 'mobDev', 'on'])).toBe(0);
+    expect(text(out)).toBe('mobDev is now an admin (changed by git@example.test at 2026-10-03T12:00:00.000Z)');
+    let map = await parseWorkspaceMap(await onDisk());
+    expect(map.people.find((p) => p.handle === 'mobDev')?.admin).toBe(true);
+    expect(map.updated).toBe(NOW.toISOString());
+
+    out = [];
+    expect(await run(['set-admin', 'webDev1', 'off', '--by', 'dana'])).toBe(0);
+    expect(text(out)).toBe('webDev1 is no longer an admin (changed by dana at 2026-10-03T12:00:00.000Z)');
+    map = await parseWorkspaceMap(await onDisk());
+    expect(map.people.find((p) => p.handle === 'webDev1')?.admin).toBeUndefined();
+  });
+
+  it('changes nothing and exits 1 for a reporter, an unknown handle, a value other than on or off, or a missing argument', async () => {
+    for (const [args, says] of [
+      [['set-admin', 'salesLead', 'on'], '[admin-needs-engineer]'],
+      [['set-admin', 'nobody', 'on'], 'The map has no person nobody to edit. [edit-target-missing]'],
+      [['set-admin', 'mobDev', 'yes'], 'the value is on or off, not "yes"'],
+      [['set-admin', 'mobDev'], 'give a handle and on or off'],
+    ] as const) {
+      err = [];
+      out = [];
+      expect(await run([...args])).toBe(1);
+      expect(text(err)).toContain(says);
+      expect(out).toEqual([]);
+      expect(await onDisk()).toBe(exampleXml);
+    }
+  });
+});
+
 describe('the command row', () => {
   it('is in the table and reads SNAPWING_MAP', async () => {
     const lines: string[] = [];
     const code = await main(['map', 'show', 'triggers'], { env: { SNAPWING_MAP: mapPath }, stdout: (l) => lines.push(l), stderr: (l) => err.push(l) });
     expect(code).toBe(0);
     expect(text(lines)).toContain('Fix it from here');
+    lines.length = 0;
+    expect(await main(['map', 'set-admin', 'mobDev', 'on', '--by', 'dana'], { env: { SNAPWING_MAP: mapPath }, stdout: (l) => lines.push(l), stderr: (l) => err.push(l) })).toBe(0);
+    expect(text(lines)).toMatch(/^mobDev is now an admin \(changed by dana at /);
   });
 });

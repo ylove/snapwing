@@ -55,7 +55,7 @@ const PAT = 'U0FAKEPAT';
 const MAP: WorkspaceMap = {
   org: 'Example',
   updated: '2026-10-02T00:00:00Z',
-  surfaces: [{ id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [] }],
+  surfaces: [{ id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [], uses: [] }],
   channels: [{ id: CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [] }],
   triggers: { messageActions: [{ label: 'Fix it from here' }], emoji: [{ slack: 'bug', teams: 'bug' }], directMessage: { images: true, text: true } },
   vocabulary: [],
