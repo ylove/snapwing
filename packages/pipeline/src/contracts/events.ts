@@ -13,8 +13,10 @@
 // Where the specs are silent on a payload, it carries the minimum fields the B 3 projections
 // (`incidents`, `claims`, `escalation_scores`) need, and says so in its doc comment. Bodies that the
 // `artifacts` table stores (bundles, implementation requests, diagnoses, reviews) are referenced by
-// `ArtifactRef`, never inlined. Coordination events (B 6) join this union with the coordinator.
+// `ArtifactRef`, never inlined. Coordination events (B 6.1 to 6.3, #313) close the union: they are
+// appended only to a multi-repo parent's log, so the parent's projections read its own events alone.
 
+import type { LifecycleStatus } from '../lifecycle/machine.ts';
 import type { InteractiveCard } from './adapters.ts';
 import type {
   ApprovalAction,
@@ -99,7 +101,14 @@ export type EventType =
   // Text signals after filing (A 3)
   | 'text-signal'
   // main 15.3, 15.4: a capture source's lookup ended with nothing filed
-  | 'capture-cancelled';
+  | 'capture-cancelled'
+  // B 6.1 to 6.3 multi-repo coordination, on the parent's log only
+  | 'work-items-opened'
+  | 'fanout'
+  | 'child-progressed'
+  | 'contract-revised'
+  | 'fanin'
+  | 'merge-walk';
 
 /** Every `EventType`, once, in log order where there is one. Frozen. */
 export const EVENT_TYPES = Object.freeze([
@@ -154,6 +163,12 @@ export const EVENT_TYPES = Object.freeze([
   'user-side',
   'text-signal',
   'capture-cancelled',
+  'work-items-opened',
+  'fanout',
+  'child-progressed',
+  'contract-revised',
+  'fanin',
+  'merge-walk',
 ] as const satisfies readonly EventType[]);
 
 // Compile-time: EVENT_TYPES lists every member of EventType (the `satisfies` above rules out extras).
@@ -831,6 +846,12 @@ export interface EventPayloads {
   'user-side': UserSidePayload;
   'text-signal': TextSignalPayload;
   'capture-cancelled': CaptureCancelledPayload;
+  'work-items-opened': WorkItemsOpenedPayload;
+  fanout: FanoutPayload;
+  'child-progressed': ChildProgressedPayload;
+  'contract-revised': ContractRevisedPayload;
+  fanin: FaninPayload;
+  'merge-walk': MergeWalkPayload;
 }
 
 // Compile-time: EventPayloads has exactly one entry per EventType.
@@ -914,4 +935,162 @@ export interface CaptureCancelledPayload {
   /** The card that was waiting: the dedupe card, `file-confirm`, or the surface question (`clarify`). */
   card: 'dedupe' | 'file-confirm' | 'clarify';
   timedOut?: boolean;
+}
+
+// Multi-repo coordination (B 6.1 to 6.3, #313) ------------------------------------------------------
+//
+// A fix that spans repositories is a parent incident with one work item per repository: an incident
+// of kind `work-item` whose `parent_id` is the parent (B 6.1). These events go on the parent's log
+// only. A payload names a work item by its incident id (`workItemId`, the id in `fixer:{workItemId}`)
+// and, where a reader shows it, by its key in the parent request (`key`, such as `wi-1`). Work items
+// run through the single-repo lifecycle on their own logs; the parent's status follows the rows for
+// these events in lifecycle/machine.ts.
+
+/** One work item as `work-items-opened` records it: a `<workItem>` of the parent request (B 6.2) and its incident. */
+export interface OpenedWorkItem {
+  /** The work item's own incident id. */
+  workItemId: string;
+  /** Its id in the parent request (`<workItem id>`), such as `wi-1`; unique within the parent. */
+  key: string;
+  /** The repository, as the map writes it (`github.com/owner/name`). */
+  repo: string;
+  /** The map surface the repository belongs to; the parent's status lines name the work item by it. */
+  surfaceId: string;
+  /** Keys of the work items it waits on (`<workItem dependsOn>`); empty when it may start at once. */
+  dependsOn: string[];
+  /** Ids of the contracts it produces (`<produces contract>`). */
+  produces: string[];
+  /** Ids of the contracts it consumes (`<consumes contract>`). */
+  consumes: string[];
+}
+
+/** A contract between work items (B 6.2) as the work items were opened with it. */
+export interface OpenedContract {
+  /** The id the requests name, such as `c-price-format-v2`. */
+  id: string;
+  /** Its body (artifact kind `contract`) at opening; `contract-revised` names each later version. */
+  artifact: ArtifactRef;
+}
+
+/**
+ * B 6.1, 6.2: the parent opened one work item per repository. Appended once, after the parent is
+ * filed, by the step that opens the work items (a retry finds it and opens no second set). Never
+ * changes the status: the first `fanout` does.
+ */
+export interface WorkItemsOpenedPayload {
+  workItems: OpenedWorkItem[];
+  /** Every contract a work item produces or consumes; empty when the work items share none. */
+  contracts: OpenedContract[];
+  /** Work item keys in the order the walk merges them (`<mergeOrder>`). */
+  mergeOrder: string[];
+  /** `<handoff allOrNothing>`: one failed work item degrades the whole set and nothing merges (B 6.3 step 3). */
+  allOrNothing: boolean;
+}
+
+/**
+ * B 6.3 step 1: the coordinator started fixers. Appended once per delivery that started any. The
+ * first moves the parent from `filed` to `fixing`; later ones start dependents as their dependencies
+ * open PRs, or start a dependent again on a revised contract.
+ */
+export interface FanoutPayload {
+  /** Incident ids of the work items whose fixer jobs this delivery started (`fixer:{workItemId}`). */
+  started: string[];
+}
+
+/**
+ * B 6.3 step 2: a work item's status changed, mirrored onto the parent by the coordination follower so
+ * the parent's projections (status message, Jira, queue) never read a work item's log. The work item's
+ * own event is the record; this is its copy. Never changes the parent's status.
+ */
+export interface ChildProgressedPayload {
+  workItemId: string;
+  key: string;
+  /** The work item event mirrored, such as `filed`, `pr-opened`, `ci-green`, `fixer-failed`, `merged`. */
+  event: EventType;
+  /** That event's `seq` in the work item's log: the follower appends nothing for a pair the parent already has. */
+  workItemSeq: number;
+  /** The work item's status after that event (B 5). */
+  status: LifecycleStatus;
+  /** The work item's PR, once it has one. */
+  prNumber?: number;
+  /** The work item's Jira key, once it is filed. */
+  jiraKey?: string;
+  /** Why, when the event says: a review's or the fixer's reason, the failing checks, a stop's reason. */
+  reason?: string;
+}
+
+/**
+ * B 6.2: the producing work item's fixer reported a contract body (its `fixer-artifact` of kind
+ * `contract`) that differs from the latest version, stored as a new version. Dependents restart per
+ * contract version: a dependent run started on an older version is cancelled and started again on
+ * this one. Never changes the status.
+ */
+export interface ContractRevisedPayload {
+  /** The contract id, as in `work-items-opened`. */
+  contractId: string;
+  /** The producing work item. */
+  workItemId: string;
+  key: string;
+  /** The `seq` of that `fixer-artifact` in the producing work item's log, so a redelivery revises nothing twice. */
+  workItemSeq: number;
+  /** The new version of the contract's artifact. */
+  artifact: ArtifactRef;
+}
+
+/** One work item in a `fanin`: where it stood when the set's gate was decided. */
+export interface FaninWorkItem {
+  workItemId: string;
+  key: string;
+  /** Its status at fan-in (B 5): `mergeable` for every work item of a set that passed. */
+  status: LifecycleStatus;
+  prNumber?: number;
+  /** The head its review and CI passed on; the walk merges exactly this head (main 11.3). */
+  headSha?: string;
+  /** Why this work item holds the set back, when it does. */
+  reason?: string;
+}
+
+/**
+ * B 6.3 step 3: one merge gate for the whole set (main 11.3). `merge`: every gate passed at level 3,
+ * so the walk starts. `human`: levels 1 and 2, a person merges the set. `degrade`: a gate failed, the
+ * level was lowered since fan-out, or under `allOrNothing` a work item failed; nothing merges on its
+ * own. `merge` and `human` move the parent to `mergeable`, `degrade` to `escalated`.
+ */
+export interface FaninPayload {
+  decision: 'merge' | 'human' | 'degrade';
+  /** Every work item, in merge order. */
+  workItems: FaninWorkItem[];
+  /** The decision in words, naming the gate or the work item behind a `degrade`. */
+  reason: string;
+  /** The parent's level the set was decided at. */
+  level: AutonomyLevel;
+  /** The set's gate; absent when the set degraded before a gate ran (a failed work item). */
+  gate?: MergeGateResult;
+}
+
+/**
+ * B 6.3 steps 4 and 5: one step of the merge walk along `mergeOrder`. `merged`: the work item's PR
+ * merged. `ci-green`, `ci-red`: the work item's CI ran again against its merged dependency; red stops
+ * the walk and moves the parent to `escalated`. `reverted`: a work item the walk had merged got a
+ * revert PR after a red CI. The parent's own `merged` follows the last work item's `merged`.
+ */
+export interface MergeWalkPayload {
+  /** The work item merged, whose CI ran, or that was reverted. */
+  workItemId: string;
+  key: string;
+  outcome: 'merged' | 'ci-green' | 'ci-red' | 'reverted';
+  /** The work item's PR. */
+  prNumber: number;
+  /** `merged`: the merge commit on the base branch. */
+  mergeCommitSha?: string;
+  /** `ci-green`, `ci-red`: the head CI ran on. */
+  headSha?: string;
+  /** `ci-red`: the failing checks. */
+  failingChecks?: string[];
+  /** `ci-red`: the revert PRs opened for the work items already merged, in merge order. */
+  revertPrNumbers?: number[];
+  /** `reverted`: this work item's revert PR. */
+  revertPrNumber?: number;
+  /** The step in words, such as why a revert was opened. */
+  reason?: string;
 }
