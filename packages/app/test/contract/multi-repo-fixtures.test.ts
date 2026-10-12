@@ -92,7 +92,7 @@ describe('multi-repo fixtures', () => {
     expect(euroLabel(stale)).toBe('Total $20.00');
 
     const web = await clone(seed.web.repo, 'web-fix');
-    const consumer = fix(web, request(`<workItem id="web" repo="github.com/${seed.web.repo}" producer-commit="${producer.head}"/>`));
+    const consumer = fix(web, request(`<contract id="price-format" version="1" role="consumes"><pin repo="github.com/${seed.sharedUi.repo}" sha="${producer.head}"/></contract>`));
     expect(consumer.outcome).toBe('done');
     const pkg = await readFile(join(web, 'package.json'), 'utf8');
     expect(pkg).toContain(`#${producer.head}"`);
@@ -105,6 +105,6 @@ describe('multi-repo fixtures', () => {
     git(web, ['checkout', '--quiet', '-b', 'fix/none']);
     const out = JSON.parse(run(web, 'node', [AGENT, scratch, '1'], request())) as { outcome: string; reason: string };
     expect(out.outcome).toBe('failed');
-    expect(out.reason).toContain('producer commit');
+    expect(out.reason).toContain('<pin sha/>');
   });
 });

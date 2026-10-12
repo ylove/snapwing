@@ -70,9 +70,8 @@ async function review() {
 
 // The multi-repo fixtures (public #333): `@fixture/shared-ui` gains a currency on `formatPrice`, and
 // `@fixture/web` bumps its shared-ui pin to the producer commit its request names and passes the cart's
-// currency. The commit is read from the request: an attribute `producer-commit`, `producerCommit` or
-// `producer` holding a 40 hex commit, else a `<producer>` element holding one, else the last 40 hex
-// commit in the request.
+// currency. The commit is the `sha` of the `<pin repo sha/>` inside the consumed `<contract>` (public
+// #316, #322); a request with no pin fails, so a coordinator that forgets it is not hidden.
 const SHARED_UI_PRICE = [
   "const SYMBOLS = { USD: '$', EUR: '\\u20ac', GBP: '\\u00a3' };",
   '',
@@ -84,12 +83,11 @@ const SHARED_UI_PRICE = [
 ].join('\n');
 
 function producerCommit() {
-  const sha = '([0-9a-f]{40})';
-  const found =
-    new RegExp(`producer(?:-commit|Commit)?\\s*=\\s*"${sha}"`).exec(request) ??
-    new RegExp(`<producer\\b[^>]*>[^<]*?${sha}`).exec(request) ??
-    [...request.matchAll(/\b[0-9a-f]{40}\b/g)].at(-1);
-  return found === undefined ? undefined : (found[1] ?? found[0]);
+  for (const [, attrs] of request.matchAll(/<pin\b([^>]*)\/?>/g)) {
+    const sha = /\bsha\s*=\s*"([0-9a-f]{40})"/.exec(attrs ?? '');
+    if (sha !== null) return sha[1];
+  }
+  return undefined;
 }
 
 function packageName() {
@@ -121,7 +119,7 @@ function fixSharedUi() {
 function fixWeb() {
   checkpoint('branched', git(['rev-parse', '--abbrev-ref', 'HEAD']));
   const commit = producerCommit();
-  if (commit === undefined) return finish({ outcome: 'failed', reason: 'the request names no producer commit to pin shared-ui to', attempts: 0 });
+  if (commit === undefined) return finish({ outcome: 'failed', reason: 'the request has no <pin sha/> naming the producer commit to pin shared-ui to', attempts: 0 });
   const pkgFile = join(workdir, 'package.json');
   const pkg = readFileSync(pkgFile, 'utf8');
   const pinned = pkg.replace(/(@fixture\/shared-ui"\s*:\s*"git\+file:\/\/[^"#]+#)[0-9a-f]{40}/, `$1${commit}`);
