@@ -173,6 +173,21 @@
                   <xs:attribute name="name" type="NonEmptyToken" use="required"/>
                 </xs:complexType>
               </xs:element>
+              <!-- How a work item's issue joins its parent: an issue link of linkType (default Relates,
+                   which every site has), or a sub-task of the parent. -->
+              <xs:element name="workItems" minOccurs="0">
+                <xs:complexType>
+                  <xs:attribute name="mode" default="link">
+                    <xs:simpleType>
+                      <xs:restriction base="xs:token">
+                        <xs:enumeration value="link"/>
+                        <xs:enumeration value="subtask"/>
+                      </xs:restriction>
+                    </xs:simpleType>
+                  </xs:attribute>
+                  <xs:attribute name="linkType" type="NonEmptyToken" default="Relates"/>
+                </xs:complexType>
+              </xs:element>
             </xs:sequence>
           </xs:complexType>
           <xs:unique name="OneStatusPerTarget">

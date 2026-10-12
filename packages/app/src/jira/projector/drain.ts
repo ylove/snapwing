@@ -17,6 +17,12 @@
 // Jira's search is eventually consistent, so a retry within seconds of a create can still miss the
 // label; the retry delay (1 s doubling) makes that unlikely, not impossible.
 //
+// Work items (B 6.4, #317). A `create-issue` row with a `parentKey` joins its parent once the issue
+// exists: an issue link of the configured type with the work item on the inward side (a retry reads the
+// issue's links first), or, in sub-task mode, the issue is created as the project's sub-task type.
+// A project with no sub-task type falls back to the link and says so in one comment on the parent;
+// a link type the site lacks leaves the issue unlinked with one comment naming the parent.
+//
 // Batching (B 7.1). An `add-comment` row with a `batch_key` waits until 60 s after its `createdAt`
 // (held with `deferOutbox` and no error, so it is not a failure); then every pending comment row
 // with that key created inside the window becomes one comment, one paragraph block per row.
@@ -34,6 +40,7 @@
 
 import type { IncidentEvent, NewEvent } from '@snapwing/pipeline/contracts/events.ts';
 import { isExpectedSeqConflict, type OutboxItem } from '@snapwing/pipeline/contracts/state.ts';
+import { DEFAULT_JIRA_WORK_ITEMS, type JiraWorkItemsConfig } from '@snapwing/pipeline/config/app-config.ts';
 import type { JiraStatusOverrides } from '@snapwing/pipeline/jira/statuses.ts';
 import type { StatePort } from '@snapwing/pipeline/ports/state.ts';
 import { JiraNotFoundError, JiraRateLimitError, JiraTransitionNotFoundError, JiraValidationError, type JiraClient } from '../client/index.ts';
@@ -42,6 +49,7 @@ import {
   createAssigneeResolver,
   fetchScreenshot,
   findOrCreateIssue,
+  joinParent,
   parseJiraRow,
   sendOp,
   uploadScreenshots,
@@ -84,6 +92,11 @@ export interface JiraProjectorOptions {
    * (`<jira><status logical="backlog" name="..."/></jira>`). Default none.
    */
   statusOverrides?: JiraStatusOverrides;
+  /**
+   * How a `create-issue` row with a `parentKey` joins its parent, from `AppConfig.jira.workItems`
+   * (B 6.4, #317). Default: a `Relates` issue link.
+   */
+  workItems?: JiraWorkItemsConfig;
   /** Fetches a screenshot for upload; default a plain GET (`fetchScreenshot`). */
   loadScreenshot?: LoadScreenshot;
   /**
@@ -145,6 +158,7 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   const customFieldIds = requireCustomFieldIds(options.customFieldIds);
   const statuses = createStatusResolver(client, options.statusOverrides ?? {});
   const assignees = createAssigneeResolver(client, now);
+  const workItems = options.workItems ?? DEFAULT_JIRA_WORK_ITEMS;
   const loadScreenshot = options.loadScreenshot ?? fetchScreenshot;
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
@@ -184,7 +198,10 @@ export function createJiraProjector(options: JiraProjectorOptions): JiraProjecto
   }
 
   async function fileIssue(row: OutboxItem, op: CreateIssueOp): Promise<Outcome> {
-    const found = await findOrCreateIssue(client, op, customFieldIds, assignees);
+    const found = await findOrCreateIssue(client, op, customFieldIds, assignees, workItems);
+    // Linking is a degradation-safe step (a missing link type is a comment, not a failure); a transient
+    // error defers the row and the retry finds the issue by its label and the link by its type.
+    if (op.parentKey !== undefined) await joinParent(client, found, op.parentKey, (op.fields['project'] as { key: string }).key, workItems);
     await recordFiled(row, op.incidentId, found.key);
     // Before the fixer can start: it reads the latest artifact version, which must name the real key.
     await finalizePrompt({

@@ -112,14 +112,34 @@ describe('loadAppConfig', () => {
   });
 
   it('reads <jira> status overrides and defaults to none', async () => {
-    expect(loadAppConfig(example).jira).toEqual({ statuses: {} });
-    expect(loadAppConfig(example.replace('<jira/>', '')).jira).toEqual({ statuses: {} });
+    expect(loadAppConfig(example).jira).toEqual({ statuses: {}, workItems: { mode: 'link', linkType: 'Relates' } });
+    expect(loadAppConfig(example.replace('<jira/>', '')).jira).toEqual({ statuses: {}, workItems: { mode: 'link', linkType: 'Relates' } });
     const xml = example.replace(
       '<jira/>',
       '<jira><status logical="backlog" name="Selected for Development"/><status logical="in-review" name="Code Review"/></jira>',
     );
     expect(await validateAppConfig(xml)).toEqual({ valid: true, errors: [] });
-    expect(loadAppConfig(xml).jira).toEqual({ statuses: { backlog: 'Selected for Development', 'in-review': 'Code Review' } });
+    expect(loadAppConfig(xml).jira).toEqual({
+      statuses: { backlog: 'Selected for Development', 'in-review': 'Code Review' },
+      workItems: { mode: 'link', linkType: 'Relates' },
+    });
+  });
+
+  it('reads <jira><workItems> (#317): link by default with Relates, sub-task mode, a named link type', async () => {
+    const withItems = (attrs: string): string => example.replace('<jira/>', `<jira><workItems ${attrs}/></jira>`);
+    for (const [attrs, want] of [
+      ['', { mode: 'link', linkType: 'Relates' }],
+      ['mode="subtask"', { mode: 'subtask', linkType: 'Relates' }],
+      ['mode="link" linkType="Implements"', { mode: 'link', linkType: 'Implements' }],
+      ['linkType="Blocks"', { mode: 'link', linkType: 'Blocks' }],
+    ] as const) {
+      expect(await validateAppConfig(withItems(attrs)), attrs).toEqual({ valid: true, errors: [] });
+      expect(loadAppConfig(withItems(attrs)).jira.workItems, attrs).toEqual(want);
+    }
+    for (const bad of ['mode="parent"', 'mode=""', 'linkType=""']) {
+      expect((await validateAppConfig(withItems(bad))).valid, bad).toBe(false);
+    }
+    expect(() => loadAppConfig(withItems('mode="parent"'))).toThrow(/workItems mode "parent" must be one of link, subtask/);
   });
 
   it('rejects an unknown logical target and a target named twice, in the XSD and the loader', async () => {
