@@ -25,7 +25,7 @@ const noModel: ModelPort = {
   classify: () => Promise.reject(new Error('model must not be called')),
 };
 
-const surfaceLabels = ['Website', 'Mobile App', 'B2B Admin Portal'];
+const surfaceLabels = ['Website', 'Mobile App', 'B2B Admin Portal', 'Shared UI'];
 
 const baseCtx = (over: Partial<GateContext> = {}): GateContext => ({
   maxQuestionsPerIncident: 1,

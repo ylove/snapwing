@@ -290,7 +290,7 @@ describe('lintInstructions', () => {
 
   it('without a named surface, names every surface and component the dial keeps from agent merges', () => {
     const [finding] = lintInstructions('- Always merge automatically.', playbook, map);
-    expect(finding?.targets).toEqual(['web', 'web/auth-web', 'mobile', 'admin']);
+    expect(finding?.targets).toEqual(['web', 'web/auth-web', 'mobile', 'admin', 'shared-ui']);
     expect(finding?.conflict).toContain('mobile is autonomy level 1 (fix-on-tap), where a human merges');
   });
 

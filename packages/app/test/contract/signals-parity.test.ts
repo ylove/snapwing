@@ -53,7 +53,7 @@ const REPORTED = 1_730_000_000_000;
 const MAP: WorkspaceMap = {
   org: 'Example',
   updated: '2026-10-03T00:00:00Z',
-  surfaces: [{ id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [] }],
+  surfaces: [{ id: 'web', label: 'Website', repo: 'github.com/fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [], uses: [] }],
   channels: [
     { id: SLACK_CHANNEL, name: 'web-bugs', surface: 'web', triggerEmoji: [] },
     { id: TEAMS_CHANNEL, name: 'web-bugs-teams', surface: 'web', platform: 'teams', teamId: TEAM, triggerEmoji: [] },

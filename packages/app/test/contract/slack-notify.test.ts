@@ -259,7 +259,7 @@ describe('the staging request (A 1.3)', () => {
 describe('a standing subscription asked for in a DM (A 4.4)', () => {
   const dmMap: WorkspaceMap = {
     ...map,
-    surfaces: [{ id: 'web', label: 'Website', repo: 'fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [] }],
+    surfaces: [{ id: 'web', label: 'Website', repo: 'fake-org/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [], uses: [] }],
   };
 
   function dm(user: string, text: string, id: string): unknown {

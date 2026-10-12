@@ -35,7 +35,7 @@ const T0 = new Date('2026-10-03T09:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
 const WS = '01K6WORKSPACE0000000000000';
 const ENGINEER = { id: 'U0WEBDEV1', role: 'engineer' as EventActorRole };
-const LABELS = ['Website', 'Mobile App', 'B2B Admin Portal'];
+const LABELS = ['Website', 'Mobile App', 'B2B Admin Portal', 'Shared UI'];
 
 /** "the app" is the example map's vocabulary for the mobile surface. */
 const APP_TEXT = 'the app crashes when I open settings';

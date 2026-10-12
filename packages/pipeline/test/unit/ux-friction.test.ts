@@ -23,8 +23,8 @@ const WS = '01K6WORKSPACE0000000000000';
 
 const MAP = {
   surfaces: [
-    { id: 'web-app', label: 'Web app', repo: 'acme/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [] },
-    { id: 'api', label: 'API', repo: 'acme/api', jira: { project: 'API', defaultIssueType: 'Bug' }, components: [] },
+    { id: 'web-app', label: 'Web app', repo: 'acme/web', jira: { project: 'WEB', defaultIssueType: 'Bug' }, components: [], uses: [] },
+    { id: 'api', label: 'API', repo: 'acme/api', jira: { project: 'API', defaultIssueType: 'Bug' }, components: [], uses: [] },
   ],
   channels: [
     { id: 'C0INFER', name: '#web-chat', surface: 'web-app', confidence: 'inferred' as const, triggerEmoji: [] },

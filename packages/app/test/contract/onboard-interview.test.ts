@@ -545,7 +545,7 @@ describe('snapwing onboard --answers: the whole interview on empty sandboxes', (
     const mapXml = await readFile(join(workdir, 'workspace-context.xml'), 'utf8');
     const map = await parseWorkspaceMap(mapXml);
     expect(map.surfaces).toEqual([
-      { id: 'admin', label: 'Admin Portal', repo: `github.com/${REPO}`, jira: { project: PROJECT, defaultIssueType: 'Bug' }, components: [] },
+      { id: 'admin', label: 'Admin Portal', repo: `github.com/${REPO}`, jira: { project: PROJECT, defaultIssueType: 'Bug' }, components: [], uses: [] },
     ]);
     // Slack was approved after the products and owners were confirmed; its approval made those steps (and
     // the map) run again, so the written map holds its channel and the owner's Slack account.
@@ -689,7 +689,7 @@ describe('snapwing onboard --answers: a team that leaves a chat platform out', (
 
     // The map and the config are valid, and name Slack's channel and nothing from Teams.
     const map = await parseWorkspaceMap(await readFile(join(workdir, 'workspace-context.xml'), 'utf8'));
-    expect(map.surfaces).toEqual([{ id: 'admin', label: 'Admin Portal', repo: `github.com/${REPO}`, jira: { project: PROJECT, defaultIssueType: 'Bug' }, components: [] }]);
+    expect(map.surfaces).toEqual([{ id: 'admin', label: 'Admin Portal', repo: `github.com/${REPO}`, jira: { project: PROJECT, defaultIssueType: 'Bug' }, components: [], uses: [] }]);
     expect(map.channels).toEqual([expect.objectContaining({ id: SLACK_CHANNEL.id, name: SLACK_CHANNEL.name, surface: 'admin' })]);
     expect(map.channels.some((c) => c.platform === 'teams')).toBe(false);
     expect(map.people).toEqual([expect.objectContaining({ handle: OWNER.login, email: OWNER.email, role: 'engineer' })]);

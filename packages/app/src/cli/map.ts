@@ -3,11 +3,14 @@
 //   snapwing map show [surfaces|channels|lexicon|people|triggers] [--xml] [--map <file>]
 //   snapwing map set-level <surface> <0-3> [--by <who>] [--map <file>]
 //   snapwing map set-trigger --emoji <name> [--channel <name>] [--platform slack|teams] [--by <who>] [--map <file>]
+//   snapwing map set-uses <surface> <id,...> [--by <who>] [--map <file>]
+//   snapwing map set-admin <handle> on|off [--by <who>] [--map <file>]
 //
-// Edits go through `editWorkspaceMap` (XSD, then Schematron), record `changedBy` and `changedAt` on the
-// autonomy override, set the root's `updated`, and write atomically (a temp file in the same directory,
-// then a rename). An invalid edit writes nothing and exits 1. The schema has no change record on a
-// trigger row, so `set-trigger` stamps the root's `updated` and prints who and when.
+// Edits go through `editWorkspaceMap` (XSD, Schematron, then the uses cycle check), record `changedBy` and
+// `changedAt` on the autonomy override, set the root's `updated`, and write atomically (a temp file in the
+// same directory, then a rename). An invalid edit writes nothing and exits 1. The schema has no change record
+// on a trigger row, a `uses` row, or the admin flag (#312), so `set-trigger`, `set-uses` and `set-admin` stamp
+// the root's `updated` and print who and when.
 
 import { execFileSync } from 'node:child_process';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -23,10 +26,14 @@ import type { CliIo } from './state.ts';
 export const MAP_USAGE = `Usage: snapwing map show [surfaces|channels|lexicon|people|triggers] [--xml]
        snapwing map set-level <surface> <0-3> [--by <who>]
        snapwing map set-trigger --emoji <name> [--channel <name>] [--platform slack|teams] [--by <who>]
+       snapwing map set-uses <surface> <id,...> [--by <who>]
+       snapwing map set-admin <handle> on|off [--by <who>]
 
   show          readable tables; --xml prints the map file as it is
   set-level     set a surface's autonomy level (0 ticket-only, 1 fix-on-tap, 2 fix-now, 3 autopilot)
   set-trigger   add or change a trigger emoji: a workspace row, or with --channel that channel's override
+  set-uses      set the surfaces whose code a surface builds on (a shared package or service); '' clears them
+  set-admin     mark an engineer as an admin (may review corrections in the console), or not
   --by <who>    who made the change; default the git user email, else the OS user
   --map <file>  workspace map; default $SNAPWING_MAP, else workspace-context.xml
 
@@ -64,6 +71,8 @@ export async function runMap(args: readonly string[], io: CliIo, hooks: MapHooks
   if (sub === 'show') return runShow(rest, io);
   if (sub === 'set-level') return runSetLevel(rest, io, hooks);
   if (sub === 'set-trigger') return runSetTrigger(rest, io, hooks);
+  if (sub === 'set-uses') return runSetUses(rest, io, hooks);
+  if (sub === 'set-admin') return runSetAdmin(rest, io, hooks);
   io.stderr(`snapwing map: unknown subcommand ${JSON.stringify(sub)}\n${MAP_USAGE}`);
   return 1;
 }
@@ -155,11 +164,11 @@ function renderSection(map: WorkspaceMap, section: Section): string {
   switch (section) {
     case 'surfaces':
       return table(
-        ['id', 'label', 'repo', 'jira', 'level', 'changed', 'components'],
+        ['id', 'label', 'repo', 'jira', 'level', 'changed', 'components', 'uses'],
         map.surfaces.map((s) => {
           const o = map.policies.autonomy.overrides.find((x) => x.kind === 'surface' && x.ref === s.id);
           const changed = o === undefined ? '' : [o.changedBy, o.changedAt].filter((x) => x !== undefined).join(' ');
-          return [s.id, s.label, s.repo, s.jira.project, String(surfaceLevel(map, s.id)), changed, s.components.map((c) => c.id).join(', ')];
+          return [s.id, s.label, s.repo, s.jira.project, String(surfaceLevel(map, s.id)), changed, s.components.map((c) => c.id).join(', '), s.uses.join(', ')];
         }),
       );
     case 'channels':
@@ -174,7 +183,7 @@ function renderSection(map: WorkspaceMap, section: Section): string {
       );
     case 'people':
       return table(
-        ['handle', 'role', 'email', 'slack', 'teams', 'owns'],
+        ['handle', 'role', 'email', 'slack', 'teams', 'owns', 'admin'],
         map.people.map((p) => [
           p.handle,
           p.role,
@@ -182,6 +191,7 @@ function renderSection(map: WorkspaceMap, section: Section): string {
           p.slackId ?? '',
           p.teamsId ?? '',
           p.owns.map((o) => `${o.surface}${o.component === undefined ? '' : `/${o.component}`}${o.primary ? '*' : ''}`).join(', '),
+          p.admin === true ? 'yes' : '',
         ]),
       );
     case 'triggers': {
@@ -304,6 +314,52 @@ async function runSetTrigger(args: readonly string[], io: CliIo, hooks: MapHooks
   if (code === 0) {
     const by = changedByFor(parsed.values['by'] as string | undefined, hooks);
     io.stdout(`${emoji} is now a trigger${channelName === undefined ? '' : ` in ${channelName}`} (changed by ${by} at ${changedAt})`);
+  }
+  return code;
+}
+
+async function runSetUses(args: readonly string[], io: CliIo, hooks: MapHooks): Promise<number> {
+  const parsed = parse(args, io, 'set-uses', { by: { type: 'string' } });
+  if (!parsed.ok) return parsed.code;
+  const [surface, list, ...extra] = parsed.positionals;
+  if (surface === undefined || list === undefined || extra.length > 0) {
+    io.stderr(`snapwing map set-uses: give a surface and the surfaces it uses, comma separated ('' for none)\n${MAP_USAGE}`);
+    return 1;
+  }
+  const uses = [...new Set(list.split(/[\s,]+/).filter((id) => id !== ''))];
+  const path = mapPathFor(io, parsed.values['map'] as string | undefined);
+  const xml = await readMapFile(path, io, 'set-uses');
+  if (xml === undefined) return 1;
+  const changedAt = (hooks.now?.() ?? new Date()).toISOString();
+  const code = await applyEdit(path, xml, { kind: 'setSurfaceUses', surface, uses }, changedAt, io, 'set-uses');
+  if (code === 0) {
+    const by = changedByFor(parsed.values['by'] as string | undefined, hooks);
+    io.stdout(`${surface} now uses ${uses.length === 0 ? 'no other surface' : uses.join(', ')} (changed by ${by} at ${changedAt})`);
+  }
+  return code;
+}
+
+async function runSetAdmin(args: readonly string[], io: CliIo, hooks: MapHooks): Promise<number> {
+  const parsed = parse(args, io, 'set-admin', { by: { type: 'string' } });
+  if (!parsed.ok) return parsed.code;
+  const [handle, value, ...extra] = parsed.positionals;
+  if (handle === undefined || value === undefined || extra.length > 0) {
+    io.stderr(`snapwing map set-admin: give a handle and on or off\n${MAP_USAGE}`);
+    return 1;
+  }
+  if (value !== 'on' && value !== 'off') {
+    io.stderr(`snapwing map set-admin: the value is on or off, not ${JSON.stringify(value)}`);
+    return 1;
+  }
+  const admin = value === 'on';
+  const path = mapPathFor(io, parsed.values['map'] as string | undefined);
+  const xml = await readMapFile(path, io, 'set-admin');
+  if (xml === undefined) return 1;
+  const changedAt = (hooks.now?.() ?? new Date()).toISOString();
+  const code = await applyEdit(path, xml, { kind: 'setPersonAdmin', handle, admin }, changedAt, io, 'set-admin');
+  if (code === 0) {
+    const by = changedByFor(parsed.values['by'] as string | undefined, hooks);
+    io.stdout(`${handle} is ${admin ? 'now' : 'no longer'} an admin (changed by ${by} at ${changedAt})`);
   }
   return code;
 }

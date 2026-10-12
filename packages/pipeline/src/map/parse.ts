@@ -3,7 +3,7 @@
 // the document's shape and only narrows `unknown` values; it does not re-check them.
 
 import { XMLParser } from 'fast-xml-parser';
-import { validate, type SchemaPaths } from '../schemas/validate.ts';
+import { validate, type SchemaPaths, type ValidationError, type ValidationResult } from '../schemas/validate.ts';
 import { assetPath } from '../util/assets.ts';
 import {
   InvalidMapError,
@@ -39,12 +39,57 @@ export const WORKSPACE_SCHEMAS: SchemaPaths = {
 /**
  * Validate `xml` against the workspace XSD and Schematron, then convert it to a typed map.
  * Throws `InvalidMapError` carrying every validation error when the document is malformed,
- * breaks the XSD, or (if the XSD passes) breaks a cross-reference rule.
+ * breaks the XSD, (if the XSD passes) breaks a cross-reference rule, or (if those pass) has
+ * surfaces that use each other in a cycle.
  */
 export async function parseWorkspaceMap(xml: string): Promise<WorkspaceMap> {
   const result = await validate(xml, WORKSPACE_SCHEMAS);
   if (!result.valid) throw new InvalidMapError(result.errors);
-  return convert(xml);
+  const map = convert(xml);
+  const cycles = usesCycleErrors(map.surfaces);
+  if (cycles.length > 0) throw new InvalidMapError(cycles);
+  return map;
+}
+
+/** Every rule `parseWorkspaceMap` applies, as a result instead of a throw: what the map writer checks before handing XML back. */
+export async function validateWorkspaceMap(xml: string): Promise<ValidationResult> {
+  const result = await validate(xml, WORKSPACE_SCHEMAS);
+  if (!result.valid) return result;
+  const cycles = usesCycleErrors(convert(xml).surfaces);
+  return cycles.length > 0 ? { valid: false, errors: cycles } : result;
+}
+
+/**
+ * One error (rule `uses-cycle`) per cycle in the surfaces' `uses` relation, naming the surfaces in it in order
+ * (#312). The walk is depth first in document order, so each cycle is reported once, from the surface where the
+ * walk entered it.
+ */
+export function usesCycleErrors(surfaces: readonly Pick<MapSurface, 'id' | 'uses'>[]): ValidationError[] {
+  const uses = new Map(surfaces.map((s) => [s.id, s.uses]));
+  const state = new Map<string, 'open' | 'done'>();
+  const stack: string[] = [];
+  const errors: ValidationError[] = [];
+  const visit = (id: string): void => {
+    state.set(id, 'open');
+    stack.push(id);
+    for (const next of uses.get(id) ?? []) {
+      if (!uses.has(next)) continue;
+      const seen = state.get(next);
+      if (seen === 'open') errors.push(cycleError(stack.slice(stack.indexOf(next))));
+      else if (seen === undefined) visit(next);
+    }
+    stack.pop();
+    state.set(id, 'done');
+  };
+  for (const s of surfaces) if (!state.has(s.id)) visit(s.id);
+  return errors;
+}
+
+/** For `[a, b, c]`: "Surfaces a, b and c form a uses cycle: a uses b, which uses c, which uses a." */
+function cycleError(cycle: readonly string[]): ValidationError {
+  const [first = '', ...rest] = cycle;
+  const names = rest.length === 0 ? `Surface ${first} forms` : `Surfaces ${[first, ...rest.slice(0, -1)].join(', ')} and ${rest.at(-1) ?? ''} form`;
+  return { message: `${names} a uses cycle: ${first} uses ${[...rest, first].join(', which uses ')}.`, rule: 'uses-cycle' };
 }
 
 // Conversion from the parsed tree. Names mirror the XML.
@@ -52,7 +97,7 @@ export async function parseWorkspaceMap(xml: string): Promise<WorkspaceMap> {
 type Node = Record<string, unknown>;
 
 const ARRAY_ELEMENTS = new Set([
-  'surface', 'component', 'channel', 'trigger', 'messageAction', 'emoji', 'term', 'person', 'owns', 'level', 'forbiddenPath',
+  'surface', 'component', 'uses', 'channel', 'trigger', 'messageAction', 'emoji', 'term', 'person', 'owns', 'level', 'forbiddenPath',
 ]);
 
 const parser = new XMLParser({
@@ -114,6 +159,7 @@ function surface(n: Node): MapSurface {
     ...(repoBase === undefined ? {} : { repoBase }),
     jira: { project: attr(jira, 'project'), defaultIssueType: attr(jira, 'defaultIssueType') },
     components: list(node(n['components'])['component']).map((c): MapComponent => ({ id: attr(c, 'id'), label: attr(c, 'label') })),
+    uses: list(n['uses']).map((u) => attr(u, 'surface')),
   };
 }
 
@@ -155,12 +201,14 @@ function person(n: Node): MapPerson {
   const slackId = optAttr(n, 'slackId');
   const teamsId = optAttr(n, 'teamsId');
   const email = optAttr(n, 'email');
+  const admin = optAttr(n, 'admin');
   return {
     ...(slackId === undefined ? {} : { slackId }),
     ...(teamsId === undefined ? {} : { teamsId }),
     handle: attr(n, 'handle'),
     ...(email === undefined ? {} : { email }),
     role: attr(n, 'role') as MapActorRole,
+    ...(admin === undefined ? {} : { admin: bool(admin.trim()) }),
     owns: list(n['owns']).map((o): MapOwnership => {
       const component = optAttr(o, 'component');
       return { surface: attr(o, 'surface'), ...(component === undefined ? {} : { component }), primary: optAttr(o, 'primary') === 'true' || optAttr(o, 'primary') === '1' };

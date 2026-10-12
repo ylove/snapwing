@@ -36,7 +36,7 @@ describe('writeWorkspaceMap', () => {
       expect(written.xml).toContain('<repo base="release/2">github.com/acme/mobile</repo>');
       expect(await parseWorkspaceMap(written.xml)).toEqual(map);
     }
-    const added = await edited([{ kind: 'addSurface', surface: { id: 'docs', label: 'Docs', repo: 'github.com/acme/docs', repoBase: 'main-next', jira: { project: 'DOC', defaultIssueType: 'Task' }, components: [] } }]);
+    const added = await edited([{ kind: 'addSurface', surface: { id: 'docs', label: 'Docs', repo: 'github.com/acme/docs', repoBase: 'main-next', jira: { project: 'DOC', defaultIssueType: 'Task' }, components: [], uses: [] } }]);
     expect(added.map.surfaces.find((s) => s.id === 'docs')?.repoBase).toBe('main-next');
   });
 
@@ -133,7 +133,7 @@ describe('editWorkspaceMap', () => {
 
   it('adds a surface, a channel, a term, and a person', async () => {
     const { map } = await edited([
-      { kind: 'addSurface', surface: { id: 'docs', label: 'Docs', repo: 'github.com/acme/docs', jira: { project: 'DOC', defaultIssueType: 'Bug' }, components: [{ id: 'search', label: 'Search' }] } },
+      { kind: 'addSurface', surface: { id: 'docs', label: 'Docs', repo: 'github.com/acme/docs', jira: { project: 'DOC', defaultIssueType: 'Bug' }, components: [{ id: 'search', label: 'Search' }], uses: [] } },
       { kind: 'addChannel', channel: { id: '19:abc@thread.tacv2', name: 'docs-bugs', surface: 'docs', confidence: 'explicit', platform: 'teams', teamId: 'g2', triggerEmoji: ['bug'] } },
       { kind: 'addTerm', term: { text: 'the docs', surface: 'docs', component: 'search' } },
       { kind: 'addPerson', person: { teamsId: 'T9', handle: 'docsDev', email: 'd@x.com', role: 'engineer', owns: [{ surface: 'docs', component: 'search', primary: true }] } },
@@ -189,7 +189,7 @@ describe('editWorkspaceMap', () => {
       expect(dangling.errors.map((e) => e.rule)).toContain('channel-surface-exists');
       expect('xml' in dangling).toBe(false);
     }
-    const dupe = await editWorkspaceMap(example, [{ kind: 'addSurface', surface: { id: 'web', label: 'Again', repo: 'x/y', jira: { project: 'W', defaultIssueType: 'Bug' }, components: [] } }]);
+    const dupe = await editWorkspaceMap(example, [{ kind: 'addSurface', surface: { id: 'web', label: 'Again', repo: 'x/y', jira: { project: 'W', defaultIssueType: 'Bug' }, components: [], uses: [] } }]);
     expect(dupe.ok).toBe(false);
     const badLevel = await editWorkspaceMap(example, [{ kind: 'setSurfaceLevel', surface: 'web', level: 9 as 3, changedBy: 'a', changedAt: '2026-10-03T10:00:00Z' }]);
     expect(badLevel.ok).toBe(false);

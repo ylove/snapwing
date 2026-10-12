@@ -32,6 +32,12 @@ export interface MapSurface {
   repoBase?: string;
   jira: { project: string; defaultIssueType: string };
   components: MapComponent[];
+  /**
+   * Ids of the surfaces whose code this surface builds on (a shared package or service), in document order (#312).
+   * Empty when it declares none. The Schematron checks each names another declared surface; `parseWorkspaceMap`
+   * refuses a cycle.
+   */
+  uses: string[];
 }
 
 export interface MapChannel {
@@ -79,6 +85,8 @@ export interface MapPerson {
   handle: string;
   email?: string;
   role: MapActorRole;
+  /** `admin="true"`: may review corrections in the console (main 20.3, #312). Only an engineer carries it. Absent when the map omits it. */
+  admin?: boolean;
   owns: MapOwnership[];
 }
 

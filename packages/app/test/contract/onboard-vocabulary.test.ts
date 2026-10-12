@@ -189,8 +189,9 @@ const WEB: MapSurface = {
   repo: 'acme/web',
   jira: { project: 'WEB', defaultIssueType: 'Bug' },
   components: [{ id: 'checkout', label: 'Checkout' }],
+  uses: [],
 };
-const MOBILE: MapSurface = { id: 'mobile', label: 'Mobile app', repo: 'acme/mobile', jira: { project: 'MOB', defaultIssueType: 'Bug' }, components: [] };
+const MOBILE: MapSurface = { id: 'mobile', label: 'Mobile app', repo: 'acme/mobile', jira: { project: 'MOB', defaultIssueType: 'Bug' }, components: [], uses: [] };
 const CHANNELS: MapChannel[] = [
   { id: 'C_WEB', name: 'web-bugs', surface: 'web', confidence: 'explicit', triggerEmoji: [] },
   { id: 'C_QUIET', name: 'web-quiet', surface: 'web', confidence: 'inferred', triggerEmoji: [] },

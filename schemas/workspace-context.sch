@@ -41,6 +41,25 @@
     </sch:rule>
   </sch:pattern>
 
+  <!-- A surface lists the surfaces whose code it builds on (#312). A cycle needs a graph walk,
+       so parseWorkspaceMap refuses it after these rules pass. -->
+  <sch:pattern id="surface-uses">
+    <sch:rule context="w:surfaces/w:surface/w:uses">
+      <sch:assert id="uses-surface-exists"
+                  test="@surface = /w:workspace/w:surfaces/w:surface/@id">Surface <sch:value-of select="../@id"/> uses surface <sch:value-of select="@surface"/>, which is not declared.</sch:assert>
+      <sch:assert id="uses-not-self"
+                  test="not(@surface = ../@id)">Surface <sch:value-of select="../@id"/> cannot use itself.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+
+  <!-- The admin flag gates the console's corrections review (main 20.3), so only an engineer carries it (#312). -->
+  <sch:pattern id="person-admin">
+    <sch:rule context="w:person">
+      <sch:assert id="admin-needs-engineer"
+                  test="not(normalize-space(@admin) = ('true', '1')) or @role = 'engineer'">Person <sch:value-of select="@handle"/> is marked admin but has role <sch:value-of select="@role"/>; only an engineer can be an admin.</sch:assert>
+    </sch:rule>
+  </sch:pattern>
+
   <sch:pattern id="override-refs">
     <sch:rule context="w:overrides/w:surface">
       <sch:let name="ref" value="@ref"/>
