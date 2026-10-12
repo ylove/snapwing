@@ -1,0 +1,11 @@
+{
+  "name": "@fixture/shared-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared UI helpers for the Snapwing multi-repo contract fixtures. Plain ES modules, so a consumer can load it from node_modules with no build.",
+  "exports": { ".": "./src/index.mjs" },
+  "scripts": {
+    "test": "node --test \"test/*.mjs\""
+  }
+}
