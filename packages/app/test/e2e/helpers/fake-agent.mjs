@@ -68,8 +68,81 @@ async function review() {
   finish({ outcome: 'done', branch: 'review', summary: 'approve', testsAdded: [] });
 }
 
+// The multi-repo fixtures (public #333): `@fixture/shared-ui` gains a currency on `formatPrice`, and
+// `@fixture/web` bumps its shared-ui pin to the producer commit its request names and passes the cart's
+// currency. The commit is read from the request: an attribute `producer-commit`, `producerCommit` or
+// `producer` holding a 40 hex commit, else a `<producer>` element holding one, else the last 40 hex
+// commit in the request.
+const SHARED_UI_PRICE = [
+  "const SYMBOLS = { USD: '$', EUR: '\\u20ac', GBP: '\\u00a3' };",
+  '',
+  '/** A price in integer cents as text in `currency` (default USD), for example `\\u20ac18.00`. */',
+  "export function formatPrice(cents, currency = 'USD') {",
+  '  return `${SYMBOLS[currency] ?? `${currency} `}${(cents / 100).toFixed(2)}`;',
+  '}',
+  '',
+].join('\n');
+
+function producerCommit() {
+  const sha = '([0-9a-f]{40})';
+  const found =
+    new RegExp(`producer(?:-commit|Commit)?\\s*=\\s*"${sha}"`).exec(request) ??
+    new RegExp(`<producer\\b[^>]*>[^<]*?${sha}`).exec(request) ??
+    [...request.matchAll(/\b[0-9a-f]{40}\b/g)].at(-1);
+  return found === undefined ? undefined : (found[1] ?? found[0]);
+}
+
+function packageName() {
+  try {
+    return JSON.parse(readFileSync(join(workdir, 'package.json'), 'utf8')).name;
+  } catch {
+    return undefined;
+  }
+}
+
+function commitAll(files, message, summary) {
+  git(['add', ...files]);
+  git(['commit', '--quiet', '-m', `${key}: ${message}`]);
+  finish({ outcome: 'done', branch: git(['rev-parse', '--abbrev-ref', 'HEAD']), summary: `[snapwing-test] Scripted e2e fixer for ${key}: ${summary}`, testsAdded: [] });
+}
+
+function fixSharedUi() {
+  checkpoint('branched', git(['rev-parse', '--abbrev-ref', 'HEAD']));
+  const file = join(workdir, 'src/price.mjs');
+  if (!readFileSync(file, 'utf8').includes('Seeded gap')) return finish({ outcome: 'failed', reason: 'the seeded gap is not where the fixture README says', attempts: 1 });
+  writeFileSync(file, SHARED_UI_PRICE);
+  const tests = join(workdir, 'test/price.check.mjs');
+  writeFileSync(tests, `${readFileSync(tests, 'utf8')}\ntest('formats a euro price with the euro sign', () => {\n  assert.equal(formatPrice(1800, 'EUR'), '\\u20ac18.00');\n});\n`);
+  checkpoint('implemented', 'src/price.mjs');
+  checkpoint('tested', 'test/price.check.mjs covers it (not run by the scripted agent)');
+  commitAll(['src/price.mjs', 'test/price.check.mjs'], 'formatPrice takes a currency', 'formatPrice now takes a currency.');
+}
+
+function fixWeb() {
+  checkpoint('branched', git(['rev-parse', '--abbrev-ref', 'HEAD']));
+  const commit = producerCommit();
+  if (commit === undefined) return finish({ outcome: 'failed', reason: 'the request names no producer commit to pin shared-ui to', attempts: 0 });
+  const pkgFile = join(workdir, 'package.json');
+  const pkg = readFileSync(pkgFile, 'utf8');
+  const pinned = pkg.replace(/(@fixture\/shared-ui"\s*:\s*"git\+file:\/\/[^"#]+#)[0-9a-f]{40}/, `$1${commit}`);
+  const file = join(workdir, 'src/storefront.mjs');
+  const before = readFileSync(file, 'utf8');
+  const after = before.replace(/\n\/\/ Seeded bug:[^\n]*\n/, '\n').replace('formatPrice(cents)', 'formatPrice(cents, cart.currency)');
+  if (pinned === pkg || after === before) return finish({ outcome: 'failed', reason: 'the seeded bug is not where the fixture README says', attempts: 1 });
+  writeFileSync(pkgFile, pinned);
+  writeFileSync(file, after);
+  const tests = join(workdir, 'test/cart.check.mjs');
+  writeFileSync(tests, `${readFileSync(tests, 'utf8')}\ntest('shows a euro cart with the euro sign', () => {\n  const eur = { ...usd, currency: 'EUR' };\n  assert.equal(priceLabel(eur, 1800), '\\u20ac18.00');\n  assert.equal(totalLabel(eur), 'Total \\u20ac20.00');\n});\n`);
+  checkpoint('implemented', `package.json pins shared-ui at ${commit.slice(0, 7)}; src/storefront.mjs passes the currency`);
+  checkpoint('tested', 'test/cart.check.mjs covers it (not run by the scripted agent)');
+  commitAll(['package.json', 'src/storefront.mjs', 'test/cart.check.mjs'], 'show prices in the cart currency', 'web pins the shared-ui commit that takes a currency and passes the cart currency.');
+}
+
 async function fix() {
   if (!request.includes('<implementation-request')) return finish({ outcome: 'failed', reason: 'stdin held no implementation request', attempts: 0 });
+  const name = packageName();
+  if (name === '@fixture/shared-ui') return fixSharedUi();
+  if (name === '@fixture/web') return fixWeb();
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']);
   checkpoint('branched', branch);
   const file = join(workdir, 'src/cart.ts');

@@ -1,0 +1,14 @@
+{
+  "name": "@fixture/web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Storefront fixture for the Snapwing multi-repo contract tests. It shows prices through shared-ui, which it pins by commit.",
+  "dependencies": {
+    "@fixture/shared-ui": "git+file://{{SHARED_UI_URL}}#{{SHARED_UI_SHA}}"
+  },
+  "scripts": {
+    "pretest": "node scripts/resolve-shared-ui.mjs",
+    "test": "node --test \"test/*.mjs\""
+  }
+}
