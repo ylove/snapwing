@@ -29,6 +29,7 @@
     "fixer-image:build": "docker build -f infra/docker/fixer/Dockerfile -t snapwing-fixer:local .",
     "pack:cli": "node scripts/pack-cli.mjs",
     "test:pack": "pnpm --filter @snapwing/app run test:pack",
+    "raycast:export": "node packages/raycast/scripts/export.mjs",
     "onboard:proof": "tsx scripts/onboard-proof.ts"
   },
   "devDependencies": {
