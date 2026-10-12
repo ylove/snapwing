@@ -38,6 +38,15 @@
 //   recorded). In `ci` and `ci-retry` the wait for CI goes on; in `mergeable` CI is awaited again for the
 //   new head, in `ci-retry`, since the fixer's own head already passed and a red CI on another commit is
 //   a human's; `held` stays held for the human it waits on.
+// - Multi-repo coordination (B 6.1 to 6.3, #313): the coordination events go on a parent's log only, so
+//   their rows never fire for a single-repo incident or a work item, which run on the rows above
+//   unchanged. `fanout` moves `filed` (and `stopped`, which behaves as `filed`) to `fixing` and keeps
+//   `fixing` for a later fan-out. `fanin` `merge` or `human` moves `fixing` to `mergeable`, `degrade` to
+//   `escalated`; `mergeable` takes a `fanin` again when one work item was sent back after fan-in.
+//   `merge-walk` `ci-red` moves `mergeable` or `held` to `escalated`, and every other step keeps the
+//   status, also in `escalated` (the reverts after a red CI). The parent's own `merged` follows the
+//   last `merge-walk` `merged`, and its `deployed:*` and `closed` use the rows above.
+//   `work-items-opened`, `child-progressed` and `contract-revised` are records that keep the status.
 
 import type { EventType, IncidentEvent } from '../contracts/events.ts';
 
@@ -131,6 +140,16 @@ type Row = Partial<Record<EventType, Target>>;
 const heldTarget: Target = (event) =>
   event.type === 'held' && event.payload.kind === 'gate' ? 'held' : 'mergeable';
 
+/** B 6.3 step 3: a set that passed fan-in (`merge` or `human`) is mergeable; a degraded set escalates. */
+const faninTarget: Target = (event) =>
+  event.type === 'fanin' && event.payload.decision === 'degrade' ? 'escalated' : 'mergeable';
+
+/** B 6.3 step 4: a red CI stops the merge walk and escalates; every other step keeps `status`. */
+const walkTarget =
+  (status: LifecycleStatus): Target =>
+  (event) =>
+    event.type === 'merge-walk' && event.payload.outcome === 'ci-red' ? 'escalated' : status;
+
 /** Rows of the table, keyed by the status the incident is in. */
 const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
   captured: {
@@ -168,6 +187,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'pr-opened': 'in-review',
     'not-a-bug': 'not-a-bug',
     closed: 'closed',
+    // B 6.3 step 1: the parent's coordinator started its first work items.
+    fanout: 'fixing',
   },
   claimed: {
     'jira-transitioned': 'human-fixing',
@@ -190,6 +211,9 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'pr-opened': 'in-review',
     'fixer-failed': 'escalated',
     closed: 'closed',
+    // B 6.3 steps 1 and 3: dependents start as their dependencies open PRs; then one gate for the set.
+    fanout: 'fixing',
+    fanin: faninTarget,
   },
   'fixing-retry': {
     'fixer-started': 'fixing-retry',
@@ -232,6 +256,9 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'review-passed': 'ci-retry',
     'review-failed': 'fixing-retry',
     closed: 'closed',
+    // B 6.3 steps 3 and 4: the set fanned in again, and the walk in merge order.
+    fanin: faninTarget,
+    'merge-walk': walkTarget('mergeable'),
   },
   held: {
     released: 'mergeable',
@@ -239,6 +266,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'review-passed': 'held',
     'review-failed': 'fixing-retry',
     closed: 'closed',
+    // B 6.3 step 4: a person's Merge for a held set walks it.
+    'merge-walk': walkTarget('held'),
   },
   merged: {
     'deployed:staging': 'deployed:staging',
@@ -269,6 +298,7 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'pr-opened': 'in-review',
     'not-a-bug': 'not-a-bug',
     closed: 'closed',
+    fanout: 'fixing',
   },
   escalated: {
     merged: 'merged',
@@ -276,6 +306,8 @@ const TRANSITIONS: Readonly<Record<LifecycleStatus, Row>> = {
     'fixer-started': 'fixing',
     'pr-opened': 'in-review',
     closed: 'closed',
+    // B 6.3 step 4: after a red CI the walk records the reverts of the work items it merged.
+    'merge-walk': 'escalated',
   },
   closed: {},
   'not-filed': {},
@@ -326,6 +358,11 @@ const NON_STATE_CHANGING: ReadonlySet<EventType> = new Set<EventType>([
   'text-signal',
   // A 1.4 reaction ladder (ADR 0018): priority, owner mention, outage; the work goes on as it was.
   'escalated',
+  // B 6.1 to 6.3 coordination records on a parent: the work items opened, a work item's progress
+  // mirrored, a revised contract. The parent moves on `fanout`, `fanin` and `merge-walk`.
+  'work-items-opened',
+  'child-progressed',
+  'contract-revised',
 ]);
 
 export interface TransitionResult {

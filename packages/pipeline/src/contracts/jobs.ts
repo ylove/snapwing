@@ -11,6 +11,8 @@ export type JobName =
   | 'review.run'
   | 'merge.evaluate'
   | 'reconcile'
+  // B 6.3: one coordinator per multi-repo parent, keyed by `coordinateKey`
+  | 'coordinate'
   // #271: deletes expired kv rows, hourly (state/kv.ts)
   | 'kv.sweep'
   // A 4.5: one active-monitoring poll per monitored incident, every `monitor.interval` (monitor/active.ts)
@@ -39,6 +41,7 @@ export const JOB_NAMES: readonly JobName[] = [
   'review.run',
   'merge.evaluate',
   'reconcile',
+  'coordinate',
   'kv.sweep',
   'monitor.poll',
   'digest.0',
@@ -188,6 +191,28 @@ export function reviewRunKey(incidentId: string, headSha: string): string {
 
 export function isReviewRunData(v: unknown): v is ReviewRunData {
   return isRecord(v) && isNonEmptyString(v['incidentId']) && isPositiveInt(v['prNumber']) && isNonEmptyString(v['headSha']);
+}
+
+// Coordination (B 6.3) ---------------------------------------------------------------------------
+
+/**
+ * `coordinate` job data: the multi-repo parent incident. The job is deterministic given the log
+ * (B 6.3): every delivery reads the parent's and its work items' logs again, so it carries nothing else.
+ */
+export interface CoordinateData {
+  parentId: string;
+}
+
+/**
+ * Singleton key of a parent's `coordinate` job (`coordinate:{parentId}`, B 6.3), so a second start
+ * while one is queued adds nothing.
+ */
+export function coordinateKey(parentId: string): string {
+  return `coordinate:${keySegment(parentId)}`;
+}
+
+export function isCoordinateData(v: unknown): v is CoordinateData {
+  return isRecord(v) && isNonEmptyString(v['parentId']);
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {

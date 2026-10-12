@@ -16,9 +16,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { isEventType, type EventType, type IncidentEvent, type NewEvent } from '../contracts/events.ts';
+import { EVENT_TYPES, isEventType, type EventType, type IncidentEvent, type NewEvent } from '../contracts/events.ts';
 import { LOG_START, stateOptionsFromEnv, type IncidentStatus, type StateOptions } from '../contracts/state.ts';
-import { INITIAL_STATUS, isValidTransition, nextStatus } from '../lifecycle/machine.ts';
+import { INITIAL_STATUS, isValidTransition, LIFECYCLE_STATUSES, nextStatus } from '../lifecycle/machine.ts';
 import { USER_SIDE_KINDS } from '../models/user-side.ts';
 import type { OpenedState } from '../ports/state.ts';
 import { openState } from '../state/db.ts';
@@ -110,6 +110,12 @@ const PAYLOAD_SHAPES = {
   'user-side': { kind: 'string', evidence: 'string', questionSeq: 'number', surfaceId: 'string?' },
   'text-signal': { kind: 'string', messageId: 'string', phase: 'string?', text: 'string?', confidence: 'number?', env: 'string?', from: 'string?', priority: 'object?', resolution: 'string?', where: 'string?', cardMessageId: 'string?', linkedIncidentId: 'string?', to: 'string?', expiresAt: 'string?', via: 'string?' },
   'capture-cancelled': { card: 'string', timedOut: 'boolean?' },
+  'work-items-opened': { workItems: 'array', contracts: 'array', mergeOrder: 'array', allOrNothing: 'boolean' },
+  fanout: { started: 'array' },
+  'child-progressed': { workItemId: 'string', key: 'string', event: 'string', workItemSeq: 'number', status: 'string', prNumber: 'number?', jiraKey: 'string?', reason: 'string?' },
+  'contract-revised': { contractId: 'string', workItemId: 'string', key: 'string', workItemSeq: 'number', artifact: 'object' },
+  fanin: { decision: 'string', workItems: 'array', reason: 'string', level: 'number', gate: 'object?' },
+  'merge-walk': { workItemId: 'string', key: 'string', outcome: 'string', prNumber: 'number', mergeCommitSha: 'string?', headSha: 'string?', failingChecks: 'array?', revertPrNumbers: 'array?', revertPrNumber: 'number?', reason: 'string?' },
 } as const satisfies { readonly [K in EventType]: Shape };
 
 /** Closed value sets for the discriminants and enums a typo would silently break. */
@@ -131,6 +137,9 @@ const ENUMS: Readonly<Partial<Record<EventType, Readonly<Record<string, readonly
     via: ['reaction', 'message'],
   },
   'capture-cancelled': { card: ['dedupe', 'file-confirm', 'clarify'] },
+  'child-progressed': { event: EVENT_TYPES, status: LIFECYCLE_STATUSES },
+  fanin: { decision: ['merge', 'human', 'degrade'] },
+  'merge-walk': { outcome: ['merged', 'ci-green', 'ci-red', 'reverted'] },
 };
 
 function kindOf(value: unknown): Kind | 'null' | 'other' {

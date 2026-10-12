@@ -98,6 +98,20 @@ const SAMPLES = {
   'user-side': { kind: 'wrong-environment', evidence: 'URL bar shows staging.example.com', questionSeq: 5, surfaceId: 'web' },
   'text-signal': { kind: 'environment', messageId: '1730000000.000900', text: 'happening on prod too', confidence: 1, env: 'production', from: 'staging', priority: { from: 'Medium', to: 'High' } },
   'capture-cancelled': { card: 'file-confirm' },
+  'work-items-opened': {
+    workItems: [
+      { workItemId: '01JZ00000000000000000000C1', key: 'wi-1', repo: 'github.com/fake-org/shared-ui', surfaceId: 'shared-ui', dependsOn: [], produces: ['c-price-format-v2'], consumes: [] },
+      { workItemId: '01JZ00000000000000000000C2', key: 'wi-2', repo: 'github.com/fake-org/web', surfaceId: 'web', dependsOn: ['wi-1'], produces: [], consumes: ['c-price-format-v2'] },
+    ],
+    contracts: [{ id: 'c-price-format-v2', artifact: ART }],
+    mergeOrder: ['wi-1', 'wi-2'],
+    allOrNothing: true,
+  },
+  fanout: { started: ['01JZ00000000000000000000C1'] },
+  'child-progressed': { workItemId: '01JZ00000000000000000000C1', key: 'wi-1', event: 'pr-opened', workItemSeq: 9, status: 'in-review', prNumber: 212 },
+  'contract-revised': { contractId: 'c-price-format-v2', workItemId: '01JZ00000000000000000000C1', key: 'wi-1', workItemSeq: 8, artifact: { artifactId: ART.artifactId, version: 2 } },
+  fanin: { decision: 'merge', workItems: [{ workItemId: '01JZ00000000000000000000C1', key: 'wi-1', status: 'mergeable', prNumber: 212, headSha: SHA }], reason: 'every gate passed at level 3', level: 3 },
+  'merge-walk': { workItemId: '01JZ00000000000000000000C1', key: 'wi-1', outcome: 'merged', prNumber: 212, mergeCommitSha: SHA },
 } as const satisfies { readonly [K in EventType]: EventPayloads[K] };
 
 describe('EVENT_TYPES', () => {
