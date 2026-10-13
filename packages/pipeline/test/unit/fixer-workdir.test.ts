@@ -92,6 +92,9 @@ describe('prepareWorkdir', () => {
     expect(harnessGit(p, ['config', 'user.name'])).toBe('snapwing[bot]');
     expect(harnessGit(p, ['config', 'user.email'])).toBe('snapwing[bot]@users.noreply.github.com');
     expect(harnessGit(p, ['remote', 'get-url', 'origin'])).toBe(origin.url);
+    // No background maintenance writes in the checkout after a commit (#372).
+    expect(harnessGit(p, ['config', '--local', 'maintenance.auto'])).toBe('false');
+    expect(harnessGit(p, ['config', '--local', 'gc.auto'])).toBe('0');
     expect(harnessGit(p, ['status', '--porcelain'])).toBe('');
     expect((await readFile(join(p.workdir, 'dev.txt'), 'utf8')).trim()).toBe('dev');
   });

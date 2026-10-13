@@ -206,6 +206,10 @@ export async function prepareWorkdir(given: PrepareWorkdirInput): Promise<Prepar
       ['tag.gpgsign', 'false'],
       ['credential.helper', ''],
       ['core.hooksPath', hooksDir],
+      // No detached git process writes in the checkout after the harness commits (#372): the hand-off
+      // bundles a quiet tree. A git without `maintenance` accepts the unknown key and ignores it.
+      ['maintenance.auto', 'false'],
+      ['gc.auto', '0'],
     ];
     for (const [key, value] of config) await git(['config', key, value]);
 
